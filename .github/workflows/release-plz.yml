@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: run release-plz
-        uses: release-plz/action@v0
+        uses: release-plz/action@v0.5.130
         with:
           command: release-pr
         env:
@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: run release-plz
-        uses: release-plz/action@v0
+        uses: release-plz/action@v0.5.130
         with:
           command: release
         env:
