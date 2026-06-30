@@ -34,18 +34,25 @@ jobs:
   # on merge of the release PR: tags `v{version}`, creates the github release,
   # and publishes crates to crates.io in dependency order. the pushed tag then
   # triggers release.yml, which builds maturin wheels and publishes to pypi.
-  release-plz-release:
-    name: release-plz release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: run release-plz
-        uses: release-plz/action@v0.5.130
-        with:
-          command: release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  #
+  # GATED OFF until the crates are bootstrap-published to crates.io once. A first
+  # publish of the workspace fails manifest verification because inter-crate deps
+  # (e.g. rolter-balancer -> rolter-core) resolve against crates.io, where nothing
+  # is published yet. Re-enable once the initial publish is done and
+  # CARGO_REGISTRY_TOKEN is confirmed. Tracked in Linear (Phase 9).
+  #
+  # release-plz-release:
+  #   name: release-plz release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - name: run release-plz
+  #       uses: release-plz/action@v0.5.130
+  #       with:
+  #         command: release
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
