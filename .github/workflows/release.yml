@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── build maturin wheels ────────────────────────────────────────────────────
+  build-wheels:
+    name: build wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build wheels (linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+          manylinux: auto
+          target: x86_64
+
+      - name: build wheels (linux aarch64)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+          manylinux: auto
+          target: aarch64
+
+      - name: build wheels (macos / windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+
+      - name: upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/
+
+  # ── publish to PyPI ─────────────────────────────────────────────────────────
+  publish-pypi:
+    name: publish to pypi
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/rolter/
+    permissions:
+      id-token: write  # trusted publishing (OIDC)
+    steps:
+      - name: download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+
+      - name: publish to pypi
+        uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*
+
+  # ── publish to crates.io ────────────────────────────────────────────────────
+  publish-crates:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p rolter-core    --no-verify
+          sleep 20
+          cargo publish -p rolter-store   --no-verify
+          sleep 20
+          cargo publish -p rolter-auth    --no-verify
+          sleep 20
+          cargo publish -p rolter-balancer --no-verify
+          sleep 20
+          cargo publish -p rolter-proxy   --no-verify
+          sleep 20
+          cargo publish -p rolter-control --no-verify
+          sleep 20
+          cargo publish -p rolter-gateway --no-verify
