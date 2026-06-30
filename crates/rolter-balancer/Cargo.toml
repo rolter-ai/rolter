@@ -1,0 +1,13 @@
+[package]
+name = "rolter-balancer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "pluggable load-balancing strategies for rolter routes"
+
+[dependencies]
+rolter-core.workspace = true
+parking_lot.workspace = true
+ahash.workspace = true
+rand.workspace = true

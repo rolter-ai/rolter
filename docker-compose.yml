@@ -1,0 +1,74 @@
+name: rolter
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rolter
+      POSTGRES_PASSWORD: rolter
+      POSTGRES_DB: rolter
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ./clickhouse:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  gateway:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    command: ["rolter-gateway", "--config", "/app/rolter.toml"]
+    ports:
+      - "4000:4000"
+    environment:
+      RUST_LOG: info
+      ROLTER_CONFIG: /app/rolter.toml
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      - redis
+
+  control:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    command: ["rolter-control"]
+    ports:
+      - "4001:4001"
+    environment:
+      RUST_LOG: info
+      ROLTER_UI_DIR: /app/ui/dist
+      DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+
+volumes:
+  pgdata:
+  chdata:

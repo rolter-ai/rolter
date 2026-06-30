@@ -1,0 +1,42 @@
+# Docker deployment
+
+## Compose (full stack)
+
+`docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services.
+
+```bash
+cp .env.example .env            # set OPENAI_API_KEY etc.
+docker compose up -d
+docker compose logs -f gateway
+```
+
+- Gateway: http://localhost:4000
+- Control + UI: http://localhost:4001
+- Postgres `5432`, Redis `6379`, ClickHouse `8123/9000`
+
+DB schemas auto-apply on first start (`migrations/` → Postgres initdb, `clickhouse/` → ClickHouse initdb).
+
+## Image
+
+The multi-stage `Dockerfile` produces a slim Debian runtime with both binaries and the built UI at `/app/ui/dist`.
+
+```bash
+docker build -t rolter:dev .
+docker run --rm -p 4000:4000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v "$PWD/rolter.toml:/app/rolter.toml" \
+  rolter:dev
+```
+
+Override the entrypoint to run the control plane:
+
+```bash
+docker run --rm -p 4001:4001 rolter:dev rolter-control
+```
+
+## Production notes
+
+- Put the gateway behind TLS (ingress/load balancer); keep the control plane private.
+- Set a strong `ROLTER_MASTER_KEY`; provide DB/Redis/ClickHouse URLs via env or a secrets manager.
+- Scale `gateway` horizontally; all replicas hot-reload config from Redis. ClickHouse and Postgres are shared.
+- Kubernetes manifests/Helm chart are a roadmap item.

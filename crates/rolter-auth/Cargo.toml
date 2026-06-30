@@ -1,0 +1,11 @@
+[package]
+name = "rolter-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "virtual keys, roles and access checks for rolter"
+
+[dependencies]
+serde.workspace = true
+subtle.workspace = true

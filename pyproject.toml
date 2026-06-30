@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rolter"
+version = "0.0.1"
+description = "high-performance openai/anthropic-compatible llm proxy and load balancer"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+keywords = ["llm", "proxy", "gateway", "openai", "anthropic", "vllm", "load-balancer"]
+
+[project.urls]
+Repository = "https://github.com/ormeilu/rolter"
+
+# maturin builds the rust binary into the wheel so `uv tool install rolter`
+# exposes the cli. install maturin first with `uv tool install maturin`.
+# note: the wheel currently ships `rolter-gateway`; a unified `rolter` launcher
+# that dispatches gateway/control subcommands is tracked in TODO.md.
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/rolter-gateway/Cargo.toml"
+strip = true

@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rolter-core",
+    "crates/rolter-balancer",
+    "crates/rolter-proxy",
+    "crates/rolter-store",
+    "crates/rolter-auth",
+    "crates/rolter-gateway",
+    "crates/rolter-control",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/ormeilu/rolter"
+authors = ["rolter contributors"]
+rust-version = "1.82"
+
+[workspace.dependencies]
+# async runtime + web
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8" }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "fs", "set-header"] }
+hyper = "1"
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# errors + logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# http client for upstream forwarding
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+bytes = "1"
+futures-util = "0.3"
+
+# concurrency primitives
+async-trait = "0.1"
+arc-swap = "1"
+dashmap = "6"
+parking_lot = "0.12"
+
+# misc
+rand = "0.8"
+ahash = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+subtle = "2"
+
+# internal crates
+rolter-core = { path = "crates/rolter-core" }
+rolter-balancer = { path = "crates/rolter-balancer" }
+rolter-proxy = { path = "crates/rolter-proxy" }
+rolter-store = { path = "crates/rolter-store" }
+rolter-auth = { path = "crates/rolter-auth" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
