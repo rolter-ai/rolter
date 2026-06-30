@@ -4,7 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "rolter"
-version = "0.0.1"
+# version is read from crates/rolter-gateway/Cargo.toml by maturin so release-plz
+# (which bumps the cargo workspace version) keeps the wheel version in sync.
+dynamic = ["version"]
 description = "high-performance openai/anthropic-compatible llm proxy and load balancer"
 readme = "README.md"
 license = { text = "Apache-2.0" }
