@@ -26,7 +26,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Control CRUD API for all of the above (Axum + validation)
 - [x] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
 - [x] `GET /internal/snapshot?version=N` for gateways
-- [ ] Seed/bootstrap command (create org/admin, import `rolter.toml`)
+- [x] Seed/bootstrap command (create org/admin, import `rolter.toml`)
 
 ## Phase 2 — Reload-free config
 - [ ] Redis client + `PUBLISH`/`SUBSCRIBE` on `rolter.config`
