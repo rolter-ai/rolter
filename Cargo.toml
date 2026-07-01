@@ -55,6 +55,7 @@ clap = { version = "4", features = ["derive", "env"] }
 subtle = "2"
 
 # postgres persistence (rolter-store `postgres` feature)
+argon2 = "0.5"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio-rustls",
     "postgres",
