@@ -24,8 +24,8 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Migration runner (`sqlx migrate` / refinery) replacing initdb-only
 - [x] Repositories: orgs, teams, projects, providers, provider_keys, routes, route_targets, virtual_keys, budgets, rate_limits, model_prices
 - [ ] Control CRUD API for all of the above (Axum + validation)
-- [ ] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
-- [ ] `GET /internal/snapshot?version=N` for gateways
+- [x] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
+- [x] `GET /internal/snapshot?version=N` for gateways
 - [ ] Seed/bootstrap command (create org/admin, import `rolter.toml`)
 
 ## Phase 2 — Reload-free config
