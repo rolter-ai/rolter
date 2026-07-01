@@ -60,9 +60,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
     "migrate",
     "uuid",
+    "chrono",
     "macros",
 ] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 
 # internal crates
 rolter-core = { path = "crates/rolter-core" }
