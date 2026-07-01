@@ -30,7 +30,16 @@ clap.workspace = true
 sqlx = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 
 [features]
 default = []
-postgres = ["rolter-store/postgres", "dep:sqlx", "dep:uuid", "dep:argon2"]
+postgres = [
+    "rolter-store/postgres",
+    "dep:sqlx",
+    "dep:uuid",
+    "dep:argon2",
+    "dep:sha2",
+    "dep:rand",
+]

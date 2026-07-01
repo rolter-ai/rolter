@@ -5,6 +5,9 @@
 //! in-memory store, and the role catalog; CRUD, RBAC enforcement, Postgres
 //! persistence and Redis change publication are added in later phases.
 
+#[cfg(feature = "postgres")]
+mod crud;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,6 +50,10 @@ struct Args {
 #[derive(Clone)]
 struct ControlState {
     store: Arc<dyn ConfigStore>,
+    /// set when `--database-url` is configured; backs the CRUD API, which
+    /// needs direct repository access beyond what `ConfigStore` exposes
+    #[cfg(feature = "postgres")]
+    pool: Option<sqlx::PgPool>,
 }
 
 #[tokio::main]
@@ -54,10 +61,18 @@ async fn main() -> anyhow::Result<()> {
     rolter_core::telemetry::init();
     let args = Args::parse();
 
-    let store: Arc<dyn ConfigStore> = build_store(&args).await?;
+    #[allow(unused_variables)]
+    let (store, pool) = build_store(&args).await?;
+    #[cfg(feature = "postgres")]
+    let state = ControlState {
+        store,
+        pool: pool.clone(),
+    };
+    #[cfg(not(feature = "postgres"))]
     let state = ControlState { store };
 
-    let api = Router::new()
+    #[allow(unused_mut)]
+    let mut api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/ping",
@@ -65,11 +80,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/v1/roles", get(list_roles))
         .route("/api/v1/config", get(get_config))
-        .route("/internal/snapshot", get(get_snapshot))
-        .with_state(state);
+        .route("/internal/snapshot", get(get_snapshot));
 
-    // anything not matched by the api falls through to the built SPA
-    let app = api.fallback_service(ServeDir::new(&args.ui_dir));
+    #[cfg(feature = "postgres")]
+    if pool.is_some() {
+        api = api.merge(crud::router());
+    }
+
+    let app = api
+        .with_state(state)
+        // anything not matched by the api falls through to the built SPA
+        .fallback_service(ServeDir::new(&args.ui_dir));
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
     tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
@@ -80,20 +101,32 @@ async fn main() -> anyhow::Result<()> {
 
 /// Build the config store: postgres-backed when `--database-url` is set
 /// (running migrations first), otherwise an in-memory store seeded from the
-/// bootstrap toml.
-async fn build_store(args: &Args) -> anyhow::Result<Arc<dyn ConfigStore>> {
-    #[cfg(feature = "postgres")]
+/// bootstrap toml. Also returns the raw pool (postgres builds only), which
+/// the CRUD API needs for direct repository access.
+#[cfg(feature = "postgres")]
+async fn build_store(args: &Args) -> anyhow::Result<(Arc<dyn ConfigStore>, Option<sqlx::PgPool>)> {
     if let Some(database_url) = &args.database_url {
         let pool = rolter_store::postgres::connect(database_url).await?;
         rolter_store::postgres::run_migrations(&pool).await?;
-        return Ok(Arc::new(rolter_store::PostgresConfigStore::new(pool)));
+        let store: Arc<dyn ConfigStore> =
+            Arc::new(rolter_store::PostgresConfigStore::new(pool.clone()));
+        return Ok((store, Some(pool)));
     }
 
     let config = match &args.config {
         Some(path) if path.exists() => GatewayConfig::load(path)?,
         _ => GatewayConfig::default(),
     };
-    Ok(Arc::new(InMemoryConfigStore::new(config)))
+    Ok((Arc::new(InMemoryConfigStore::new(config)), None))
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn build_store(args: &Args) -> anyhow::Result<(Arc<dyn ConfigStore>, Option<()>)> {
+    let config = match &args.config {
+        Some(path) if path.exists() => GatewayConfig::load(path)?,
+        _ => GatewayConfig::default(),
+    };
+    Ok((Arc::new(InMemoryConfigStore::new(config)), None))
 }
 
 async fn list_roles() -> Json<Value> {
