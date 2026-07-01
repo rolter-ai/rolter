@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for humans and AI agents working in this repository.
+Guidance for humans and AI agents working in this repository. `CLAUDE.md` is a symlink to this file.
 
 ## Project
 
@@ -13,7 +13,8 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - `cargo fmt --all` — format (run before committing)
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint (must be clean)
 - `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane
-- `cargo run -p rolter-control` — run the control plane + UI host
+- `cargo run -p rolter-control` — run the control plane + UI host (add `--database-url`/`ROLTER_DATABASE_URL` for the postgres-backed store, CRUD API and `/internal/snapshot`)
+- `cargo run -p rolter-store --features postgres --bin rolter-seed -- --import rolter.example.toml` — idempotent DB bootstrap (org/team/project, optional admin user, providers/routes)
 - `cd ui && bun install` then `bun run dev` / `bun run build` — UI deps, dev server, production build
 - `docker compose up -d` — bring up Postgres, Redis, ClickHouse and rolter
 
@@ -26,6 +27,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - Code comments start lowercase with no trailing punctuation; `///` doc comments use normal prose.
 - New balancing strategies implement `rolter_balancer::LoadBalancer` and are wired into `build()`.
 - New storage backends implement the `rolter_store` traits behind a cargo feature.
+- The gateway ships a built-in `fake-llm` model (deterministic lorem ipsum, no upstream or config needed) on `/v1/chat/completions` and `/v1/messages`, non-streaming and SSE. Use it for smoke tests and local dev without secrets; a configured route named `fake-llm` shadows the builtin.
 
 ## Commit & PR conventions
 
@@ -48,8 +50,10 @@ fix(gateway): stream anthropic sse without buffering
 docs(architecture): document reload-free config propagation
 ```
 
-- Link issues in the body/footer with `Closes #123` / `Refs #123`.
-- PR titles must be a single valid Conventional Commit line (CI checks this).
+- Link Linear issues in the body/footer with `Closes ROL-123` / `Refs ROL-123` (GitHub issues: `Closes #123`).
+- PR titles must be a single valid Conventional Commit line (CI checks this); append the Linear key in brackets, e.g. `feat(gateway): built-in fake-llm default model [ROL-98]`.
+- Branch names follow `<type>/<ISSUE-KEY>-<short-description>` with the same Conventional Commit types, e.g. `fix/ROL-94-models-auth`. Never use a person or agent name as the prefix.
+- Prefer stacked branches/PRs (GitButler) for dependent work; keep each PR one logical change.
 - Keep PRs focused; update `docs/` and `TODO.md` when behavior changes.
 - Include the co-author trailer on agent commits: `Co-Authored-By: Oz <oz-agent@warp.dev>`.
 
