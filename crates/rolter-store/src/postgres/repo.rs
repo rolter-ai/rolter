@@ -288,6 +288,20 @@ impl RouteRepo<'_> {
         }
         Ok(())
     }
+
+    /// Delete every route serving `model` (a public model name can be routed
+    /// from several projects). Returns how many routes were removed.
+    pub async fn delete_by_model(&self, model: &str) -> Result<u64> {
+        let res = sqlx::query("delete from routes where model = $1")
+            .bind(model)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("model {model}")));
+        }
+        Ok(res.rows_affected())
+    }
 }
 
 /// Route targets, scoped to a route.

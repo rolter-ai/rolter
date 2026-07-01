@@ -80,6 +80,8 @@ pub fn router() -> Router<ControlState> {
             get(list_model_prices).put(upsert_model_price),
         )
         .route("/api/v1/model-prices/{model}", delete(delete_model_price))
+        .route("/api/v1/models", get(list_models))
+        .route("/api/v1/models/{model}", delete(delete_model))
 }
 
 fn pool(state: &ControlState) -> &PgPool {
@@ -89,24 +91,34 @@ fn pool(state: &ControlState) -> &PgPool {
         .expect("crud router is only mounted when a postgres pool is configured")
 }
 
-struct ApiError(Error);
+enum ApiError {
+    Core(Error),
+    /// mutation collides with a config-file-owned resource (409)
+    Conflict(String),
+}
 
 impl From<Error> for ApiError {
     fn from(err: Error) -> Self {
-        Self(err)
+        Self::Core(err)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match &self.0 {
-            Error::NotFound(_) => StatusCode::NOT_FOUND,
-            Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        let (status, message) = match self {
+            Self::Core(err) => {
+                let status = match &err {
+                    Error::NotFound(_) => StatusCode::NOT_FOUND,
+                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                (status, err.to_string())
+            }
+            Self::Conflict(message) => (StatusCode::CONFLICT, message),
         };
         (
             status,
-            Json(serde_json::json!({"error": {"message": self.0.to_string()}})),
+            Json(serde_json::json!({"error": {"message": message}})),
         )
             .into_response()
     }
@@ -117,9 +129,31 @@ type ApiResult<T> = Result<T, ApiError>;
 /// Reject a required field that's empty after trimming.
 fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().is_empty() {
-        return Err(ApiError(Error::Config(format!(
+        return Err(ApiError::Core(Error::Config(format!(
             "{field} must not be empty"
         ))));
+    }
+    Ok(())
+}
+
+/// Bump the config version after a mutation that changes the effective
+/// gateway config, so snapshot-polling gateways pick it up without restart.
+async fn bump_config_version(state: &ControlState) -> ApiResult<()> {
+    rolter_store::postgres::bump_version(pool(state)).await?;
+    Ok(())
+}
+
+/// Reject a mutation that collides with a bootstrap-config-owned resource.
+fn require_not_config_owned(
+    owned: &std::collections::HashSet<String>,
+    name: &str,
+    kind: &str,
+) -> ApiResult<()> {
+    if owned.contains(name) {
+        return Err(ApiError::Conflict(format!(
+            "{kind} '{name}' is managed by the bootstrap config and cannot be \
+             modified at runtime; edit the config file and restart instead"
+        )));
     }
     Ok(())
 }
@@ -249,24 +283,25 @@ async fn create_provider(
     Json(body): Json<CreateProvider>,
 ) -> ApiResult<Json<Provider>> {
     require_non_empty(&body.name, "name")?;
+    require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
     if !PROVIDER_KINDS.contains(&body.kind.as_str()) {
-        return Err(ApiError(Error::Config(format!(
+        return Err(ApiError::Core(Error::Config(format!(
             "kind must be one of {PROVIDER_KINDS:?}"
         ))));
     }
-    Ok(Json(
-        ProviderRepo(pool(&state))
-            .create(
-                org_id,
-                &body.name,
-                &body.kind,
-                &body.api_base,
-                body.api_key_env.as_deref(),
-                body.egress_proxy.as_deref(),
-            )
-            .await?,
-    ))
+    let row = ProviderRepo(pool(&state))
+        .create(
+            org_id,
+            &body.name,
+            &body.kind,
+            &body.api_base,
+            body.api_key_env.as_deref(),
+            body.egress_proxy.as_deref(),
+        )
+        .await?;
+    bump_config_version(&state).await?;
+    Ok(Json(row))
 }
 
 async fn delete_provider(
@@ -274,6 +309,7 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     ProviderRepo(pool(&state)).delete(id).await?;
+    bump_config_version(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -311,16 +347,17 @@ async fn create_route(
     Json(body): Json<CreateRoute>,
 ) -> ApiResult<Json<Route>> {
     require_non_empty(&body.model, "model")?;
+    require_not_config_owned(&state.config_owned.models, &body.model, "model")?;
     if !STRATEGIES.contains(&body.strategy.as_str()) {
-        return Err(ApiError(Error::Config(format!(
+        return Err(ApiError::Core(Error::Config(format!(
             "strategy must be one of {STRATEGIES:?}"
         ))));
     }
-    Ok(Json(
-        RouteRepo(pool(&state))
-            .create(project_id, &body.model, &body.strategy)
-            .await?,
-    ))
+    let row = RouteRepo(pool(&state))
+        .create(project_id, &body.model, &body.strategy)
+        .await?;
+    bump_config_version(&state).await?;
+    Ok(Json(row))
 }
 
 #[derive(Deserialize)]
@@ -333,11 +370,11 @@ async fn set_route_enabled(
     Path(id): Path<Uuid>,
     Json(body): Json<SetRouteEnabled>,
 ) -> ApiResult<Json<Route>> {
-    Ok(Json(
-        RouteRepo(pool(&state))
-            .set_enabled(id, body.enabled)
-            .await?,
-    ))
+    let row = RouteRepo(pool(&state))
+        .set_enabled(id, body.enabled)
+        .await?;
+    bump_config_version(&state).await?;
+    Ok(Json(row))
 }
 
 async fn delete_route(
@@ -345,6 +382,7 @@ async fn delete_route(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     RouteRepo(pool(&state)).delete(id).await?;
+    bump_config_version(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -373,18 +411,18 @@ async fn create_route_target(
     Json(body): Json<CreateRouteTarget>,
 ) -> ApiResult<Json<RouteTarget>> {
     if body.weight <= 0 {
-        return Err(ApiError(Error::Config("weight must be > 0".into())));
+        return Err(ApiError::Core(Error::Config("weight must be > 0".into())));
     }
-    Ok(Json(
-        RouteTargetRepo(pool(&state))
-            .create(
-                route_id,
-                body.provider_id,
-                body.upstream_model.as_deref(),
-                body.weight,
-            )
-            .await?,
-    ))
+    let row = RouteTargetRepo(pool(&state))
+        .create(
+            route_id,
+            body.provider_id,
+            body.upstream_model.as_deref(),
+            body.weight,
+        )
+        .await?;
+    bump_config_version(&state).await?;
+    Ok(Json(row))
 }
 
 async fn delete_route_target(
@@ -392,6 +430,7 @@ async fn delete_route_target(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     RouteTargetRepo(pool(&state)).delete(id).await?;
+    bump_config_version(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -447,6 +486,7 @@ async fn create_virtual_key(
             &body.models,
         )
         .await?;
+    bump_config_version(&state).await?;
     Ok(Json(CreatedVirtualKey { row, key }))
 }
 
@@ -460,11 +500,11 @@ async fn set_virtual_key_disabled(
     Path(id): Path<Uuid>,
     Json(body): Json<SetVirtualKeyDisabled>,
 ) -> ApiResult<Json<VirtualKey>> {
-    Ok(Json(
-        VirtualKeyRepo(pool(&state))
-            .set_disabled(id, body.disabled)
-            .await?,
-    ))
+    let row = VirtualKeyRepo(pool(&state))
+        .set_disabled(id, body.disabled)
+        .await?;
+    bump_config_version(&state).await?;
+    Ok(Json(row))
 }
 
 async fn delete_virtual_key(
@@ -472,6 +512,7 @@ async fn delete_virtual_key(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     VirtualKeyRepo(pool(&state)).delete(id).await?;
+    bump_config_version(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -487,7 +528,7 @@ const SCOPE_TYPES: [&str; 4] = ["org", "team", "project", "virtual_key"];
 
 fn validate_scope(scope_type: &str) -> ApiResult<()> {
     if !SCOPE_TYPES.contains(&scope_type) {
-        return Err(ApiError(Error::Config(format!(
+        return Err(ApiError::Core(Error::Config(format!(
             "scope_type must be one of {SCOPE_TYPES:?}"
         ))));
     }
@@ -525,7 +566,9 @@ async fn create_budget(
 ) -> ApiResult<Json<Budget>> {
     validate_scope(&body.scope_type)?;
     if body.limit_usd.trim().parse::<f64>().is_err() {
-        return Err(ApiError(Error::Config("limit_usd must be numeric".into())));
+        return Err(ApiError::Core(Error::Config(
+            "limit_usd must be numeric".into(),
+        )));
     }
     Ok(Json(
         BudgetRepo(pool(&state))
@@ -611,7 +654,9 @@ fn default_currency() -> String {
 
 fn require_numeric(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().parse::<f64>().is_err() {
-        return Err(ApiError(Error::Config(format!("{field} must be numeric"))));
+        return Err(ApiError::Core(Error::Config(format!(
+            "{field} must be numeric"
+        ))));
     }
     Ok(())
 }
@@ -644,5 +689,50 @@ async fn delete_model_price(
     Path(model): Path<String>,
 ) -> ApiResult<StatusCode> {
     ModelPriceRepo(pool(&state)).delete(&model).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --- effective model list (config + db, LiteLLM-style) ---
+
+#[derive(Serialize)]
+struct EffectiveModel {
+    model: String,
+    strategy: rolter_core::BalancingStrategy,
+    targets: usize,
+    /// "config" = declared in the bootstrap file, read-only at runtime;
+    /// "db" = created via this API, full runtime CRUD
+    source: &'static str,
+}
+
+/// The merged model list the gateway effectively serves: bootstrap-config
+/// routes (read-only) plus DB routes, as exposed by the merged store.
+async fn list_models(State(state): State<ControlState>) -> ApiResult<Json<Vec<EffectiveModel>>> {
+    let config = state.store.load().await?;
+    let models = config
+        .routes
+        .iter()
+        .map(|r| EffectiveModel {
+            model: r.model.clone(),
+            strategy: r.strategy,
+            targets: r.targets.len(),
+            source: if state.config_owned.models.contains(&r.model) {
+                "config"
+            } else {
+                "db"
+            },
+        })
+        .collect();
+    Ok(Json(models))
+}
+
+/// Delete a DB-defined model (all routes with that public name). Config
+/// models are rejected with `409` since the file owns them.
+async fn delete_model(
+    State(state): State<ControlState>,
+    Path(model): Path<String>,
+) -> ApiResult<StatusCode> {
+    require_not_config_owned(&state.config_owned.models, &model, "model")?;
+    RouteRepo(pool(&state)).delete_by_model(&model).await?;
+    bump_config_version(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }

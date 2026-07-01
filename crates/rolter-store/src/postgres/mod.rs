@@ -163,6 +163,18 @@ impl PostgresConfigStore {
     }
 }
 
+/// Bump the global config version so snapshot-polling gateways refetch.
+/// Call after any mutation that changes the effective [`GatewayConfig`]
+/// (providers, routes, targets, virtual keys).
+pub async fn bump_version(pool: &PgPool) -> Result<i64> {
+    sqlx::query_scalar(
+        "update config_version set version = version + 1 where id = 1 returning version",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(store_err)
+}
+
 #[async_trait]
 impl ConfigStore for PostgresConfigStore {
     async fn load(&self) -> Result<GatewayConfig> {
