@@ -27,10 +27,11 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
 - [x] `GET /internal/snapshot?version=N` for gateways
 - [x] Seed/bootstrap command (create org/admin, import `rolter.toml`)
+- [x] Config vs DB model split (LiteLLM-style): bootstrap toml merged read-only over DB models, `GET/DELETE /api/v1/models`, 409 on config-owned mutations
 
 ## Phase 2 — Reload-free config
 - [ ] Redis client + `PUBLISH`/`SUBSCRIBE` on `rolter.config`
-- [ ] Bump/read `config_version` transactionally on writes
+- [x] Bump/read `config_version` on CRUD writes (transactional bump with Redis publish still pending)
 - [ ] Gateway watcher task: on event/interval, fetch snapshot, `ArcSwap::store`
 - [ ] Snapshot validation before version bump (targets reference known providers)
 - [ ] Metrics for reload (version, last-applied, failures)
