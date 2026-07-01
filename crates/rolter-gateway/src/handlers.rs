@@ -9,8 +9,9 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 
 use rolter_balancer::RouteContext;
+use rolter_core::VirtualKeyConfig;
 
-use crate::state::AppState;
+use crate::state::{AppState, Snapshot};
 
 /// Liveness probe.
 pub async fn healthz() -> &'static str {
@@ -25,15 +26,24 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// OpenAI-compatible model listing built from configured routes.
-pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
+/// OpenAI-compatible model listing built from configured routes, filtered to
+/// the models the caller's virtual key is allowed to see.
+pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let snap = state.snapshot.load();
+    let vk = match authenticate(&state, &snap, &headers) {
+        Ok(vk) => vk,
+        Err(resp) => return resp,
+    };
     let data: Vec<Value> = snap
         .routes
         .keys()
+        .filter(|m| {
+            vk.as_ref()
+                .is_none_or(|vk| rolter_auth::model_allowed(&vk.models, m))
+        })
         .map(|m| json!({"id": m, "object": "model", "owned_by": "rolter"}))
         .collect();
-    Json(json!({"object": "list", "data": data}))
+    Json(json!({"object": "list", "data": data})).into_response()
 }
 
 pub async fn chat_completions(
@@ -80,6 +90,32 @@ fn error_json(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// Shared virtual-key auth check for every `/v1/*` handler. Returns the
+/// matched key (or `None` when no keys are configured, i.e. auth disabled).
+#[allow(clippy::result_large_err)]
+fn authenticate(
+    state: &AppState,
+    snap: &Snapshot,
+    headers: &HeaderMap,
+) -> Result<Option<VirtualKeyConfig>, Response> {
+    if snap.keys.is_empty() {
+        return Ok(None);
+    }
+    match extract_key(headers) {
+        Some(key) => match snap.keys.get(&key) {
+            Some(vk) => Ok(Some(vk.clone())),
+            None => {
+                state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+                Err(error_json(StatusCode::UNAUTHORIZED, "invalid api key"))
+            }
+        },
+        None => {
+            state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+            Err(error_json(StatusCode::UNAUTHORIZED, "missing api key"))
+        }
+    }
+}
+
 /// Shared proxy pipeline: parse, authenticate, balance, forward, stream back.
 async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
@@ -95,23 +131,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     let snap = state.snapshot.load();
 
-    // virtual-key auth is enforced only when keys are configured
-    if !snap.keys.is_empty() {
-        match extract_key(&headers) {
-            Some(key) => match snap.keys.get(&key) {
-                Some(vk) if rolter_auth::model_allowed(&vk.models, &model) => {}
-                Some(_) => {
-                    return error_json(StatusCode::FORBIDDEN, "model not allowed for this key")
-                }
-                None => {
-                    state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                    return error_json(StatusCode::UNAUTHORIZED, "invalid api key");
-                }
-            },
-            None => {
-                state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                return error_json(StatusCode::UNAUTHORIZED, "missing api key");
-            }
+    let vk = match authenticate(&state, &snap, &headers) {
+        Ok(vk) => vk,
+        Err(resp) => return resp,
+    };
+    if let Some(vk) = &vk {
+        if !rolter_auth::model_allowed(&vk.models, &model) {
+            return error_json(StatusCode::FORBIDDEN, "model not allowed for this key");
         }
     }
 
@@ -194,4 +220,81 @@ fn stream_response(response: reqwest::Response) -> Response {
                 "failed to build response",
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use axum::http::HeaderValue;
+
+    use rolter_core::{BalancingStrategy, GatewayConfig, ModelRoute, Target, VirtualKeyConfig};
+
+    use super::*;
+
+    fn config_with_keys() -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        config.routes.push(ModelRoute {
+            model: "gpt-4o".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![Target {
+                provider: "openai".to_string(),
+                model: None,
+                weight: 1,
+            }],
+        });
+        config.routes.push(ModelRoute {
+            model: "claude".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![Target {
+                provider: "anthropic".to_string(),
+                model: None,
+                weight: 1,
+            }],
+        });
+        config.virtual_keys.push(VirtualKeyConfig {
+            key: "sk-gpt-only".to_string(),
+            name: None,
+            models: vec!["gpt-4o".to_string()],
+        });
+        config
+    }
+
+    async fn models_in_response(resp: Response) -> Vec<String> {
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        value["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn list_models_requires_auth_when_keys_configured() {
+        let state = AppState::new(&config_with_keys());
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_models_filters_by_key_allow_list() {
+        let state = AppState::new(&config_with_keys());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-gpt-only"),
+        );
+        let resp = list_models(State(state), headers).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(models_in_response(resp).await, vec!["gpt-4o".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_models_open_when_no_keys_configured() {
+        let state = AppState::new(&GatewayConfig::default());
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
