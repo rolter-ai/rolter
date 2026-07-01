@@ -54,6 +54,16 @@ ahash = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 subtle = "2"
 
+# postgres persistence (rolter-store `postgres` feature)
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+    "uuid",
+    "macros",
+] }
+uuid = { version = "1", features = ["v4"] }
+
 # internal crates
 rolter-core = { path = "crates/rolter-core" }
 rolter-balancer = { path = "crates/rolter-balancer" }

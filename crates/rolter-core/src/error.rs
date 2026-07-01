@@ -18,6 +18,9 @@ pub enum Error {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("store error: {0}")]
+    Store(String),
+
     #[error("unauthorized")]
     Unauthorized,
 }

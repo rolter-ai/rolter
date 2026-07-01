@@ -10,10 +10,13 @@ description = "repository traits and storage backends for rolter"
 rolter-core.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
+sqlx = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 # postgres / redis / clickhouse backends land behind feature flags; see ROADMAP
 [features]
 default = []
+postgres = ["sqlx", "uuid"]
 
 [dev-dependencies]
 tokio = { workspace = true }
