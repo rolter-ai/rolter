@@ -22,7 +22,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 ## Phase 1 — Persistence & control plane
 - [x] `rolter-store` Postgres backend (`sqlx`) behind a `postgres` feature
 - [x] Migration runner (`sqlx migrate` / refinery) replacing initdb-only
-- [ ] Repositories: orgs, teams, projects, providers, provider_keys, routes, route_targets, virtual_keys, budgets, rate_limits, model_prices
+- [x] Repositories: orgs, teams, projects, providers, provider_keys, routes, route_targets, virtual_keys, budgets, rate_limits, model_prices
 - [ ] Control CRUD API for all of the above (Axum + validation)
 - [ ] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
 - [ ] `GET /internal/snapshot?version=N` for gateways
