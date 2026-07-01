@@ -10,6 +10,12 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use rolter_core::{GatewayConfig, Result};
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresConfigStore;
+
 /// Read/write access to the gateway configuration.
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
