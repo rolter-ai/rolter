@@ -23,7 +23,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] `rolter-store` Postgres backend (`sqlx`) behind a `postgres` feature
 - [x] Migration runner (`sqlx migrate` / refinery) replacing initdb-only
 - [x] Repositories: orgs, teams, projects, providers, provider_keys, routes, route_targets, virtual_keys, budgets, rate_limits, model_prices
-- [ ] Control CRUD API for all of the above (Axum + validation)
+- [x] Control CRUD API for all of the above (Axum + validation)
 - [x] Compose a runtime snapshot (`GatewayConfig`-shaped) from the DB
 - [x] `GET /internal/snapshot?version=N` for gateways
 - [x] Seed/bootstrap command (create org/admin, import `rolter.toml`)
