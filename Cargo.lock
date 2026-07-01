@@ -1583,6 +1583,7 @@ dependencies = [
  "rolter-auth",
  "rolter-core",
  "rolter-store",
+ "serde",
  "serde_json",
  "tokio",
  "tower-http",

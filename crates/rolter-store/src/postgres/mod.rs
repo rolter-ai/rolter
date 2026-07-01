@@ -181,6 +181,13 @@ impl ConfigStore for PostgresConfigStore {
                 .into(),
         ))
     }
+
+    async fn current_version(&self) -> Result<i64> {
+        sqlx::query_scalar("select version from config_version where id = 1")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(store_err)
+    }
 }
 
 #[cfg(test)]

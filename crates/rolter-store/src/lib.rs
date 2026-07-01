@@ -4,6 +4,7 @@
 //! Redis (cache + pub/sub) and ClickHouse (logs) backends implement the same
 //! traits behind cargo features as the control plane is built out.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,11 +24,18 @@ pub trait ConfigStore: Send + Sync {
     async fn load(&self) -> Result<GatewayConfig>;
     /// Persist a new configuration snapshot.
     async fn save(&self, config: GatewayConfig) -> Result<()>;
+    /// The store's current config version, bumped on every write. Gateways
+    /// poll this (see `GET /internal/snapshot?version=N` in rolter-control)
+    /// to decide whether a fresh snapshot needs fetching.
+    async fn current_version(&self) -> Result<i64> {
+        Ok(1)
+    }
 }
 
 /// An in-memory [`ConfigStore`] for development and tests.
 pub struct InMemoryConfigStore {
     inner: Arc<RwLock<GatewayConfig>>,
+    version: AtomicI64,
 }
 
 impl InMemoryConfigStore {
@@ -35,6 +43,7 @@ impl InMemoryConfigStore {
     pub fn new(config: GatewayConfig) -> Self {
         Self {
             inner: Arc::new(RwLock::new(config)),
+            version: AtomicI64::new(1),
         }
     }
 }
@@ -47,7 +56,12 @@ impl ConfigStore for InMemoryConfigStore {
 
     async fn save(&self, config: GatewayConfig) -> Result<()> {
         *self.inner.write() = config;
+        self.version.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn current_version(&self) -> Result<i64> {
+        Ok(self.version.load(Ordering::SeqCst))
     }
 }
 
