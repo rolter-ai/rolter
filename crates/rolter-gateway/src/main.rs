@@ -4,6 +4,7 @@
 //! serves OpenAI- and Anthropic-compatible endpoints, balancing across upstream
 //! targets and streaming responses straight back to clients.
 
+mod fake_llm;
 mod handlers;
 mod metrics;
 mod state;

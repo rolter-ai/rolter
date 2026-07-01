@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use rolter_balancer::RouteContext;
 use rolter_core::VirtualKeyConfig;
 
+use crate::fake_llm;
 use crate::state::{AppState, Snapshot};
 
 /// Liveness probe.
@@ -34,9 +35,14 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
+    let builtin = std::iter::once(fake_llm::MODEL_NAME)
+        .filter(|m| !snap.routes.contains_key(*m))
+        .map(str::to_string);
     let data: Vec<Value> = snap
         .routes
         .keys()
+        .cloned()
+        .chain(builtin)
         .filter(|m| {
             vk.as_ref()
                 .is_none_or(|vk| rolter_auth::model_allowed(&vk.models, m))
@@ -139,6 +145,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         if !rolter_auth::model_allowed(&vk.models, &model) {
             return error_json(StatusCode::FORBIDDEN, "model not allowed for this key");
         }
+    }
+
+    // built-in fake-llm answers locally unless a configured route shadows it
+    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+        return match path {
+            "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
+            "/v1/messages" => fake_llm::messages(&parsed),
+            _ => error_json(
+                StatusCode::NOT_FOUND,
+                &format!("'{model}' is not served on {path}"),
+            ),
+        };
     }
 
     let entry = match snap.routes.get(&model) {
@@ -296,5 +314,55 @@ mod tests {
         let state = AppState::new(&GatewayConfig::default());
         let resp = list_models(State(state), HeaderMap::new()).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn list_models_includes_builtin_fake_llm() {
+        let state = AppState::new(&GatewayConfig::default());
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(
+            models_in_response(resp).await,
+            vec![crate::fake_llm::MODEL_NAME.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_llm_serves_chat_completions_without_config() {
+        let state = AppState::new(&GatewayConfig::default());
+        let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
+        let resp = chat_completions(State(state), HeaderMap::new(), body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["object"], "chat.completion");
+        assert_eq!(value["model"], "fake-llm");
+    }
+
+    #[tokio::test]
+    async fn fake_llm_serves_messages_without_config() {
+        let state = AppState::new(&GatewayConfig::default());
+        let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
+        let resp = messages(State(state), HeaderMap::new(), body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["type"], "message");
+        assert_eq!(value["stop_reason"], "end_turn");
+    }
+
+    #[tokio::test]
+    async fn fake_llm_not_served_on_legacy_completions() {
+        let state = AppState::new(&GatewayConfig::default());
+        let body = Bytes::from(r#"{"model": "fake-llm", "prompt": "hi"}"#);
+        let resp = completions(State(state), HeaderMap::new(), body).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn fake_llm_respects_virtual_key_auth() {
+        let state = AppState::new(&config_with_keys());
+        let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
+        let resp = chat_completions(State(state), HeaderMap::new(), body).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
