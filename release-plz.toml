@@ -1,7 +1,12 @@
 # https://release-plz.dev/docs/config
 [workspace]
 # single tag for the whole workspace (all crates share the workspace version).
-# this tag triggers release.yml, which builds maturin wheels and publishes to pypi.
+# this tag triggers release.yml, which builds maturin wheels; the pypi publish
+# step in that workflow is gated behind the PYPI_PUBLISH_ENABLED repo variable.
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 dependencies_update = true
+# tag-only releases for now: crates.io publish stays off until the workspace
+# is bootstrap-published and the ROL-103 CI gate is in place. without the tag,
+# release-plz would keep re-proposing the same version forever.
+publish = false

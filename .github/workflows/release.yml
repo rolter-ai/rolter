@@ -52,8 +52,12 @@ jobs:
           path: dist/
 
   # ── publish to PyPI ─────────────────────────────────────────────────────────
+  # fail-closed: publishes only when the PYPI_PUBLISH_ENABLED repo variable is
+  # set to "true". stays off until the ROL-103 CI gate (tests/lint/security
+  # before publish) is wired in; wheels still build above as a release artifact.
   publish-pypi:
     name: publish to pypi
+    if: vars.PYPI_PUBLISH_ENABLED == 'true'
     needs: build-wheels
     runs-on: ubuntu-latest
     environment:
