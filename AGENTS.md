@@ -12,7 +12,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - `cargo test --workspace` — run unit tests
 - `cargo fmt --all` — format (run before committing)
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint (must be clean)
-- `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane
+- `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane (add `--snapshot-url http://control:4001/internal/snapshot` to hot-reload config from the control plane without a restart)
 - `cargo run -p rolter-control` — run the control plane + UI host (add `--database-url`/`ROLTER_DATABASE_URL` for the postgres-backed store, CRUD API and `/internal/snapshot`)
 - `cargo run -p rolter-store --features postgres --bin rolter-seed -- --import rolter.example.toml` — idempotent DB bootstrap (org/team/project, optional admin user, providers/routes)
 - `cd ui && bun install` then `bun run dev` / `bun run build` — UI deps, dev server, production build

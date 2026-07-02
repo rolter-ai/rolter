@@ -1654,6 +1654,7 @@ dependencies = [
  "rolter-balancer",
  "rolter-core",
  "rolter-proxy",
+ "serde",
  "serde_json",
  "tokio",
  "tower-http",

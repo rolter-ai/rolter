@@ -8,6 +8,7 @@ mod fake_llm;
 mod handlers;
 mod metrics;
 mod state;
+mod watcher;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -32,6 +33,14 @@ struct Args {
     /// override the bind port
     #[arg(long, env = "ROLTER_PORT")]
     port: Option<u16>,
+    /// control-plane snapshot endpoint to poll for reload-free config
+    /// updates, e.g. `http://control:4001/internal/snapshot`; polling is
+    /// disabled when unset
+    #[arg(long, env = "ROLTER_SNAPSHOT_URL")]
+    snapshot_url: Option<String>,
+    /// how often to poll the snapshot endpoint, in seconds
+    #[arg(long, env = "ROLTER_SNAPSHOT_POLL_SECS", default_value_t = 5)]
+    snapshot_poll_secs: u64,
 }
 
 #[tokio::main]
@@ -54,6 +63,15 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     let state = AppState::new(&config);
+
+    // start the reload-free config watcher when a control plane is configured
+    if let Some(snapshot_url) = args.snapshot_url {
+        let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
+        tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, "config watcher enabled");
+        watcher::spawn(state.clone(), snapshot_url, period);
+    } else {
+        tracing::info!("no snapshot url configured; running with static bootstrap config");
+    }
 
     let app = Router::new()
         .route("/healthz", get(handlers::healthz))
