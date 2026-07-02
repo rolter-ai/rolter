@@ -86,6 +86,10 @@ async fn poll_once(
     if body.version <= current && current != 0 {
         return Ok(None);
     }
+    // never apply a broken snapshot; keep serving the last good config
+    if let Err(problems) = body.config.validate() {
+        anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
+    }
     state.reload(&body.config, body.version);
     tracing::info!(version = body.version, "applied new config snapshot");
     Ok(Some(body.version))
@@ -138,6 +142,39 @@ mod tests {
         let applied = poll_once(&client, &state, &url).await.unwrap();
         assert_eq!(applied, None);
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_snapshot_and_keeps_old_config() {
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        // route targets a provider that doesn't exist -> must be rejected
+        async fn snapshot() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "version": 9,
+                "config": {
+                    "routes": [{"model": "broken", "targets": [{"provider": "ghost"}]}]
+                }
+            }))
+        }
+
+        let app = Router::new().route("/internal/snapshot", get(snapshot));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        let url = format!("http://{addr}/internal/snapshot");
+
+        let res = poll_once(&client, &state, &url).await;
+        assert!(res.is_err(), "invalid snapshot must be an error");
+        // old config stays: no reload recorded, version unchanged
+        assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 0);
+        assert_eq!(state.metrics.config_version.load(Relaxed), 0);
     }
 
     #[tokio::test]

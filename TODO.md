@@ -33,7 +33,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Redis client + `PUBLISH`/`SUBSCRIBE` on `rolter.config`
 - [x] Bump/read `config_version` on CRUD writes (transactional bump with Redis publish still pending)
 - [x] Gateway watcher task: poll `/internal/snapshot?version=N` on an interval, `ArcSwap::store` on change (`--snapshot-url`)
-- [ ] Snapshot validation before version bump (targets reference known providers)
+- [x] Snapshot validation (`GatewayConfig::validate`): control refuses to serve an invalid snapshot, gateway refuses to apply one (keeps last good config)
 - [x] Metrics for reload (`rolter_config_version`, `rolter_config_reloads_total`, `rolter_config_reload_failures_total`)
 
 ## Phase 3 — Auth & RBAC
