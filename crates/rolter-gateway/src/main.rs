@@ -61,6 +61,13 @@ async fn main() -> anyhow::Result<()> {
         config.server.port = port;
     }
 
+    if let Err(problems) = config.validate() {
+        tracing::warn!(
+            ?problems,
+            "bootstrap config failed validation; requests to affected routes will error"
+        );
+    }
+
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     let state = AppState::new(&config);
 

@@ -215,7 +215,22 @@ async fn get_snapshot(
         return StatusCode::NOT_MODIFIED.into_response();
     }
     match state.store.load().await {
-        Ok(config) => Json(json!({"version": version, "config": config})).into_response(),
+        Ok(config) => {
+            // never distribute a broken config to gateways: reply with the
+            // problems instead so the operator can fix the source
+            if let Err(problems) = config.validate() {
+                tracing::error!(?problems, "refusing to serve invalid config snapshot");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": {
+                        "message": "config failed validation",
+                        "problems": problems,
+                    }})),
+                )
+                    .into_response();
+            }
+            Json(json!({"version": version, "config": config})).into_response()
+        }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": {"message": err.to_string()}})),

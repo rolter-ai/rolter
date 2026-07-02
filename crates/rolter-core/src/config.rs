@@ -158,6 +158,47 @@ impl GatewayConfig {
     pub fn resolve_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
     }
+
+    /// Validate internal consistency: every route target must reference a
+    /// known provider, names must be unique and target weights positive.
+    /// Returns every problem found, so callers can log/report them all.
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+
+        let mut provider_names = std::collections::HashSet::new();
+        for provider in &self.providers {
+            if !provider_names.insert(provider.name.as_str()) {
+                problems.push(format!("duplicate provider name '{}'", provider.name));
+            }
+        }
+
+        let mut route_models = std::collections::HashSet::new();
+        for route in &self.routes {
+            if !route_models.insert(route.model.as_str()) {
+                problems.push(format!("duplicate route model '{}'", route.model));
+            }
+            for target in &route.targets {
+                if !provider_names.contains(target.provider.as_str()) {
+                    problems.push(format!(
+                        "route '{}' targets unknown provider '{}'",
+                        route.model, target.provider
+                    ));
+                }
+                if target.weight == 0 {
+                    problems.push(format!(
+                        "route '{}' target '{}' has zero weight",
+                        route.model, target.provider
+                    ));
+                }
+            }
+        }
+
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +226,43 @@ mod tests {
         assert_eq!(cfg.providers.len(), 1);
         assert_eq!(cfg.routes[0].strategy, BalancingStrategy::RoundRobin);
         assert_eq!(cfg.routes[0].targets[0].weight, 1);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_reports_all_problems() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://dup.example.com"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "missing"
+            [[routes.targets]]
+            provider = "openai"
+            weight = 0
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        )
+        .unwrap();
+        let problems = cfg.validate().unwrap_err();
+        assert_eq!(problems.len(), 4);
+        assert!(problems.iter().any(|p| p.contains("duplicate provider")));
+        assert!(problems.iter().any(|p| p.contains("duplicate route")));
+        assert!(problems.iter().any(|p| p.contains("unknown provider")));
+        assert!(problems.iter().any(|p| p.contains("zero weight")));
     }
 }
