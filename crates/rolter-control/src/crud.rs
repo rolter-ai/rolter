@@ -138,8 +138,26 @@ fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
 
 /// Bump the config version after a mutation that changes the effective
 /// gateway config, so snapshot-polling gateways pick it up without restart.
+/// When redis is configured the new version is also published on
+/// [`rolter_core::CONFIG_CHANNEL`] (best-effort, off the request path) so
+/// gateways refetch immediately instead of waiting for their poll interval.
 async fn bump_config_version(state: &ControlState) -> ApiResult<()> {
-    rolter_store::postgres::bump_version(pool(state)).await?;
+    let version = rolter_store::postgres::bump_version(pool(state)).await?;
+    if let Some(client) = state.redis.clone() {
+        tokio::spawn(async move {
+            let publish = async {
+                let mut conn = client.get_multiplexed_async_connection().await?;
+                redis::cmd("PUBLISH")
+                    .arg(rolter_core::CONFIG_CHANNEL)
+                    .arg(version)
+                    .query_async::<()>(&mut conn)
+                    .await
+            };
+            if let Err(err) = publish.await {
+                tracing::warn!(error = %err, version, "failed to publish config bump to redis");
+            }
+        });
+    }
     Ok(())
 }
 

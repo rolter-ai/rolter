@@ -41,6 +41,11 @@ struct Args {
     /// how often to poll the snapshot endpoint, in seconds
     #[arg(long, env = "ROLTER_SNAPSHOT_POLL_SECS", default_value_t = 5)]
     snapshot_poll_secs: u64,
+    /// redis connection url; when set (together with --snapshot-url), config
+    /// bumps published by the control plane trigger an immediate refetch
+    /// instead of waiting for the poll interval
+    #[arg(long, env = "ROLTER_REDIS_URL")]
+    redis_url: Option<String>,
 }
 
 #[tokio::main]
@@ -74,8 +79,8 @@ async fn main() -> anyhow::Result<()> {
     // start the reload-free config watcher when a control plane is configured
     if let Some(snapshot_url) = args.snapshot_url {
         let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
-        tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, "config watcher enabled");
-        watcher::spawn(state.clone(), snapshot_url, period);
+        tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
+        watcher::spawn(state.clone(), snapshot_url, period, args.redis_url);
     } else {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }

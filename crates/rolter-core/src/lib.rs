@@ -12,3 +12,7 @@ pub use config::{
     ServerConfig, Target, VirtualKeyConfig,
 };
 pub use error::{Error, Result};
+
+/// Redis pub/sub channel the control plane publishes config-version bumps
+/// on; gateways subscribe to it to trigger an immediate snapshot poll.
+pub const CONFIG_CHANNEL: &str = "rolter.config";
