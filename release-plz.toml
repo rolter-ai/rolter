@@ -1,12 +1,22 @@
 # https://release-plz.dev/docs/config
 [workspace]
-# single tag for the whole workspace (all crates share the workspace version).
-# this tag triggers release.yml, which builds maturin wheels; the pypi publish
-# step in that workflow is gated behind the PYPI_PUBLISH_ENABLED repo variable.
-git_tag_name = "v{{ version }}"
-git_release_name = "v{{ version }}"
+# all crates share the workspace version, so exactly one package (the
+# gateway, whose version also drives pyproject.toml) creates the single
+# v{version} tag and github release — per-package tags would collide on the
+# same name (422 on the second crate). the tag triggers release.yml, which
+# builds maturin wheels; the pypi publish step in that workflow is gated
+# behind the PYPI_PUBLISH_ENABLED repo variable.
+git_tag_enable = false
+git_release_enable = false
 dependencies_update = true
 # tag-only releases for now: crates.io publish stays off until the workspace
 # is bootstrap-published and the ROL-103 CI gate is in place. without the tag,
 # release-plz would keep re-proposing the same version forever.
 publish = false
+
+[[package]]
+name = "rolter-gateway"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_name = "v{{ version }}"
