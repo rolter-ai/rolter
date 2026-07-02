@@ -49,6 +49,11 @@ struct Args {
     #[cfg(feature = "postgres")]
     #[arg(long, env = "ROLTER_DATABASE_URL")]
     database_url: Option<String>,
+    /// redis connection url; when set, config-version bumps are published on
+    /// the `rolter.config` channel so gateways refetch immediately instead of
+    /// waiting for their poll interval
+    #[arg(long, env = "ROLTER_REDIS_URL")]
+    redis_url: Option<String>,
 }
 
 /// Names owned by the bootstrap config file: immutable at runtime,
@@ -77,6 +82,10 @@ struct ControlState {
     /// the API (empty when no bootstrap config was given)
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     config_owned: Arc<ConfigOwned>,
+    /// set when `--redis-url` is configured; config-version bumps are
+    /// published on [`rolter_core::CONFIG_CHANNEL`] (best-effort)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    redis: Option<redis::Client>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -99,18 +108,34 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_default(),
     );
 
+    let redis = match &args.redis_url {
+        Some(url) => match redis::Client::open(url.as_str()) {
+            Ok(client) => {
+                tracing::info!(%url, "publishing config bumps to redis");
+                Some(client)
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "invalid redis url; config pub/sub disabled");
+                None
+            }
+        },
+        None => None,
+    };
+
     #[allow(unused_variables)]
     let (store, pool) = build_store(&args, bootstrap).await?;
     #[cfg(feature = "postgres")]
     let state = ControlState {
         store,
         config_owned,
+        redis,
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
     let state = ControlState {
         store,
         config_owned,
+        redis,
     };
 
     #[allow(unused_mut)]

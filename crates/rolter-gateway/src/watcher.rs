@@ -6,14 +6,21 @@
 //! control plane replies `304 Not Modified` when the gateway is already
 //! current, so steady-state polling is cheap.
 //!
-//! This is the polling transport; a Redis pub/sub wake-up (ROL-27) can later
-//! trigger an immediate poll on top of the same apply path.
+//! Polling is the reliable baseline transport. When a redis url is
+//! configured, a subscriber on [`rolter_core::CONFIG_CHANNEL`] additionally
+//! wakes the loop the moment the control plane publishes a version bump, so
+//! changes propagate immediately instead of waiting out the poll interval.
+//! Redis being down never breaks config propagation — the subscriber
+//! reconnects with backoff while interval polling keeps working.
 
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use tokio::sync::Notify;
 
 use rolter_core::GatewayConfig;
 
@@ -28,9 +35,14 @@ struct SnapshotResponse {
 
 /// Spawn the background watcher. `snapshot_url` is the control plane's
 /// snapshot endpoint (e.g. `http://control:4001/internal/snapshot`); `period`
-/// is the poll interval. Returns immediately; the task runs until the process
-/// exits.
-pub fn spawn(state: AppState, snapshot_url: String, period: Duration) {
+/// is the poll interval; `redis_url`, when set, adds an instant pub/sub
+/// wake-up on top of the interval. Returns immediately; the tasks run until
+/// the process exits.
+pub fn spawn(state: AppState, snapshot_url: String, period: Duration, redis_url: Option<String>) {
+    let wakeup = Arc::new(Notify::new());
+    if let Some(url) = redis_url {
+        tokio::spawn(subscribe(url, Arc::clone(&wakeup)));
+    }
     tokio::spawn(async move {
         // a dedicated short-timeout client so a hung control plane can't wedge
         // the watcher loop
@@ -38,17 +50,27 @@ pub fn spawn(state: AppState, snapshot_url: String, period: Duration) {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_else(|_| Client::new());
-        run(&client, &state, &snapshot_url, period).await;
+        run(&client, &state, &snapshot_url, period, &wakeup).await;
     });
 }
 
-/// The poll loop, factored out so tests can drive a single tick.
-async fn run(client: &Client, state: &AppState, snapshot_url: &str, period: Duration) {
+/// The poll loop, factored out so tests can drive a single tick. Polls on
+/// the interval and immediately whenever the redis subscriber signals.
+async fn run(
+    client: &Client,
+    state: &AppState,
+    snapshot_url: &str,
+    period: Duration,
+    wakeup: &Notify,
+) {
     let mut ticker = tokio::time::interval(period);
     // the initial config was applied at startup; treat it as version 0 so the
     // first successful poll always applies the authoritative version
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = wakeup.notified() => {}
+        }
         if let Err(err) = poll_once(client, state, snapshot_url).await {
             state
                 .metrics
@@ -56,6 +78,33 @@ async fn run(client: &Client, state: &AppState, snapshot_url: &str, period: Dura
                 .fetch_add(1, Relaxed);
             tracing::warn!(error = %err, "config snapshot poll failed");
         }
+    }
+}
+
+/// Subscribe to [`rolter_core::CONFIG_CHANNEL`] and signal `wakeup` on every
+/// message. Reconnects with a fixed backoff forever; interval polling covers
+/// propagation while redis is unavailable.
+async fn subscribe(redis_url: String, wakeup: Arc<Notify>) {
+    const BACKOFF: Duration = Duration::from_secs(5);
+    loop {
+        let session = async {
+            let client = redis::Client::open(redis_url.as_str())?;
+            let mut pubsub = client.get_async_pubsub().await?;
+            pubsub.subscribe(rolter_core::CONFIG_CHANNEL).await?;
+            tracing::info!(
+                channel = rolter_core::CONFIG_CHANNEL,
+                "config pub/sub connected"
+            );
+            let mut stream = pubsub.on_message();
+            while stream.next().await.is_some() {
+                wakeup.notify_one();
+            }
+            Ok::<_, redis::RedisError>(())
+        };
+        if let Err(err) = session.await {
+            tracing::warn!(error = %err, "config pub/sub disconnected; retrying");
+        }
+        tokio::time::sleep(BACKOFF).await;
     }
 }
 
