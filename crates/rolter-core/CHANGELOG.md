@@ -11,14 +11,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(core)* scaffold rolter workspace and runnable gateway mvp
-
-### Other
-
-- release v0.0.1 ([#3](https://github.com/ormeilu/rolter/pull/3))
-
-## [0.0.1](https://github.com/ormeilu/rolter/releases/tag/v0.0.1) - 2026-06-30
-
-### Added
-
-- *(core)* scaffold rolter workspace and runnable gateway mvp
+- *(store)* postgres-backed ConfigStore with sqlx migration runner [ROL-20 ROL-21] ([#9](https://github.com/ormeilu/rolter/pull/9))
