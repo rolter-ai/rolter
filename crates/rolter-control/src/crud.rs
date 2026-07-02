@@ -136,28 +136,30 @@ fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// Bump the config version after a mutation that changes the effective
-/// gateway config, so snapshot-polling gateways pick it up without restart.
-/// When redis is configured the new version is also published on
-/// [`rolter_core::CONFIG_CHANNEL`] (best-effort, off the request path) so
-/// gateways refetch immediately instead of waiting for their poll interval.
-async fn bump_config_version(state: &ControlState) -> ApiResult<()> {
-    let version = rolter_store::postgres::bump_version(pool(state)).await?;
-    if let Some(client) = state.redis.clone() {
-        tokio::spawn(async move {
-            let publish = async {
-                let mut conn = client.get_multiplexed_async_connection().await?;
-                redis::cmd("PUBLISH")
-                    .arg(rolter_core::CONFIG_CHANNEL)
-                    .arg(version)
-                    .query_async::<()>(&mut conn)
-                    .await
-            };
-            if let Err(err) = publish.await {
-                tracing::warn!(error = %err, version, "failed to publish config bump to redis");
-            }
-        });
-    }
+/// Announce a config change after a mutation that touches the effective
+/// gateway config. The version bump itself is transactional with the write
+/// (database triggers from migration 0003), so this only publishes the new
+/// version on [`rolter_core::CONFIG_CHANNEL`] when redis is configured
+/// (best-effort, off the request path) so gateways refetch immediately
+/// instead of waiting for their poll interval.
+async fn publish_config_change(state: &ControlState) -> ApiResult<()> {
+    let Some(client) = state.redis.clone() else {
+        return Ok(());
+    };
+    let version = rolter_store::postgres::current_version(pool(state)).await?;
+    tokio::spawn(async move {
+        let publish = async {
+            let mut conn = client.get_multiplexed_async_connection().await?;
+            redis::cmd("PUBLISH")
+                .arg(rolter_core::CONFIG_CHANNEL)
+                .arg(version)
+                .query_async::<()>(&mut conn)
+                .await
+        };
+        if let Err(err) = publish.await {
+            tracing::warn!(error = %err, version, "failed to publish config bump to redis");
+        }
+    });
     Ok(())
 }
 
@@ -318,7 +320,7 @@ async fn create_provider(
             body.egress_proxy.as_deref(),
         )
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(row))
 }
 
@@ -327,7 +329,7 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     ProviderRepo(pool(&state)).delete(id).await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -374,7 +376,7 @@ async fn create_route(
     let row = RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(row))
 }
 
@@ -391,7 +393,7 @@ async fn set_route_enabled(
     let row = RouteRepo(pool(&state))
         .set_enabled(id, body.enabled)
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(row))
 }
 
@@ -400,7 +402,7 @@ async fn delete_route(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     RouteRepo(pool(&state)).delete(id).await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -439,7 +441,7 @@ async fn create_route_target(
             body.weight,
         )
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(row))
 }
 
@@ -448,7 +450,7 @@ async fn delete_route_target(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     RouteTargetRepo(pool(&state)).delete(id).await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -504,7 +506,7 @@ async fn create_virtual_key(
             &body.models,
         )
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(CreatedVirtualKey { row, key }))
 }
 
@@ -521,7 +523,7 @@ async fn set_virtual_key_disabled(
     let row = VirtualKeyRepo(pool(&state))
         .set_disabled(id, body.disabled)
         .await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(Json(row))
 }
 
@@ -530,7 +532,7 @@ async fn delete_virtual_key(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     VirtualKeyRepo(pool(&state)).delete(id).await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -751,6 +753,6 @@ async fn delete_model(
 ) -> ApiResult<StatusCode> {
     require_not_config_owned(&state.config_owned.models, &model, "model")?;
     RouteRepo(pool(&state)).delete_by_model(&model).await?;
-    bump_config_version(&state).await?;
+    publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }

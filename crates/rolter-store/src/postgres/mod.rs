@@ -163,16 +163,14 @@ impl PostgresConfigStore {
     }
 }
 
-/// Bump the global config version so snapshot-polling gateways refetch.
-/// Call after any mutation that changes the effective [`GatewayConfig`]
-/// (providers, routes, targets, virtual keys).
-pub async fn bump_version(pool: &PgPool) -> Result<i64> {
-    sqlx::query_scalar(
-        "update config_version set version = version + 1 where id = 1 returning version",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(store_err)
+/// Read the current global config version. Bumping happens in the database
+/// itself: migration 0003 installs triggers that increment the version
+/// atomically with any write to providers/routes/route_targets/virtual_keys.
+pub async fn current_version(pool: &PgPool) -> Result<i64> {
+    sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(pool)
+        .await
+        .map_err(store_err)
 }
 
 #[async_trait]
@@ -225,6 +223,54 @@ mod tests {
             .expect("recreate schema");
         run_migrations(&pool).await.expect("run migrations");
         pool
+    }
+
+    #[tokio::test]
+    async fn triggers_bump_version_atomically_with_writes() {
+        let Some(_) = database_url() else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fresh_pool().await;
+        let v0 = current_version(&pool).await.unwrap();
+
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // orgs don't feed the gateway snapshot: no bump
+        assert_eq!(current_version(&pool).await.unwrap(), v0);
+
+        sqlx::query(
+            "insert into providers (org_id, name, kind, api_base)
+             values ($1, 'openai', 'openai', 'https://api.openai.com')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(current_version(&pool).await.unwrap(), v0 + 1);
+
+        // a rolled-back write must not bump the version
+        let mut txn = pool.begin().await.unwrap();
+        sqlx::query(
+            "insert into providers (org_id, name, kind, api_base)
+             values ($1, 'ghost', 'openai', 'https://ghost.example.com')",
+        )
+        .bind(org_id)
+        .execute(&mut *txn)
+        .await
+        .unwrap();
+        txn.rollback().await.unwrap();
+        assert_eq!(current_version(&pool).await.unwrap(), v0 + 1);
+
+        sqlx::query("delete from providers where name = 'openai'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(current_version(&pool).await.unwrap(), v0 + 2);
     }
 
     #[tokio::test]
