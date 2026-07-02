@@ -74,10 +74,15 @@ impl AppState {
         }
     }
 
-    /// Atomically replace the routing snapshot (used by hot-reload).
-    // wired to a redis pub/sub watcher in the config-hot-reload phase
-    #[allow(dead_code)]
-    pub fn reload(&self, config: &GatewayConfig) {
+    /// Atomically replace the routing snapshot (used by the config watcher).
+    /// Records `version` in metrics and bumps the reload counter.
+    pub fn reload(&self, config: &GatewayConfig, version: u64) {
         self.snapshot.store(Arc::new(Snapshot::build(config)));
+        self.metrics
+            .config_version
+            .store(version, std::sync::atomic::Ordering::Relaxed);
+        self.metrics
+            .config_reloads_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
