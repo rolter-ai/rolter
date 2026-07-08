@@ -168,10 +168,45 @@ impl VirtualKeyConfig {
 }
 
 /// Where request and cost logs are written.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
+    /// base url of the clickhouse http interface, e.g. `http://clickhouse:8123`;
+    /// logging is disabled when unset
     #[serde(default)]
     pub clickhouse_url: Option<String>,
+    /// flush a batch once it reaches this many records
+    #[serde(default = "default_log_batch_max")]
+    pub batch_max: usize,
+    /// flush a partial batch at least this often, in milliseconds
+    #[serde(default = "default_log_flush_ms")]
+    pub flush_ms: u64,
+    /// bounded in-flight queue; records are dropped (counted) when it is full so
+    /// the request hot path never blocks on the log writer
+    #[serde(default = "default_log_queue_capacity")]
+    pub queue_capacity: usize,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            clickhouse_url: None,
+            batch_max: default_log_batch_max(),
+            flush_ms: default_log_flush_ms(),
+            queue_capacity: default_log_queue_capacity(),
+        }
+    }
+}
+
+fn default_log_batch_max() -> usize {
+    1000
+}
+
+fn default_log_flush_ms() -> u64 {
+    1000
+}
+
+fn default_log_queue_capacity() -> usize {
+    10_000
 }
 
 impl GatewayConfig {

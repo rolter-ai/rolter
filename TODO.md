@@ -47,7 +47,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
 ## Phase 4 — Cost, limits & pricing
-- [ ] ClickHouse client + async batched writer off the hot path
+- [x] ClickHouse client + async batched writer off the hot path
 - [ ] Capture token usage (parse non-stream usage; accumulate for streams)
 - [ ] Pricing catalog CRUD + per-request `cost_usd`
 - [ ] Budgets enforcement (scope chain, most-restrictive-wins) with Redis spend counters

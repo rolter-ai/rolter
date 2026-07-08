@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -13,6 +14,7 @@ use rolter_balancer::RouteContext;
 use rolter_core::VirtualKeyConfig;
 
 use crate::fake_llm;
+use crate::logging::RequestLog;
 use crate::state::{AppState, Snapshot};
 
 /// Liveness probe.
@@ -137,6 +139,7 @@ fn authenticate(
 /// Shared proxy pipeline: parse, authenticate, balance, forward, stream back.
 async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
+    let started = Instant::now();
 
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
@@ -217,15 +220,53 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let api_key = provider.resolve_api_key();
     let upstream_model = target.model.as_deref();
 
+    // capture log fields before `body` is moved into the forwarder
+    let stream = parsed
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let provider_name = target.provider.clone();
+    let target_label = target.model.clone().unwrap_or_else(|| model.clone());
+
     match state
         .forwarder
         .forward_json(provider, path, body, api_key.as_deref(), upstream_model)
         .await
     {
-        Ok(response) => stream_response(response),
+        Ok(response) => {
+            let status = response.status().as_u16();
+            state.log.log(RequestLog {
+                request_id,
+                model,
+                provider: provider_name,
+                target: target_label,
+                status,
+                stream: stream as u8,
+                latency_ms: started.elapsed().as_millis() as u32,
+                ..Default::default()
+            });
+            stream_response(response)
+        }
         Err(err) => {
             state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-            error_json(StatusCode::BAD_GATEWAY, &err.to_string())
+            let message = err.to_string();
+            state.log.log(RequestLog {
+                request_id,
+                model,
+                provider: provider_name,
+                target: target_label,
+                status: StatusCode::BAD_GATEWAY.as_u16(),
+                stream: stream as u8,
+                latency_ms: started.elapsed().as_millis() as u32,
+                error: message.clone(),
+                ..Default::default()
+            });
+            error_json(StatusCode::BAD_GATEWAY, &message)
         }
     }
 }

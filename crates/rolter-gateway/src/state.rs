@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use rolter_balancer::{build, LoadBalancer};
 use rolter_core::{GatewayConfig, ModelRoute, ProviderConfig, VirtualKeyConfig};
 use rolter_proxy::Forwarder;
 
+use crate::logging::LogSink;
 use crate::metrics::Metrics;
 
 /// A resolved route plus its constructed balancer.
@@ -68,15 +70,42 @@ pub struct AppState {
     pub snapshot: Arc<ArcSwap<Snapshot>>,
     pub forwarder: Arc<Forwarder>,
     pub metrics: Arc<Metrics>,
+    pub log: LogSink,
 }
 
 impl AppState {
-    /// Build state from an initial configuration.
+    /// Build state with logging disabled. Used by tests and any caller that
+    /// does not need the ClickHouse writer.
+    #[cfg(test)]
     pub fn new(config: &GatewayConfig) -> Self {
+        let metrics = Arc::new(Metrics::default());
+        let log = LogSink::disabled(metrics.clone());
+        Self::assemble(config, metrics, log)
+    }
+
+    /// Build state and, when a `clickhouse_url` is configured, spawn the async
+    /// batched log writer. Must be called from within a Tokio runtime.
+    pub fn with_logging(config: &GatewayConfig) -> Self {
+        let metrics = Arc::new(Metrics::default());
+        let log = match &config.logging.clickhouse_url {
+            Some(url) => LogSink::spawn(
+                url.clone(),
+                config.logging.batch_max,
+                Duration::from_millis(config.logging.flush_ms),
+                config.logging.queue_capacity,
+                metrics.clone(),
+            ),
+            None => LogSink::disabled(metrics.clone()),
+        };
+        Self::assemble(config, metrics, log)
+    }
+
+    fn assemble(config: &GatewayConfig, metrics: Arc<Metrics>, log: LogSink) -> Self {
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config))),
             forwarder: Arc::new(Forwarder::new()),
-            metrics: Arc::new(Metrics::default()),
+            metrics,
+            log,
         }
     }
 

@@ -17,6 +17,10 @@ pub struct Metrics {
     pub config_reloads_total: AtomicU64,
     /// failed snapshot fetches/parses since start
     pub config_reload_failures_total: AtomicU64,
+    /// request-log rows successfully written to clickhouse
+    pub logs_written_total: AtomicU64,
+    /// request-log rows dropped (queue full or write failed)
+    pub logs_dropped_total: AtomicU64,
 }
 
 impl Metrics {
@@ -64,6 +68,20 @@ impl Metrics {
             "rolter_config_reload_failures_total",
             "failed config snapshot fetches",
             self.config_reload_failures_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_logs_written_total",
+            "request-log rows written to clickhouse",
+            self.logs_written_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_logs_dropped_total",
+            "request-log rows dropped (queue full or write failed)",
+            self.logs_dropped_total.load(Relaxed),
         );
         out
     }

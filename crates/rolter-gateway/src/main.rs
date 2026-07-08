@@ -6,6 +6,7 @@
 
 mod fake_llm;
 mod handlers;
+mod logging;
 mod metrics;
 mod state;
 mod watcher;
@@ -74,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
-    let state = AppState::new(&config);
+    if let Some(url) = &config.logging.clickhouse_url {
+        tracing::info!(%url, "clickhouse request logging enabled");
+    }
+    let state = AppState::with_logging(&config);
 
     // start the reload-free config watcher when a control plane is configured
     if let Some(snapshot_url) = args.snapshot_url {

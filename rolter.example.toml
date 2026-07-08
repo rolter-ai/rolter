@@ -73,4 +73,9 @@ disabled = false               # revoke without deleting
 # expires_at = "2027-01-01T00:00:00Z"   # rfc3339; key stops working at/after this
 
 [logging]
+# request logs are written asynchronously in batches, off the request hot path;
+# logging is disabled entirely when clickhouse_url is unset
 # clickhouse_url = "http://localhost:8123"
+# batch_max = 1000        # flush once a batch reaches this many rows
+# flush_ms = 1000         # also flush a partial batch at least this often
+# queue_capacity = 10000  # rows are dropped (and counted) when this queue is full
