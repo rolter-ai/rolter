@@ -1,0 +1,36 @@
+name: quality
+
+# reusable quality/security gate. run standalone from ci.yml on every push/pr
+# and via workflow_call from the release paths so nothing publishes on a commit
+# whose tests, lint or supply-chain check has not passed.
+on:
+  workflow_call:
+
+jobs:
+  rust:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy (postgres feature)
+        run: cargo clippy -p rolter-store --all-targets --features postgres -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-deny (advisories, bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

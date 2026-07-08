@@ -72,11 +72,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 
 # internal crates
-rolter-core = { path = "crates/rolter-core" }
-rolter-balancer = { path = "crates/rolter-balancer" }
-rolter-proxy = { path = "crates/rolter-proxy" }
-rolter-store = { path = "crates/rolter-store" }
-rolter-auth = { path = "crates/rolter-auth" }
+# internal deps carry an explicit version (kept in sync with workspace.package
+# by release-plz) so they are not wildcard deps and can publish to crates.io
+rolter-core = { path = "crates/rolter-core", version = "0.0.2" }
+rolter-balancer = { path = "crates/rolter-balancer", version = "0.0.2" }
+rolter-proxy = { path = "crates/rolter-proxy", version = "0.0.2" }
+rolter-store = { path = "crates/rolter-store", version = "0.0.2" }
+rolter-auth = { path = "crates/rolter-auth", version = "0.0.2" }
 
 [profile.release]
 opt-level = 3

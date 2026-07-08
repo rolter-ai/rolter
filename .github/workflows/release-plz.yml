@@ -39,8 +39,15 @@ jobs:
   # publish gate is in place — both tracked in Linear (Phase 9). The pushed
   # tag triggers release.yml, whose pypi publish step is gated behind the
   # PYPI_PUBLISH_ENABLED repo variable.
+  # same quality/security gate as CI, on the merge commit that would be
+  # tagged/published. release-plz-release needs this so cargo publish (once
+  # re-enabled) cannot run on an unverified commit (ROL-103).
+  verify:
+    uses: ./.github/workflows/quality.yml
+
   release-plz-release:
     name: release-plz release
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
