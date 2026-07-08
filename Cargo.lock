@@ -1656,6 +1656,7 @@ name = "rolter-auth"
 version = "0.0.2"
 dependencies = [
  "serde",
+ "sha2",
  "subtle",
 ]
 
@@ -1696,6 +1697,7 @@ dependencies = [
 name = "rolter-core"
 version = "0.0.2"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror",
@@ -1712,6 +1714,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "bytes",
+ "chrono",
  "clap",
  "futures-util",
  "redis",

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -25,6 +26,23 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// deployment-wide secret mixed into virtual-key digests. keeps plaintext
+    /// keys out of gateway memory and makes a leaked digest useless without it.
+    /// falls back to the `ROLTER_KEY_PEPPER` env var when unset (see
+    /// [`ServerConfig::resolve_key_pepper`]).
+    #[serde(default)]
+    pub key_pepper: Option<String>,
+}
+
+impl ServerConfig {
+    /// Resolve the key pepper: explicit config wins, else `ROLTER_KEY_PEPPER`,
+    /// else empty (keys are still hashed, just without a secret pepper).
+    pub fn resolve_key_pepper(&self) -> String {
+        self.key_pepper
+            .clone()
+            .or_else(|| std::env::var("ROLTER_KEY_PEPPER").ok())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for ServerConfig {
@@ -32,6 +50,7 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
+            key_pepper: None,
         }
     }
 }
@@ -133,6 +152,19 @@ pub struct VirtualKeyConfig {
     /// allowed public model names; empty means all models are allowed
     #[serde(default)]
     pub models: Vec<String>,
+    /// administratively revoke the key without deleting it
+    #[serde(default)]
+    pub disabled: bool,
+    /// optional expiry; the key stops authenticating at/after this instant
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl VirtualKeyConfig {
+    /// Whether the key may authenticate at `now`: not disabled and not expired.
+    pub fn is_active(&self, now: DateTime<Utc>) -> bool {
+        !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
+    }
 }
 
 /// Where request and cost logs are written.
