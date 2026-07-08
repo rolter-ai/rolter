@@ -10,20 +10,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: fmt
-        run: cargo fmt --all --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: test
-        run: cargo test --workspace
+  # full quality/security gate (fmt, clippy incl. postgres feature, test,
+  # cargo-deny). shared with the release paths via workflow_call so publish
+  # and CI enforce the exact same checks on a commit.
+  quality:
+    uses: ./.github/workflows/quality.yml
 
   pr-title:
     if: github.event_name == 'pull_request'

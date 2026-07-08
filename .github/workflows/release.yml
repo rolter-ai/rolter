@@ -10,6 +10,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── quality/security gate ───────────────────────────────────────────────────
+  # runs the same fmt/clippy/test/cargo-deny pipeline as CI on the tagged
+  # commit. publish-pypi needs this, so a tag whose code fails verification
+  # never ships.
+  verify:
+    uses: ./.github/workflows/quality.yml
+
+  # asserts the external app-provided checks (CodeQL, secret scanning) reported
+  # success for this commit. fail-closed: pending or missing checks block the
+  # publish. required check names are configurable via the
+  # RELEASE_REQUIRED_CHECKS repo variable (comma-separated); defaults cover
+  # CodeQL + GitGuardian.
+  verify-external-checks:
+    name: assert external checks green
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: assert required check-runs succeeded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'CodeQL,GitGuardian Security Checks' }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
+            -q '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"')"
+          echo "check-runs for $SHA:"; echo "$runs"
+          fail=0
+          IFS=',' read -ra names <<< "$REQUIRED"
+          for name in "${names[@]}"; do
+            name="$(echo "$name" | sed 's/^ *//;s/ *$//')"
+            [ -z "$name" ] && continue
+            line="$(echo "$runs" | grep -F -m1 "$(printf '%s\t' "$name")" || true)"
+            if [ -z "$line" ]; then
+              echo "::error::required check '$name' not found for $SHA (fail-closed)"; fail=1; continue
+            fi
+            status="$(echo "$line" | cut -f2)"; conclusion="$(echo "$line" | cut -f3)"
+            if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+              echo "::error::required check '$name' status=$status conclusion=$conclusion (need completed/success)"; fail=1
+            fi
+          done
+          exit $fail
+
   # ── build maturin wheels ────────────────────────────────────────────────────
   build-wheels:
     name: build wheel (${{ matrix.os }})
@@ -53,12 +99,12 @@ jobs:
 
   # ── publish to PyPI ─────────────────────────────────────────────────────────
   # fail-closed: publishes only when the PYPI_PUBLISH_ENABLED repo variable is
-  # set to "true". stays off until the ROL-103 CI gate (tests/lint/security
-  # before publish) is wired in; wheels still build above as a release artifact.
+  # set to "true" AND the verify + external-check gates pass for the tagged
+  # commit (ROL-103). wheels still build above as a release artifact regardless.
   publish-pypi:
     name: publish to pypi
     if: vars.PYPI_PUBLISH_ENABLED == 'true'
-    needs: build-wheels
+    needs: [verify, verify-external-checks, build-wheels]
     runs-on: ubuntu-latest
     environment:
       name: pypi
