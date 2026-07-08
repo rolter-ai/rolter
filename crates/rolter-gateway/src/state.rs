@@ -19,7 +19,11 @@ pub struct RouteEntry {
 pub struct Snapshot {
     pub providers: HashMap<String, ProviderConfig>,
     pub routes: HashMap<String, RouteEntry>,
+    /// virtual keys indexed by their peppered digest ([`rolter_auth::hash_key`]),
+    /// never by plaintext — the raw key is not retained in gateway memory
     pub keys: HashMap<String, VirtualKeyConfig>,
+    /// deployment secret used to derive the key digests above
+    pub pepper: String,
 }
 
 impl Snapshot {
@@ -42,16 +46,18 @@ impl Snapshot {
                 },
             );
         }
+        let pepper = config.server.resolve_key_pepper();
         let keys = config
             .virtual_keys
             .iter()
             .cloned()
-            .map(|k| (k.key.clone(), k))
+            .map(|k| (rolter_auth::hash_key(&pepper, &k.key), k))
             .collect();
         Self {
             providers,
             routes,
             keys,
+            pepper,
         }
     }
 }

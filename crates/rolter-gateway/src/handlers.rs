@@ -6,6 +6,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
+use chrono::Utc;
 use serde_json::{json, Value};
 
 use rolter_balancer::RouteContext;
@@ -108,13 +109,24 @@ fn authenticate(
         return Ok(None);
     }
     match extract_key(headers) {
-        Some(key) => match snap.keys.get(&key) {
-            Some(vk) => Ok(Some(vk.clone())),
-            None => {
-                state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                Err(error_json(StatusCode::UNAUTHORIZED, "invalid api key"))
+        Some(key) => {
+            // look up by peppered digest so the plaintext key is never used as a
+            // map key and never lingers in memory beyond this call
+            let digest = rolter_auth::hash_key(&snap.pepper, &key);
+            match snap.keys.get(&digest) {
+                Some(vk) if vk.is_active(Utc::now()) => Ok(Some(vk.clone())),
+                // matched but revoked or expired: do not distinguish from a
+                // missing key in the response
+                Some(_) => {
+                    state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+                    Err(error_json(StatusCode::UNAUTHORIZED, "invalid api key"))
+                }
+                None => {
+                    state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+                    Err(error_json(StatusCode::UNAUTHORIZED, "invalid api key"))
+                }
             }
-        },
+        }
         None => {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
             Err(error_json(StatusCode::UNAUTHORIZED, "missing api key"))
@@ -274,6 +286,8 @@ mod tests {
             key: "sk-gpt-only".to_string(),
             name: None,
             models: vec!["gpt-4o".to_string()],
+            disabled: false,
+            expires_at: None,
         });
         config
     }
@@ -364,5 +378,73 @@ mod tests {
         let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
         let resp = chat_completions(State(state), HeaderMap::new(), body).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn bearer(key: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {key}")).unwrap(),
+        );
+        headers
+    }
+
+    fn config_with_one_key(vk: VirtualKeyConfig) -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        config.virtual_keys.push(vk);
+        config
+    }
+
+    #[tokio::test]
+    async fn expired_key_is_rejected() {
+        let vk = VirtualKeyConfig {
+            key: "sk-expired".to_string(),
+            name: None,
+            models: vec![],
+            disabled: false,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+        };
+        let state = AppState::new(&config_with_one_key(vk));
+        let resp = list_models(State(state), bearer("sk-expired")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn disabled_key_is_rejected() {
+        let vk = VirtualKeyConfig {
+            key: "sk-disabled".to_string(),
+            name: None,
+            models: vec![],
+            disabled: true,
+            expires_at: None,
+        };
+        let state = AppState::new(&config_with_one_key(vk));
+        let resp = list_models(State(state), bearer("sk-disabled")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unexpired_active_key_authenticates() {
+        let vk = VirtualKeyConfig {
+            key: "sk-live".to_string(),
+            name: None,
+            models: vec![],
+            disabled: false,
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        };
+        let state = AppState::new(&config_with_one_key(vk));
+        let resp = list_models(State(state), bearer("sk-live")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn plaintext_key_is_not_retained_in_snapshot() {
+        // keys are indexed by peppered digest, never by the raw secret
+        let state = AppState::new(&config_with_keys());
+        let snap = state.snapshot.load();
+        assert!(!snap.keys.contains_key("sk-gpt-only"));
+        assert!(snap
+            .keys
+            .contains_key(&rolter_auth::hash_key(&snap.pepper, "sk-gpt-only")));
     }
 }

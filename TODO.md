@@ -44,7 +44,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] OAuth2/OIDC SSO (group→role mapping)
 - [ ] LDAP bind + group mapping
 - [ ] Audit log writes + UI surface
-- [ ] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
+- [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
 ## Phase 4 — Cost, limits & pricing
 - [ ] ClickHouse client + async batched writer off the hot path
