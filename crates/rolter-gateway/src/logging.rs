@@ -8,11 +8,16 @@
 //! never blocked on. Token and cost fields are captured in a later phase; this
 //! writer establishes the plumbing and the record shape.
 
+use std::pin::Pin;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use std::time::Duration;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+use futures_util::Stream;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::metrics::Metrics;
@@ -64,6 +69,169 @@ impl Default for RequestLog {
             ttft_ms: 0,
             error: String::new(),
         }
+    }
+}
+
+/// Token usage extracted from an upstream response.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
+}
+
+/// Extract token usage from a fully-buffered upstream response body.
+///
+/// Handles both OpenAI (`prompt_tokens`/`completion_tokens`/`total_tokens`) and
+/// Anthropic (`input_tokens`/`output_tokens`, top-level or under `message`) key
+/// styles, for non-streamed JSON and SSE. For SSE every `data:` object is
+/// scanned and the largest values are kept, since streamed usage is cumulative
+/// or reported once at the end (OpenAI final chunk, Anthropic
+/// `message_start`/`message_delta`). `total` falls back to `prompt + completion`
+/// when the upstream does not report it.
+pub fn parse_usage(is_sse: bool, buf: &[u8]) -> Usage {
+    let mut usage = Usage::default();
+    if is_sse {
+        for line in buf.split(|&b| b == b'\n') {
+            let line = trim_ascii(line);
+            let Some(rest) = line.strip_prefix(b"data:") else {
+                continue;
+            };
+            let rest = trim_ascii(rest);
+            if rest == b"[DONE]" {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_slice::<Value>(rest) {
+                merge_usage(&mut usage, &value);
+            }
+        }
+    } else if let Ok(value) = serde_json::from_slice::<Value>(buf) {
+        merge_usage(&mut usage, &value);
+    }
+    if usage.total == 0 {
+        usage.total = usage.prompt.saturating_add(usage.completion);
+    }
+    usage
+}
+
+fn trim_ascii(mut b: &[u8]) -> &[u8] {
+    while let [first, rest @ ..] = b {
+        if first.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    while let [rest @ .., last] = b {
+        if last.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    b
+}
+
+/// Merge any usage numbers found in `value` into `usage`, keeping the max of
+/// each field (streamed usage is cumulative or final-only).
+fn merge_usage(usage: &mut Usage, value: &Value) {
+    // usage can sit at the top level (openai, anthropic non-stream / message_delta)
+    // or under `message` (anthropic message_start event)
+    for holder in [value.get("usage"), value.pointer("/message/usage")] {
+        let Some(u) = holder else { continue };
+        let prompt = u32_field(u, "prompt_tokens").or_else(|| u32_field(u, "input_tokens"));
+        let completion =
+            u32_field(u, "completion_tokens").or_else(|| u32_field(u, "output_tokens"));
+        if let Some(p) = prompt {
+            usage.prompt = usage.prompt.max(p);
+        }
+        if let Some(c) = completion {
+            usage.completion = usage.completion.max(c);
+        }
+        if let Some(t) = u32_field(u, "total_tokens") {
+            usage.total = usage.total.max(t);
+        }
+    }
+}
+
+fn u32_field(value: &Value, key: &str) -> Option<u32> {
+    value.get(key).and_then(|v| v.as_u64()).map(|n| n as u32)
+}
+
+/// Response body stream that forwards each chunk to the client unchanged while
+/// buffering the whole body, then on end-of-stream parses token usage, stamps
+/// latency/ttft and emits the completed [`RequestLog`] exactly once.
+pub struct UsageLoggingStream {
+    inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
+    buf: Vec<u8>,
+    is_sse: bool,
+    started: Instant,
+    ttft_ms: Option<u32>,
+    sink: LogSink,
+    // taken and emitted once the stream ends
+    pending: Option<RequestLog>,
+}
+
+impl UsageLoggingStream {
+    pub fn new(
+        inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
+        is_sse: bool,
+        started: Instant,
+        sink: LogSink,
+        log: RequestLog,
+    ) -> Self {
+        Self {
+            inner,
+            buf: Vec::new(),
+            is_sse,
+            started,
+            ttft_ms: None,
+            sink,
+            pending: Some(log),
+        }
+    }
+
+    fn finalize(&mut self) {
+        let Some(mut log) = self.pending.take() else {
+            return;
+        };
+        let usage = parse_usage(self.is_sse, &self.buf);
+        log.prompt_tokens = usage.prompt;
+        log.completion_tokens = usage.completion;
+        log.total_tokens = usage.total;
+        log.latency_ms = self.started.elapsed().as_millis() as u32;
+        log.ttft_ms = self.ttft_ms.unwrap_or(log.latency_ms);
+        self.sink.log(log);
+    }
+}
+
+impl Stream for UsageLoggingStream {
+    type Item = reqwest::Result<Bytes>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                if self.ttft_ms.is_none() {
+                    self.ttft_ms = Some(self.started.elapsed().as_millis() as u32);
+                }
+                self.buf.extend_from_slice(&chunk);
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
+            Poll::Ready(None) => {
+                self.finalize();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for UsageLoggingStream {
+    // if the client disconnects mid-stream the stream is dropped without a final
+    // None poll; still emit what we have so the request is not lost
+    fn drop(&mut self) {
+        self.finalize();
     }
 }
 
@@ -223,6 +391,71 @@ mod tests {
     }
 
     #[test]
+    fn parses_openai_non_stream_usage() {
+        let body =
+            br#"{"id":"x","usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 11,
+                completion: 22,
+                total: 33
+            }
+        );
+    }
+
+    #[test]
+    fn parses_anthropic_non_stream_usage_and_derives_total() {
+        let body = br#"{"type":"message","usage":{"input_tokens":7,"output_tokens":5}}"#;
+        // anthropic omits total; it is derived as prompt + completion
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 7,
+                completion: 5,
+                total: 12
+            }
+        );
+    }
+
+    #[test]
+    fn parses_openai_sse_final_chunk_usage() {
+        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":9,\"total_tokens\":12}}\n\n\
+data: [DONE]\n\n";
+        assert_eq!(
+            parse_usage(true, sse),
+            Usage {
+                prompt: 3,
+                completion: 9,
+                total: 12
+            }
+        );
+    }
+
+    #[test]
+    fn parses_anthropic_sse_message_start_and_delta() {
+        let sse = b"event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":40,\"output_tokens\":1}}}\n\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
+        // input from message_start, output is the larger (final) delta value
+        assert_eq!(
+            parse_usage(true, sse),
+            Usage {
+                prompt: 40,
+                completion: 25,
+                total: 65
+            }
+        );
+    }
+
+    #[test]
+    fn missing_usage_is_zero() {
+        assert_eq!(parse_usage(false, b"{\"id\":\"x\"}"), Usage::default());
+    }
+
+    #[test]
     fn disabled_sink_is_a_noop() {
         let metrics = Arc::new(Metrics::default());
         let sink = LogSink::disabled(metrics.clone());
@@ -277,6 +510,66 @@ mod tests {
         // give the writer a moment to record the success
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(metrics.logs_written_total.load(Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_wrapper_forwards_bytes_and_logs_usage() {
+        use futures_util::StreamExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            10,
+            Duration::from_millis(50),
+            100,
+            metrics.clone(),
+        );
+
+        let upstream = br#"{"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}"#;
+        let inner = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(
+            upstream.to_vec(),
+        ))]);
+        let mut wrapped = UsageLoggingStream::new(
+            Box::pin(inner),
+            false,
+            Instant::now(),
+            sink,
+            RequestLog {
+                request_id: "req-stream".to_string(),
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        );
+
+        // draining the wrapper forwards the body unchanged to the client
+        let mut forwarded = Vec::new();
+        while let Some(chunk) = wrapped.next().await {
+            forwarded.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(forwarded, upstream);
+        drop(wrapped); // ensure finalize ran
+
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert!(req.contains("\"request_id\":\"req-stream\""));
+        assert!(req.contains("\"prompt_tokens\":4"));
+        assert!(req.contains("\"completion_tokens\":6"));
+        assert!(req.contains("\"total_tokens\":10"));
     }
 
     #[tokio::test]

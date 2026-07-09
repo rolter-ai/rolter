@@ -240,17 +240,24 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     {
         Ok(response) => {
             let status = response.status().as_u16();
-            state.log.log(RequestLog {
+            let is_sse = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.contains("event-stream"))
+                .unwrap_or(false);
+            // token counts, latency and ttft are filled by the stream wrapper
+            // once the body has been fully forwarded to the client
+            let log = RequestLog {
                 request_id,
                 model,
                 provider: provider_name,
                 target: target_label,
                 status,
                 stream: stream as u8,
-                latency_ms: started.elapsed().as_millis() as u32,
                 ..Default::default()
-            });
-            stream_response(response)
+            };
+            stream_response(response, is_sse, started, state.log.clone(), log)
         }
         Err(err) => {
             state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
@@ -271,8 +278,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     }
 }
 
-/// Convert an upstream response into a streaming axum response.
-fn stream_response(response: reqwest::Response) -> Response {
+/// Convert an upstream response into a streaming axum response, teeing the body
+/// through [`UsageLoggingStream`] so token usage and latency are logged once the
+/// response has been fully forwarded.
+fn stream_response(
+    response: reqwest::Response,
+    is_sse: bool,
+    started: Instant,
+    sink: crate::logging::LogSink,
+    log: RequestLog,
+) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = response
@@ -281,10 +296,17 @@ fn stream_response(response: reqwest::Response) -> Response {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json")
         .to_string();
+    let body = crate::logging::UsageLoggingStream::new(
+        Box::pin(response.bytes_stream()),
+        is_sse,
+        started,
+        sink,
+        log,
+    );
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
-        .body(Body::from_stream(response.bytes_stream()))
+        .body(Body::from_stream(body))
         .unwrap_or_else(|_| {
             error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
