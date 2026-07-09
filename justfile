@@ -42,11 +42,15 @@ ui-build:
 
 # bring up postgres, redis, clickhouse and rolter
 up:
-    docker compose up -d
+    docker compose -f docker/docker-compose.yml up -d
 
 # tear down the docker stack
 down:
-    docker compose down
+    docker compose -f docker/docker-compose.yml down
+
+# supply-chain audit (advisories, bans, licenses, sources)
+deny:
+    cargo deny check --config .config/deny.toml
 
 # run fmt, lint and tests like ci does
 ci: fmt lint test

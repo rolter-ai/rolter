@@ -21,6 +21,8 @@ pub struct Metrics {
     pub logs_written_total: AtomicU64,
     /// request-log rows dropped (queue full or write failed)
     pub logs_dropped_total: AtomicU64,
+    /// requests rejected because a matching budget was exhausted
+    pub budget_blocks_total: AtomicU64,
 }
 
 impl Metrics {
@@ -82,6 +84,13 @@ impl Metrics {
             "rolter_logs_dropped_total",
             "request-log rows dropped (queue full or write failed)",
             self.logs_dropped_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_budget_blocks_total",
+            "requests rejected due to an exhausted budget",
+            self.budget_blocks_total.load(Relaxed),
         );
         out
     }

@@ -169,6 +169,8 @@ pub struct UsageLoggingStream {
     ttft_ms: Option<u32>,
     sink: LogSink,
     price: Option<rolter_core::ModelPriceConfig>,
+    // records the request's cost against its budgets once cost_usd is known
+    recorder: Option<crate::budgets::SpendRecorder>,
     // taken and emitted once the stream ends
     pending: Option<RequestLog>,
 }
@@ -181,6 +183,7 @@ impl UsageLoggingStream {
         sink: LogSink,
         price: Option<rolter_core::ModelPriceConfig>,
         log: RequestLog,
+        recorder: Option<crate::budgets::SpendRecorder>,
     ) -> Self {
         Self {
             inner,
@@ -190,6 +193,7 @@ impl UsageLoggingStream {
             ttft_ms: None,
             sink,
             price,
+            recorder,
             pending: Some(log),
         }
     }
@@ -211,6 +215,14 @@ impl UsageLoggingStream {
             .unwrap_or(0.0);
         log.latency_ms = self.started.elapsed().as_millis() as u32;
         log.ttft_ms = self.ttft_ms.unwrap_or(log.latency_ms);
+        // add this request's cost to its budget counters (async, fire-and-forget
+        // so finalize stays sync and never blocks the response path)
+        if let Some(recorder) = self.recorder.take() {
+            let cost = log.cost_usd;
+            if cost > 0.0 {
+                tokio::spawn(async move { recorder.record(cost).await });
+            }
+        }
         self.sink.log(log);
     }
 }
@@ -569,6 +581,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
                 model: "gpt-4o".to_string(),
                 ..Default::default()
             },
+            None,
         );
 
         // draining the wrapper forwards the body unchanged to the client

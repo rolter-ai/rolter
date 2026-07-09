@@ -6,14 +6,14 @@ pub mod repo;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rolter_core::{
-    BalancingStrategy, Error, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
-    ProviderKind, Result, Target, VirtualKeyRecord,
+    BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, Error, GatewayConfig,
+    ModelPriceConfig, ModelRoute, ProviderConfig, ProviderKind, Result, Target, VirtualKeyRecord,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::postgres::models::ModelPrice;
+use crate::postgres::models::{Budget, ModelPrice};
 use crate::ConfigStore;
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -225,6 +225,47 @@ impl PostgresConfigStore {
             })
             .collect())
     }
+
+    async fn load_budgets(&self) -> Result<Vec<BudgetConfig>> {
+        let rows: Vec<Budget> = sqlx::query_as(
+            "select id, scope_type, scope_id, limit_usd, period, created_at
+             from budgets order by created_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let scope = match r.scope_type.as_str() {
+                    "org" => BudgetScope::Org,
+                    "team" => BudgetScope::Team,
+                    "project" => BudgetScope::Project,
+                    "virtual_key" => BudgetScope::Key,
+                    // unknown scope: skip rather than mis-enforce
+                    _ => return None,
+                };
+                Some(BudgetConfig {
+                    scope,
+                    id: r.scope_id.to_string(),
+                    // decimal stored as text; a malformed value disables the cap
+                    limit_usd: r.limit_usd.parse().unwrap_or(f64::INFINITY),
+                    period: parse_period(&r.period),
+                })
+            })
+            .collect())
+    }
+}
+
+/// Map the free-text `budgets.period` column to a [`BudgetPeriod`]. Accepts both
+/// the human names and the legacy duration shorthands (`1d`, `30d`), defaulting
+/// to monthly for anything unrecognized.
+fn parse_period(period: &str) -> BudgetPeriod {
+    match period.trim().to_ascii_lowercase().as_str() {
+        "daily" | "1d" | "24h" => BudgetPeriod::Daily,
+        "total" | "lifetime" | "all" => BudgetPeriod::Total,
+        _ => BudgetPeriod::Monthly,
+    }
 }
 
 /// Read the current global config version. Bumping happens in the database
@@ -244,11 +285,13 @@ impl ConfigStore for PostgresConfigStore {
         let routes = self.load_routes().await?;
         let model_prices = self.load_model_prices().await?;
         let db_virtual_keys = self.load_virtual_keys().await?;
+        let budgets = self.load_budgets().await?;
         Ok(GatewayConfig {
             providers,
             routes,
             model_prices,
             db_virtual_keys,
+            budgets,
             ..GatewayConfig::default()
         })
     }

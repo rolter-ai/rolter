@@ -80,6 +80,18 @@ disabled = false               # revoke without deleting
 # output_per_mtok = 10.0
 # cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok
 
+# --- spend caps (enforced against redis-tracked cost) ---
+# a request is blocked with 402 when any matching budget's spend has reached its
+# limit (most-restrictive-wins across the scope chain). requires --redis-url;
+# without redis, budgets fail open. `id` matches the request's virtual-key scope
+# ids (org/team/project/virtual-key id); config keys carry no scope, so these
+# target database-defined keys.
+# [[budgets]]
+# scope = "org"        # org | team | project | key
+# id = "org-uuid"
+# limit_usd = 500.0
+# period = "monthly"   # monthly (default) | daily | total
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

@@ -11,7 +11,7 @@ jobs:
     name: fmt / clippy / test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,8 +29,11 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: cargo-deny (advisories, bans, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
+          # deny.toml lives under .config/; --config is a `check` subcommand
+          # arg, so it must go via command-arguments (placed after the command)
           command: check
+          command-arguments: "--config .config/deny.toml"

@@ -64,14 +64,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: build wheels (linux)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+          args: --release --out dist --manifest-path crates/rolter/Cargo.toml
           manylinux: auto
           target: x86_64
 
@@ -80,7 +80,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+          args: --release --out dist --manifest-path crates/rolter/Cargo.toml
           manylinux: auto
           target: aarch64
 
@@ -89,7 +89,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --manifest-path crates/rolter-gateway/Cargo.toml
+          args: --release --out dist --manifest-path crates/rolter/Cargo.toml
 
       - name: upload wheels
         uses: actions/upload-artifact@v4
