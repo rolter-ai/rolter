@@ -196,7 +196,7 @@ impl AppState {
     ) -> Self {
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config))),
-            forwarder: Arc::new(Forwarder::new()),
+            forwarder: Arc::new(Forwarder::with_timeouts(&config.timeouts)),
             metrics,
             log,
             budgets,

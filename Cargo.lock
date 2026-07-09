@@ -1770,6 +1770,7 @@ dependencies = [
  "reqwest",
  "rolter-core",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

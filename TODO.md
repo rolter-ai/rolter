@@ -61,7 +61,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Upstream health checks; skip unhealthy targets
 - [ ] In-flight load counters feeding `loads` to balancers
 - [ ] Weighted selection honoring `Target.weight`
-- [ ] Request timeouts + graceful shutdown/drain
+- [x] Request timeouts + graceful shutdown/drain
 
 ## Phase 6 — Caching v2
 - [ ] Cache-aware trie eviction (LRU / max-nodes) + metrics

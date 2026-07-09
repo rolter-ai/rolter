@@ -11,12 +11,16 @@ use std::time::Duration;
 use bytes::Bytes;
 use dashmap::DashMap;
 use reqwest::{Client, Method, Proxy, Response};
-use rolter_core::{Error, ProviderConfig, ProviderKind, Result};
+use rolter_core::{Error, ProviderConfig, ProviderKind, Result, TimeoutConfig};
 
 /// Forwards requests to upstream providers using pooled, reused HTTP clients.
 pub struct Forwarder {
     default: Client,
     proxied: DashMap<String, Client>,
+    /// connect-establishment timeout baked into every client
+    connect_timeout: Option<Duration>,
+    /// time-to-response-headers bound applied around each `send()` (0 disables)
+    request_timeout: Option<Duration>,
 }
 
 impl Default for Forwarder {
@@ -26,11 +30,22 @@ impl Default for Forwarder {
 }
 
 impl Forwarder {
-    /// Create a forwarder with a default pooled client.
+    /// Create a forwarder with default timeouts.
     pub fn new() -> Self {
+        Self::with_timeouts(&TimeoutConfig::default())
+    }
+
+    /// Create a forwarder whose clients honour `timeouts`.
+    pub fn with_timeouts(timeouts: &TimeoutConfig) -> Self {
+        let connect_timeout =
+            (timeouts.connect_secs > 0).then(|| Duration::from_secs(timeouts.connect_secs));
+        let request_timeout =
+            (timeouts.request_secs > 0).then(|| Duration::from_secs(timeouts.request_secs));
         Self {
-            default: build_client(None),
+            default: build_client(None, connect_timeout),
             proxied: DashMap::new(),
+            connect_timeout,
+            request_timeout,
         }
     }
 
@@ -40,7 +55,7 @@ impl Forwarder {
             Some(proxy) => self
                 .proxied
                 .entry(proxy.clone())
-                .or_insert_with(|| build_client(Some(proxy)))
+                .or_insert_with(|| build_client(Some(proxy), self.connect_timeout))
                 .clone(),
         }
     }
@@ -78,18 +93,30 @@ impl Forwarder {
                 }
             }
         }
-        req.body(body)
-            .send()
-            .await
-            .map_err(|e| Error::Upstream(e.to_string()))
+        let send = req.body(body).send();
+        // bound time-to-response-headers only; the body stream is untouched so
+        // long SSE responses are never cut short
+        match self.request_timeout {
+            Some(limit) => match tokio::time::timeout(limit, send).await {
+                Ok(res) => res.map_err(|e| Error::Upstream(e.to_string())),
+                Err(_) => Err(Error::Upstream(format!(
+                    "upstream request timed out after {}s",
+                    limit.as_secs()
+                ))),
+            },
+            None => send.await.map_err(|e| Error::Upstream(e.to_string())),
+        }
     }
 }
 
-fn build_client(proxy: Option<&str>) -> Client {
+fn build_client(proxy: Option<&str>, connect_timeout: Option<Duration>) -> Client {
     let mut builder = Client::builder()
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(64)
         .tcp_nodelay(true);
+    if let Some(ct) = connect_timeout {
+        builder = builder.connect_timeout(ct);
+    }
     if let Some(url) = proxy {
         if let Ok(px) = Proxy::all(url) {
             builder = builder.proxy(px);
@@ -135,5 +162,48 @@ mod tests {
         let body = Bytes::from(r#"{"model":"public"}"#);
         let out = maybe_rewrite_model(body.clone(), None);
         assert_eq!(out, body);
+    }
+
+    #[tokio::test]
+    async fn request_timeout_fires_on_a_silent_upstream() {
+        // a listener that accepts connections but never writes a response,
+        // so only the request timeout can unblock the forward
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                if let Ok((stream, _)) = listener.accept().await {
+                    // hold the connection open, never respond
+                    std::mem::forget(stream);
+                }
+            }
+        });
+
+        let fwd = Forwarder::with_timeouts(&TimeoutConfig {
+            connect_secs: 0,
+            request_secs: 1,
+        });
+        let provider = ProviderConfig {
+            name: "slow".to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{addr}"),
+            api_key: None,
+            api_key_env: None,
+            egress_proxy: None,
+        };
+        let err = fwd
+            .forward_json(
+                &provider,
+                "/v1/chat/completions",
+                Bytes::from_static(b"{}"),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected a timeout error, got: {err}"
+        );
     }
 }
