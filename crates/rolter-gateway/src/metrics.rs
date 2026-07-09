@@ -37,6 +37,8 @@ pub struct Metrics {
     pub breaker_opened_total: AtomicU64,
     /// times a circuit breaker closed a target after a successful half-open probe
     pub breaker_closed_total: AtomicU64,
+    /// upstream `/metrics` scrape sweeps completed
+    pub metrics_scrapes_total: AtomicU64,
 }
 
 impl Metrics {
@@ -154,6 +156,13 @@ impl Metrics {
             "rolter_breaker_closed_total",
             "targets closed by the circuit breaker after a successful half-open probe",
             self.breaker_closed_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_metrics_scrapes_total",
+            "upstream /metrics scrape sweeps completed",
+            self.metrics_scrapes_total.load(Relaxed),
         );
         out
     }

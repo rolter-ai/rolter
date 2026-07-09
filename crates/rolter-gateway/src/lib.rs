@@ -19,6 +19,7 @@ mod logging;
 mod metrics;
 mod rate_limits;
 mod state;
+mod upstream_metrics;
 mod watcher;
 
 use std::net::SocketAddr;
@@ -101,6 +102,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             "active upstream health probing enabled"
         );
         health::spawn_prober(&config, state.clone());
+        upstream_metrics::spawn_scraper(&config, state.clone());
     }
 
     // start the reload-free config watcher when a control plane is configured

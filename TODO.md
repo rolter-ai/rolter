@@ -77,7 +77,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Inbound W3C `traceparent`/`b3` continuation; `request_id` end-to-end
 - [ ] Outbound trace-context propagation to vLLM/SGLang/TGI
 - [ ] `metrics` facade + prometheus exporter: latency histograms (TTFT/total), gauges, labels
-- [ ] Federate/scrape upstream engine `/metrics`; correlate per target
+- [x] Federate/scrape upstream engine `/metrics` (queue depth → balancer load view)
 - [ ] Backend recipes: SigNoz, Datadog, Grafana, Langfuse (LLM traces + cost)
 - [ ] OTel Collector example config in `infra/`
 

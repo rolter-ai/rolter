@@ -154,6 +154,8 @@ pub struct AppState {
     pub health: crate::health::Health,
     /// per-target circuit breaker registry, shared across requests and reloads
     pub breaker: crate::breaker::Breaker,
+    /// upstream engine metrics snapshot populated by the background scraper
+    pub upstream_metrics: crate::upstream_metrics::UpstreamMetrics,
 }
 
 impl AppState {
@@ -226,6 +228,13 @@ impl AppState {
                 )
             } else {
                 crate::breaker::Breaker::default()
+            },
+            // an enabled snapshot only when scraping is on, else an inert one
+            // that reports zero depth so it never perturbs the load view
+            upstream_metrics: if config.metrics_scrape.enabled {
+                crate::upstream_metrics::UpstreamMetrics::new()
+            } else {
+                crate::upstream_metrics::UpstreamMetrics::default()
             },
         }
     }

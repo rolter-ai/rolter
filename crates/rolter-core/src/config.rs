@@ -42,6 +42,9 @@ pub struct GatewayConfig {
     /// per-target circuit breaker for sustained upstream failures
     #[serde(default)]
     pub breaker: BreakerConfig,
+    /// background scrape of upstream engine `/metrics` for load-aware routing
+    #[serde(default)]
+    pub metrics_scrape: MetricsScrapeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -518,6 +521,50 @@ fn default_health_timeout_secs() -> u64 {
 
 fn default_health_path() -> String {
     "/".to_string()
+}
+
+/// Background scrape of each upstream engine's Prometheus `/metrics`. When
+/// enabled, a task periodically pulls per-provider queue depth (vLLM/SGLang/TGI
+/// `num_requests_waiting`) into a lock-free snapshot the balancer folds into its
+/// in-flight load view, so load-aware strategies steer away from backed-up
+/// engines. Disabled by default; the snapshot reports zero depth when inert.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetricsScrapeConfig {
+    /// master switch for background metrics scraping
+    #[serde(default)]
+    pub enabled: bool,
+    /// seconds between scrape sweeps
+    #[serde(default = "default_scrape_interval_secs")]
+    pub interval_secs: u64,
+    /// per-scrape timeout in seconds
+    #[serde(default = "default_scrape_timeout_secs")]
+    pub timeout_secs: u64,
+    /// request path appended to each provider's `api_base` when scraping
+    #[serde(default = "default_scrape_path")]
+    pub path: String,
+}
+
+impl Default for MetricsScrapeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: default_scrape_interval_secs(),
+            timeout_secs: default_scrape_timeout_secs(),
+            path: default_scrape_path(),
+        }
+    }
+}
+
+fn default_scrape_interval_secs() -> u64 {
+    5
+}
+
+fn default_scrape_timeout_secs() -> u64 {
+    2
+}
+
+fn default_scrape_path() -> String {
+    "/metrics".to_string()
 }
 
 /// Per-target circuit breaker. Complements the short per-failure [`CooldownConfig`]

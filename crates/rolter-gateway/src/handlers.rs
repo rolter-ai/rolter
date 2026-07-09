@@ -291,8 +291,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
     // live per-target in-flight counts steer load-aware strategies away from busy
-    // targets; the count for the chosen target is held for the whole request
-    let loads = state.loads.snapshot(&model, entry.route.targets.len());
+    // targets; the count for the chosen target is held for the whole request.
+    // scraped upstream queue depth (when enabled) is folded in so the balancer
+    // also sees pressure that hasn't reached this gateway's own counters
+    let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+    for (i, target) in entry.route.targets.iter().enumerate() {
+        if let Some(l) = loads.get_mut(i) {
+            *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+        }
+    }
     let mut tried: Vec<usize> = Vec::new();
     let mut last_provider = String::new();
     let mut last_target = model.clone();
