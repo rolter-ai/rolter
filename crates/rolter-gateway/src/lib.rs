@@ -7,6 +7,7 @@
 //! The binary is a thin wrapper over [`run`]; the unified `rolter` launcher
 //! reuses the same entrypoint as its `gateway` subcommand.
 
+mod breaker;
 mod budgets;
 mod cooldowns;
 mod error;

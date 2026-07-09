@@ -33,6 +33,10 @@ pub struct Metrics {
     pub health_down_total: AtomicU64,
     /// times a health probe transitioned a provider from down to healthy
     pub health_recovered_total: AtomicU64,
+    /// times a circuit breaker tripped a target open after sustained failures
+    pub breaker_opened_total: AtomicU64,
+    /// times a circuit breaker closed a target after a successful half-open probe
+    pub breaker_closed_total: AtomicU64,
 }
 
 impl Metrics {
@@ -136,6 +140,20 @@ impl Metrics {
             "rolter_health_recovered_total",
             "providers restored to healthy by an active health probe",
             self.health_recovered_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_breaker_opened_total",
+            "targets tripped open by the circuit breaker after sustained failures",
+            self.breaker_opened_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_breaker_closed_total",
+            "targets closed by the circuit breaker after a successful half-open probe",
+            self.breaker_closed_total.load(Relaxed),
         );
         out
     }

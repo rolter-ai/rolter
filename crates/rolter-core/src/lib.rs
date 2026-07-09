@@ -8,10 +8,10 @@ pub mod error;
 pub mod telemetry;
 
 pub use config::{
-    BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, CooldownConfig, GatewayConfig,
-    HealthConfig, LoggingConfig, ModelPriceConfig, ModelRoute, ProviderConfig, ProviderKind,
-    RateLimitConfig, RetryConfig, ServerConfig, Target, TimeoutConfig, VirtualKeyConfig,
-    VirtualKeyRecord,
+    BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CooldownConfig,
+    GatewayConfig, HealthConfig, LoggingConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
+    ProviderKind, RateLimitConfig, RetryConfig, ServerConfig, Target, TimeoutConfig,
+    VirtualKeyConfig, VirtualKeyRecord,
 };
 pub use error::{Error, Result};
 

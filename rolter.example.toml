@@ -159,6 +159,19 @@ disabled = false               # revoke without deleting
 # timeout_secs = 2     # per-probe timeout
 # path = "/"           # appended to each provider's api_base when probing
 
+# --- per-target circuit breaker ---
+# complements the short per-failure cooldown with a longer-lived state machine.
+# after failure_threshold consecutive transient failures a target trips OPEN and
+# is skipped for open_secs; the first request after that window probes it
+# (half-open), a success closes the breaker and a failure re-opens it. where a
+# cooldown shrugs off one wobble, the breaker sheds load off a target that is down
+# hard. when every target of a route is open the gateway fails open. disabled by
+# default. defaults shown below.
+# [breaker]
+# enabled = false
+# failure_threshold = 5   # consecutive failures that trip a target open; 0 disables
+# open_secs = 30          # how long a tripped target stays open before a probe
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

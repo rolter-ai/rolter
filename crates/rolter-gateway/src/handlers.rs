@@ -308,6 +308,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &loads,
             &state.cooldowns,
             &state.health,
+            &state.breaker,
             &model,
             cd_enabled,
         ) {
@@ -353,6 +354,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         state.cooldowns.park(&model, idx, secs);
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
+                    // feed the circuit breaker; a sustained run trips the target open
+                    if state.breaker.on_failure(&model, idx) {
+                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                    }
                     if attempt < retry.max_retries {
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -364,6 +369,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         .await;
                         continue;
                     }
+                } else if state.breaker.on_success(&model, idx) {
+                    // a good response closes a breaker that was probing (half-open)
+                    state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
                 }
                 let is_sse = response
                     .headers()
@@ -383,6 +391,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         .cooldowns
                         .park(&model, idx, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                }
+                // and counts against the circuit breaker
+                if state.breaker.on_failure(&model, idx) {
+                    state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < retry.max_retries {
                     state.metrics.retries_total.fetch_add(1, Relaxed);
@@ -466,14 +478,17 @@ fn pick_untried(
     loads: &[u64],
     cooldowns: &crate::cooldowns::Cooldowns,
     health: &crate::health::Health,
+    breaker: &crate::breaker::Breaker,
     model: &str,
     cd_enabled: bool,
 ) -> Option<usize> {
-    // a target is skippable when parked on a cooldown or when its provider is
-    // currently marked unhealthy by the active prober
+    // a target is skippable when parked on a cooldown, when its provider is
+    // currently marked unhealthy by the active prober, or when its circuit
+    // breaker is open
     let skip = |i: usize| {
         (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
+            || !breaker.allows(model, i)
     };
     if let Some(i) = entry.balancer.pick(ctx, loads) {
         if !tried.contains(&i) && !skip(i) {
@@ -842,13 +857,24 @@ mod tests {
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::default();
-        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false).unwrap();
+        let bb = crate::breaker::Breaker::default();
+        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, "m", false).unwrap();
+        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, &bb, "m", false).unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
         assert_eq!(
-            pick_untried(&entry, &ctx, &[first, second], &[], &cd, &hh, "m", false),
+            pick_untried(
+                &entry,
+                &ctx,
+                &[first, second],
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false
+            ),
             None
         );
     }
@@ -878,15 +904,16 @@ mod tests {
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::new();
         let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
         // park target 0: selection must avoid it and pick 1
         cd.park("m", 0, 60);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", true),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true),
             Some(1)
         );
         // park both: fail open to an untried target rather than returning None
         cd.park("m", 1, 60);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", true).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true).is_some());
     }
 
     #[test]
@@ -914,14 +941,52 @@ mod tests {
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::new();
+        let bb = crate::breaker::Breaker::default();
         // mark provider "a" (target 0) unhealthy: selection must pick target 1
         hh.set("a", false);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false),
             Some(1)
         );
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).is_some());
+    }
+
+    #[test]
+    fn pick_untried_skips_open_breaker() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![
+                Target {
+                    provider: "a".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+                Target {
+                    provider: "b".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+            ],
+        };
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            route,
+        };
+        let ctx = RouteContext::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::new(1, 60);
+        // trip target 0 open: selection must avoid it and pick 1
+        assert!(bb.on_failure("m", 0));
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false),
+            Some(1)
+        );
+        // both open: fail open to an untried target rather than returning None
+        assert!(bb.on_failure("m", 1));
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).is_some());
     }
 }
