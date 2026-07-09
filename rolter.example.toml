@@ -92,6 +92,17 @@ disabled = false               # revoke without deleting
 # limit_usd = 500.0
 # period = "monthly"   # monthly (default) | daily | total
 
+# --- throughput caps (redis sliding window, per-minute) ---
+# a request is rejected with 429 (+ retry-after) when a matching limit's
+# trailing-minute request or token count has reached its cap (most-restrictive-
+# wins across the scope chain). requires --redis-url; without redis, limits fail
+# open. `id` matches the request's virtual-key scope ids, like budgets above.
+# [[rate_limits]]
+# scope = "key"        # org | team | project | key
+# id = "vk-uuid"
+# rpm = 600            # requests per minute; omit to leave requests uncapped
+# tpm = 150000         # tokens per minute; omit to leave tokens uncapped
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

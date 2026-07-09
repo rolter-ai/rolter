@@ -23,6 +23,8 @@ pub struct Metrics {
     pub logs_dropped_total: AtomicU64,
     /// requests rejected because a matching budget was exhausted
     pub budget_blocks_total: AtomicU64,
+    /// requests rejected because a matching rpm/tpm rate limit was exhausted
+    pub rate_limit_blocks_total: AtomicU64,
 }
 
 impl Metrics {
@@ -91,6 +93,13 @@ impl Metrics {
             "rolter_budget_blocks_total",
             "requests rejected due to an exhausted budget",
             self.budget_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_rate_limit_blocks_total",
+            "requests rejected due to an exhausted rate limit",
+            self.rate_limit_blocks_total.load(Relaxed),
         );
         out
     }
