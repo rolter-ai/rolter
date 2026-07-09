@@ -21,6 +21,9 @@ pub struct GatewayConfig {
     pub db_virtual_keys: Vec<VirtualKeyRecord>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
+    /// spend caps enforced by the gateway against Redis-tracked cumulative cost
+    #[serde(default)]
+    pub budgets: Vec<BudgetConfig>,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -229,6 +232,65 @@ impl ModelPriceConfig {
             + completion as f64 * self.output_per_mtok)
             / 1_000_000.0
     }
+}
+
+/// The scope level a [`BudgetConfig`] applies to. Matched against the request's
+/// virtual-key scope chain (org → team → project → key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetScope {
+    Org,
+    Team,
+    Project,
+    Key,
+}
+
+/// The rolling window a budget resets on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetPeriod {
+    #[default]
+    Monthly,
+    Daily,
+    /// never resets — a lifetime cap
+    Total,
+}
+
+impl BudgetPeriod {
+    /// Identifier of the current window at `now`; part of the Redis spend key so
+    /// a new window starts with a zero counter.
+    pub fn bucket(&self, now: DateTime<Utc>) -> String {
+        match self {
+            BudgetPeriod::Daily => now.format("%Y%m%d").to_string(),
+            BudgetPeriod::Monthly => now.format("%Y%m").to_string(),
+            BudgetPeriod::Total => "all".to_string(),
+        }
+    }
+
+    /// TTL for the Redis spend counter (generous, just for cleanup — the bucket
+    /// key already partitions windows). `None` for [`BudgetPeriod::Total`].
+    pub fn ttl_secs(&self) -> Option<u64> {
+        match self {
+            BudgetPeriod::Daily => Some(2 * 24 * 3600),
+            BudgetPeriod::Monthly => Some(40 * 24 * 3600),
+            BudgetPeriod::Total => None,
+        }
+    }
+}
+
+/// A spend cap applied to a scope over a rolling [`BudgetPeriod`]. The gateway
+/// blocks a request when any matching budget's tracked spend has reached its
+/// limit (most-restrictive-wins across the scope chain).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BudgetConfig {
+    pub scope: BudgetScope,
+    /// id of the scoped entity (org/team/project/virtual-key id), matched
+    /// against the request's key scope chain
+    pub id: String,
+    /// spend cap in USD for the window
+    pub limit_usd: f64,
+    #[serde(default)]
+    pub period: BudgetPeriod,
 }
 
 /// Where request and cost logs are written.

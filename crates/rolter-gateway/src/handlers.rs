@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use rolter_balancer::RouteContext;
 
+use crate::budgets::{ScopeIds, SpendRecorder};
 use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::state::{AppState, KeyMeta, Snapshot};
@@ -161,6 +162,29 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
     }
 
+    // scope identity drives both budget enforcement and log attribution
+    let scope = vk
+        .as_ref()
+        .map(|v| ScopeIds {
+            org: v.org_id.clone(),
+            team: v.team_id.clone(),
+            project: v.project_id.clone(),
+            key: v.id.clone(),
+        })
+        .unwrap_or_default();
+
+    // block before spending upstream tokens when any applicable budget is spent
+    if let Some(exceeded) = state.budgets.exceeded(&snap.budgets, &scope).await {
+        state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
+        return error_json(
+            StatusCode::PAYMENT_REQUIRED,
+            &format!(
+                "budget exceeded for {:?} '{}' (limit ${:.2})",
+                exceeded.scope, exceeded.id, exceeded.limit_usd
+            ),
+        );
+    }
+
     // built-in fake-llm answers locally unless a configured route shadows it
     if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
         return match path {
@@ -232,17 +256,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let provider_name = target.provider.clone();
     let target_label = target.model.clone().unwrap_or_else(|| model.clone());
     // scope identity for log attribution (empty for config-defined keys)
-    let (vk_id, org_id, team_id, project_id) = vk
-        .as_ref()
-        .map(|v| {
-            (
-                v.id.clone(),
-                v.org_id.clone(),
-                v.team_id.clone(),
-                v.project_id.clone(),
-            )
-        })
-        .unwrap_or_default();
+    let (vk_id, org_id, team_id, project_id) = (
+        scope.key.clone(),
+        scope.org.clone(),
+        scope.team.clone(),
+        scope.project.clone(),
+    );
+    // records this request's cost against its budgets once cost_usd is known
+    let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     match state
         .forwarder
@@ -273,7 +294,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 stream: stream as u8,
                 ..Default::default()
             };
-            stream_response(response, is_sse, started, state.log.clone(), price, log)
+            stream_response(
+                response,
+                is_sse,
+                started,
+                state.log.clone(),
+                price,
+                log,
+                recorder,
+            )
         }
         Err(err) => {
             state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
@@ -301,6 +330,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 /// Convert an upstream response into a streaming axum response, teeing the body
 /// through [`UsageLoggingStream`] so token usage and latency are logged once the
 /// response has been fully forwarded.
+#[allow(clippy::too_many_arguments)]
 fn stream_response(
     response: reqwest::Response,
     is_sse: bool,
@@ -308,6 +338,7 @@ fn stream_response(
     sink: crate::logging::LogSink,
     price: Option<rolter_core::ModelPriceConfig>,
     log: RequestLog,
+    recorder: SpendRecorder,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -324,6 +355,7 @@ fn stream_response(
         sink,
         price,
         log,
+        Some(recorder),
     );
     Response::builder()
         .status(status)

@@ -50,7 +50,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] ClickHouse client + async batched writer off the hot path
 - [x] Capture token usage (parse non-stream usage; accumulate for streams)
 - [x] Pricing catalog CRUD + per-request `cost_usd`
-- [ ] Budgets enforcement (scope chain, most-restrictive-wins) with Redis spend counters
+- [x] Budgets enforcement (scope chain, most-restrictive-wins) with Redis spend counters
 - [ ] RPM/TPM rate limits via Redis (sliding window) with `429` + `retry-after`
 - [x] Usage/cost aggregation queries for the dashboard
 
@@ -107,6 +107,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] `bun run lint`/build wired into CI
 
 ## Cross-cutting / tech debt
+- [ ] Publish `rolter` to PyPI (no wheel there yet). crates.io is done (all 8 crates @0.0.2). PyPI trusted publisher (OIDC) is configured as a *pending* publisher (repo `ormeilu/rolter`, workflow `release.yml`, env `pypi`); `PYPI_PUBLISH_ENABLED=true` is set. Blocker: the `v0.0.2` tag predates `crates/rolter`, so its wheel would ship the gateway-only binary. Fix: cut a fresh tag off master (v0.0.3 via release-plz) so `release.yml` builds the unified-launcher wheel and the pending publisher activates on first upload.
 - [ ] Integration tests for the gateway (mock upstream) + streaming assertions
 - [ ] `criterion` benches for `pick`/trie; `oha`/`k6` load tests
 - [ ] Structured error type surfaced as OpenAI-style JSON everywhere

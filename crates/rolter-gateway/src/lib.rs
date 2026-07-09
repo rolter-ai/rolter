@@ -7,6 +7,7 @@
 //! The binary is a thin wrapper over [`run`]; the unified `rolter` launcher
 //! reuses the same entrypoint as its `gateway` subcommand.
 
+mod budgets;
 mod fake_llm;
 mod handlers;
 mod logging;
@@ -79,7 +80,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(url) = &config.logging.clickhouse_url {
         tracing::info!(%url, "clickhouse request logging enabled");
     }
-    let state = AppState::with_logging(&config);
+    let state = AppState::with_logging(&config, args.redis_url.as_deref());
 
     // start the reload-free config watcher when a control plane is configured
     if let Some(snapshot_url) = args.snapshot_url {
