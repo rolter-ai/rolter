@@ -168,6 +168,7 @@ pub struct UsageLoggingStream {
     started: Instant,
     ttft_ms: Option<u32>,
     sink: LogSink,
+    price: Option<rolter_core::ModelPriceConfig>,
     // taken and emitted once the stream ends
     pending: Option<RequestLog>,
 }
@@ -178,6 +179,7 @@ impl UsageLoggingStream {
         is_sse: bool,
         started: Instant,
         sink: LogSink,
+        price: Option<rolter_core::ModelPriceConfig>,
         log: RequestLog,
     ) -> Self {
         Self {
@@ -187,6 +189,7 @@ impl UsageLoggingStream {
             started,
             ttft_ms: None,
             sink,
+            price,
             pending: Some(log),
         }
     }
@@ -199,6 +202,13 @@ impl UsageLoggingStream {
         log.prompt_tokens = usage.prompt;
         log.completion_tokens = usage.completion;
         log.total_tokens = usage.total;
+        // cache_hit accounting arrives with the response-cache phase; price the
+        // full prompt as fresh input for now
+        log.cost_usd = self
+            .price
+            .as_ref()
+            .map(|p| p.cost_usd(usage.prompt, usage.completion, 0))
+            .unwrap_or(0.0);
         log.latency_ms = self.started.elapsed().as_millis() as u32;
         log.ttft_ms = self.ttft_ms.unwrap_or(log.latency_ms);
         self.sink.log(log);
@@ -542,11 +552,18 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
         let inner = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(
             upstream.to_vec(),
         ))]);
+        let price = Some(rolter_core::ModelPriceConfig {
+            model: "gpt-4o".to_string(),
+            input_per_mtok: 1_000_000.0, // 1 usd per token, for an exact assert
+            output_per_mtok: 1_000_000.0,
+            cached_input_per_mtok: None,
+        });
         let mut wrapped = UsageLoggingStream::new(
             Box::pin(inner),
             false,
             Instant::now(),
             sink,
+            price,
             RequestLog {
                 request_id: "req-stream".to_string(),
                 model: "gpt-4o".to_string(),
@@ -570,6 +587,8 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
         assert!(req.contains("\"prompt_tokens\":4"));
         assert!(req.contains("\"completion_tokens\":6"));
         assert!(req.contains("\"total_tokens\":10"));
+        // 1 usd/token * (4 + 6) tokens = 10.0
+        assert!(req.contains("\"cost_usd\":10.0"));
     }
 
     #[tokio::test]

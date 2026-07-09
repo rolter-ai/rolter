@@ -5,13 +5,14 @@ pub mod repo;
 
 use async_trait::async_trait;
 use rolter_core::{
-    BalancingStrategy, Error, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, Result,
-    Target,
+    BalancingStrategy, Error, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
+    ProviderKind, Result, Target,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
+use crate::postgres::models::ModelPrice;
 use crate::ConfigStore;
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -161,6 +162,26 @@ impl PostgresConfigStore {
             })
             .collect()
     }
+
+    async fn load_model_prices(&self) -> Result<Vec<ModelPriceConfig>> {
+        let rows: Vec<ModelPrice> = sqlx::query_as(
+            "select id, model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency, created_at
+             from model_prices order by model",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ModelPriceConfig {
+                model: r.model,
+                // decimals are stored as text; a malformed value prices at zero
+                input_per_mtok: r.input_per_mtok.parse().unwrap_or(0.0),
+                output_per_mtok: r.output_per_mtok.parse().unwrap_or(0.0),
+                cached_input_per_mtok: r.cached_input_per_mtok.and_then(|v| v.parse().ok()),
+            })
+            .collect())
+    }
 }
 
 /// Read the current global config version. Bumping happens in the database
@@ -178,9 +199,11 @@ impl ConfigStore for PostgresConfigStore {
     async fn load(&self) -> Result<GatewayConfig> {
         let providers = self.load_providers().await?;
         let routes = self.load_routes().await?;
+        let model_prices = self.load_model_prices().await?;
         Ok(GatewayConfig {
             providers,
             routes,
+            model_prices,
             ..GatewayConfig::default()
         })
     }

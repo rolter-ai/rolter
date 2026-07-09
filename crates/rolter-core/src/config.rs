@@ -16,6 +16,8 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub virtual_keys: Vec<VirtualKeyConfig>,
     #[serde(default)]
+    pub model_prices: Vec<ModelPriceConfig>,
+    #[serde(default)]
     pub logging: LoggingConfig,
 }
 
@@ -164,6 +166,36 @@ impl VirtualKeyConfig {
     /// Whether the key may authenticate at `now`: not disabled and not expired.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
+    }
+}
+
+/// Per-model token pricing used to compute `cost_usd` for each request. Rates
+/// are USD per million tokens (matching the `model_prices` catalog).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelPriceConfig {
+    /// public model name this price applies to
+    pub model: String,
+    #[serde(default)]
+    pub input_per_mtok: f64,
+    #[serde(default)]
+    pub output_per_mtok: f64,
+    /// price for cache-hit input tokens; falls back to `input_per_mtok`
+    #[serde(default)]
+    pub cached_input_per_mtok: Option<f64>,
+}
+
+impl ModelPriceConfig {
+    /// Compute request cost in USD from token counts. `cached_input` is the
+    /// portion of `prompt` tokens served from cache (priced at the cached rate
+    /// when set); pass 0 when unknown.
+    pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> f64 {
+        let cached = cached_input.min(prompt);
+        let fresh = prompt - cached;
+        let cached_rate = self.cached_input_per_mtok.unwrap_or(self.input_per_mtok);
+        (fresh as f64 * self.input_per_mtok
+            + cached as f64 * cached_rate
+            + completion as f64 * self.output_per_mtok)
+            / 1_000_000.0
     }
 }
 
@@ -331,5 +363,29 @@ mod tests {
         assert!(problems.iter().any(|p| p.contains("duplicate route")));
         assert!(problems.iter().any(|p| p.contains("unknown provider")));
         assert!(problems.iter().any(|p| p.contains("zero weight")));
+    }
+
+    #[test]
+    fn cost_usd_from_token_counts() {
+        let price = ModelPriceConfig {
+            model: "gpt-4o".to_string(),
+            input_per_mtok: 2.5,
+            output_per_mtok: 10.0,
+            cached_input_per_mtok: None,
+        };
+        // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075
+        assert!((price.cost_usd(1000, 500, 0) - 0.0075).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cost_usd_applies_cached_rate() {
+        let price = ModelPriceConfig {
+            model: "gpt-4o".to_string(),
+            input_per_mtok: 2.0,
+            output_per_mtok: 0.0,
+            cached_input_per_mtok: Some(0.5),
+        };
+        // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
+        assert!((price.cost_usd(1000, 0, 400) - 0.0014).abs() < 1e-12);
     }
 }

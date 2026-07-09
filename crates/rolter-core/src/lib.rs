@@ -8,8 +8,8 @@ pub mod error;
 pub mod telemetry;
 
 pub use config::{
-    BalancingStrategy, GatewayConfig, LoggingConfig, ModelRoute, ProviderConfig, ProviderKind,
-    ServerConfig, Target, VirtualKeyConfig,
+    BalancingStrategy, GatewayConfig, LoggingConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
+    ProviderKind, ServerConfig, Target, VirtualKeyConfig,
 };
 pub use error::{Error, Result};
 

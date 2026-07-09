@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use rolter_balancer::{build, LoadBalancer};
-use rolter_core::{GatewayConfig, ModelRoute, ProviderConfig, VirtualKeyConfig};
+use rolter_core::{GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig, VirtualKeyConfig};
 use rolter_proxy::Forwarder;
 
 use crate::logging::LogSink;
@@ -26,6 +26,8 @@ pub struct Snapshot {
     pub keys: HashMap<String, VirtualKeyConfig>,
     /// deployment secret used to derive the key digests above
     pub pepper: String,
+    /// per-model token pricing, keyed by public model name
+    pub prices: HashMap<String, ModelPriceConfig>,
 }
 
 impl Snapshot {
@@ -55,11 +57,18 @@ impl Snapshot {
             .cloned()
             .map(|k| (rolter_auth::hash_key(&pepper, &k.key), k))
             .collect();
+        let prices = config
+            .model_prices
+            .iter()
+            .cloned()
+            .map(|p| (p.model.clone(), p))
+            .collect();
         Self {
             providers,
             routes,
             keys,
             pepper,
+            prices,
         }
     }
 }

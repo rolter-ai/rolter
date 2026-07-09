@@ -72,6 +72,14 @@ models = []   # empty = all models allowed
 disabled = false               # revoke without deleting
 # expires_at = "2027-01-01T00:00:00Z"   # rfc3339; key stops working at/after this
 
+# --- per-model token pricing (usd per million tokens) ---
+# drives cost_usd on each request log; models without a price log cost 0
+# [[model_prices]]
+# model = "gpt-4o"
+# input_per_mtok = 2.5
+# output_per_mtok = 10.0
+# cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
