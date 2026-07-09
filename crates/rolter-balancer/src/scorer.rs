@@ -4,7 +4,7 @@
 //! must not receive traffic, every strategy becomes a [`Scorer`] producing a
 //! per-target score in `[0.0, 1.0]`, the scores are combined as a weighted sum,
 //! and the winner is the argmax with ties broken randomly. This turns the
-//! monolithic [`LoadBalancer`](crate::LoadBalancer) strategies into composable
+//! monolithic [`LoadBalancer`] strategies into composable
 //! plugins so cache/load/cost signals can be mixed per route.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use parking_lot::Mutex;
 
 use crate::trie::Trie;
-use crate::RouteContext;
+use crate::{LoadBalancer, RouteContext};
 
 /// A per-target signal. Produces a score in `[0.0, 1.0]` (higher is better) for
 /// each candidate target that survived filtering, index-aligned with the
@@ -95,6 +95,34 @@ impl Pipeline {
         for (scorer, _) in &self.scorers {
             scorer.observe(target, ctx);
         }
+    }
+
+    /// The default composable stack over `weights.len()` targets: configured
+    /// per-target weight, in-flight load, and prefix-cache affinity, each
+    /// contributing equally. The foundation strategy the roadmap's cost/latency
+    /// scorers slot into.
+    pub fn default_stack(weights: &[u32]) -> Self {
+        let n = weights.len();
+        Self::new(n)
+            .with(Box::new(StaticScorer::new(weights)), 1.0)
+            .with(Box::new(LeastLoadScorer::new(n)), 1.0)
+            .with(Box::new(PrefixCacheScorer::new(n)), 1.0)
+    }
+}
+
+impl LoadBalancer for Pipeline {
+    fn name(&self) -> &'static str {
+        "pipeline"
+    }
+
+    fn pick(&self, ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
+        // eligibility filtering (tried/cooling/unhealthy/breaker) is applied by
+        // the caller; the pipeline scores every target
+        self.select(ctx, loads, |_| true)
+    }
+
+    fn observe(&self, target: usize, ctx: &RouteContext) {
+        Pipeline::observe(self, target, ctx);
     }
 }
 

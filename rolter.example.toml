@@ -76,6 +76,21 @@ provider = "vllm-2"
 model = "meta-llama/Llama-3.1-8B-Instruct"
 weight = 1
 
+# composable pipeline: filter → weighted-score → argmax. blends the target
+# weight, in-flight load, and prefix-cache affinity scorers into one decision —
+# the foundation future cost/latency/kv-cache scorers plug into
+[[routes]]
+model = "llama-pipeline"
+strategy = "pipeline"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 2
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
 

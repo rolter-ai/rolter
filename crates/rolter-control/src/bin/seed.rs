@@ -184,6 +184,7 @@ async fn import_bootstrap_toml(
             BalancingStrategy::ConsistentHash => "consistent_hash",
             BalancingStrategy::CacheAware => "cache_aware",
             BalancingStrategy::Weighted => "weighted",
+            BalancingStrategy::Pipeline => "pipeline",
         };
         let existing = routes
             .list(project_id)
