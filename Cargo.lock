@@ -1680,6 +1680,7 @@ dependencies = [
  "clap",
  "rand 0.8.6",
  "redis",
+ "reqwest",
  "rolter-auth",
  "rolter-core",
  "rolter-store",

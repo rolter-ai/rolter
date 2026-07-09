@@ -13,7 +13,6 @@ use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -478,11 +477,18 @@ struct CreatedVirtualKey {
     key: String,
 }
 
-fn generate_virtual_key() -> (String, String, String) {
+/// Deployment-wide pepper shared with the gateway (`ROLTER_KEY_PEPPER`). Keys
+/// are stored as `rolter_auth::hash_key(pepper, key)` so the gateway can match
+/// presented keys by the same peppered digest.
+fn key_pepper() -> String {
+    std::env::var("ROLTER_KEY_PEPPER").unwrap_or_default()
+}
+
+fn generate_virtual_key(pepper: &str) -> (String, String, String) {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
     let key = format!("sk-rolter-{}", hex_encode(&bytes));
-    let hash = hex_encode(&Sha256::digest(key.as_bytes()));
+    let hash = rolter_auth::hash_key(pepper, &key);
     let prefix = key.chars().take(12).collect::<String>();
     (key, hash, prefix)
 }
@@ -496,7 +502,7 @@ async fn create_virtual_key(
     Path(project_id): Path<Uuid>,
     Json(body): Json<CreateVirtualKey>,
 ) -> ApiResult<Json<CreatedVirtualKey>> {
-    let (key, key_hash, key_prefix) = generate_virtual_key();
+    let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
         .create(
             project_id,
