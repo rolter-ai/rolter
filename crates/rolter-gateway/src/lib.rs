@@ -75,9 +75,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     if let Err(problems) = config.validate() {
         tracing::warn!(
-            ?problems,
+            count = problems.len(),
             "bootstrap config failed validation; requests to affected routes will error"
         );
+        // enumerate each problem on its own line so an operator can fix the whole
+        // config in one pass rather than one restart per error
+        for (i, problem) in problems.iter().enumerate() {
+            tracing::warn!("  config problem {}/{}: {}", i + 1, problems.len(), problem);
+        }
     }
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
