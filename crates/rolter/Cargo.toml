@@ -1,0 +1,27 @@
+[package]
+name = "rolter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "high-performance openai/anthropic-compatible llm gateway and load balancer — unified cli launcher for the gateway and control plane"
+keywords = ["llm", "proxy", "gateway", "openai", "anthropic"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+readme = "README.md"
+
+[[bin]]
+name = "rolter"
+path = "src/main.rs"
+
+[dependencies]
+rolter-core.workspace = true
+rolter-gateway.workspace = true
+rolter-control.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[features]
+default = []
+# enable the control plane's postgres-backed store, CRUD API and migrations
+postgres = ["rolter-control/postgres"]

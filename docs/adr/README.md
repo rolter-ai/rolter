@@ -30,7 +30,7 @@ Accepted. Control plane writes Postgres, bumps a version, publishes on Redis; ga
 Accepted. Upstream keys are AES-256-GCM envelope-encrypted with a master key from env/file; Vault/KMS backends later. Consequence: no plaintext secrets at rest; master key is the critical secret.
 
 ## ADR-0010 — Packaging: maturin (uv) + cargo + Docker
-Accepted. Ship a maturin-built PyPI wheel bundling the binary (`uv tool install rolter`), `cargo install`, and a multi-stage Docker image. Consequence: three distribution paths; a unified `rolter` CLI launcher is a follow-up.
+Accepted. Ship a maturin-built PyPI wheel bundling the unified `rolter` launcher (`uv tool install rolter`), `cargo install rolter`, and a multi-stage Docker image. The `rolter` binary dispatches to `gateway`/`control` subcommands so one wheel/crate ships the whole system. Consequence: three distribution paths from a single named artifact.
 
 ## ADR-0011 — API surface v1
 Accepted. OpenAI `/v1/chat/completions`, `/v1/completions`, `/v1/models` and Anthropic `/v1/messages`. Embeddings, images, audio and other modalities follow. Consequence: drop-in for the two dominant client SDKs first.

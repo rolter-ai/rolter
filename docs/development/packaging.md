@@ -2,24 +2,32 @@
 
 rolter ships three ways.
 
+The unified `rolter` binary dispatches to both planes via subcommands:
+
+```bash
+rolter gateway --config rolter.toml     # data plane
+rolter control --database-url postgres://…   # control plane + UI host
+```
+
+The standalone `rolter-gateway` / `rolter-control` binaries remain available.
+
 ## cargo
 
 ```bash
-cargo install --path crates/rolter-gateway
-cargo install --path crates/rolter-control
+cargo install rolter            # unified launcher (from crates.io)
+# or from source:
+cargo install --path crates/rolter
 ```
 
 ## uv (PyPI wheel via maturin)
 
-The wheel bundles the compiled Rust binary so Python users can install the CLI with `uv`. `pyproject.toml` uses the maturin backend (`bindings = "bin"`, `manifest-path = crates/rolter-gateway/Cargo.toml`).
+The wheel bundles the compiled `rolter` launcher so Python users can install the CLI with `uv`. `pyproject.toml` uses the maturin backend (`bindings = "bin"`, `manifest-path = crates/rolter/Cargo.toml`).
 
 ```bash
 uv tool install maturin       # one-time
 uvx maturin build --release   # build a wheel into target/wheels/
 uv tool install rolter        # once published to PyPI
 ```
-
-> Note: the wheel currently exposes `rolter-gateway`. A unified `rolter` launcher that dispatches `gateway`/`control` subcommands (so one wheel ships both) is tracked in `TODO.md`.
 
 ## Docker
 

@@ -1652,6 +1652,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rolter"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rolter-control",
+ "rolter-core",
+ "rolter-gateway",
+ "tokio",
+]
+
+[[package]]
 name = "rolter-auth"
 version = "0.0.2"
 dependencies = [

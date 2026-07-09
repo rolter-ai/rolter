@@ -8,6 +8,7 @@ members = [
     "crates/rolter-auth",
     "crates/rolter-gateway",
     "crates/rolter-control",
+    "crates/rolter",
 ]
 
 [workspace.package]
@@ -79,6 +80,8 @@ rolter-balancer = { path = "crates/rolter-balancer", version = "0.0.2" }
 rolter-proxy = { path = "crates/rolter-proxy", version = "0.0.2" }
 rolter-store = { path = "crates/rolter-store", version = "0.0.2" }
 rolter-auth = { path = "crates/rolter-auth", version = "0.0.2" }
+rolter-gateway = { path = "crates/rolter-gateway", version = "0.0.2" }
+rolter-control = { path = "crates/rolter-control", version = "0.0.2" }
 
 [profile.release]
 opt-level = 3
