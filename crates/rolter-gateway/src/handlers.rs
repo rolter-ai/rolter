@@ -11,11 +11,10 @@ use chrono::Utc;
 use serde_json::{json, Value};
 
 use rolter_balancer::RouteContext;
-use rolter_core::VirtualKeyConfig;
 
 use crate::fake_llm;
 use crate::logging::RequestLog;
-use crate::state::{AppState, Snapshot};
+use crate::state::{AppState, KeyMeta, Snapshot};
 
 /// Liveness probe.
 pub async fn healthz() -> &'static str {
@@ -106,7 +105,7 @@ fn authenticate(
     state: &AppState,
     snap: &Snapshot,
     headers: &HeaderMap,
-) -> Result<Option<VirtualKeyConfig>, Response> {
+) -> Result<Option<KeyMeta>, Response> {
     if snap.keys.is_empty() {
         return Ok(None);
     }
@@ -232,6 +231,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         .to_string();
     let provider_name = target.provider.clone();
     let target_label = target.model.clone().unwrap_or_else(|| model.clone());
+    // scope identity for log attribution (empty for config-defined keys)
+    let (vk_id, org_id, team_id, project_id) = vk
+        .as_ref()
+        .map(|v| {
+            (
+                v.id.clone(),
+                v.org_id.clone(),
+                v.team_id.clone(),
+                v.project_id.clone(),
+            )
+        })
+        .unwrap_or_default();
 
     match state
         .forwarder
@@ -251,6 +262,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             let price = snap.prices.get(&model).cloned();
             let log = RequestLog {
                 request_id,
+                virtual_key_id: vk_id,
+                org_id,
+                team_id,
+                project_id,
                 model,
                 provider: provider_name,
                 target: target_label,
@@ -265,6 +280,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             let message = err.to_string();
             state.log.log(RequestLog {
                 request_id,
+                virtual_key_id: vk_id,
+                org_id,
+                team_id,
+                project_id,
                 model,
                 provider: provider_name,
                 target: target_label,
@@ -324,7 +343,9 @@ mod tests {
     use axum::extract::State;
     use axum::http::HeaderValue;
 
-    use rolter_core::{BalancingStrategy, GatewayConfig, ModelRoute, Target, VirtualKeyConfig};
+    use rolter_core::{
+        BalancingStrategy, GatewayConfig, ModelRoute, Target, VirtualKeyConfig, VirtualKeyRecord,
+    };
 
     use super::*;
 
@@ -459,6 +480,43 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.virtual_keys.push(vk);
         config
+    }
+
+    #[tokio::test]
+    async fn db_virtual_key_authenticates_by_digest_with_scope() {
+        // a database-defined key: gateway stores the pre-computed digest and the
+        // scope identity, never the plaintext
+        let mut config = GatewayConfig::default();
+        let pepper = config.server.resolve_key_pepper();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(&pepper, "sk-db-key"),
+            id: "vk-1".to_string(),
+            org_id: "org-1".to_string(),
+            team_id: "team-1".to_string(),
+            project_id: "proj-1".to_string(),
+            models: vec![],
+            disabled: false,
+            expires_at: None,
+        });
+        let state = AppState::new(&config);
+
+        // the right plaintext authenticates
+        let resp = list_models(State(state.clone()), bearer("sk-db-key")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // a wrong key does not
+        let resp = list_models(State(state.clone()), bearer("sk-wrong")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // the snapshot carries scope identity, indexed by digest not plaintext
+        let snap = state.snapshot.load();
+        assert!(!snap.keys.contains_key("sk-db-key"));
+        let meta = snap
+            .keys
+            .get(&rolter_auth::hash_key(&snap.pepper, "sk-db-key"))
+            .expect("db key present by digest");
+        assert_eq!(meta.id, "vk-1");
+        assert_eq!(meta.org_id, "org-1");
+        assert_eq!(meta.project_id, "proj-1");
     }
 
     #[tokio::test]

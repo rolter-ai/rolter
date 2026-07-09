@@ -9,7 +9,7 @@ pub mod telemetry;
 
 pub use config::{
     BalancingStrategy, GatewayConfig, LoggingConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
-    ProviderKind, ServerConfig, Target, VirtualKeyConfig,
+    ProviderKind, ServerConfig, Target, VirtualKeyConfig, VirtualKeyRecord,
 };
 pub use error::{Error, Result};
 

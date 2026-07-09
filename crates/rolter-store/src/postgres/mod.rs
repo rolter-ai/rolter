@@ -4,9 +4,10 @@ pub mod models;
 pub mod repo;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use rolter_core::{
     BalancingStrategy, Error, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
-    ProviderKind, Result, Target,
+    ProviderKind, Result, Target, VirtualKeyRecord,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
@@ -83,6 +84,18 @@ struct TargetRow {
     weight: i32,
 }
 
+#[derive(FromRow)]
+struct VirtualKeyRow {
+    id: Uuid,
+    key_hash: String,
+    models: Vec<String>,
+    disabled: bool,
+    expires_at: Option<DateTime<Utc>>,
+    project_id: Uuid,
+    team_id: Uuid,
+    org_id: Uuid,
+}
+
 fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
     Ok(match s {
         "round_robin" => BalancingStrategy::RoundRobin,
@@ -99,13 +112,13 @@ fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
 }
 
 /// A [`ConfigStore`] backed by Postgres. `load` composes a [`GatewayConfig`]
-/// from the `providers` and `routes`/`route_targets` tables.
+/// from the `providers`, `routes`/`route_targets`, `model_prices` and
+/// `virtual_keys` tables.
 ///
-/// Virtual keys are intentionally **not** reconstructed here: `virtual_keys`
-/// stores only a one-way hash of each key (`key_hash`), so the plaintext
-/// needed to populate [`rolter_core::VirtualKeyConfig::key`] cannot be
-/// recovered from the database. Hash-based key verification in the gateway
-/// request path is tracked separately (virtual-key hardening).
+/// Virtual keys are exposed as [`rolter_core::VirtualKeyRecord`]s carrying only
+/// the one-way `key_hash` plus scope identity — never the plaintext. Since the
+/// gateway authenticates by peppered digest, the stored hash is sufficient to
+/// verify presented keys (the control plane must hash with the same pepper).
 pub struct PostgresConfigStore {
     pool: PgPool,
 }
@@ -163,6 +176,36 @@ impl PostgresConfigStore {
             .collect()
     }
 
+    /// Load database-defined virtual keys with their resolved scope chain
+    /// (project → team → org). Only the one-way `key_hash` is exposed; the
+    /// gateway matches presented keys against it by peppered digest.
+    async fn load_virtual_keys(&self) -> Result<Vec<VirtualKeyRecord>> {
+        let rows: Vec<VirtualKeyRow> = sqlx::query_as(
+            "select vk.id, vk.key_hash, vk.models, vk.disabled, vk.expires_at, \
+                    vk.project_id, p.team_id, t.org_id \
+             from virtual_keys vk \
+             join projects p on p.id = vk.project_id \
+             join teams t on t.id = p.team_id \
+             order by vk.created_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| VirtualKeyRecord {
+                key_hash: r.key_hash,
+                id: r.id.to_string(),
+                org_id: r.org_id.to_string(),
+                team_id: r.team_id.to_string(),
+                project_id: r.project_id.to_string(),
+                models: r.models,
+                disabled: r.disabled,
+                expires_at: r.expires_at,
+            })
+            .collect())
+    }
+
     async fn load_model_prices(&self) -> Result<Vec<ModelPriceConfig>> {
         let rows: Vec<ModelPrice> = sqlx::query_as(
             "select id, model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency, created_at
@@ -200,10 +243,12 @@ impl ConfigStore for PostgresConfigStore {
         let providers = self.load_providers().await?;
         let routes = self.load_routes().await?;
         let model_prices = self.load_model_prices().await?;
+        let db_virtual_keys = self.load_virtual_keys().await?;
         Ok(GatewayConfig {
             providers,
             routes,
             model_prices,
+            db_virtual_keys,
             ..GatewayConfig::default()
         })
     }

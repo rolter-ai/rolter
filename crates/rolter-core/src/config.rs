@@ -15,6 +15,10 @@ pub struct GatewayConfig {
     pub routes: Vec<ModelRoute>,
     #[serde(default)]
     pub virtual_keys: Vec<VirtualKeyConfig>,
+    /// database-defined virtual keys, carried as peppered digests plus scope
+    /// identity (never plaintext). composed from the store, not the toml
+    #[serde(default)]
+    pub db_virtual_keys: Vec<VirtualKeyRecord>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     #[serde(default)]
@@ -164,6 +168,34 @@ pub struct VirtualKeyConfig {
 
 impl VirtualKeyConfig {
     /// Whether the key may authenticate at `now`: not disabled and not expired.
+    pub fn is_active(&self, now: DateTime<Utc>) -> bool {
+        !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
+    }
+}
+
+/// A database-defined virtual key as seen by the gateway: the peppered digest
+/// (never the plaintext) plus the scope identity used for log attribution,
+/// budgets and rate limits.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VirtualKeyRecord {
+    /// `rolter_auth::hash_key(pepper, key)` — how the gateway looks the key up
+    pub key_hash: String,
+    pub id: String,
+    #[serde(default)]
+    pub org_id: String,
+    #[serde(default)]
+    pub team_id: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl VirtualKeyRecord {
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
     }
