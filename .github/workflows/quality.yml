@@ -13,6 +13,12 @@ name: quality
 on:
   workflow_call:
 
+# least-privilege GITHUB_TOKEN: every job here only reads the checked-out repo.
+# a reusable workflow cannot exceed the caller's grant, but declaring it here
+# keeps the default scope tight and satisfies the CodeQL actions query.
+permissions:
+  contents: read
+
 # faster linking on the linux runner; writes ~/.cargo/config.toml to use the
 # wild linker for *-unknown-linux-{gnu,musl}. pinned to the 0.9.0 commit sha.
 env:
