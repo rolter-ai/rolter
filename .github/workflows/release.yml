@@ -92,6 +92,11 @@ jobs:
       - name: build wheels (linux aarch64)
         if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
+        env:
+          # the manylinux2014 aarch64 cross toolchain drives ring's perlasm
+          # through a gas that doesn't predefine __ARM_ARCH, so ring's build
+          # aborts ("ARM assembler must define __ARM_ARCH"); define it here
+          CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
         with:
           command: build
           args: --release --out dist --manifest-path crates/rolter/Cargo.toml
