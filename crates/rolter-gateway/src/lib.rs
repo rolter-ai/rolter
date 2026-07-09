@@ -11,6 +11,7 @@ mod budgets;
 mod cooldowns;
 mod fake_llm;
 mod handlers;
+mod load;
 mod logging;
 mod metrics;
 mod rate_limits;

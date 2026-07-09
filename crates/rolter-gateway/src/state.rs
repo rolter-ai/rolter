@@ -147,6 +147,8 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     /// per-target cooldown registry, shared across requests and config reloads
     pub cooldowns: crate::cooldowns::Cooldowns,
+    /// per-target in-flight load counters feeding the balancer
+    pub loads: crate::load::LoadTracker,
 }
 
 impl AppState {
@@ -202,6 +204,7 @@ impl AppState {
             budgets,
             rate_limiter,
             cooldowns: crate::cooldowns::Cooldowns::new(),
+            loads: crate::load::LoadTracker::new(),
         }
     }
 
