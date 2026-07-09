@@ -18,7 +18,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[routes]]`
 - `model` (string) — public model name clients request
-- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware`, default `round_robin`)
+- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline`, default `round_robin`)
 - `[[routes.targets]]`
   - `provider` (string) — a provider `name`
   - `model` (string, optional) — upstream model id; defaults to the requested model

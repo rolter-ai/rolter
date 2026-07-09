@@ -144,6 +144,9 @@ pub enum BalancingStrategy {
     CacheAware,
     /// smooth weighted round-robin honouring each target's `weight`
     Weighted,
+    /// composable filter → weighted-score → argmax pipeline (static weight +
+    /// in-flight load + prefix-cache affinity scorers)
+    Pipeline,
 }
 
 /// A single upstream target within a route.

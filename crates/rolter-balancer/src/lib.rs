@@ -51,6 +51,7 @@ pub fn build(strategy: BalancingStrategy, weights: &[u32]) -> Box<dyn LoadBalanc
         BalancingStrategy::ConsistentHash => Box::new(ConsistentHash::new(n)),
         BalancingStrategy::CacheAware => Box::new(CacheAware::new(n, 0.5)),
         BalancingStrategy::Weighted => Box::new(WeightedRoundRobin::new(weights)),
+        BalancingStrategy::Pipeline => Box::new(scorer::Pipeline::default_stack(weights)),
     }
 }
 
@@ -416,6 +417,21 @@ mod tests {
     #[test]
     fn weighted_empty_returns_none() {
         let lb = build(BalancingStrategy::Weighted, &[]);
+        assert_eq!(lb.pick(&RouteContext::default(), &[]), None);
+    }
+
+    #[test]
+    fn pipeline_strategy_picks_least_loaded() {
+        let lb = build(BalancingStrategy::Pipeline, &[1, 1, 1]);
+        assert_eq!(lb.name(), "pipeline");
+        // load scorer favours the idle target 1; equal weights, no prompt
+        let got = lb.pick(&RouteContext::default(), &[9, 0, 4]);
+        assert_eq!(got, Some(1));
+    }
+
+    #[test]
+    fn pipeline_strategy_empty_returns_none() {
+        let lb = build(BalancingStrategy::Pipeline, &[]);
         assert_eq!(lb.pick(&RouteContext::default(), &[]), None);
     }
 }
