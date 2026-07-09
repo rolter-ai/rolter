@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rolter"
-# version is read from crates/rolter-gateway/Cargo.toml by maturin so release-plz
+# version is read from crates/rolter/Cargo.toml by maturin so release-plz
 # (which bumps the cargo workspace version) keeps the wheel version in sync.
 dynamic = ["version"]
 description = "high-performance openai/anthropic-compatible llm proxy and load balancer"
@@ -18,9 +18,9 @@ Repository = "https://github.com/ormeilu/rolter"
 
 # maturin builds the rust binary into the wheel so `uv tool install rolter`
 # exposes the cli. install maturin first with `uv tool install maturin`.
-# note: the wheel currently ships `rolter-gateway`; a unified `rolter` launcher
-# that dispatches gateway/control subcommands is tracked in TODO.md.
+# the wheel ships the unified `rolter` launcher, which dispatches the
+# `gateway` and `control` subcommands.
 [tool.maturin]
 bindings = "bin"
-manifest-path = "crates/rolter-gateway/Cargo.toml"
+manifest-path = "crates/rolter/Cargo.toml"
 strip = true

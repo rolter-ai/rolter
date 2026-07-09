@@ -31,17 +31,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # on merge of the release PR: tags `v{version}` and creates the github
-  # release. cargo publish is disabled via `publish = false` in
-  # release-plz.toml until the workspace is bootstrap-published to crates.io
-  # (a first publish fails manifest verification because inter-crate deps
-  # resolve against crates.io, where nothing exists yet) and the ROL-103
-  # publish gate is in place — both tracked in Linear (Phase 9). The pushed
-  # tag triggers release.yml, whose pypi publish step is gated behind the
-  # PYPI_PUBLISH_ENABLED repo variable.
+  # on merge of the release PR: publishes every workspace member to crates.io
+  # in dependency order (`publish = true` in release-plz.toml, using
+  # CARGO_REGISTRY_TOKEN), tags `v{version}` and creates the github release.
+  # the pushed tag triggers release.yml, whose pypi publish step is gated
+  # behind the PYPI_PUBLISH_ENABLED repo variable.
   # same quality/security gate as CI, on the merge commit that would be
-  # tagged/published. release-plz-release needs this so cargo publish (once
-  # re-enabled) cannot run on an unverified commit (ROL-103).
+  # tagged/published. release-plz-release needs this so cargo publish cannot
+  # run on an unverified commit (ROL-103).
   verify:
     uses: ./.github/workflows/quality.yml
 
@@ -60,3 +57,4 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
