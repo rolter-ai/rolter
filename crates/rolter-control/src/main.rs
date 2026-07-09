@@ -5,6 +5,7 @@
 //! in-memory store, and the role catalog; CRUD, RBAC enforcement, Postgres
 //! persistence and Redis change publication are added in later phases.
 
+mod analytics;
 #[cfg(feature = "postgres")]
 mod crud;
 
@@ -54,6 +55,10 @@ struct Args {
     /// waiting for their poll interval
     #[arg(long, env = "ROLTER_REDIS_URL")]
     redis_url: Option<String>,
+    /// clickhouse http url; when set, the dashboard usage/cost analytics
+    /// endpoints (`/api/v1/analytics/*`) query the `request_logs` table
+    #[arg(long, env = "CLICKHOUSE_URL")]
+    clickhouse_url: Option<String>,
 }
 
 /// Names owned by the bootstrap config file: immutable at runtime,
@@ -86,6 +91,9 @@ struct ControlState {
     /// published on [`rolter_core::CONFIG_CHANNEL`] (best-effort)
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     redis: Option<redis::Client>,
+    /// set when `--clickhouse-url` is configured; backs the usage/cost
+    /// analytics endpoints
+    clickhouse: Option<analytics::ClickHouseClient>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -122,6 +130,11 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    let clickhouse = args.clickhouse_url.as_deref().map(|url| {
+        tracing::info!(%url, "usage/cost analytics enabled");
+        analytics::ClickHouseClient::new(url)
+    });
+
     #[allow(unused_variables)]
     let (store, pool) = build_store(&args, bootstrap).await?;
     #[cfg(feature = "postgres")]
@@ -129,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         config_owned,
         redis,
+        clickhouse,
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -136,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         config_owned,
         redis,
+        clickhouse,
     };
 
     #[allow(unused_mut)]
@@ -147,7 +162,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/v1/roles", get(list_roles))
         .route("/api/v1/config", get(get_config))
-        .route("/internal/snapshot", get(get_snapshot));
+        .route("/internal/snapshot", get(get_snapshot))
+        .merge(analytics::router());
 
     #[cfg(feature = "postgres")]
     if pool.is_some() {
