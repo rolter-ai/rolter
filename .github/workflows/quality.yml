@@ -33,6 +33,7 @@ jobs:
       - name: cargo-deny (advisories, bans, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          # deny.toml lives under .config/; --config is a subcommand arg
+          # deny.toml lives under .config/; --config is a `check` subcommand
+          # arg, so it must go via command-arguments (placed after the command)
           command: check
-          arguments: "--config .config/deny.toml"
+          command-arguments: "--config .config/deny.toml"
