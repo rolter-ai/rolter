@@ -20,6 +20,10 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# local runtime config — copy rolter.example.toml to rolter.toml and adjust.
+# kept out of git so deployments don't clobber it and no secrets leak in
+rolter.toml
+
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
