@@ -23,6 +23,12 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
   - `provider` (string) — a provider `name`
   - `model` (string, optional) — upstream model id; defaults to the requested model
   - `weight` (u32, default `1`)
+- `[routes.params]` (table, optional) — admin default inference params injected into the request body (e.g. `temperature`, `max_tokens`, `stop`). Provider-agnostic: keys are whatever the upstream accepts. An unset param passes through untouched.
+- `[routes.param_policy]` — whether callers may override the `params` defaults
+  - `mode` (`allow` | `deny`, default `allow`) — baseline override policy
+  - `allow` (string[], default `[]`) — params callers may override when `mode = "deny"`
+  - `deny` (string[], default `[]`) — params callers may not override when `mode = "allow"`
+  - when an override is denied and the caller sends the param anyway, the admin default silently wins
 
 ### `[[virtual_keys]]`
 - `key` (string) — the bearer token clients present

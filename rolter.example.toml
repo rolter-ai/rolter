@@ -40,6 +40,17 @@ api_base = "http://localhost:8002"
 [[routes]]
 model = "gpt-4o"
 strategy = "round_robin"
+# admin-set default inference params injected into the request body. an unset
+# param passes through untouched. param_policy governs whether callers may
+# override a default: mode "allow" (default) lets callers override anything not
+# in `deny`; mode "deny" pins every default except those in `allow`. when an
+# override is denied the admin default silently wins.
+# [routes.params]
+# temperature = 0.0        # force deterministic output for this model
+# max_tokens = 1024        # cap output length
+# [routes.param_policy]
+# mode = "deny"
+# allow = ["max_tokens"]   # callers may still lower max_tokens
 [[routes.targets]]
 provider = "openai"
 model = "gpt-4o"
