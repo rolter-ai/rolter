@@ -178,24 +178,26 @@ jobs:
             -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
             | grep -q 'data:'
 
-  # ── informational checks ────────────────────────────────────────────────────
-  # non-blocking for now (continue-on-error); promote to required once their
-  # baseline is understood. see the required-checks policy in ROL-124.
+  # ── spelling: docs / comments / identifiers ─────────────────────────────────
+  # false positives are pinned in _typos.toml with an explaining comment each.
   typos:
-    name: typos (informational)
+    name: typos
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: crate-ci/typos@master
 
+  # ── unused dependencies ─────────────────────────────────────────────────────
   machete:
-    name: unused deps (informational)
+    name: unused deps
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: bnjbvr/cargo-machete@main
+
+  # ── informational checks ────────────────────────────────────────────────────
+  # non-blocking for now (continue-on-error); promote to required once their
+  # baseline is understood. see the required-checks policy in ROL-124.
 
   coverage:
     name: coverage (informational)

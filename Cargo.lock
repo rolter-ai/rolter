@@ -1716,7 +1716,6 @@ dependencies = [
  "rolter-store",
  "serde",
  "serde_json",
- "sha2",
  "sqlx",
  "tokio",
  "tower-http",
@@ -1730,10 +1729,8 @@ version = "0.0.3"
 dependencies = [
  "chrono",
  "serde",
- "serde_json",
  "thiserror",
  "toml",
- "tracing",
  "tracing-subscriber",
 ]
 
