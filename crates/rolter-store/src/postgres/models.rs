@@ -50,7 +50,7 @@ pub struct Route {
     pub id: Uuid,
     pub project_id: Uuid,
     pub model: String,
-    /// one of `round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware`
+    /// one of `round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted`
     pub strategy: String,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,

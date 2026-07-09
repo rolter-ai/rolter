@@ -136,6 +136,8 @@ pub enum BalancingStrategy {
     PowerOfTwo,
     ConsistentHash,
     CacheAware,
+    /// smooth weighted round-robin honouring each target's `weight`
+    Weighted,
 }
 
 /// A single upstream target within a route.

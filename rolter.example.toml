@@ -62,6 +62,20 @@ model = "meta-llama/Llama-3.1-8B-Instruct"
 provider = "vllm-2"
 model = "meta-llama/Llama-3.1-8B-Instruct"
 
+# weighted routing: send 3x as much traffic to the first target as the second
+# (smooth weighted round-robin — proportional but evenly interleaved)
+[[routes]]
+model = "llama-weighted"
+strategy = "weighted"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 3
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
 

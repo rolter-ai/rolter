@@ -805,7 +805,7 @@ mod tests {
             ],
         };
         let entry = crate::state::RouteEntry {
-            balancer: rolter_balancer::build(route.strategy, route.targets.len()),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
             route,
         };
         let ctx = RouteContext::default();
@@ -840,7 +840,7 @@ mod tests {
             ],
         };
         let entry = crate::state::RouteEntry {
-            balancer: rolter_balancer::build(route.strategy, route.targets.len()),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
             route,
         };
         let ctx = RouteContext::default();
