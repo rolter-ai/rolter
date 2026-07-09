@@ -27,6 +27,9 @@ pub struct GatewayConfig {
     /// request/token throughput caps enforced against a Redis sliding window
     #[serde(default)]
     pub rate_limits: Vec<RateLimitConfig>,
+    /// upstream retry policy for transient failures (408/429/5xx, connect errors)
+    #[serde(default)]
+    pub retry: RetryConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -316,6 +319,62 @@ pub struct RateLimitConfig {
     pub tpm: Option<u32>,
 }
 
+/// Upstream retry policy. On a transient upstream failure (HTTP 408/429/5xx or a
+/// connection error) the gateway re-picks a target (excluding ones already tried,
+/// so retries fail over to sibling targets when available) and forwards again,
+/// up to `max_retries` extra attempts. Backoff is exponential with full jitter
+/// between `base_backoff_ms` and `max_backoff_ms`; a 429 `Retry-After` header
+/// overrides the computed delay. Retries only happen before any body bytes have
+/// been streamed to the client, so no partial response is ever duplicated.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RetryConfig {
+    /// extra attempts after the first (0 disables retries)
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// base backoff in milliseconds for the first retry
+    #[serde(default = "default_base_backoff_ms")]
+    pub base_backoff_ms: u64,
+    /// ceiling for the backoff delay in milliseconds
+    #[serde(default = "default_max_backoff_ms")]
+    pub max_backoff_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            base_backoff_ms: default_base_backoff_ms(),
+            max_backoff_ms: default_max_backoff_ms(),
+        }
+    }
+}
+
+fn default_max_retries() -> u32 {
+    2
+}
+
+fn default_base_backoff_ms() -> u64 {
+    100
+}
+
+fn default_max_backoff_ms() -> u64 {
+    2_000
+}
+
+impl RetryConfig {
+    /// Backoff delay in milliseconds for retry `attempt` (1-based), exponential
+    /// with full jitter capped at `max_backoff_ms`. `rand01` is a uniform sample
+    /// in `[0, 1)` supplied by the caller (keeps this pure and testable).
+    pub fn backoff_ms(&self, attempt: u32, rand01: f64) -> u64 {
+        let exp = self
+            .base_backoff_ms
+            .saturating_mul(1u64 << attempt.min(16).saturating_sub(1));
+        let capped = exp.min(self.max_backoff_ms);
+        // full jitter: sleep a random amount in [0, capped]
+        (capped as f64 * rand01.clamp(0.0, 1.0)) as u64
+    }
+}
+
 /// Where request and cost logs are written.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
@@ -504,5 +563,18 @@ mod tests {
         };
         // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
         assert!((price.cost_usd(1000, 0, 400) - 0.0014).abs() < 1e-12);
+    }
+
+    #[test]
+    fn retry_defaults_and_backoff() {
+        let r = RetryConfig::default();
+        assert_eq!(r.max_retries, 2);
+        // attempt 1: base 100, full jitter -> [0, 100]
+        assert_eq!(r.backoff_ms(1, 1.0), 100);
+        assert_eq!(r.backoff_ms(1, 0.0), 0);
+        // attempt 2: 200 exp; half jitter -> 100
+        assert_eq!(r.backoff_ms(2, 0.5), 100);
+        // exponential growth is capped at max_backoff_ms
+        assert_eq!(r.backoff_ms(10, 1.0), 2_000);
     }
 }

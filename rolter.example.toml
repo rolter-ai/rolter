@@ -103,6 +103,17 @@ disabled = false               # revoke without deleting
 # rpm = 600            # requests per minute; omit to leave requests uncapped
 # tpm = 150000         # tokens per minute; omit to leave tokens uncapped
 
+# --- upstream retry policy ---
+# on a transient upstream failure (http 408/429/5xx or a connection error) the
+# gateway re-picks a target (excluding ones already tried, so retries fail over
+# to sibling targets) and forwards again. backoff is exponential with jitter; a
+# 429 retry-after header (whole seconds) overrides the computed delay. retries
+# only happen before any body bytes reach the client. defaults shown below.
+# [retry]
+# max_retries = 2         # extra attempts after the first; 0 disables retries
+# base_backoff_ms = 100   # base delay for the first retry
+# max_backoff_ms = 2000   # ceiling for the backoff delay
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
