@@ -31,11 +31,11 @@ uv tool install rolter        # once published to PyPI
 
 ## Docker
 
-Multi-stage `Dockerfile` builds the Rust binaries and the Bun-built UI, then assembles a slim runtime:
+Multi-stage `docker/Dockerfile` builds the Rust binaries and the Bun-built UI, then assembles a slim runtime:
 
 ```bash
-docker build -t rolter:dev .
-docker compose up -d          # full stack with postgres/redis/clickhouse
+docker build -f docker/Dockerfile -t rolter:dev .
+docker compose -f docker/docker-compose.yml up -d          # full stack with postgres/redis/clickhouse
 ```
 
 ## Releasing (roadmap)

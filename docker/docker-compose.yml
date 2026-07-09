@@ -12,7 +12,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
+      - ../migrations:/docker-entrypoint-initdb.d
 
   redis:
     image: redis:8-alpine
@@ -28,7 +28,7 @@ services:
       - "9000:9000"
     volumes:
       - chdata:/var/lib/clickhouse
-      - ./clickhouse:/docker-entrypoint-initdb.d
+      - ../clickhouse:/docker-entrypoint-initdb.d
     ulimits:
       nofile:
         soft: 262144
@@ -36,7 +36,8 @@ services:
 
   gateway:
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       target: runtime
     restart: unless-stopped
     command: ["rolter-gateway", "--config", "/app/rolter.toml"]
@@ -52,7 +53,8 @@ services:
 
   control:
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       target: runtime
     restart: unless-stopped
     command: ["rolter-control"]

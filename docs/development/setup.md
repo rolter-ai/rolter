@@ -35,7 +35,7 @@ cd ui && bun install && bun run dev  # http://localhost:3000 (proxies /api -> :4
 ## Run the full stack
 
 ```bash
-docker compose up -d                 # postgres, redis, clickhouse, gateway, control
+docker compose -f docker/docker-compose.yml up -d                 # postgres, redis, clickhouse, gateway, control
 ```
 
 ## Handy tasks

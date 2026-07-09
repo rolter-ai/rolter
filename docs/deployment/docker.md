@@ -2,12 +2,12 @@
 
 ## Compose (full stack)
 
-`docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services.
+`docker/docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services.
 
 ```bash
 cp .env.example .env            # set OPENAI_API_KEY etc.
-docker compose up -d
-docker compose logs -f gateway
+docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml logs -f gateway
 ```
 
 - Gateway: http://localhost:4000
@@ -18,10 +18,10 @@ DB schemas auto-apply on first start (`migrations/` → Postgres initdb, `clickh
 
 ## Image
 
-The multi-stage `Dockerfile` produces a slim Debian runtime with both binaries and the built UI at `/app/ui/dist`.
+The multi-stage `docker/Dockerfile` produces a slim Debian runtime with both binaries and the built UI at `/app/ui/dist`.
 
 ```bash
-docker build -t rolter:dev .
+docker build -f docker/Dockerfile -t rolter:dev .
 docker run --rm -p 4000:4000 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   -v "$PWD/rolter.toml:/app/rolter.toml" \
