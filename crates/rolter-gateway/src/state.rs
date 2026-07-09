@@ -5,9 +5,10 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build, LoadBalancer};
-use rolter_core::{GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig};
+use rolter_core::{BudgetConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig};
 use rolter_proxy::Forwarder;
 
+use crate::budgets::BudgetEnforcer;
 use crate::logging::LogSink;
 use crate::metrics::Metrics;
 
@@ -50,6 +51,8 @@ pub struct Snapshot {
     pub pepper: String,
     /// per-model token pricing, keyed by public model name
     pub prices: HashMap<String, ModelPriceConfig>,
+    /// spend caps to enforce, shared cheaply with per-request spend recorders
+    pub budgets: Arc<Vec<BudgetConfig>>,
 }
 
 impl Snapshot {
@@ -113,6 +116,7 @@ impl Snapshot {
             keys,
             pepper,
             prices,
+            budgets: Arc::new(config.budgets.clone()),
         }
     }
 }
@@ -124,21 +128,24 @@ pub struct AppState {
     pub forwarder: Arc<Forwarder>,
     pub metrics: Arc<Metrics>,
     pub log: LogSink,
+    /// enforces spend caps against Redis; disabled when no redis url is set
+    pub budgets: BudgetEnforcer,
 }
 
 impl AppState {
-    /// Build state with logging disabled. Used by tests and any caller that
-    /// does not need the ClickHouse writer.
+    /// Build state with logging and budget enforcement disabled. Used by tests
+    /// and any caller that does not need the ClickHouse writer or Redis.
     #[cfg(test)]
     pub fn new(config: &GatewayConfig) -> Self {
         let metrics = Arc::new(Metrics::default());
         let log = LogSink::disabled(metrics.clone());
-        Self::assemble(config, metrics, log)
+        Self::assemble(config, metrics, log, BudgetEnforcer::disabled())
     }
 
     /// Build state and, when a `clickhouse_url` is configured, spawn the async
-    /// batched log writer. Must be called from within a Tokio runtime.
-    pub fn with_logging(config: &GatewayConfig) -> Self {
+    /// batched log writer. When `redis_url` is set, budget enforcement is backed
+    /// by that Redis. Must be called from within a Tokio runtime.
+    pub fn with_logging(config: &GatewayConfig, redis_url: Option<&str>) -> Self {
         let metrics = Arc::new(Metrics::default());
         let log = match &config.logging.clickhouse_url {
             Some(url) => LogSink::spawn(
@@ -150,15 +157,25 @@ impl AppState {
             ),
             None => LogSink::disabled(metrics.clone()),
         };
-        Self::assemble(config, metrics, log)
+        let budgets = match redis_url {
+            Some(url) => BudgetEnforcer::new(url),
+            None => BudgetEnforcer::disabled(),
+        };
+        Self::assemble(config, metrics, log, budgets)
     }
 
-    fn assemble(config: &GatewayConfig, metrics: Arc<Metrics>, log: LogSink) -> Self {
+    fn assemble(
+        config: &GatewayConfig,
+        metrics: Arc<Metrics>,
+        log: LogSink,
+        budgets: BudgetEnforcer,
+    ) -> Self {
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config))),
             forwarder: Arc::new(Forwarder::new()),
             metrics,
             log,
+            budgets,
         }
     }
 
