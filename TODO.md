@@ -55,7 +55,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Usage/cost aggregation queries for the dashboard
 
 ## Phase 5 — Reliability
-- [ ] Retries (backoff + jitter) on 408/429/5xx, configurable
+- [x] Retries (backoff + jitter) on 408/429/5xx, configurable
 - [ ] Circuit breaker per target (closed/open/half-open)
 - [ ] Cooldowns on rate-limited targets
 - [ ] Upstream health checks; skip unhealthy targets

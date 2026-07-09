@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use rolter_balancer::{build, LoadBalancer};
 use rolter_core::{
     BudgetConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig, RateLimitConfig,
+    RetryConfig,
 };
 use rolter_proxy::Forwarder;
 
@@ -58,6 +59,8 @@ pub struct Snapshot {
     pub budgets: Arc<Vec<BudgetConfig>>,
     /// throughput caps to enforce, shared cheaply with per-request recorders
     pub rate_limits: Arc<Vec<RateLimitConfig>>,
+    /// upstream retry policy applied on transient failures
+    pub retry: RetryConfig,
 }
 
 impl Snapshot {
@@ -123,6 +126,7 @@ impl Snapshot {
             prices,
             budgets: Arc::new(config.budgets.clone()),
             rate_limits: Arc::new(config.rate_limits.clone()),
+            retry: config.retry.clone(),
         }
     }
 }

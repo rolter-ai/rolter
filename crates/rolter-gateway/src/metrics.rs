@@ -25,6 +25,8 @@ pub struct Metrics {
     pub budget_blocks_total: AtomicU64,
     /// requests rejected because a matching rpm/tpm rate limit was exhausted
     pub rate_limit_blocks_total: AtomicU64,
+    /// upstream attempts retried after a transient failure (408/429/5xx/connect)
+    pub retries_total: AtomicU64,
 }
 
 impl Metrics {
@@ -100,6 +102,13 @@ impl Metrics {
             "rolter_rate_limit_blocks_total",
             "requests rejected due to an exhausted rate limit",
             self.rate_limit_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_retries_total",
+            "upstream attempts retried after a transient failure",
+            self.retries_total.load(Relaxed),
         );
         out
     }

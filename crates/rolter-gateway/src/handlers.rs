@@ -1,5 +1,7 @@
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use tokio::time::sleep;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -227,40 +229,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
 
-    // scope the body borrow so the bytes can be moved into the forwarder after
-    let picked = {
-        let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-        let prompt = std::str::from_utf8(&body).ok();
-        let ctx = RouteContext {
-            session_key,
-            prompt,
-        };
-        let idx = entry.balancer.pick(&ctx, &[]);
-        if let Some(i) = idx {
-            entry.balancer.observe(i, &ctx);
-        }
-        idx
-    };
-    let idx = match picked {
-        Some(i) => i,
-        None => return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
-    };
-
-    let target = &entry.route.targets[idx];
-    let provider = match snap.providers.get(&target.provider) {
-        Some(provider) => provider,
-        None => {
-            return error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "configured target provider not found",
-            )
-        }
-    };
-
-    let api_key = provider.resolve_api_key();
-    let upstream_model = target.model.as_deref();
-
-    // capture log fields before `body` is moved into the forwarder
+    // capture log fields independent of the chosen target
     let stream = parsed
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -270,8 +239,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let provider_name = target.provider.clone();
-    let target_label = target.model.clone().unwrap_or_else(|| model.clone());
     // scope identity for log attribution (empty for config-defined keys)
     let (vk_id, org_id, team_id, project_id) = (
         scope.key.clone(),
@@ -287,23 +254,98 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     );
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
+    let price = snap.prices.get(&model).cloned();
 
-    match state
-        .forwarder
-        .forward_json(provider, path, body, api_key.as_deref(), upstream_model)
-        .await
-    {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            let is_sse = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|ct| ct.contains("event-stream"))
-                .unwrap_or(false);
-            // token counts, latency and ttft are filled by the stream wrapper
-            // once the body has been fully forwarded to the client
-            let price = snap.prices.get(&model).cloned();
+    let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
+    let prompt = std::str::from_utf8(&body).ok();
+    let ctx = RouteContext {
+        session_key,
+        prompt,
+    };
+
+    // pick a target and forward, retrying transient failures on a fresh target
+    // (exponential backoff + jitter). retries happen before any body bytes reach
+    // the client, so a partial response is never duplicated.
+    let retry = &snap.retry;
+    let mut tried: Vec<usize> = Vec::new();
+    let mut last_provider = String::new();
+    let mut last_target = model.clone();
+    let mut last_error: Option<String> = None;
+    let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+
+    for attempt in 0..=retry.max_retries {
+        let idx = match pick_untried(entry, &ctx, &tried) {
+            Some(i) => i,
+            None => break, // no untried target left to fail over to
+        };
+        entry.balancer.observe(idx, &ctx);
+        tried.push(idx);
+
+        let target = &entry.route.targets[idx];
+        let provider = match snap.providers.get(&target.provider) {
+            Some(provider) => provider,
+            None => {
+                last_error = Some("configured target provider not found".to_string());
+                break;
+            }
+        };
+        last_provider = target.provider.clone();
+        last_target = target.model.clone().unwrap_or_else(|| model.clone());
+        let api_key = provider.resolve_api_key();
+        let upstream_model = target.model.as_deref();
+
+        match state
+            .forwarder
+            .forward_json(
+                provider,
+                path,
+                body.clone(),
+                api_key.as_deref(),
+                upstream_model,
+            )
+            .await
+        {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if is_retryable_status(status) && attempt < retry.max_retries {
+                    state.metrics.retries_total.fetch_add(1, Relaxed);
+                    sleep(Duration::from_millis(retry_delay_ms(
+                        retry,
+                        &response,
+                        attempt + 1,
+                        started,
+                    )))
+                    .await;
+                    continue;
+                }
+                let is_sse = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|ct| ct.contains("event-stream"))
+                    .unwrap_or(false);
+                outcome = Some((response, status, is_sse));
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err.to_string());
+                if attempt < retry.max_retries {
+                    state.metrics.retries_total.fetch_add(1, Relaxed);
+                    sleep(Duration::from_millis(
+                        retry.backoff_ms(attempt + 1, jitter(started)),
+                    ))
+                    .await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    match outcome {
+        // token counts, latency and ttft are filled by the stream wrapper once
+        // the body has been fully forwarded to the client
+        Some((response, status, is_sse)) => {
             let log = RequestLog {
                 request_id,
                 virtual_key_id: vk_id,
@@ -311,8 +353,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 team_id,
                 project_id,
                 model,
-                provider: provider_name,
-                target: target_label,
+                provider: last_provider,
+                target: last_target,
                 status,
                 stream: stream as u8,
                 ..Default::default()
@@ -328,9 +370,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 token_recorder,
             )
         }
-        Err(err) => {
+        None => {
+            // no attempt ever reached an upstream: the balancer had no target
+            if last_error.is_none() {
+                return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
+            }
             state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-            let message = err.to_string();
+            let message = last_error.unwrap_or_default();
             state.log.log(RequestLog {
                 request_id,
                 virtual_key_id: vk_id,
@@ -338,8 +384,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 team_id,
                 project_id,
                 model,
-                provider: provider_name,
-                target: target_label,
+                provider: last_provider,
+                target: last_target,
                 status: StatusCode::BAD_GATEWAY.as_u16(),
                 stream: stream as u8,
                 latency_ms: started.elapsed().as_millis() as u32,
@@ -349,6 +395,55 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             error_json(StatusCode::BAD_GATEWAY, &message)
         }
     }
+}
+
+/// Pick a target the request has not tried yet. Honours the balancer's choice on
+/// the first attempt; when the balancer repeats an already-tried index (or has
+/// none), falls over to the first untried target for a deterministic retry.
+fn pick_untried(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext,
+    tried: &[usize],
+) -> Option<usize> {
+    if let Some(i) = entry.balancer.pick(ctx, &[]) {
+        if !tried.contains(&i) {
+            return Some(i);
+        }
+    }
+    (0..entry.route.targets.len()).find(|i| !tried.contains(i))
+}
+
+/// Whether an upstream HTTP status is worth retrying: request timeout, too many
+/// requests, or any server-side error.
+fn is_retryable_status(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
+}
+
+/// Cheap, dependency-free jitter source in `[0, 1)` derived from the request
+/// clock — good enough to decorrelate concurrent retriers.
+fn jitter(started: Instant) -> f64 {
+    (started.elapsed().subsec_nanos() % 1000) as f64 / 1000.0
+}
+
+/// Delay before the next retry. Honours a `Retry-After` (whole seconds) header on
+/// a 429, capped at 30s; otherwise falls back to exponential backoff with jitter.
+fn retry_delay_ms(
+    cfg: &rolter_core::RetryConfig,
+    response: &reqwest::Response,
+    attempt: u32,
+    started: Instant,
+) -> u64 {
+    if response.status().as_u16() == 429 {
+        if let Some(secs) = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            return (secs.saturating_mul(1000)).min(30_000);
+        }
+    }
+    cfg.backoff_ms(attempt, jitter(started))
 }
 
 /// Convert an upstream response into a streaming axum response, teeing the body
@@ -628,5 +723,47 @@ mod tests {
         assert!(snap
             .keys
             .contains_key(&rolter_auth::hash_key(&snap.pepper, "sk-gpt-only")));
+    }
+
+    #[test]
+    fn retryable_statuses() {
+        assert!(is_retryable_status(408));
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(200));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(404));
+    }
+
+    #[test]
+    fn pick_untried_fails_over_to_sibling() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![
+                Target {
+                    provider: "a".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+                Target {
+                    provider: "b".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+            ],
+        };
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, route.targets.len()),
+            route,
+        };
+        let ctx = RouteContext::default();
+        let first = pick_untried(&entry, &ctx, &[]).unwrap();
+        // with the first target excluded, the fallback must choose the other one
+        let second = pick_untried(&entry, &ctx, &[first]).unwrap();
+        assert_ne!(first, second);
+        // both tried: nothing left to fail over to
+        assert_eq!(pick_untried(&entry, &ctx, &[first, second]), None);
     }
 }
