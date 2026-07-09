@@ -187,6 +187,19 @@ disabled = false               # revoke without deleting
 # failure_threshold = 5   # consecutive failures that trip a target open; 0 disables
 # open_secs = 30          # how long a tripped target stays open before a probe
 
+# --- upstream engine metrics scrape ---
+# when enabled, a background task periodically pulls each provider's prometheus
+# {api_base}{path} and parses the scheduler queue depth (vLLM
+# num_requests_waiting, SGLang/TGI fallbacks). the depth is folded into the
+# balancer's in-flight load view so load-aware strategies (power_of_two,
+# pipeline) steer away from backed-up engines. disabled by default; a scrape
+# failure or missing metric contributes zero depth. defaults shown below.
+# [metrics_scrape]
+# enabled = false
+# interval_secs = 5    # seconds between scrape sweeps
+# timeout_secs = 2     # per-scrape timeout
+# path = "/metrics"    # appended to each provider's api_base when scraping
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
