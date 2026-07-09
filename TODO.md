@@ -56,7 +56,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 
 ## Phase 5 — Reliability
 - [x] Retries (backoff + jitter) on 408/429/5xx, configurable
-- [ ] Circuit breaker per target (closed/open/half-open)
+- [x] Circuit breaker per target (closed/open/half-open)
 - [x] Cooldowns on rate-limited targets
 - [x] Upstream health checks; skip unhealthy targets
 - [x] In-flight load counters feeding `loads` to balancers

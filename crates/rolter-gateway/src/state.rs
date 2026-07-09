@@ -152,6 +152,8 @@ pub struct AppState {
     pub loads: crate::load::LoadTracker,
     /// provider health registry populated by the background prober
     pub health: crate::health::Health,
+    /// per-target circuit breaker registry, shared across requests and reloads
+    pub breaker: crate::breaker::Breaker,
 }
 
 impl AppState {
@@ -214,6 +216,16 @@ impl AppState {
                 crate::health::Health::new()
             } else {
                 crate::health::Health::default()
+            },
+            // an enabled breaker only when configured on, else an inert one that
+            // admits every target so the balancer never skips
+            breaker: if config.breaker.enabled() {
+                crate::breaker::Breaker::new(
+                    config.breaker.failure_threshold,
+                    config.breaker.open_secs,
+                )
+            } else {
+                crate::breaker::Breaker::default()
             },
         }
     }

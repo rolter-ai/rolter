@@ -39,6 +39,9 @@ pub struct GatewayConfig {
     /// active upstream health probing
     #[serde(default)]
     pub health: HealthConfig,
+    /// per-target circuit breaker for sustained upstream failures
+    #[serde(default)]
+    pub breaker: BreakerConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -512,6 +515,53 @@ fn default_health_timeout_secs() -> u64 {
 
 fn default_health_path() -> String {
     "/".to_string()
+}
+
+/// Per-target circuit breaker. Complements the short per-failure [`CooldownConfig`]
+/// with a longer-lived state machine: after `failure_threshold` consecutive
+/// transient failures a target trips **open** and is skipped for `open_secs`;
+/// the first request after that window probes it (**half-open**), and a success
+/// closes the breaker while another failure re-opens it. Where a cooldown parks a
+/// target for one wobble, the breaker sheds sustained load off a target that is
+/// down hard. Disabled by default (`enabled = false`); when every target of a
+/// route is open the gateway fails open rather than rejecting.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BreakerConfig {
+    /// master switch for the circuit breaker
+    #[serde(default)]
+    pub enabled: bool,
+    /// consecutive transient failures that trip a closed target open
+    #[serde(default = "default_breaker_failure_threshold")]
+    pub failure_threshold: u32,
+    /// how long a tripped target stays open before a half-open probe, in seconds
+    #[serde(default = "default_breaker_open_secs")]
+    pub open_secs: u64,
+}
+
+impl Default for BreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_threshold: default_breaker_failure_threshold(),
+            open_secs: default_breaker_open_secs(),
+        }
+    }
+}
+
+fn default_breaker_failure_threshold() -> u32 {
+    5
+}
+
+fn default_breaker_open_secs() -> u64 {
+    30
+}
+
+impl BreakerConfig {
+    /// Whether the breaker is active. A zero `failure_threshold` also disables it,
+    /// since a target could never accumulate enough failures to trip.
+    pub fn enabled(&self) -> bool {
+        self.enabled && self.failure_threshold > 0
+    }
 }
 
 /// Where request and cost logs are written.
