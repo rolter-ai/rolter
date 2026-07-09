@@ -25,5 +25,5 @@ pub enum Error {
     Unauthorized,
 }
 
-/// Convenience alias for results that fail with [`Error`].
+/// Convenience alias for results that fail with [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
