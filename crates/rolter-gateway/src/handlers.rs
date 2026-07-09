@@ -286,6 +286,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &tried,
             &loads,
             &state.cooldowns,
+            &state.health,
             &model,
             cd_enabled,
         ) {
@@ -436,24 +437,33 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 /// falls over to the first untried, un-parked target. When every remaining
 /// target is parked it fails open to the first untried one so requests still
 /// flow rather than 503-ing on a transient wobble.
+#[allow(clippy::too_many_arguments)]
 fn pick_untried(
     entry: &crate::state::RouteEntry,
     ctx: &RouteContext,
     tried: &[usize],
     loads: &[u64],
     cooldowns: &crate::cooldowns::Cooldowns,
+    health: &crate::health::Health,
     model: &str,
     cd_enabled: bool,
 ) -> Option<usize> {
-    let parked = |i: usize| cd_enabled && cooldowns.is_parked(model, i);
+    // a target is skippable when parked on a cooldown or when its provider is
+    // currently marked unhealthy by the active prober
+    let skip = |i: usize| {
+        (cd_enabled && cooldowns.is_parked(model, i))
+            || !health.is_healthy(&entry.route.targets[i].provider)
+    };
     if let Some(i) = entry.balancer.pick(ctx, loads) {
-        if !tried.contains(&i) && !parked(i) {
+        if !tried.contains(&i) && !skip(i) {
             return Some(i);
         }
     }
     let n = entry.route.targets.len();
+    // prefer an untried, non-skipped target; fail open to any untried one when
+    // every remaining sibling is parked or unhealthy
     (0..n)
-        .find(|i| !tried.contains(i) && !parked(*i))
+        .find(|i| !tried.contains(i) && !skip(*i))
         .or_else(|| (0..n).find(|i| !tried.contains(i)))
 }
 
@@ -810,13 +820,14 @@ mod tests {
         };
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::default();
-        let first = pick_untried(&entry, &ctx, &[], &[], &cd, "m", false).unwrap();
+        let hh = crate::health::Health::default();
+        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false).unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, "m", false).unwrap();
+        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, "m", false).unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
         assert_eq!(
-            pick_untried(&entry, &ctx, &[first, second], &[], &cd, "m", false),
+            pick_untried(&entry, &ctx, &[first, second], &[], &cd, &hh, "m", false),
             None
         );
     }
@@ -845,14 +856,51 @@ mod tests {
         };
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::new();
+        let hh = crate::health::Health::default();
         // park target 0: selection must avoid it and pick 1
         cd.park("m", 0, 60);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, "m", true),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", true),
             Some(1)
         );
         // park both: fail open to an untried target rather than returning None
         cd.park("m", 1, 60);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, "m", true).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", true).is_some());
+    }
+
+    #[test]
+    fn pick_untried_skips_unhealthy_provider() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![
+                Target {
+                    provider: "a".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+                Target {
+                    provider: "b".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+            ],
+        };
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            route,
+        };
+        let ctx = RouteContext::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::new();
+        // mark provider "a" (target 0) unhealthy: selection must pick target 1
+        hh.set("a", false);
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false),
+            Some(1)
+        );
+        // both providers unhealthy: fail open rather than returning None
+        hh.set("b", false);
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, "m", false).is_some());
     }
 }

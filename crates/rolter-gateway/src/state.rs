@@ -150,6 +150,8 @@ pub struct AppState {
     pub cooldowns: crate::cooldowns::Cooldowns,
     /// per-target in-flight load counters feeding the balancer
     pub loads: crate::load::LoadTracker,
+    /// provider health registry populated by the background prober
+    pub health: crate::health::Health,
 }
 
 impl AppState {
@@ -206,6 +208,13 @@ impl AppState {
             rate_limiter,
             cooldowns: crate::cooldowns::Cooldowns::new(),
             loads: crate::load::LoadTracker::new(),
+            // an enabled registry only when probing is on, else an inert one that
+            // reports every provider healthy so the balancer never skips
+            health: if config.health.enabled {
+                crate::health::Health::new()
+            } else {
+                crate::health::Health::default()
+            },
         }
     }
 
