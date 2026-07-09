@@ -9,6 +9,7 @@
 
 mod budgets;
 mod cooldowns;
+mod error;
 mod fake_llm;
 mod handlers;
 mod health;

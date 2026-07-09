@@ -94,12 +94,11 @@ fn extract_key(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// OpenAI-style error response with the `type` inferred from `status`. Kept as
+/// the single choke point so every error path stays wire-compatible; callers
+/// that want a `code`/`param` build [`crate::error::ApiError`] directly.
 fn error_json(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        Json(json!({"error": {"message": message, "type": "rolter_error"}})),
-    )
-        .into_response()
+    crate::error::ApiError::new(status, message).into_response()
 }
 
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
@@ -146,11 +145,20 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
-        Err(_) => return error_json(StatusCode::BAD_REQUEST, "invalid json body"),
+        Err(_) => {
+            return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "invalid json body")
+                .with_code("invalid_json")
+                .into_response()
+        }
     };
     let model = match parsed.get("model").and_then(|m| m.as_str()) {
         Some(m) => m.to_string(),
-        None => return error_json(StatusCode::BAD_REQUEST, "missing model field"),
+        None => {
+            return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing model field")
+                .with_code("missing_required_parameter")
+                .with_param("model")
+                .into_response()
+        }
     };
 
     let snap = state.snapshot.load();
@@ -161,7 +169,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     };
     if let Some(vk) = &vk {
         if !rolter_auth::model_allowed(&vk.models, &model) {
-            return error_json(StatusCode::FORBIDDEN, "model not allowed for this key");
+            return crate::error::ApiError::new(
+                StatusCode::FORBIDDEN,
+                "model not allowed for this key",
+            )
+            .with_code("model_not_allowed")
+            .with_param("model")
+            .into_response();
         }
     }
 
@@ -179,26 +193,30 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // block before spending upstream tokens when any applicable budget is spent
     if let Some(exceeded) = state.budgets.exceeded(&snap.budgets, &scope).await {
         state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
-        return error_json(
+        return crate::error::ApiError::new(
             StatusCode::PAYMENT_REQUIRED,
-            &format!(
+            format!(
                 "budget exceeded for {:?} '{}' (limit ${:.2})",
                 exceeded.scope, exceeded.id, exceeded.limit_usd
             ),
-        );
+        )
+        .with_code("insufficient_quota")
+        .into_response();
     }
 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
     if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
         state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
-        let mut resp = error_json(
+        let mut resp = crate::error::ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            &format!(
+            format!(
                 "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
                 hit.kind, hit.scope, hit.id, hit.limit
             ),
-        );
+        )
+        .with_code("rate_limit_exceeded")
+        .into_response();
         resp.headers_mut()
             .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
         return resp;
@@ -219,10 +237,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let entry = match snap.routes.get(&model) {
         Some(entry) => entry,
         None => {
-            return error_json(
+            return crate::error::ApiError::new(
                 StatusCode::NOT_FOUND,
-                &format!("no route for model '{model}'"),
+                format!("no route for model '{model}'"),
             )
+            .with_code("model_not_found")
+            .with_param("model")
+            .into_response()
         }
     };
     if entry.route.targets.is_empty() {
