@@ -10,9 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # full quality/security gate (fmt, clippy incl. postgres feature, test,
-  # cargo-deny). shared with the release paths via workflow_call so publish
-  # and CI enforce the exact same checks on a commit.
+  # full quality/security gate (fmt, clippy, nextest, doc tests, feature matrix,
+  # cargo doc, cargo-deny, gitleaks, actionlint, ui, smoke, + informational
+  # checks). shared with the release paths via workflow_call so publish and CI
+  # enforce the exact same checks on a commit.
   quality:
     uses: ./.github/workflows/quality.yml
 
@@ -51,3 +52,31 @@ jobs:
             deps
             release
           requireScope: false
+
+  # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
+  # required status check on master; it turns green only when the quality
+  # workflow and pr-title both succeed (a skipped pr-title on push is fine).
+  # adding/removing jobs inside quality.yml then never requires touching branch
+  # protection settings. see ROL-124.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [quality, pr-title]
+    runs-on: ubuntu-latest
+    steps:
+      - name: assert required jobs succeeded
+        run: |
+          set -euo pipefail
+          echo "quality:  ${{ needs.quality.result }}"
+          echo "pr-title: ${{ needs.pr-title.result }}"
+          # quality must succeed; pr-title may be skipped (push builds) but must
+          # not have failed
+          if [ "${{ needs.quality.result }}" != "success" ]; then
+            echo "::error::quality gate did not pass"
+            exit 1
+          fi
+          if [ "${{ needs.pr-title.result }}" = "failure" ]; then
+            echo "::error::pr-title check failed"
+            exit 1
+          fi
+          echo "all required checks green"

@@ -3,21 +3,31 @@ name: quality
 # reusable quality/security gate. run standalone from ci.yml on every push/pr
 # and via workflow_call from the release paths so nothing publishes on a commit
 # whose tests, lint or supply-chain check has not passed.
+#
+# most development in this repo is done by AI agents, so CI is the strongest
+# reviewer: many independent checks. jobs are split so a failure points at one
+# concern. ci.yml aggregates every job here (plus pr-title) into a single
+# `ci-ok` check for branch protection. some newer/heavier checks run as
+# informational (continue-on-error) until their baseline is trusted, then get
+# promoted to blocking — see ROL-124.
 on:
   workflow_call:
 
+# faster linking on the linux runner; writes ~/.cargo/config.toml to use the
+# wild linker for *-unknown-linux-{gnu,musl}. pinned to the 0.9.0 commit sha.
+env:
+  WILD_ACTION_SHA: 0bbbfa5df4380cab8e63cb8505a1ce65e1d10203
+
 jobs:
-  rust:
-    name: fmt / clippy / test
+  # ── rust: format + lint ─────────────────────────────────────────────────────
+  fmt-clippy:
+    name: fmt / clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # faster linking on the linux runner; writes ~/.cargo/config.toml so cargo
-      # uses the wild linker for *-unknown-linux-{gnu,musl}. pinned to the 0.9.0
-      # commit sha per the supply-chain policy (no floating action refs)
       - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
       - uses: Swatinem/rust-cache@v2
       - name: fmt
@@ -26,9 +36,54 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: clippy (postgres feature)
         run: cargo clippy -p rolter-store --all-targets --features postgres -- -D warnings
-      - name: test
-        run: cargo test --workspace
 
+  # ── rust: tests ─────────────────────────────────────────────────────────────
+  # nextest for the unit/integration tests (per-test isolation, faster) plus an
+  # explicit doc-test pass since nextest does not run doc tests.
+  test:
+    name: nextest / doctests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: nextest (workspace, all features)
+        run: cargo nextest run --workspace --all-features
+      - name: doc tests
+        run: cargo test --doc --workspace --all-features
+
+  # ── rust: non-default feature builds ────────────────────────────────────────
+  # agents frequently break builds behind a cargo feature; check each in turn.
+  feature-matrix:
+    name: feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+      - name: cargo hack (each feature)
+        run: cargo hack check --each-feature --workspace --all-targets
+
+  # ── rust: doc warnings ──────────────────────────────────────────────────────
+  # broken intra-doc links / invalid rustdoc are common agent mistakes.
+  docs:
+    name: cargo doc (warnings = errors)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --all-features
+
+  # ── supply chain: advisories / bans / licenses / sources ────────────────────
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -41,3 +96,118 @@ jobs:
           # arg, so it must go via command-arguments (placed after the command)
           command: check
           command-arguments: "--config .config/deny.toml"
+
+  # ── supply chain: secret scanning ───────────────────────────────────────────
+  # agents must never leak a provider key; fail the build if one is committed.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ── workflow lint: validate the CI yaml itself ──────────────────────────────
+  # agents edit workflows too; catch syntax and shell smells early.
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+
+  # ── ui: typecheck + production build ────────────────────────────────────────
+  ui:
+    name: ui lint / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: install
+        run: bun install --frozen-lockfile
+      - name: lint (tsc --noEmit)
+        run: bun run lint
+      - name: build
+        run: bun run build
+
+  # ── smoke: run the gateway and hit it end-to-end ────────────────────────────
+  # boots the real binary and exercises the built-in fake-llm (no upstream or
+  # secrets needed), catching wiring regressions no unit test sees.
+  smoke:
+    name: gateway smoke (fake-llm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@v2
+      - name: build gateway
+        run: cargo build -p rolter-gateway
+      - name: boot + probe
+        run: |
+          set -euo pipefail
+          # no config file: the gateway starts open with the built-in fake-llm
+          ./target/debug/rolter-gateway --config /nonexistent.toml &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          # wait for the listener
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4000/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "== /healthz =="
+          curl -fsS http://127.0.0.1:4000/healthz
+          echo "== /v1/models =="
+          curl -fsS http://127.0.0.1:4000/v1/models
+          echo "== fake-llm chat (non-streaming) =="
+          curl -fsS http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","messages":[{"role":"user","content":"hi"}]}' \
+            | tee /tmp/resp.json
+          grep -q '"choices"' /tmp/resp.json
+          echo "== fake-llm chat (streaming) =="
+          curl -fsS -N http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
+            | grep -q 'data:'
+
+  # ── informational checks ────────────────────────────────────────────────────
+  # non-blocking for now (continue-on-error); promote to required once their
+  # baseline is understood. see the required-checks policy in ROL-124.
+  typos:
+    name: typos (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: crate-ci/typos@master
+
+  machete:
+    name: unused deps (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bnjbvr/cargo-machete@main
+
+  coverage:
+    name: coverage (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: cargo llvm-cov
+        run: cargo llvm-cov --workspace --all-features --summary-only
