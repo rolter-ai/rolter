@@ -8,6 +8,7 @@
 //! reuses the same entrypoint as its `gateway` subcommand.
 
 mod budgets;
+mod cooldowns;
 mod fake_llm;
 mod handlers;
 mod logging;

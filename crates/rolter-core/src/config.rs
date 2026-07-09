@@ -30,6 +30,9 @@ pub struct GatewayConfig {
     /// upstream retry policy for transient failures (408/429/5xx, connect errors)
     #[serde(default)]
     pub retry: RetryConfig,
+    /// per-target cooldown applied after a transient upstream failure
+    #[serde(default)]
+    pub cooldown: CooldownConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -375,6 +378,55 @@ impl RetryConfig {
     }
 }
 
+/// Per-target cooldown policy. After a target returns a transient failure
+/// (HTTP 429/5xx or a connection error) it is parked for `base_secs` (or the
+/// 429 `Retry-After`, capped at `max_secs`); while parked the balancer skips it
+/// so load shifts to healthy siblings. When every sibling is parked the gateway
+/// fails open and still forwards, rather than rejecting the request. Set
+/// `base_secs = 0` to disable cooldowns.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CooldownConfig {
+    /// how long a failing target is parked, in seconds (0 disables cooldowns)
+    #[serde(default = "default_cooldown_base_secs")]
+    pub base_secs: u64,
+    /// ceiling for a cooldown derived from a 429 `Retry-After`, in seconds
+    #[serde(default = "default_cooldown_max_secs")]
+    pub max_secs: u64,
+}
+
+impl Default for CooldownConfig {
+    fn default() -> Self {
+        Self {
+            base_secs: default_cooldown_base_secs(),
+            max_secs: default_cooldown_max_secs(),
+        }
+    }
+}
+
+fn default_cooldown_base_secs() -> u64 {
+    5
+}
+
+fn default_cooldown_max_secs() -> u64 {
+    300
+}
+
+impl CooldownConfig {
+    /// Whether cooldowns are active.
+    pub fn enabled(&self) -> bool {
+        self.base_secs > 0
+    }
+
+    /// Cooldown duration in seconds for a failure. `retry_after_secs` is the
+    /// upstream 429 hint when present; it is honoured but capped at `max_secs`.
+    pub fn duration_secs(&self, retry_after_secs: Option<u64>) -> u64 {
+        match retry_after_secs {
+            Some(ra) => ra.max(self.base_secs).min(self.max_secs),
+            None => self.base_secs,
+        }
+    }
+}
+
 /// Where request and cost logs are written.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
@@ -576,5 +628,25 @@ mod tests {
         assert_eq!(r.backoff_ms(2, 0.5), 100);
         // exponential growth is capped at max_backoff_ms
         assert_eq!(r.backoff_ms(10, 1.0), 2_000);
+    }
+
+    #[test]
+    fn cooldown_duration_and_enable() {
+        let c = CooldownConfig::default();
+        assert!(c.enabled());
+        assert_eq!(c.base_secs, 5);
+        // no hint -> base
+        assert_eq!(c.duration_secs(None), 5);
+        // retry-after honoured but never below base
+        assert_eq!(c.duration_secs(Some(2)), 5);
+        assert_eq!(c.duration_secs(Some(30)), 30);
+        // capped at max_secs
+        assert_eq!(c.duration_secs(Some(10_000)), 300);
+        // base 0 disables
+        let off = CooldownConfig {
+            base_secs: 0,
+            max_secs: 300,
+        };
+        assert!(!off.enabled());
     }
 }

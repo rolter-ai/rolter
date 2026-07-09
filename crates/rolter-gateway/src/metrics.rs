@@ -27,6 +27,8 @@ pub struct Metrics {
     pub rate_limit_blocks_total: AtomicU64,
     /// upstream attempts retried after a transient failure (408/429/5xx/connect)
     pub retries_total: AtomicU64,
+    /// times a target was parked on a cooldown after a transient failure
+    pub cooldowns_tripped_total: AtomicU64,
 }
 
 impl Metrics {
@@ -109,6 +111,13 @@ impl Metrics {
             "rolter_retries_total",
             "upstream attempts retried after a transient failure",
             self.retries_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_cooldowns_tripped_total",
+            "targets parked on a cooldown after a transient failure",
+            self.cooldowns_tripped_total.load(Relaxed),
         );
         out
     }

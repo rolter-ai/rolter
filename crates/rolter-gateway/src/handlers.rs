@@ -267,6 +267,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // (exponential backoff + jitter). retries happen before any body bytes reach
     // the client, so a partial response is never duplicated.
     let retry = &snap.retry;
+    let cooldown = &snap.cooldown;
+    let cd_enabled = cooldown.enabled();
     let mut tried: Vec<usize> = Vec::new();
     let mut last_provider = String::new();
     let mut last_target = model.clone();
@@ -274,7 +276,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
 
     for attempt in 0..=retry.max_retries {
-        let idx = match pick_untried(entry, &ctx, &tried) {
+        let idx = match pick_untried(entry, &ctx, &tried, &state.cooldowns, &model, cd_enabled) {
             Some(i) => i,
             None => break, // no untried target left to fail over to
         };
@@ -307,16 +309,24 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         {
             Ok(response) => {
                 let status = response.status().as_u16();
-                if is_retryable_status(status) && attempt < retry.max_retries {
-                    state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(retry_delay_ms(
-                        retry,
-                        &response,
-                        attempt + 1,
-                        started,
-                    )))
-                    .await;
-                    continue;
+                if is_retryable_status(status) {
+                    // park the failing target so siblings absorb the load
+                    if cd_enabled {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&model, idx, secs);
+                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                    }
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(retry_delay_ms(
+                            retry,
+                            &response,
+                            attempt + 1,
+                            started,
+                        )))
+                        .await;
+                        continue;
+                    }
                 }
                 let is_sse = response
                     .headers()
@@ -329,6 +339,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             }
             Err(err) => {
                 last_error = Some(err.to_string());
+                // a connection-level failure parks the target too
+                if cd_enabled {
+                    state
+                        .cooldowns
+                        .park(&model, idx, cooldown.duration_secs(None));
+                    state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                }
                 if attempt < retry.max_retries {
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
@@ -397,20 +414,29 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     }
 }
 
-/// Pick a target the request has not tried yet. Honours the balancer's choice on
-/// the first attempt; when the balancer repeats an already-tried index (or has
-/// none), falls over to the first untried target for a deterministic retry.
+/// Pick a target the request has not tried yet, preferring one that is not on a
+/// cooldown. Honours the balancer's choice when it is fresh and healthy; else
+/// falls over to the first untried, un-parked target. When every remaining
+/// target is parked it fails open to the first untried one so requests still
+/// flow rather than 503-ing on a transient wobble.
 fn pick_untried(
     entry: &crate::state::RouteEntry,
     ctx: &RouteContext,
     tried: &[usize],
+    cooldowns: &crate::cooldowns::Cooldowns,
+    model: &str,
+    cd_enabled: bool,
 ) -> Option<usize> {
+    let parked = |i: usize| cd_enabled && cooldowns.is_parked(model, i);
     if let Some(i) = entry.balancer.pick(ctx, &[]) {
-        if !tried.contains(&i) {
+        if !tried.contains(&i) && !parked(i) {
             return Some(i);
         }
     }
-    (0..entry.route.targets.len()).find(|i| !tried.contains(i))
+    let n = entry.route.targets.len();
+    (0..n)
+        .find(|i| !tried.contains(i) && !parked(*i))
+        .or_else(|| (0..n).find(|i| !tried.contains(i)))
 }
 
 /// Whether an upstream HTTP status is worth retrying: request timeout, too many
@@ -425,6 +451,15 @@ fn jitter(started: Instant) -> f64 {
     (started.elapsed().subsec_nanos() % 1000) as f64 / 1000.0
 }
 
+/// Parse a `Retry-After` header expressed in whole seconds, if present.
+fn retry_after_secs(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
 /// Delay before the next retry. Honours a `Retry-After` (whole seconds) header on
 /// a 429, capped at 30s; otherwise falls back to exponential backoff with jitter.
 fn retry_delay_ms(
@@ -434,12 +469,7 @@ fn retry_delay_ms(
     started: Instant,
 ) -> u64 {
     if response.status().as_u16() == 429 {
-        if let Some(secs) = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = retry_after_secs(response) {
             return (secs.saturating_mul(1000)).min(30_000);
         }
     }
@@ -759,11 +789,47 @@ mod tests {
             route,
         };
         let ctx = RouteContext::default();
-        let first = pick_untried(&entry, &ctx, &[]).unwrap();
+        let cd = crate::cooldowns::Cooldowns::default();
+        let first = pick_untried(&entry, &ctx, &[], &cd, "m", false).unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second = pick_untried(&entry, &ctx, &[first]).unwrap();
+        let second = pick_untried(&entry, &ctx, &[first], &cd, "m", false).unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
-        assert_eq!(pick_untried(&entry, &ctx, &[first, second]), None);
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[first, second], &cd, "m", false),
+            None
+        );
+    }
+
+    #[test]
+    fn pick_untried_skips_parked_target() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![
+                Target {
+                    provider: "a".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+                Target {
+                    provider: "b".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+            ],
+        };
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, route.targets.len()),
+            route,
+        };
+        let ctx = RouteContext::default();
+        let cd = crate::cooldowns::Cooldowns::new();
+        // park target 0: selection must avoid it and pick 1
+        cd.park("m", 0, 60);
+        assert_eq!(pick_untried(&entry, &ctx, &[], &cd, "m", true), Some(1));
+        // park both: fail open to an untried target rather than returning None
+        cd.park("m", 1, 60);
+        assert!(pick_untried(&entry, &ctx, &[], &cd, "m", true).is_some());
     }
 }
