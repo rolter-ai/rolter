@@ -5,12 +5,15 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build, LoadBalancer};
-use rolter_core::{BudgetConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig};
+use rolter_core::{
+    BudgetConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig, RateLimitConfig,
+};
 use rolter_proxy::Forwarder;
 
 use crate::budgets::BudgetEnforcer;
 use crate::logging::LogSink;
 use crate::metrics::Metrics;
+use crate::rate_limits::RateLimiter;
 
 /// A resolved route plus its constructed balancer.
 pub struct RouteEntry {
@@ -53,6 +56,8 @@ pub struct Snapshot {
     pub prices: HashMap<String, ModelPriceConfig>,
     /// spend caps to enforce, shared cheaply with per-request spend recorders
     pub budgets: Arc<Vec<BudgetConfig>>,
+    /// throughput caps to enforce, shared cheaply with per-request recorders
+    pub rate_limits: Arc<Vec<RateLimitConfig>>,
 }
 
 impl Snapshot {
@@ -117,6 +122,7 @@ impl Snapshot {
             pepper,
             prices,
             budgets: Arc::new(config.budgets.clone()),
+            rate_limits: Arc::new(config.rate_limits.clone()),
         }
     }
 }
@@ -130,6 +136,8 @@ pub struct AppState {
     pub log: LogSink,
     /// enforces spend caps against Redis; disabled when no redis url is set
     pub budgets: BudgetEnforcer,
+    /// enforces throughput caps against Redis; disabled when no redis url is set
+    pub rate_limiter: RateLimiter,
 }
 
 impl AppState {
@@ -139,7 +147,13 @@ impl AppState {
     pub fn new(config: &GatewayConfig) -> Self {
         let metrics = Arc::new(Metrics::default());
         let log = LogSink::disabled(metrics.clone());
-        Self::assemble(config, metrics, log, BudgetEnforcer::disabled())
+        Self::assemble(
+            config,
+            metrics,
+            log,
+            BudgetEnforcer::disabled(),
+            RateLimiter::disabled(),
+        )
     }
 
     /// Build state and, when a `clickhouse_url` is configured, spawn the async
@@ -157,11 +171,11 @@ impl AppState {
             ),
             None => LogSink::disabled(metrics.clone()),
         };
-        let budgets = match redis_url {
-            Some(url) => BudgetEnforcer::new(url),
-            None => BudgetEnforcer::disabled(),
+        let (budgets, rate_limiter) = match redis_url {
+            Some(url) => (BudgetEnforcer::new(url), RateLimiter::new(url)),
+            None => (BudgetEnforcer::disabled(), RateLimiter::disabled()),
         };
-        Self::assemble(config, metrics, log, budgets)
+        Self::assemble(config, metrics, log, budgets, rate_limiter)
     }
 
     fn assemble(
@@ -169,6 +183,7 @@ impl AppState {
         metrics: Arc<Metrics>,
         log: LogSink,
         budgets: BudgetEnforcer,
+        rate_limiter: RateLimiter,
     ) -> Self {
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config))),
@@ -176,6 +191,7 @@ impl AppState {
             metrics,
             log,
             budgets,
+            rate_limiter,
         }
     }
 

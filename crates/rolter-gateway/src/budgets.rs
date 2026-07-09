@@ -29,7 +29,7 @@ pub struct ScopeIds {
 }
 
 impl ScopeIds {
-    fn id_for(&self, scope: BudgetScope) -> &str {
+    pub(crate) fn id_for(&self, scope: BudgetScope) -> &str {
         match scope {
             BudgetScope::Org => &self.org,
             BudgetScope::Team => &self.team,

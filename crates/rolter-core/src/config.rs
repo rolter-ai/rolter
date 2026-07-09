@@ -24,6 +24,9 @@ pub struct GatewayConfig {
     /// spend caps enforced by the gateway against Redis-tracked cumulative cost
     #[serde(default)]
     pub budgets: Vec<BudgetConfig>,
+    /// request/token throughput caps enforced against a Redis sliding window
+    #[serde(default)]
+    pub rate_limits: Vec<RateLimitConfig>,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -291,6 +294,26 @@ pub struct BudgetConfig {
     pub limit_usd: f64,
     #[serde(default)]
     pub period: BudgetPeriod,
+}
+
+/// A throughput cap applied to a scope over a rolling one-minute window. The
+/// gateway rejects a request with 429 (+ `retry-after`) when a matching limit's
+/// sliding-window count has reached `rpm` (requests) or `tpm` (tokens);
+/// most-restrictive-wins across the scope chain. At least one of `rpm`/`tpm`
+/// should be set — a limit with neither never blocks.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RateLimitConfig {
+    pub scope: BudgetScope,
+    /// id of the scoped entity (org/team/project/virtual-key id), matched
+    /// against the request's key scope chain
+    pub id: String,
+    /// requests-per-minute cap; unset means requests are not capped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpm: Option<u32>,
+    /// tokens-per-minute cap (prompt + completion); unset means tokens are not
+    /// capped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm: Option<u32>,
 }
 
 /// Where request and cost logs are written.

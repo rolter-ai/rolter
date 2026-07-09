@@ -51,7 +51,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Capture token usage (parse non-stream usage; accumulate for streams)
 - [x] Pricing catalog CRUD + per-request `cost_usd`
 - [x] Budgets enforcement (scope chain, most-restrictive-wins) with Redis spend counters
-- [ ] RPM/TPM rate limits via Redis (sliding window) with `429` + `retry-after`
+- [x] RPM/TPM rate limits via Redis (sliding window) with `429` + `retry-after`
 - [x] Usage/cost aggregation queries for the dashboard
 
 ## Phase 5 — Reliability

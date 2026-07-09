@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
@@ -15,6 +15,7 @@ use rolter_balancer::RouteContext;
 use crate::budgets::{ScopeIds, SpendRecorder};
 use crate::fake_llm;
 use crate::logging::RequestLog;
+use crate::rate_limits::TokenRecorder;
 use crate::state::{AppState, KeyMeta, Snapshot};
 
 /// Liveness probe.
@@ -185,6 +186,22 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         );
     }
 
+    // throughput cap: reject before forwarding when a matching request/token
+    // window is already at capacity (admission also counts the request)
+    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
+        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
+        let mut resp = error_json(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!(
+                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
+                hit.kind, hit.scope, hit.id, hit.limit
+            ),
+        );
+        resp.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
+        return resp;
+    }
+
     // built-in fake-llm answers locally unless a configured route shadows it
     if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
         return match path {
@@ -262,6 +279,12 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         scope.team.clone(),
         scope.project.clone(),
     );
+    // records this request's tokens against its rate limits once usage is known
+    let token_recorder = TokenRecorder::new(
+        state.rate_limiter.clone(),
+        snap.rate_limits.clone(),
+        scope.clone(),
+    );
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
@@ -302,6 +325,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 price,
                 log,
                 recorder,
+                token_recorder,
             )
         }
         Err(err) => {
@@ -339,6 +363,7 @@ fn stream_response(
     price: Option<rolter_core::ModelPriceConfig>,
     log: RequestLog,
     recorder: SpendRecorder,
+    token_recorder: TokenRecorder,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -356,6 +381,7 @@ fn stream_response(
         price,
         log,
         Some(recorder),
+        Some(token_recorder),
     );
     Response::builder()
         .status(status)

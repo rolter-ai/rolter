@@ -171,11 +171,14 @@ pub struct UsageLoggingStream {
     price: Option<rolter_core::ModelPriceConfig>,
     // records the request's cost against its budgets once cost_usd is known
     recorder: Option<crate::budgets::SpendRecorder>,
+    // records the request's tokens against its rate limits once usage is known
+    token_recorder: Option<crate::rate_limits::TokenRecorder>,
     // taken and emitted once the stream ends
     pending: Option<RequestLog>,
 }
 
 impl UsageLoggingStream {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
         is_sse: bool,
@@ -184,6 +187,7 @@ impl UsageLoggingStream {
         price: Option<rolter_core::ModelPriceConfig>,
         log: RequestLog,
         recorder: Option<crate::budgets::SpendRecorder>,
+        token_recorder: Option<crate::rate_limits::TokenRecorder>,
     ) -> Self {
         Self {
             inner,
@@ -194,6 +198,7 @@ impl UsageLoggingStream {
             sink,
             price,
             recorder,
+            token_recorder,
             pending: Some(log),
         }
     }
@@ -221,6 +226,14 @@ impl UsageLoggingStream {
             let cost = log.cost_usd;
             if cost > 0.0 {
                 tokio::spawn(async move { recorder.record(cost).await });
+            }
+        }
+        // add this request's tokens to its rate-limit windows (async, same as
+        // above); uses total tokens so a single big request counts against tpm
+        if let Some(token_recorder) = self.token_recorder.take() {
+            let tokens = log.total_tokens as u64;
+            if tokens > 0 {
+                tokio::spawn(async move { token_recorder.record(tokens).await });
             }
         }
         self.sink.log(log);
@@ -581,6 +594,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
                 model: "gpt-4o".to_string(),
                 ..Default::default()
             },
+            None,
             None,
         );
 

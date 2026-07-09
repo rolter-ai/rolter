@@ -12,6 +12,7 @@ mod fake_llm;
 mod handlers;
 mod logging;
 mod metrics;
+mod rate_limits;
 mod state;
 mod watcher;
 

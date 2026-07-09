@@ -7,13 +7,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rolter_core::{
     BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, Error, GatewayConfig,
-    ModelPriceConfig, ModelRoute, ProviderConfig, ProviderKind, Result, Target, VirtualKeyRecord,
+    ModelPriceConfig, ModelRoute, ProviderConfig, ProviderKind, RateLimitConfig, Result, Target,
+    VirtualKeyRecord,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::postgres::models::{Budget, ModelPrice};
+use crate::postgres::models::{Budget, ModelPrice, RateLimit};
 use crate::ConfigStore;
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -255,6 +256,36 @@ impl PostgresConfigStore {
             })
             .collect())
     }
+
+    async fn load_rate_limits(&self) -> Result<Vec<RateLimitConfig>> {
+        let rows: Vec<RateLimit> = sqlx::query_as(
+            "select id, scope_type, scope_id, rpm, tpm, created_at
+             from rate_limits order by created_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let scope = match r.scope_type.as_str() {
+                    "org" => BudgetScope::Org,
+                    "team" => BudgetScope::Team,
+                    "project" => BudgetScope::Project,
+                    "virtual_key" => BudgetScope::Key,
+                    // unknown scope: skip rather than mis-enforce
+                    _ => return None,
+                };
+                Some(RateLimitConfig {
+                    scope,
+                    id: r.scope_id.to_string(),
+                    // non-positive caps are meaningless; treat them as unset
+                    rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
+                    tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
+                })
+            })
+            .collect())
+    }
 }
 
 /// Map the free-text `budgets.period` column to a [`BudgetPeriod`]. Accepts both
@@ -286,12 +317,14 @@ impl ConfigStore for PostgresConfigStore {
         let model_prices = self.load_model_prices().await?;
         let db_virtual_keys = self.load_virtual_keys().await?;
         let budgets = self.load_budgets().await?;
+        let rate_limits = self.load_rate_limits().await?;
         Ok(GatewayConfig {
             providers,
             routes,
             model_prices,
             db_virtual_keys,
             budgets,
+            rate_limits,
             ..GatewayConfig::default()
         })
     }
