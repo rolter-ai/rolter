@@ -19,6 +19,11 @@ on:
         type: boolean
         default: false
 
+# publishing authenticates to crates.io via CARGO_REGISTRY_TOKEN, not the
+# GITHUB_TOKEN — least-privilege read is all this workflow needs.
+permissions:
+  contents: read
+
 concurrency:
   group: publish-bootstrap
   cancel-in-progress: false
