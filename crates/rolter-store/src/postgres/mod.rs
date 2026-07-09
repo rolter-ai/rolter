@@ -104,6 +104,7 @@ fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
         "power_of_two" => BalancingStrategy::PowerOfTwo,
         "consistent_hash" => BalancingStrategy::ConsistentHash,
         "cache_aware" => BalancingStrategy::CacheAware,
+        "weighted" => BalancingStrategy::Weighted,
         other => {
             return Err(Error::Store(format!(
                 "unknown balancing strategy '{other}'"

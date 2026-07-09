@@ -76,7 +76,8 @@ impl Snapshot {
             .collect();
         let mut routes = HashMap::new();
         for route in &config.routes {
-            let balancer = build(route.strategy, route.targets.len());
+            let weights: Vec<u32> = route.targets.iter().map(|t| t.weight).collect();
+            let balancer = build(route.strategy, &weights);
             routes.insert(
                 route.model.clone(),
                 RouteEntry {

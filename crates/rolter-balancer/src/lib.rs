@@ -38,14 +38,18 @@ pub trait LoadBalancer: Send + Sync {
     fn observe(&self, _target: usize, _ctx: &RouteContext) {}
 }
 
-/// Build a boxed [`LoadBalancer`] for `n` targets from a configured strategy.
-pub fn build(strategy: BalancingStrategy, n: usize) -> Box<dyn LoadBalancer> {
+/// Build a boxed [`LoadBalancer`] from a configured strategy and the route's
+/// per-target `weights` (index-aligned with the route targets). Strategies that
+/// ignore weights only use `weights.len()` as the target count.
+pub fn build(strategy: BalancingStrategy, weights: &[u32]) -> Box<dyn LoadBalancer> {
+    let n = weights.len();
     match strategy {
         BalancingStrategy::RoundRobin => Box::new(RoundRobin::new(n)),
         BalancingStrategy::Random => Box::new(Random::new(n)),
         BalancingStrategy::PowerOfTwo => Box::new(PowerOfTwo::new(n)),
         BalancingStrategy::ConsistentHash => Box::new(ConsistentHash::new(n)),
         BalancingStrategy::CacheAware => Box::new(CacheAware::new(n, 0.5)),
+        BalancingStrategy::Weighted => Box::new(WeightedRoundRobin::new(weights)),
     }
 }
 
@@ -73,6 +77,55 @@ impl LoadBalancer for RoundRobin {
             return None;
         }
         Some(self.next.fetch_add(1, Relaxed) % self.n)
+    }
+}
+
+/// Smooth weighted round-robin (the nginx algorithm). Distributes picks in
+/// proportion to each target's weight while keeping the sequence evenly
+/// interleaved rather than bursty. Falls back to plain rotation when all weights
+/// are equal.
+pub struct WeightedRoundRobin {
+    /// static configured weight per target (clamped to at least 1)
+    weights: Vec<i64>,
+    /// mutable running weights advanced on each pick
+    current: Mutex<Vec<i64>>,
+    total: i64,
+}
+
+impl WeightedRoundRobin {
+    pub fn new(weights: &[u32]) -> Self {
+        let weights: Vec<i64> = weights.iter().map(|&w| (w as i64).max(1)).collect();
+        let total = weights.iter().sum();
+        let current = vec![0i64; weights.len()];
+        Self {
+            weights,
+            current: Mutex::new(current),
+            total,
+        }
+    }
+}
+
+impl LoadBalancer for WeightedRoundRobin {
+    fn name(&self) -> &'static str {
+        "weighted"
+    }
+    fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
+        let n = self.weights.len();
+        if n == 0 {
+            return None;
+        }
+        let mut current = self.current.lock();
+        // advance every target by its weight, pick the current maximum, then
+        // pull that target back by the total weight so others catch up
+        let mut best = 0usize;
+        for i in 0..n {
+            current[i] += self.weights[i];
+            if current[i] > current[best] {
+                best = i;
+            }
+        }
+        current[best] -= self.total;
+        Some(best)
     }
 }
 
@@ -332,7 +385,36 @@ mod tests {
 
     #[test]
     fn empty_targets_return_none() {
-        let lb = build(BalancingStrategy::RoundRobin, 0);
+        let lb = build(BalancingStrategy::RoundRobin, &[]);
+        assert_eq!(lb.pick(&RouteContext::default(), &[]), None);
+    }
+
+    #[test]
+    fn weighted_distributes_in_proportion() {
+        // weights 3:1 over a full cycle of 4 picks -> target 0 thrice, target 1 once
+        let lb = build(BalancingStrategy::Weighted, &[3, 1]);
+        let ctx = RouteContext::default();
+        let mut counts = [0usize; 2];
+        for _ in 0..40 {
+            counts[lb.pick(&ctx, &[]).unwrap()] += 1;
+        }
+        assert_eq!(counts[0], 30);
+        assert_eq!(counts[1], 10);
+    }
+
+    #[test]
+    fn weighted_is_smooth_not_bursty() {
+        // smooth wrr interleaves rather than emitting 0,0,0,1 in a block
+        let lb = build(BalancingStrategy::Weighted, &[3, 1]);
+        let ctx = RouteContext::default();
+        let seq: Vec<usize> = (0..4).map(|_| lb.pick(&ctx, &[]).unwrap()).collect();
+        // the single low-weight pick lands in the middle of the cycle
+        assert_eq!(seq, vec![0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn weighted_empty_returns_none() {
+        let lb = build(BalancingStrategy::Weighted, &[]);
         assert_eq!(lb.pick(&RouteContext::default(), &[]), None);
     }
 }
