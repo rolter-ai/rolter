@@ -573,23 +573,49 @@ impl GatewayConfig {
         self.providers.iter().find(|p| p.name == name)
     }
 
-    /// Validate internal consistency: every route target must reference a
-    /// known provider, names must be unique and target weights positive.
-    /// Returns every problem found, so callers can log/report them all.
+    /// Validate internal consistency and surface every problem at once so an
+    /// operator can fix a whole config in one pass rather than one error per
+    /// restart. Checks: unique/non-empty provider names, well-formed provider
+    /// `api_base` and `egress_proxy` URLs, unique/non-empty route models, each
+    /// route having at least one target that references a known provider with a
+    /// positive weight, unique/non-empty virtual keys, positive budget limits and
+    /// rate limits that actually cap something. Returns every problem found, so
+    /// callers can log/report them all.
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
         let mut problems = Vec::new();
 
         let mut provider_names = std::collections::HashSet::new();
         for provider in &self.providers {
-            if !provider_names.insert(provider.name.as_str()) {
+            if provider.name.trim().is_empty() {
+                problems.push("provider has an empty name".to_string());
+            } else if !provider_names.insert(provider.name.as_str()) {
                 problems.push(format!("duplicate provider name '{}'", provider.name));
+            }
+            if !is_http_url(&provider.api_base) {
+                problems.push(format!(
+                    "provider '{}' has an invalid api_base '{}' (expected http:// or https:// url)",
+                    provider.name, provider.api_base
+                ));
+            }
+            if let Some(proxy) = &provider.egress_proxy {
+                if !is_proxy_url(proxy) {
+                    problems.push(format!(
+                        "provider '{}' has an invalid egress_proxy '{}' (expected http(s)/socks5(h) url)",
+                        provider.name, proxy
+                    ));
+                }
             }
         }
 
         let mut route_models = std::collections::HashSet::new();
         for route in &self.routes {
-            if !route_models.insert(route.model.as_str()) {
+            if route.model.trim().is_empty() {
+                problems.push("route has an empty model name".to_string());
+            } else if !route_models.insert(route.model.as_str()) {
                 problems.push(format!("duplicate route model '{}'", route.model));
+            }
+            if route.targets.is_empty() {
+                problems.push(format!("route '{}' has no targets", route.model));
             }
             for target in &route.targets {
                 if !provider_names.contains(target.provider.as_str()) {
@@ -607,12 +633,60 @@ impl GatewayConfig {
             }
         }
 
+        let mut key_values = std::collections::HashSet::new();
+        for vk in &self.virtual_keys {
+            if vk.key.trim().is_empty() {
+                problems.push("virtual key has an empty key value".to_string());
+            } else if !key_values.insert(vk.key.as_str()) {
+                problems.push("duplicate virtual key value".to_string());
+            }
+        }
+
+        for budget in &self.budgets {
+            if budget.limit_usd <= 0.0 || budget.limit_usd.is_nan() {
+                problems.push(format!(
+                    "budget for {:?} '{}' has a non-positive limit_usd",
+                    budget.scope, budget.id
+                ));
+            }
+        }
+
+        for limit in &self.rate_limits {
+            if limit.rpm.is_none() && limit.tpm.is_none() {
+                problems.push(format!(
+                    "rate limit for {:?} '{}' sets neither rpm nor tpm (never caps)",
+                    limit.scope, limit.id
+                ));
+            }
+        }
+
         if problems.is_empty() {
             Ok(())
         } else {
             Err(problems)
         }
     }
+}
+
+/// Whether `s` is a plausible `http`/`https` URL with a non-empty host.
+fn is_http_url(s: &str) -> bool {
+    for scheme in ["http://", "https://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            return !rest.is_empty() && !rest.starts_with('/');
+        }
+    }
+    false
+}
+
+/// Whether `s` is a plausible outbound-proxy URL (`http`, `https`, `socks5`, or
+/// `socks5h` scheme with a non-empty host).
+fn is_proxy_url(s: &str) -> bool {
+    for scheme in ["http://", "https://", "socks5://", "socks5h://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            return !rest.is_empty() && !rest.starts_with('/');
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -678,6 +752,67 @@ mod tests {
         assert!(problems.iter().any(|p| p.contains("duplicate route")));
         assert!(problems.iter().any(|p| p.contains("unknown provider")));
         assert!(problems.iter().any(|p| p.contains("zero weight")));
+    }
+
+    #[test]
+    fn validate_flags_urls_targets_keys_and_limits() {
+        let mut cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "ftp://nope"
+
+            [[providers]]
+            name = "proxied"
+            kind = "openai_compatible"
+            api_base = "http://localhost:8000"
+            egress_proxy = "not-a-url"
+
+            [[routes]]
+            model = "r1"
+            strategy = "round_robin"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[virtual_keys]]
+            key = "dup"
+            [[virtual_keys]]
+            key = "dup"
+
+            [[budgets]]
+            scope = "org"
+            id = "o1"
+            limit_usd = 0.0
+
+            [[rate_limits]]
+            scope = "key"
+            id = "k1"
+            "#,
+        )
+        .unwrap();
+        // targets is a required toml field; clear it post-parse to exercise the
+        // "no targets" check
+        cfg.routes[0].targets.clear();
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("invalid api_base")));
+        assert!(problems.iter().any(|p| p.contains("invalid egress_proxy")));
+        assert!(problems.iter().any(|p| p.contains("has no targets")));
+        assert!(problems.iter().any(|p| p.contains("duplicate virtual key")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("non-positive limit_usd")));
+        assert!(problems.iter().any(|p| p.contains("neither rpm nor tpm")));
+    }
+
+    #[test]
+    fn url_helpers_accept_and_reject() {
+        assert!(is_http_url("https://api.openai.com"));
+        assert!(is_http_url("http://localhost:8001"));
+        assert!(!is_http_url("https://"));
+        assert!(!is_http_url("ftp://x"));
+        assert!(is_proxy_url("socks5h://proxy:1080"));
+        assert!(!is_proxy_url("proxy:1080"));
     }
 
     #[test]
