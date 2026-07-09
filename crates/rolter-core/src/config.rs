@@ -36,6 +36,9 @@ pub struct GatewayConfig {
     /// upstream connect/response timeouts
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+    /// active upstream health probing
+    #[serde(default)]
+    pub health: HealthConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -462,6 +465,53 @@ fn default_connect_secs() -> u64 {
 
 fn default_request_secs() -> u64 {
     60
+}
+
+/// Active upstream health probing. When `enabled`, a background task periodically
+/// issues a lightweight `GET {api_base}{path}` to each provider; a provider that
+/// times out, fails to connect, or answers `5xx` is marked unhealthy and the
+/// balancer skips its targets until a later probe recovers it. Reachability with
+/// any non-5xx status (including 401/404) counts as healthy, since upstreams
+/// rarely expose a dedicated health route. Disabled by default — probing adds
+/// background traffic and is most useful for self-hosted pools. When every target
+/// of a route is unhealthy the gateway fails open rather than rejecting.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HealthConfig {
+    /// master switch for active probing
+    #[serde(default)]
+    pub enabled: bool,
+    /// seconds between probe sweeps
+    #[serde(default = "default_health_interval_secs")]
+    pub interval_secs: u64,
+    /// per-probe timeout in seconds
+    #[serde(default = "default_health_timeout_secs")]
+    pub timeout_secs: u64,
+    /// request path appended to each provider's `api_base` when probing
+    #[serde(default = "default_health_path")]
+    pub path: String,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: default_health_interval_secs(),
+            timeout_secs: default_health_timeout_secs(),
+            path: default_health_path(),
+        }
+    }
+}
+
+fn default_health_interval_secs() -> u64 {
+    10
+}
+
+fn default_health_timeout_secs() -> u64 {
+    2
+}
+
+fn default_health_path() -> String {
+    "/".to_string()
 }
 
 /// Where request and cost logs are written.

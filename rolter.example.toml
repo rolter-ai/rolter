@@ -146,6 +146,19 @@ disabled = false               # revoke without deleting
 # connect_secs = 10
 # request_secs = 60
 
+# --- active upstream health checks ---
+# when enabled, a background task periodically issues a lightweight GET
+# {api_base}{path} to each provider; a provider that times out, fails to connect,
+# or answers 5xx is marked unhealthy and the balancer skips its targets until a
+# later probe recovers it (any non-5xx status, incl. 401/404, counts as healthy).
+# when every target of a route is unhealthy the gateway fails open. disabled by
+# default. defaults shown below.
+# [health]
+# enabled = false
+# interval_secs = 10   # seconds between probe sweeps
+# timeout_secs = 2     # per-probe timeout
+# path = "/"           # appended to each provider's api_base when probing
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

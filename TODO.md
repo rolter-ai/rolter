@@ -58,7 +58,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Retries (backoff + jitter) on 408/429/5xx, configurable
 - [ ] Circuit breaker per target (closed/open/half-open)
 - [x] Cooldowns on rate-limited targets
-- [ ] Upstream health checks; skip unhealthy targets
+- [x] Upstream health checks; skip unhealthy targets
 - [x] In-flight load counters feeding `loads` to balancers
 - [x] Weighted selection honoring `Target.weight`
 - [x] Request timeouts + graceful shutdown/drain

@@ -29,6 +29,10 @@ pub struct Metrics {
     pub retries_total: AtomicU64,
     /// times a target was parked on a cooldown after a transient failure
     pub cooldowns_tripped_total: AtomicU64,
+    /// times a health probe transitioned a provider from healthy to down
+    pub health_down_total: AtomicU64,
+    /// times a health probe transitioned a provider from down to healthy
+    pub health_recovered_total: AtomicU64,
 }
 
 impl Metrics {
@@ -118,6 +122,20 @@ impl Metrics {
             "rolter_cooldowns_tripped_total",
             "targets parked on a cooldown after a transient failure",
             self.cooldowns_tripped_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_health_down_total",
+            "providers marked unhealthy by an active health probe",
+            self.health_down_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_health_recovered_total",
+            "providers restored to healthy by an active health probe",
+            self.health_recovered_total.load(Relaxed),
         );
         out
     }

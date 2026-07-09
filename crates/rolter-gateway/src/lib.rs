@@ -11,6 +11,7 @@ mod budgets;
 mod cooldowns;
 mod fake_llm;
 mod handlers;
+mod health;
 mod load;
 mod logging;
 mod metrics;
@@ -84,6 +85,16 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!(%url, "clickhouse request logging enabled");
     }
     let state = AppState::with_logging(&config, args.redis_url.as_deref());
+
+    // start active upstream health probing when enabled; skips unhealthy targets
+    if config.health.enabled {
+        tracing::info!(
+            interval_secs = config.health.interval_secs,
+            path = %config.health.path,
+            "active upstream health probing enabled"
+        );
+        health::spawn_prober(&config, state.clone());
+    }
 
     // start the reload-free config watcher when a control plane is configured
     if let Some(snapshot_url) = args.snapshot_url {
