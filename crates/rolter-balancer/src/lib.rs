@@ -11,6 +11,7 @@ use ahash::RandomState;
 use parking_lot::Mutex;
 use rolter_core::BalancingStrategy;
 
+pub mod scorer;
 pub mod trie;
 use trie::Trie;
 
