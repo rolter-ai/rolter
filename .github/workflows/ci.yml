@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# least-privilege GITHUB_TOKEN by default; jobs widen their own scope as needed.
+permissions:
+  contents: read
+
 jobs:
   # full quality/security gate (fmt, clippy, nextest, doc tests, feature matrix,
   # cargo doc, cargo-deny, gitleaks, actionlint, ui, smoke, + informational
@@ -20,6 +24,9 @@ jobs:
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: validate conventional commit pr title
         uses: amannn/action-semantic-pull-request@v5
