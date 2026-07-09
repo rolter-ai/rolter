@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  # release-plz creates release tags with the repo GITHUB_TOKEN, and GitHub
+  # suppresses downstream push events for token-created refs, so a release-plz
+  # tag never fires the push trigger above. dispatch from the default branch
+  # with the tag to ship it: `gh workflow run release.yml -f tag=vX.Y.Z`.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag to build and publish, e.g. v0.0.3"
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -33,10 +43,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          REF: ${{ inputs.tag || github.sha }}
           REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'CodeQL,GitGuardian Security Checks' }}
         run: |
           set -euo pipefail
+          # resolve the ref (tag on dispatch, sha on push) to a commit sha
+          SHA="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
           runs="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
             -q '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"')"
           echo "check-runs for $SHA:"; echo "$runs"
@@ -65,6 +77,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: build wheels (linux)
         if: matrix.os == 'ubuntu-latest'
