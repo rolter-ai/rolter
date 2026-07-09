@@ -105,6 +105,35 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     tracing::info!(%addr, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // drain in-flight requests on SIGINT/SIGTERM instead of dropping them
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("rolter-gateway shut down cleanly");
     Ok(())
+}
+
+/// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
+/// or `SIGTERM` on Unix — the signal orchestrators send on rollout/scale-down).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => tracing::warn!(%err, "failed to install SIGTERM handler"),
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
+        _ = terminate => tracing::info!("received SIGTERM, draining"),
+    }
 }

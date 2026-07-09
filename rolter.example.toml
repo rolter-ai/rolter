@@ -123,6 +123,15 @@ disabled = false               # revoke without deleting
 # base_secs = 5     # how long a failing target is parked; 0 disables cooldowns
 # max_secs = 300    # ceiling for a cooldown derived from a 429 retry-after
 
+# --- upstream timeouts ---
+# connect_secs bounds establishing the connection; request_secs bounds time to
+# response headers (not the body, so long SSE streams are never cut short). a
+# timeout surfaces as a transient error and feeds the retry/cooldown paths. set
+# a field to 0 to disable it. defaults shown below.
+# [timeouts]
+# connect_secs = 10
+# request_secs = 60
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

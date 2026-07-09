@@ -33,6 +33,9 @@ pub struct GatewayConfig {
     /// per-target cooldown applied after a transient upstream failure
     #[serde(default)]
     pub cooldown: CooldownConfig,
+    /// upstream connect/response timeouts
+    #[serde(default)]
+    pub timeouts: TimeoutConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -425,6 +428,38 @@ impl CooldownConfig {
             None => self.base_secs,
         }
     }
+}
+
+/// Upstream timeout policy. `connect_secs` bounds establishing the TCP/TLS
+/// connection; `request_secs` bounds time-to-response-headers (not the body), so
+/// a hung upstream is abandoned without killing legitimately long SSE streams. A
+/// timeout surfaces as a transient upstream error, so it feeds the retry and
+/// cooldown machinery. Set a field to 0 to disable that timeout.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TimeoutConfig {
+    /// connection-establishment timeout in seconds (0 disables)
+    #[serde(default = "default_connect_secs")]
+    pub connect_secs: u64,
+    /// time-to-response-headers timeout in seconds (0 disables)
+    #[serde(default = "default_request_secs")]
+    pub request_secs: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_secs: default_connect_secs(),
+            request_secs: default_request_secs(),
+        }
+    }
+}
+
+fn default_connect_secs() -> u64 {
+    10
+}
+
+fn default_request_secs() -> u64 {
+    60
 }
 
 /// Where request and cost logs are written.
