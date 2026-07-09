@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/ormeilu/rolter/compare/rolter-core-v0.0.2...rolter-core-v0.0.4) - 2026-07-09
+
+### Added
+
+- *(gateway)* budget enforcement with redis spend counters ([#37](https://github.com/ormeilu/rolter/pull/37))
+
+### Other
+
+- release v0.0.3 ([#38](https://github.com/ormeilu/rolter/pull/38))
+
 ## [0.0.3](https://github.com/ormeilu/rolter/compare/rolter-core-v0.0.2...rolter-core-v0.0.3) - 2026-07-09
 
 ### Added
