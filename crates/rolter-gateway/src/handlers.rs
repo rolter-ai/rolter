@@ -248,6 +248,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 .unwrap_or(false);
             // token counts, latency and ttft are filled by the stream wrapper
             // once the body has been fully forwarded to the client
+            let price = snap.prices.get(&model).cloned();
             let log = RequestLog {
                 request_id,
                 model,
@@ -257,7 +258,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 stream: stream as u8,
                 ..Default::default()
             };
-            stream_response(response, is_sse, started, state.log.clone(), log)
+            stream_response(response, is_sse, started, state.log.clone(), price, log)
         }
         Err(err) => {
             state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
@@ -286,6 +287,7 @@ fn stream_response(
     is_sse: bool,
     started: Instant,
     sink: crate::logging::LogSink,
+    price: Option<rolter_core::ModelPriceConfig>,
     log: RequestLog,
 ) -> Response {
     let status =
@@ -301,6 +303,7 @@ fn stream_response(
         is_sse,
         started,
         sink,
+        price,
         log,
     );
     Response::builder()
