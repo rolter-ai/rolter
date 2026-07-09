@@ -58,7 +58,7 @@ cargo install --path crates/rolter-gateway
 uv tool install rolter
 
 # docker
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 ## Repository layout

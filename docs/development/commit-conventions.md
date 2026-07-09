@@ -37,6 +37,6 @@ BREAKING CHANGE: config field `targets` is now `upstreams`.
 
 ## Tooling
 
-- `commitlint.config.mjs` — rules (types, scopes, lowercase subject, 72-char header).
+- `.config/commitlint.config.mjs` — rules (types, scopes, lowercase subject, 72-char header).
 - `.pre-commit-config.yaml` — `conventional-pre-commit` (commit-msg) + `cargo fmt`/`cargo clippy`.
 - Install hooks: `prek install` (or `pre-commit install && pre-commit install --hook-type commit-msg`).
