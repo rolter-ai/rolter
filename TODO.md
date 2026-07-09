@@ -48,7 +48,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 
 ## Phase 4 — Cost, limits & pricing
 - [x] ClickHouse client + async batched writer off the hot path
-- [ ] Capture token usage (parse non-stream usage; accumulate for streams)
+- [x] Capture token usage (parse non-stream usage; accumulate for streams)
 - [ ] Pricing catalog CRUD + per-request `cost_usd`
 - [ ] Budgets enforcement (scope chain, most-restrictive-wins) with Redis spend counters
 - [ ] RPM/TPM rate limits via Redis (sliding window) with `429` + `retry-after`
