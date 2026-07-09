@@ -269,19 +269,34 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let retry = &snap.retry;
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
+    // live per-target in-flight counts steer load-aware strategies away from busy
+    // targets; the count for the chosen target is held for the whole request
+    let loads = state.loads.snapshot(&model, entry.route.targets.len());
     let mut tried: Vec<usize> = Vec::new();
     let mut last_provider = String::new();
     let mut last_target = model.clone();
     let mut last_error: Option<String> = None;
     let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+    let mut inflight_guard: Option<crate::load::LoadGuard> = None;
 
     for attempt in 0..=retry.max_retries {
-        let idx = match pick_untried(entry, &ctx, &tried, &state.cooldowns, &model, cd_enabled) {
+        let idx = match pick_untried(
+            entry,
+            &ctx,
+            &tried,
+            &loads,
+            &state.cooldowns,
+            &model,
+            cd_enabled,
+        ) {
             Some(i) => i,
             None => break, // no untried target left to fail over to
         };
         entry.balancer.observe(idx, &ctx);
         tried.push(idx);
+        // count this attempt as in-flight; the guard falls out of scope (and
+        // decrements) on retry, or is moved into the stream wrapper on success
+        let guard = state.loads.begin(&model, idx);
 
         let target = &entry.route.targets[idx];
         let provider = match snap.providers.get(&target.provider) {
@@ -334,6 +349,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     .and_then(|v| v.to_str().ok())
                     .map(|ct| ct.contains("event-stream"))
                     .unwrap_or(false);
+                inflight_guard = Some(guard);
                 outcome = Some((response, status, is_sse));
                 break;
             }
@@ -385,6 +401,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 log,
                 recorder,
                 token_recorder,
+                inflight_guard,
             )
         }
         None => {
@@ -423,12 +440,13 @@ fn pick_untried(
     entry: &crate::state::RouteEntry,
     ctx: &RouteContext,
     tried: &[usize],
+    loads: &[u64],
     cooldowns: &crate::cooldowns::Cooldowns,
     model: &str,
     cd_enabled: bool,
 ) -> Option<usize> {
     let parked = |i: usize| cd_enabled && cooldowns.is_parked(model, i);
-    if let Some(i) = entry.balancer.pick(ctx, &[]) {
+    if let Some(i) = entry.balancer.pick(ctx, loads) {
         if !tried.contains(&i) && !parked(i) {
             return Some(i);
         }
@@ -489,6 +507,7 @@ fn stream_response(
     log: RequestLog,
     recorder: SpendRecorder,
     token_recorder: TokenRecorder,
+    inflight_guard: Option<crate::load::LoadGuard>,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -507,6 +526,7 @@ fn stream_response(
         log,
         Some(recorder),
         Some(token_recorder),
+        inflight_guard,
     );
     Response::builder()
         .status(status)
@@ -790,13 +810,13 @@ mod tests {
         };
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::default();
-        let first = pick_untried(&entry, &ctx, &[], &cd, "m", false).unwrap();
+        let first = pick_untried(&entry, &ctx, &[], &[], &cd, "m", false).unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second = pick_untried(&entry, &ctx, &[first], &cd, "m", false).unwrap();
+        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, "m", false).unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
         assert_eq!(
-            pick_untried(&entry, &ctx, &[first, second], &cd, "m", false),
+            pick_untried(&entry, &ctx, &[first, second], &[], &cd, "m", false),
             None
         );
     }
@@ -827,9 +847,12 @@ mod tests {
         let cd = crate::cooldowns::Cooldowns::new();
         // park target 0: selection must avoid it and pick 1
         cd.park("m", 0, 60);
-        assert_eq!(pick_untried(&entry, &ctx, &[], &cd, "m", true), Some(1));
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &[], &cd, "m", true),
+            Some(1)
+        );
         // park both: fail open to an untried target rather than returning None
         cd.park("m", 1, 60);
-        assert!(pick_untried(&entry, &ctx, &[], &cd, "m", true).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, "m", true).is_some());
     }
 }

@@ -173,6 +173,9 @@ pub struct UsageLoggingStream {
     recorder: Option<crate::budgets::SpendRecorder>,
     // records the request's tokens against its rate limits once usage is known
     token_recorder: Option<crate::rate_limits::TokenRecorder>,
+    // held for the stream's lifetime; decrements the target's in-flight count on
+    // drop (stream end or client disconnect)
+    _inflight_guard: Option<crate::load::LoadGuard>,
     // taken and emitted once the stream ends
     pending: Option<RequestLog>,
 }
@@ -188,6 +191,7 @@ impl UsageLoggingStream {
         log: RequestLog,
         recorder: Option<crate::budgets::SpendRecorder>,
         token_recorder: Option<crate::rate_limits::TokenRecorder>,
+        inflight_guard: Option<crate::load::LoadGuard>,
     ) -> Self {
         Self {
             inner,
@@ -199,6 +203,7 @@ impl UsageLoggingStream {
             price,
             recorder,
             token_recorder,
+            _inflight_guard: inflight_guard,
             pending: Some(log),
         }
     }
@@ -594,6 +599,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
                 model: "gpt-4o".to_string(),
                 ..Default::default()
             },
+            None,
             None,
             None,
         );
