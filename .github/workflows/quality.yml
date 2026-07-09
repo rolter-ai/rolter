@@ -15,6 +15,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # faster linking on the linux runner; writes ~/.cargo/config.toml so cargo
+      # uses the wild linker for *-unknown-linux-{gnu,musl}. pinned to the 0.9.0
+      # commit sha per the supply-chain policy (no floating action refs)
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
