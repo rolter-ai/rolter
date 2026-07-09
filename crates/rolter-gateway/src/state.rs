@@ -6,8 +6,8 @@ use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build, LoadBalancer};
 use rolter_core::{
-    BudgetConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig, RateLimitConfig,
-    RetryConfig,
+    BudgetConfig, CooldownConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
+    RateLimitConfig, RetryConfig,
 };
 use rolter_proxy::Forwarder;
 
@@ -61,6 +61,8 @@ pub struct Snapshot {
     pub rate_limits: Arc<Vec<RateLimitConfig>>,
     /// upstream retry policy applied on transient failures
     pub retry: RetryConfig,
+    /// per-target cooldown policy applied on transient failures
+    pub cooldown: CooldownConfig,
 }
 
 impl Snapshot {
@@ -127,6 +129,7 @@ impl Snapshot {
             budgets: Arc::new(config.budgets.clone()),
             rate_limits: Arc::new(config.rate_limits.clone()),
             retry: config.retry.clone(),
+            cooldown: config.cooldown.clone(),
         }
     }
 }
@@ -142,6 +145,8 @@ pub struct AppState {
     pub budgets: BudgetEnforcer,
     /// enforces throughput caps against Redis; disabled when no redis url is set
     pub rate_limiter: RateLimiter,
+    /// per-target cooldown registry, shared across requests and config reloads
+    pub cooldowns: crate::cooldowns::Cooldowns,
 }
 
 impl AppState {
@@ -196,6 +201,7 @@ impl AppState {
             log,
             budgets,
             rate_limiter,
+            cooldowns: crate::cooldowns::Cooldowns::new(),
         }
     }
 

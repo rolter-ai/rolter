@@ -114,6 +114,15 @@ disabled = false               # revoke without deleting
 # base_backoff_ms = 100   # base delay for the first retry
 # max_backoff_ms = 2000   # ceiling for the backoff delay
 
+# --- per-target cooldowns ---
+# after a target returns a transient failure (http 429/5xx or a connection
+# error) it is parked for base_secs (or the 429 retry-after, capped at max_secs)
+# and the balancer skips it so healthy siblings absorb the load. when every
+# sibling is parked the gateway fails open and still forwards. defaults shown.
+# [cooldown]
+# base_secs = 5     # how long a failing target is parked; 0 disables cooldowns
+# max_secs = 300    # ceiling for a cooldown derived from a 429 retry-after
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
