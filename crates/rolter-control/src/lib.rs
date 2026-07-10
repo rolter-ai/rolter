@@ -11,6 +11,7 @@
 mod analytics;
 #[cfg(feature = "postgres")]
 mod crud;
+mod health;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -164,7 +165,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         .route("/api/v1/roles", get(list_roles))
         .route("/api/v1/config", get(get_config))
         .route("/internal/snapshot", get(get_snapshot))
-        .merge(analytics::router());
+        .merge(analytics::router())
+        .merge(health::router());
 
     #[cfg(feature = "postgres")]
     if pool.is_some() {
