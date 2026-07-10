@@ -9,4 +9,6 @@ extend-ignore-re = [
     "mis-enforce",
     # "sk-abd": a deliberately-wrong virtual key in the auth verify tests
     "sk-abd",
+    # "abc"/"abd": trie test fixtures exercising shared-prefix node counting
+    "\"abd\"",
 ]

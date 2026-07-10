@@ -65,7 +65,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 
 ## Phase 6 — Caching v2
 - [x] Composable filter → weighted-score → argmax `Scorer` pipeline (foundation)
-- [ ] Cache-aware trie eviction (LRU / max-nodes) + metrics
+- [x] Cache-aware trie eviction (LRU / max-nodes; per-trie eviction counter)
 - [ ] Precise KV-event scorer (vLLM ZMQ, block hashing, resident-prefix fraction)
 - [ ] lmcache-aware strategy (controller occupancy)
 - [ ] Response cache: exact (Redis) with TTL + opt-in per route/key

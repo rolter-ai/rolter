@@ -11,7 +11,7 @@ The `cache_aware` strategy keeps, per target, a byte **trie** of prompts it has 
 - if the best match ≥ `threshold` (default `0.5`), pins the request to that target (cache hit)
 - otherwise spreads to the least-warmed target (or least loaded once load is wired)
 
-This is **approximate** (no coupling to the engine). It is intentionally simple in v1; the trie grows unbounded and eviction is a roadmap item.
+This is **approximate** (no coupling to the engine). The per-target trie is capped at a node ceiling (default 1M nodes) with **LRU eviction**: inserting past the cap drops the least-recently-inserted prompt, pruning only the nodes that become unreferenced (shared prefixes survive). Each trie exposes an eviction counter for observability.
 
 ```mermaid
 flowchart TD
