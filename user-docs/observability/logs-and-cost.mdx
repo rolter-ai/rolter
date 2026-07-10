@@ -1,0 +1,118 @@
+---
+title: "Per-Request Logs and Cost Tracking with ClickHouse"
+sidebarTitle: "Logs & Cost"
+description: "Enable ClickHouse logging to record every proxied request with token counts, cost in USD, latency, and error details for analysis and billing."
+---
+
+Rolter can write a structured row to ClickHouse for every request it proxies. Each row captures everything you need to audit usage, track spend, and investigate issues — token counts, cost in USD, latency, error details, and the A/B variant that served the request. Writes are asynchronous and batched off the request path, so enabling logging adds zero latency for your users.
+
+<Note>
+  ClickHouse logging is entirely optional. If you don't need per-request records or cost tracking, you can skip this section and Rolter will still expose Prometheus metrics and traces.
+</Note>
+
+## Enabling logging
+
+Set `clickhouse_url` in the `[logging]` section of your config file to point at your ClickHouse HTTP interface:
+
+```toml rolter.toml
+[logging]
+clickhouse_url = "http://localhost:8123"
+```
+
+Logging is disabled when `clickhouse_url` is unset — there's no placeholder or no-op mode.
+
+## What gets logged
+
+Every proxied request writes one row to the `request_logs` table with the following fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `request_id` | String | Unique request identifier, echoed in the `x-request-id` response header |
+| `model` | String | The public model name the client requested |
+| `provider` | String | The upstream provider that served the request |
+| `target` | String | The specific upstream target within the provider |
+| `status` | UInt16 | HTTP status code returned to the client |
+| `prompt_tokens` | UInt32 | Prompt / input token count reported by the upstream |
+| `completion_tokens` | UInt32 | Completion / output token count reported by the upstream |
+| `cost_usd` | Float64 | Computed cost in USD (see [Cost tracking](#cost-tracking)) |
+| `latency_ms` | UInt32 | End-to-end request latency in milliseconds |
+| `ttft_ms` | UInt32 | Time-to-first-token in milliseconds (streaming requests) |
+| `cached` | Bool | Whether the response was served from the upstream's prompt cache |
+| `error` | String | Error message if the request failed; empty on success |
+| `variant` | String | Name of the A/B variant that served the request (blank when not using variants) |
+
+## Configuration reference
+
+All `[logging]` fields except `clickhouse_url` have sensible defaults and are optional:
+
+```toml rolter.toml
+[logging]
+clickhouse_url = "http://localhost:8123"  # required to enable logging
+
+# flush when batch reaches this many rows (default: 1000)
+batch_max = 1000
+
+# also flush partial batches at least this often, in milliseconds (default: 1000)
+flush_ms = 1000
+
+# bounded queue capacity; rows are dropped and counted when full (default: 10000)
+queue_capacity = 10000
+```
+
+<AccordionGroup>
+  <Accordion title="clickhouse_url">
+    **Type:** String · **Default:** unset (logging disabled)
+
+    Base URL of your ClickHouse HTTP interface, e.g. `http://clickhouse:8123`. Rolter uses the HTTP interface — not the native TCP protocol — so no special driver is required. Logging is disabled entirely when this is unset.
+  </Accordion>
+
+  <Accordion title="batch_max">
+    **Type:** Integer · **Default:** `1000`
+
+    Rolter accumulates log rows in an in-memory batch and flushes to ClickHouse once the batch reaches this size. Larger values reduce ClickHouse insert pressure but increase memory usage and the number of rows lost if the gateway crashes before a flush.
+  </Accordion>
+
+  <Accordion title="flush_ms">
+    **Type:** Integer · **Default:** `1000`
+
+    Maximum time in milliseconds between flushes. Even if `batch_max` hasn't been reached, a partial batch is flushed at least this often. At the default value of `1000`, log rows appear in ClickHouse within about a second of the request completing.
+  </Accordion>
+
+  <Accordion title="queue_capacity">
+    **Type:** Integer · **Default:** `10000`
+
+    The bounded in-memory queue between the request path and the background log writer. When the queue is full (e.g. ClickHouse is slow or unreachable), incoming rows are dropped rather than blocking the request. Dropped rows are counted by the `rolter_log_dropped_total` Prometheus counter so you can alert on them.
+  </Accordion>
+</AccordionGroup>
+
+## Cost tracking
+
+The `cost_usd` field on each log row is computed from the `[[model_prices]]` entries in your config. You define the input and output price per million tokens for each model, and Rolter calculates the cost automatically:
+
+```toml rolter.toml
+[[model_prices]]
+model = "gpt-4o"
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absent
+```
+
+<Steps>
+  <Step title="Define prices">
+    Add a `[[model_prices]]` block for each model you want to track. You can define prices for managed models (OpenAI, Anthropic) and self-hosted models alike.
+  </Step>
+  <Step title="Rolter computes cost per request">
+    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`.
+  </Step>
+  <Step title="Query spend in ClickHouse">
+    Rows without a matching model price record `cost_usd = 0` — they still appear in logs, they just won't contribute to spend reports until you add a price.
+  </Step>
+</Steps>
+
+## Built-in dashboard
+
+The Rolter control plane's dashboard queries ClickHouse directly to give you usage, spend, latency percentiles, and error rates — all sliced by model, project, and virtual key. No extra ETL or data pipeline is needed: the rows Rolter writes are the source of truth for the dashboard.
+
+<Tip>
+  Use the `variant` column to run A/B cost analyses. If you have two variants serving the same logical model (e.g. `gpt-4o` vs `claude-sonnet`), you can compare average `cost_usd` and `latency_ms` per variant directly in ClickHouse or your BI tool.
+</Tip>

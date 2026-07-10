@@ -1,0 +1,128 @@
+---
+title: "How to Install the Rolter Gateway: Docker, Cargo, uv"
+sidebarTitle: "Installation"
+description: "Install the Rolter AI gateway using Docker Compose for a full stack, or choose a single-binary install via Cargo or uv/pip for a lighter setup."
+---
+
+Rolter ships in three forms: a Docker Compose stack that starts the gateway alongside its supporting services, a native Rust binary you can install with Cargo, and a Python-packaged wheel you can install with uv or pip. Pick the method that fits your environment — Docker Compose is the easiest way to get everything running, while the binary options are better suited for minimal setups and embedding Rolter in existing infrastructure.
+
+## Prerequisites
+
+Before you install, make sure you have at least one of the following depending on your chosen method:
+
+- **Docker Compose**: [Docker Desktop](https://docs.docker.com/get-docker/) (macOS/Windows) or Docker Engine \+ the Compose plugin (Linux)
+- **Cargo**: [Rust toolchain](https://rustup.rs/) (stable, 1.82 or later — the project MSRV)
+- **uv / pip**: [uv](https://github.com/astral-sh/uv) or Python 3.9\+ with pip
+
+You'll also need at least one upstream provider API key ready to export:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+<Note>
+  Rolter never stores provider API keys in its config file. Instead, it reads them from the environment variables you reference with `api_key_env` in `rolter.toml`. Set those variables before starting the gateway.
+</Note>
+
+## Docker Compose (recommended)
+
+Docker Compose brings up the complete Rolter stack — gateway, control plane, Postgres, Redis, and ClickHouse — with a single command. Database schemas are applied automatically on first start.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/ormeilu/rolter.git
+    cd rolter
+    ```
+  </Step>
+  <Step title="Set your environment variables">
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` and add your provider API keys:
+
+    ```bash
+    OPENAI_API_KEY=sk-...
+    ANTHROPIC_API_KEY=sk-ant-...
+    ```
+  </Step>
+  <Step title="Start the stack">
+    ```bash
+    docker compose -f docker/docker-compose.yml up -d
+    ```
+
+    Once the containers are running, the gateway and control plane are available at:
+
+    | Service | URL |
+    | --- | --- |
+    | Gateway (data plane) | [http://localhost:4000](http://localhost:4000) |
+    | Control plane \+ UI | [http://localhost:4001](http://localhost:4001) |
+  </Step>
+</Steps>
+
+<Tip>
+  Follow gateway logs in real time with `docker compose -f docker/docker-compose.yml logs -f gateway` to confirm your config loaded cleanly.
+</Tip>
+
+## Other install methods
+
+<CodeGroup>
+
+```bash Cargo
+# from a cloned copy of the repository
+cargo install --path crates/rolter-gateway
+
+# then run it with your config
+export OPENAI_API_KEY=sk-...
+rolter-gateway --config rolter.toml
+```
+
+```bash uv
+uv tool install rolter
+
+# then run it with your config
+export OPENAI_API_KEY=sk-...
+rolter-gateway --config rolter.toml
+```
+
+```bash pip
+pip install rolter
+
+# then run it with your config
+export OPENAI_API_KEY=sk-...
+rolter-gateway --config rolter.toml
+```
+
+</CodeGroup>
+
+<Note>
+  The `cargo install` and `uv`/`pip` methods install the gateway binary only — they do not start Postgres, Redis, or ClickHouse. Budget enforcement and request logging require those services. For a local-only setup without persistence, the gateway works fine without them; budgets will fail open and request logs will be skipped.
+</Note>
+
+## Default ports
+
+| Port | Service |
+| --- | --- |
+| `4000` | Gateway — handles all `/v1/*` AI requests from your clients |
+| `4001` | Control plane — hosts the dashboard and configuration API |
+| `5432` | PostgreSQL (Docker Compose only) |
+| `6379` | Redis (Docker Compose only) |
+| `8123` / `9000` | ClickHouse HTTP / native (Docker Compose only) |
+
+<Warning>
+  Do not expose port `4001` (control plane) to the public internet. Place the gateway (port `4000`) behind a TLS-terminating load balancer or ingress, and keep the control plane on an internal network.
+</Warning>
+
+## Configure your first route
+
+After installing, create a `rolter.toml` from the example config:
+
+```bash
+cp rolter.example.toml rolter.toml
+```
+
+The example file is fully annotated and ready to use. It defines routes for `gpt-4o` (OpenAI), `claude` (Anthropic), and a sample vLLM pool — edit the provider entries to match your setup, then start the gateway.
+
+Head to the [Quickstart](/quickstart) to send your first request.

@@ -1,0 +1,92 @@
+---
+title: "Rolter Environment Variables and Configuration Reference"
+sidebarTitle: "Env Vars"
+description: "All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values."
+---
+
+Environment variables override their corresponding `rolter.toml` values, and CLI flags override both. Use environment variables for secrets and for anything that changes between deployments — such as ports, database URLs, and provider API keys — so you can keep a single `rolter.toml` across environments without embedding sensitive values in it.
+
+---
+
+## Gateway variables
+
+These variables control the gateway process (`rolter-gateway`).
+
+| Variable | Purpose |
+| --- | --- |
+| `ROLTER_CONFIG` | Path to the configuration file. Defaults to `rolter.toml` in the current directory. |
+| `ROLTER_HOST` | Listen host. Overrides `[server] host` in `rolter.toml`. |
+| `ROLTER_PORT` | Listen port. Overrides `[server] port` in `rolter.toml`. |
+| `ROLTER_KEY_PEPPER` | Secret mixed into virtual-key digests. Keeps plaintext keys out of gateway memory; a leaked digest is useless without it. Overrides `[server] key_pepper`. |
+| `CLICKHOUSE_URL` | ClickHouse HTTP interface URL, e.g. `http://localhost:8123`. Overrides `[logging] clickhouse_url`. |
+
+---
+
+## Control plane variables
+
+These variables control the control-plane process (`rolter-control`), which manages the dashboard, management API, and config propagation.
+
+| Variable | Purpose |
+| --- | --- |
+| `ROLTER_CONTROL_HOST` | Listen host for the control-plane HTTP server. |
+| `ROLTER_CONTROL_PORT` | Listen port for the control-plane HTTP server. |
+| `ROLTER_UI_DIR` | Filesystem path to the built UI assets served by the control plane. |
+| `ROLTER_MASTER_KEY` | AES-256-GCM master key used to encrypt provider credentials at rest in PostgreSQL. |
+| `DATABASE_URL` | PostgreSQL connection string, e.g. `postgres://user:pass@localhost:5432/rolter`. |
+
+<Warning>
+  `ROLTER_MASTER_KEY` is the most sensitive secret in your Rolter deployment. Any party who holds this key can decrypt every stored provider credential. Generate a strong value before first run and store it in a secrets manager:
+
+  ```bash
+  openssl rand -hex 32
+  ```
+
+  Once the database is populated, rotating this key requires re-encrypting all stored credentials. Treat it with the same care as a private CA key.
+</Warning>
+
+---
+
+## Shared variables
+
+These variables apply to both the gateway and the control plane.
+
+| Variable | Purpose |
+| --- | --- |
+| `REDIS_URL` | Redis/Valkey connection string. Used by the gateway for rate limits and budget tracking, and by the control plane for config-version pub/sub. |
+| `RUST_LOG` | Log filter string passed to the `tracing` subscriber, e.g. `info` or `rolter_gateway=debug,rolter_control=info`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint for traces and metrics, e.g. `http://otel-collector:4317`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | OTLP authentication headers as a comma-separated `key=value` list, e.g. `Authorization=Bearer <token>`. |
+| `OTEL_SERVICE_NAME` | The service name reported in OTel spans, e.g. `rolter-gateway` or `rolter-control`. |
+
+---
+
+## Provider key variables
+
+Provider credentials are not hard-coded variable names — you choose the name and reference it in `rolter.toml`. Any variable name you set in a provider's `api_key_env` field becomes a provider key variable for that deployment.
+
+```toml
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"   # Rolter reads os.env["OPENAI_API_KEY"]
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+```
+
+Common provider key variables in use:
+
+| Variable | Typical provider |
+| --- | --- |
+| `OPENAI_API_KEY` | OpenAI |
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `TOGETHER_API_KEY` | Together AI |
+| `GROQ_API_KEY` | Groq |
+
+<Tip>
+  Always use `api_key_env` rather than writing your provider key inline in `rolter.toml`. Inline keys end up in version control, Docker image layers, and config backups. With `api_key_env`, your `rolter.toml` is safe to commit; only the environment running the gateway ever sees the actual key.
+</Tip>

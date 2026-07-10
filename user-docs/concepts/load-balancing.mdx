@@ -1,0 +1,190 @@
+---
+title: "Load Balancing Strategies for LLM Routing in Rolter"
+sidebarTitle: "Load Balancing"
+description: "Explore all seven load balancing strategies Rolter supports, understand when to use each one, and see how to configure them in your route definitions."
+---
+
+Every route in Rolter picks exactly one load-balancing strategy. The strategy runs on every incoming request and returns the target that should handle it. Rolter ships seven strategies, from stateless round-robin to a composable pipeline that blends weight, load, and cache-affinity signals. Choosing the right strategy for your workload can meaningfully reduce latency and cost.
+
+## Strategy overview
+
+| Strategy | Description | Best for |
+| --- | --- | --- |
+| `round_robin` | Sequential rotation through targets | Homogeneous pools, stateless workloads |
+| `random` | Uniform random selection | Simple pools where all targets are equivalent |
+| `power_of_two` | Pick the less loaded of two randomly chosen targets | Pools with variable request durations |
+| `consistent_hash` | Hash ring keyed by session ID or prompt | Multi-turn chat, sticky sessions, KV cache reuse |
+| `cache_aware` | Approximate prefix-affinity routing to warm targets | Shared system prompts, few-shot examples, RAG |
+| `weighted` | Smooth weighted round-robin by target `weight` | A/B traffic splits, capacity-based routing |
+| `pipeline` | Composable filter → scored → argmax selection | Blending weight, load, and cache signals together |
+
+---
+
+## Strategies in detail
+
+<Accordion title="round_robin — sequential rotation">
+  Rolter cycles through the target list in order, sending the first request to target 0, the second to target 1, and so on. Zero state, perfectly predictable distribution.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "gpt-4o"
+  strategy = "round_robin"
+  [[routes.targets]]
+  provider = "openai"
+  model = "gpt-4o"
+  ```
+</Accordion>
+
+<Accordion title="random — uniform random selection">
+  Each request independently picks a target at random with equal probability. Useful when you want simple distribution without sequential ordering.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "gpt-4o"
+  strategy = "random"
+  [[routes.targets]]
+  provider = "openai-east"
+  model = "gpt-4o"
+  [[routes.targets]]
+  provider = "openai-west"
+  model = "gpt-4o"
+  ```
+</Accordion>
+
+<Accordion title="power_of_two — pick the less loaded of two">
+  Rolter samples two targets at random and forwards to whichever has fewer in-flight requests. This approximates optimal load distribution with O(1) overhead and works well when request durations vary widely.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "llama"
+  strategy = "power_of_two"
+  [[routes.targets]]
+  provider = "vllm-1"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  [[routes.targets]]
+  provider = "vllm-2"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  [[routes.targets]]
+  provider = "vllm-3"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  ```
+
+  <Tip>
+    Enable `[metrics_scrape]` so Rolter folds each engine's scheduler queue depth into the load view — this makes `power_of_two` aware of queued requests, not just in-flight ones.
+  </Tip>
+</Accordion>
+
+<Accordion title="consistent_hash — sticky sessions via hash ring">
+  Rolter places targets on a 160-vnode hash ring and hashes the incoming `x-session-id` header (falling back to the prompt text) to select a target. The same session or prompt always lands on the same target, giving the upstream engine the best chance of serving it from a warm KV cache. If a target is removed, only the keys that mapped to it are reshuffled.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "llama"
+  strategy = "consistent_hash"
+  [[routes.targets]]
+  provider = "vllm-1"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  [[routes.targets]]
+  provider = "vllm-2"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  ```
+
+  Send a session identifier in the request header to activate session affinity:
+
+  ```http
+  x-session-id: user-1234-session-abc
+  ```
+</Accordion>
+
+<Accordion title="cache_aware — approximate prefix affinity">
+  Rolter maintains a per-target trie of prompts it has served. For each incoming request, it scores targets by the fraction of leading prompt bytes already present in their trie. If the best match meets or exceeds the threshold (default `0.5`), Rolter pins the request to that target. Otherwise it spreads to the least-warmed target.
+
+  This is the recommended strategy for self-hosted vLLM fleets with shared system prompts. See [Cache-Aware Routing](/concepts/cache-aware-routing) for a full explanation.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "llama"
+  strategy = "cache_aware"
+  [[routes.targets]]
+  provider = "vllm-1"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  [[routes.targets]]
+  provider = "vllm-2"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  ```
+</Accordion>
+
+<Accordion title="weighted — smooth weighted round-robin">
+  Targets receive traffic proportional to their `weight` value. Rolter uses smooth weighted round-robin, so the distribution is both proportional _and_ evenly interleaved — a 3:1 split doesn't batch three requests together, it intersperses them.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "llama-weighted"
+  strategy = "weighted"
+  [[routes.targets]]
+  provider = "vllm-1"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  weight = 3
+  [[routes.targets]]
+  provider = "vllm-2"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  weight = 1
+  ```
+
+  The above sends 75 % of requests to `vllm-1` and 25 % to `vllm-2`.
+</Accordion>
+
+<Accordion title="pipeline — composable multi-signal selection">
+  The pipeline strategy runs three stages: **filter** (drop ineligible targets), **score** (combine static weight \+ in-flight load \+ prefix-cache affinity into a weighted sum per target), and **argmax** (pick the highest scorer, breaking ties randomly). Session affinity via `x-session-id` pins repeat requests to their last-served target within a TTL window.
+
+  This is the most powerful strategy and the extension point for future cost, latency, and KV-cache scorers.
+
+  ```toml rolter.toml
+  [[routes]]
+  model = "llama-pipeline"
+  strategy = "pipeline"
+  [[routes.targets]]
+  provider = "vllm-1"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  weight = 2
+  [[routes.targets]]
+  provider = "vllm-2"
+  model = "meta-llama/Llama-3.1-8B-Instruct"
+  weight = 1
+  ```
+</Accordion>
+
+---
+
+## Session affinity with `x-session-id`
+
+Several strategies (`consistent_hash`, `pipeline`, and `cache_aware`) read the `x-session-id` request header to pin a session to a specific target. Send any stable string that identifies the logical session — a user ID, conversation ID, or a composite:
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer sk-my-app
+x-session-id: user-9876-conv-001
+Content-Type: application/json
+```
+
+When the header is absent, these strategies fall back to hashing the prompt text.
+
+---
+
+## Choosing a strategy
+
+Use this table to match your workload to a starting strategy:
+
+| Situation | Recommended strategy |
+| --- | --- |
+| Managed API (OpenAI, Anthropic), homogeneous pool | `round_robin` |
+| Many small, fast requests with equal-spec replicas | `random` |
+| Mixed long and short requests, load can spike | `power_of_two` |
+| Multi-turn chat where session stickiness matters | `consistent_hash` |
+| vLLM fleet with a shared system prompt or RAG context | `cache_aware` |
+| Canary deployment or capacity-weighted split | `weighted` |
+| Self-hosted fleet where you want all signals combined | `pipeline` |
+
+<Info>
+  You can enable `[metrics_scrape]` to let Rolter pull each engine's queue depth from its Prometheus metrics endpoint. Load-aware strategies (`power_of_two` and `pipeline`) automatically incorporate this data into their decisions.
+</Info>

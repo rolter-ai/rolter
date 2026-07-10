@@ -1,0 +1,216 @@
+---
+title: "POST /v1/messages: Anthropic Messages API for Rolter"
+sidebarTitle: "/v1/messages"
+description: "Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config."
+---
+
+The `/v1/messages` endpoint is compatible with the Anthropic Messages API. Any Anthropic SDK or HTTP client works with Rolter without code changes — set `base_url` to your gateway address and supply a Rolter virtual key. Rolter accepts both `x-api-key` (the Anthropic convention) and `Authorization: Bearer` (the OpenAI convention) so you can use either depending on which SDK you are working with. Rolter handles routing, load balancing, and retries before the request reaches your upstream.
+
+## Request
+
+**`POST /v1/messages`**
+
+### Headers
+
+<ParamField header="x-api-key" type="string">
+  Your Rolter virtual key. This is the header expected by Anthropic SDKs and is the recommended approach when targeting `/v1/messages`.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <virtual-key>` — accepted as an alternative to `x-api-key`. Both headers are equivalent within Rolter.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  Must be `application/json`.
+</ParamField>
+
+<ParamField header="x-session-id" type="string">
+  Optional session identifier. Pass a stable value to enable affinity-based routing and improve KV-cache reuse across turns in a multi-turn conversation.
+</ParamField>
+
+### Body
+
+<ParamField body="model" type="string" required>
+  The route name defined in your `rolter.toml`, for example `claude`. Rolter looks up this route and rewrites `model` to the upstream model ID (e.g. `claude-sonnet-4-20250514`) before forwarding. Returns `404` if no matching route exists.
+</ParamField>
+
+<ParamField body="messages" type="array" required>
+  Array of message objects forming the conversation.
+
+  <Expandable title="Message object fields">
+    <ParamField body="role" type="string" required>
+      The speaker role: `user` or `assistant`.
+    </ParamField>
+
+    <ParamField body="content" type="string | array" required>
+      The message content. Pass a plain string for simple text, or an array of content blocks for multi-modal input.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="max_tokens" type="integer" required>
+  The maximum number of tokens to generate. The Anthropic API requires this field — requests without it are rejected by the upstream with a validation error.
+</ParamField>
+
+<ParamField body="stream" default="false" type="boolean">
+  Set to `true` to receive the response as a Server-Sent Events stream. Rolter proxies the upstream SSE stream directly to your client.
+</ParamField>
+
+<ParamField body="system" type="string">
+  An optional system prompt prepended to the conversation context. Passed through to the upstream unchanged.
+</ParamField>
+
+<ParamField body="temperature" type="number">
+  Sampling temperature. Passed through to the upstream and subject to the route's `param_policy`.
+</ParamField>
+
+<ParamField body="top_p" type="number">
+  Nucleus sampling probability mass. An alternative to `temperature`.
+</ParamField>
+
+<ParamField body="stop_sequences" type="array">
+  Array of strings at which the model stops generating further tokens.
+</ParamField>
+
+<Warning>
+  `max_tokens` is required by the Anthropic API. Omitting it produces a validation error from the upstream. Rolter forwards the request body as-is and does not inject `max_tokens` automatically — set it in `[routes.params]` if you want a default applied gateway-side.
+</Warning>
+
+## Examples
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:4000/v1/messages \
+  -H "x-api-key: sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude",
+    "max_tokens": 256,
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+```bash curl (streaming)
+curl -N http://localhost:4000/v1/messages \
+  -H "x-api-key: sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude",
+    "max_tokens": 256,
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+```python Anthropic SDK
+import anthropic
+
+client = anthropic.Anthropic(
+    api_key="sk-rolter-dev",
+    base_url="http://localhost:4000",
+)
+
+message = client.messages.create(
+    model="claude",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+print(message.content[0].text)
+```
+
+```python Anthropic SDK (streaming)
+import anthropic
+
+client = anthropic.Anthropic(
+    api_key="sk-rolter-dev",
+    base_url="http://localhost:4000",
+)
+
+with client.messages.stream(
+    model="claude",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello!"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+</CodeGroup>
+
+## Self-hosted vLLM with session affinity
+
+If you run a pool of vLLM instances configured with an OpenAI-compatible provider and your pool serves a model that accepts Anthropic-format requests, you can use `x-session-id` to pin multi-turn traffic to the same replica.
+
+```bash curl (session affinity)
+curl http://localhost:4000/v1/messages \
+  -H "x-api-key: sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -H "x-session-id: conversation-xyz" \
+  -d '{
+    "model": "llama",
+    "max_tokens": 512,
+    "messages": [
+      {"role": "user", "content": "Summarise the Rust ownership model."}
+    ]
+  }'
+```
+
+## Response
+
+A successful non-streaming response follows the Anthropic Messages shape:
+
+```json
+{
+  "id": "msg_abc123",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Hello! How can I help you today?"
+    }
+  ],
+  "model": "claude-sonnet-4-20250514",
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 12
+  }
+}
+```
+
+<ResponseField name="id" type="string">
+  Unique message identifier, prefixed with `msg_`.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Always `"message"` for a completed response.
+</ResponseField>
+
+<ResponseField name="content" type="array">
+  Array of content blocks. Each block has a `type` field (`"text"` for standard text) and a `text` field.
+</ResponseField>
+
+<ResponseField name="stop_reason" type="string">
+  Why generation stopped: `end_turn`, `max_tokens`, or `stop_sequence`.
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Token counts for the request.
+
+  <Expandable title="Usage fields">
+    <ResponseField name="input_tokens" type="integer">
+      Tokens in the input messages.
+    </ResponseField>
+
+    <ResponseField name="output_tokens" type="integer">
+      Tokens generated in the response.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

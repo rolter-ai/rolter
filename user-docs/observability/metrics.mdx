@@ -1,0 +1,121 @@
+---
+title: "Prometheus Metrics and Histograms in Rolter Gateway"
+sidebarTitle: "Metrics"
+description: "Scrape Rolter's Prometheus endpoint to monitor request rates, latency histograms, upstream errors, and auth failures across models and providers."
+---
+
+Rolter exposes a Prometheus-compatible metrics endpoint so you can plug it straight into your existing monitoring stack — no agents or sidecars required. Metrics are updated on the request path and rendered on demand when Prometheus scrapes the endpoint.
+
+## Scraping the endpoint
+
+By default, metrics are available at `GET /metrics` on the same port as the gateway (`:4000`). Add a Rolter job to your Prometheus configuration and you're done:
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: rolter
+    static_configs:
+      - targets: ['localhost:4000']
+```
+
+## Changing the metrics path
+
+If another service behind the same reverse proxy already owns `/metrics`, you can move Rolter's endpoint to any path you choose:
+
+```toml rolter.toml
+[server]
+metrics_path = "/internal/metrics"
+```
+
+<Note>
+  The `metrics_path` value must start with `/` and must not collide with Rolter's built-in routes: `/healthz`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, or `/v1/messages`.
+</Note>
+
+## Available metrics
+
+### Request traffic
+
+<AccordionGroup>
+  <Accordion title="rolter_requests_total">
+    **Type:** Counter
+
+    Total number of requests proxied by the gateway since startup. Use this as your primary throughput signal — `rate(rolter_requests_total[1m])` gives you requests per second.
+  </Accordion>
+
+  <Accordion title="rolter_upstream_errors_total">
+    **Type:** Counter
+
+    Total upstream errors, broken down by error type. Incremented when an upstream returns a 4xx/5xx or a connection-level failure occurs (after all retries are exhausted).
+  </Accordion>
+
+  <Accordion title="rolter_auth_failures_total">
+    **Type:** Counter
+
+    Total authentication failures — requests that were rejected because the presented virtual key was missing, invalid, disabled, or expired.
+  </Accordion>
+</AccordionGroup>
+
+### Latency histograms
+
+Both histograms are labelled `{model="..."}` so you can track latency per model independently. Each histogram exposes the standard `_bucket`, `_sum`, and `_count` series.
+
+<AccordionGroup>
+  <Accordion title="rolter_request_latency_ms">
+    **Type:** Histogram · Labels: `model`
+
+    End-to-end request latency in milliseconds — from the moment Rolter receives the first request byte to when the last response byte is sent to the client (including streaming). Use `histogram_quantile(0.99, rate(rolter_request_latency_ms_bucket[5m]))` for p99 latency per model.
+  </Accordion>
+
+  <Accordion title="rolter_request_ttft_ms">
+    **Type:** Histogram · Labels: `model`
+
+    Time-to-first-token in milliseconds for streaming requests. This measures how long the client waits before receiving the initial token — a key quality-of-service signal for interactive applications. Use the `_bucket` series for percentile calculations in Grafana or Prometheus recording rules.
+  </Accordion>
+</AccordionGroup>
+
+### Configuration & health counters
+
+<AccordionGroup>
+  <Accordion title="rolter_config_version">
+    **Type:** Gauge
+
+    The current configuration snapshot version. This increments each time Rolter successfully reloads its configuration. Alert on this staying flat if you expect regular updates, or spiking unexpectedly.
+  </Accordion>
+
+  <Accordion title="Additional event counters">
+    **Type:** Counter (all)
+
+    Rolter also exposes a set of fine-grained counters for internal events. These are useful for debugging and alerting on edge conditions:
+
+    | Metric | What it counts |
+    | --- | --- |
+    | `rolter_reload_total` | Successful configuration reloads |
+    | `rolter_log_total` | Request log rows enqueued for ClickHouse |
+    | `rolter_budget_exceeded_total` | Requests blocked by a spend budget (HTTP 402) |
+    | `rolter_rate_limit_total` | Requests rejected by a rate limit (HTTP 429) |
+    | `rolter_retry_total` | Upstream retries attempted |
+    | `rolter_cooldown_total` | Targets placed into cooldown |
+    | `rolter_health_probe_total` | Active health probe attempts |
+    | `rolter_breaker_trip_total` | Circuit breaker trips |
+    | `rolter_scrape_total` | Upstream engine metrics scrape attempts |
+  </Accordion>
+</AccordionGroup>
+
+## Grafana dashboard tips
+
+<CardGroup cols={2}>
+  <Card title="Latency percentiles" icon="chart-line">
+    Use `rolter_request_latency_ms_bucket` with `histogram_quantile()` to plot p50/p95/p99 latency panels, split by the `model` label for per-model breakdown.
+  </Card>
+
+  <Card title="Time-to-first-token" icon="bolt">
+    Use `rolter_request_ttft_ms_bucket` the same way to build a TTFT panel — critical for streaming LLM apps where perceived responsiveness matters more than total latency.
+  </Card>
+
+  <Card title="Error rate" icon="circle-exclamation">
+    Combine `rate(rolter_upstream_errors_total[5m])` and `rate(rolter_requests_total[5m])` to derive an upstream error rate percentage.
+  </Card>
+
+  <Card title="Auth failure rate" icon="lock">
+    Alert on a rising `rate(rolter_auth_failures_total[5m])` to detect misconfigured clients or credential rotation issues before they affect users.
+  </Card>
+</CardGroup>

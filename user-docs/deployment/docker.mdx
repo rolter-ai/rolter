@@ -1,0 +1,120 @@
+---
+title: "Run Rolter on Docker: Gateway, Control Plane, and Stores"
+sidebarTitle: "Docker"
+description: "Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host."
+---
+
+The fastest way to get a production-ready Rolter stack running locally or on a server is with the bundled Docker Compose file. It wires up every service automatically — gateway, control plane, and all three backing stores — so you can move from zero to a working AI gateway in a few minutes.
+
+<Steps>
+  <Step title="Copy the env file and set your secrets">
+    The Compose file reads provider credentials and the master encryption key from a `.env` file. Copy the example and fill in the values before starting anything.
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` and set at minimum:
+
+    ```bash
+    OPENAI_API_KEY=sk-...
+    ANTHROPIC_API_KEY=sk-ant-...
+    ROLTER_MASTER_KEY=<32-byte hex string>
+    ```
+
+    <Note>
+      Generate a strong master key with `openssl rand -hex 32`. This key is used for AES-256-GCM encryption of stored provider secrets — keep it safe and back it up separately.
+    </Note>
+  </Step>
+  <Step title="Start the full stack">
+    Bring up all five services in the background with a single command:
+
+    ```bash
+    docker compose -f docker/docker-compose.yml up -d
+    ```
+
+    Docker Compose starts the services in dependency order: PostgreSQL, Redis, and ClickHouse come up first, then the control plane, then the gateway. On first boot, database schemas are applied automatically from the migration files — no manual SQL is required.
+  </Step>
+  <Step title="Watch the gateway logs">
+    Confirm the gateway started cleanly by tailing its logs:
+
+    ```bash
+    docker compose -f docker/docker-compose.yml logs -f gateway
+    ```
+
+    You should see the gateway announce which port it is listening on and confirm it has connected to Redis. Press `Ctrl+C` to stop following.
+  </Step>
+  <Step title="Verify the services are running">
+    Once all containers are up, the stack exposes the following default ports:
+
+    | Service | Address | Notes |
+    | --- | --- | --- |
+    | **Gateway** | `http://localhost:4000` | OpenAI/Anthropic-compatible API |
+    | **Control plane \+ UI** | `http://localhost:4001` | Dashboard and config API |
+    | **PostgreSQL** | `localhost:5432` | Source of truth for all config |
+    | **Redis** | `localhost:6379` | Config pub/sub and hot-reload events |
+    | **ClickHouse (HTTP)** | `localhost:8123` | Request logging and analytics |
+    | **ClickHouse (native)** | `localhost:9000` | ClickHouse native protocol |
+
+    Open `http://localhost:4001` in your browser to access the dashboard.
+  </Step>
+  <Step title="Send a test request">
+    Confirm the gateway is healthy and accepting traffic:
+
+    ```bash
+    # Health check
+    curl http://localhost:4000/healthz
+    
+    # List available models (uses the default dev virtual key)
+    curl http://localhost:4000/v1/models \
+      -H "Authorization: Bearer sk-rolter-dev"
+    ```
+
+    A `200 OK` from `/healthz` and a JSON model list from `/v1/models` confirm the gateway is fully operational.
+  </Step>
+</Steps>
+
+## Run just the gateway
+
+If you want to run only the gateway — without the control plane or any backing stores — you can use the published image directly with a `rolter.toml` config file. This is useful for quick tests or for edge deployments where you manage external databases separately.
+
+```bash
+docker run --rm -p 4000:4000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v "$PWD/rolter.toml:/app/rolter.toml" \
+  ghcr.io/ormeilu/rolter:latest
+```
+
+Mount your local `rolter.toml` into the container at `/app/rolter.toml`. The gateway reads provider credentials from the environment variables you inject, keeping secrets out of the config file.
+
+To run the control plane instead of the gateway, override the entrypoint:
+
+```bash
+docker run --rm -p 4001:4001 \
+  ghcr.io/ormeilu/rolter:latest rolter-control
+```
+
+## Build the image locally
+
+Both binaries and the compiled dashboard UI are packaged into a single slim Debian image. To build it from source:
+
+<CodeGroup>
+
+```bash Build
+docker build -f docker/Dockerfile -t rolter:dev .
+```
+
+```bash Run (gateway)
+docker run --rm -p 4000:4000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v "$PWD/rolter.toml:/app/rolter.toml" \
+  rolter:dev
+```
+
+</CodeGroup>
+
+## Database schemas
+
+Schema migrations are applied automatically on first container start — no manual SQL or migration commands needed. Both PostgreSQL and ClickHouse schemas are initialised by the Compose setup before the application containers start.
+
+Subsequent starts skip already-applied migrations, so it is safe to bring the stack up and down repeatedly.

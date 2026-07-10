@@ -1,0 +1,72 @@
+---
+title: "Rolter AI Gateway: OpenAI and Anthropic Compatible"
+sidebarTitle: "Introduction"
+description: "Rolter is a high-performance AI gateway and load balancer with drop-in OpenAI and Anthropic compatibility, smart routing, virtual keys, and cost tracking."
+---
+
+Rolter is an open-source AI gateway written in Rust that sits between your applications and your AI providers. Instead of scattering API keys and retry logic across every service, you point all your clients at a single Rolter endpoint and let it handle routing, authentication, budgets, and observability. Because Rolter speaks the OpenAI and Anthropic APIs natively, you can adopt it without changing a line of your existing application code.
+
+## What you can do with Rolter
+
+<CardGroup cols={2}>
+  <Card title="Drop-in compatibility" icon="plug">
+    Rolter implements the OpenAI and Anthropic HTTP APIs. Any SDK or tool that already calls those APIs works immediately — just change the base URL and swap in a virtual key.
+  </Card>
+
+  <Card title="Cache-aware load balancing" icon="arrows-split-up-and-left">
+    When you run a pool of self-hosted vLLM replicas, Rolter routes prefix-heavy traffic to the replica most likely to have the KV cache warm, reducing time-to-first-token across your fleet.
+  </Card>
+
+  <Card title="Virtual keys & RBAC" icon="key">
+    Issue short-lived or scoped virtual keys to teams, projects, or individual services. Revoke or rotate them instantly through the dashboard without touching upstream provider credentials.
+  </Card>
+
+  <Card title="Budgets & rate limits" icon="gauge-high">
+    Set monthly, daily, or lifetime spend caps per org, team, project, or key. Pair them with per-minute request and token rate limits to protect both your wallet and your upstreams.
+  </Card>
+
+  <Card title="Routing strategies" icon="shuffle">
+    Choose from round-robin, weighted, cache-aware, or composable pipeline strategies per model. Run A/B tests and canary releases by splitting traffic across named variants.
+  </Card>
+
+  <Card title="Observability" icon="chart-line">
+    Every request is logged asynchronously to ClickHouse with cost, token counts, latency, and the variant that was chosen. A Prometheus `/metrics` endpoint is always available for scraping.
+  </Card>
+</CardGroup>
+
+## How it works
+
+From your application's point of view, Rolter is just an HTTP endpoint. You send a standard OpenAI or Anthropic request to Rolter, and Rolter forwards it to the right upstream provider — commercial APIs like OpenAI and Anthropic, or self-hosted OpenAI-compatible servers like vLLM. Rolter rewrites the internal model name, injects the upstream credential, and streams the response back to you transparently.
+
+A lightweight dashboard and control plane run on a separate port so that configuration changes — new keys, updated routes, adjusted budgets — take effect immediately without restarting the gateway.
+
+```text
+Your app  ──POST /v1/chat/completions──►  Rolter gateway (port 4000)
+                                                  │
+                              ┌───────────────────┼───────────────────┐
+                              ▼                   ▼                   ▼
+                           OpenAI            Anthropic          vLLM fleet
+```
+
+## Supported endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/v1/chat/completions` | OpenAI chat completions (streaming supported) |
+| `POST` | `/v1/completions` | OpenAI legacy completions |
+| `POST` | `/v1/messages` | Anthropic Messages API (streaming supported) |
+| `GET` | `/v1/models` | Lists your configured public model names |
+| `GET` | `/healthz` | Liveness probe |
+| `GET` | `/metrics` | Prometheus metrics |
+
+## Ready to get started?
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Send your first request through Rolter in five minutes using Docker Compose.
+  </Card>
+
+  <Card title="Installation" icon="download" href="/installation">
+    Install Rolter via Docker Compose, Cargo, or uv/pip.
+  </Card>
+</CardGroup>

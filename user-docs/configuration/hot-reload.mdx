@@ -1,0 +1,75 @@
+---
+title: "Hot Reload: Apply Config Changes Without Restarting"
+sidebarTitle: "Hot Reload"
+description: "Rolter applies provider, route, and key changes from the dashboard instantly without restarting gateways or dropping in-flight connections."
+---
+
+With the full control-plane stack running, you can change providers, routes, virtual keys, pricing, budgets, and rate limits from the dashboard or management API at any time. Each gateway replica picks up the change atomically within seconds — no restarts, no dropped requests, no traffic interruption.
+
+---
+
+## Requirements
+
+Hot reload is a control-plane feature. It requires the full Rolter stack:
+
+<CardGroup cols={3}>
+  <Card title="Control plane" icon="server">
+    The `rolter-control` process validates and publishes config changes.
+  </Card>
+
+  <Card title="PostgreSQL" icon="database">
+    The authoritative store for all configuration and the monotonic version counter.
+  </Card>
+
+  <Card title="Redis / Valkey" icon="bolt">
+    Carries the pub/sub notification that tells each gateway to fetch a new snapshot.
+  </Card>
+</CardGroup>
+
+<Note>
+  Changes to `rolter.toml` require restarting the gateway. Hot reload is a control-plane feature and requires the full Docker Compose stack. When you run the gateway standalone from a config file, you must restart it to apply any changes.
+</Note>
+
+---
+
+## What you can hot-reload
+
+The following configuration changes take effect without a restart:
+
+- **Provider definitions** — add, edit, or remove upstream providers
+- **Route definitions** — add, edit, or remove routes; change strategies; update targets and weights
+- **Virtual keys** — create new keys, revoke existing keys, update model allow-lists
+- **Model pricing** — update `input_per_mtok`, `output_per_mtok`, and `cached_input_per_mtok` rates
+- **Budgets** — add, edit, or remove spend caps
+- **Rate limits** — add, edit, or remove throughput caps
+
+---
+
+## How it works
+
+From your perspective, the update process is straightforward:
+
+<Steps>
+  <Step title="Make a change in the dashboard or management API">
+    Edit a route, add a provider, create a virtual key, or adjust a budget. The control plane performs authorization checks before accepting the change.
+  </Step>
+  <Step title="The control plane validates and publishes">
+    Before writing anything, the control plane validates the full resulting configuration — for example, it checks that every route target references a known provider. A bad config is rejected at this step, so gateways never receive a broken snapshot. Once validation passes, the change is written to PostgreSQL and a new version number is published to Redis.
+  </Step>
+  <Step title="Each gateway receives the update">
+    Every running gateway replica receives the Redis pub/sub notification, fetches the new configuration snapshot from the control plane, and applies it. If a pub/sub message is ever missed, each gateway also reconciles on a background interval, so the system is self-healing.
+  </Step>
+  <Step title="Requests switch over atomically">
+    The gateway swaps its routing table using an atomic pointer swap. In-flight requests complete using the previous configuration; any request that arrives after the swap uses the new configuration. There is no window where the state is inconsistent.
+  </Step>
+</Steps>
+
+---
+
+## Scaling with multiple gateways
+
+All gateway replicas receive the same pub/sub notification simultaneously and fetch the same versioned snapshot from the control plane. You can run as many gateway replicas as you need — each one stays in sync automatically through the shared Redis instance.
+
+<Tip>
+  Point Prometheus at each replica's `/metrics` endpoint and track the `rolter_config_version` gauge to confirm all replicas are running the same configuration version. A replica that falls behind indicates a missed pub/sub message; it will self-heal at the next reconciliation interval, but the metric lets you detect and investigate the lag.
+</Tip>

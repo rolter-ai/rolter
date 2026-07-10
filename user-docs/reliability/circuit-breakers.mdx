@@ -1,0 +1,83 @@
+---
+title: "Circuit Breakers: Shed Load from Failing Upstreams"
+sidebarTitle: "Circuit Breakers"
+description: "Use Rolter's per-target circuit breakers to automatically shed traffic from upstream models that are consistently failing, protecting latency and capacity."
+---
+
+Cooldowns park a target after each individual failure, but they have a blind spot: a target that is persistently down still re-enters the pool on every cooldown expiry and absorbs a probe request — wasting latency and potentially surfacing errors to real clients. Circuit breakers solve this by tracking consecutive failures and keeping a broken target out of rotation for a meaningful window, with a single controlled probe to detect recovery.
+
+## How circuit breakers work
+
+Each target has an independent circuit breaker that moves through three states:
+
+<CardGroup cols={3}>
+  <Card title="Closed" icon="circle-check">
+    Normal operation. Requests flow to the target. Consecutive failures are counted.
+  </Card>
+
+  <Card title="Open" icon="circle-xmark">
+    The target tripped after `failure_threshold` consecutive failures. Rolter skips it entirely for `open_secs`. No real traffic reaches it during this window.
+  </Card>
+
+  <Card title="Half-Open" icon="circle-half-stroke">
+    The open window expired. The next request is used as a probe. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`.
+  </Card>
+</CardGroup>
+
+The transitions look like this:
+
+```text
+Closed ──(failure_threshold consecutive failures)──► Open
+Open   ──(open_secs elapsed, next request probes)──► Half-Open
+Half-Open ──(success)──► Closed
+Half-Open ──(failure)──► Open
+```
+
+A "transient failure" for counting purposes is the same set of conditions that trigger retries and cooldowns: HTTP 429, any 5xx response, or a connection error.
+
+**Fail-open guarantee:** when every target in a route has a tripped breaker, Rolter does not reject the request. It fails open and still forwards, giving you a live error from the upstream rather than a guaranteed gateway error.
+
+## Configuration
+
+Circuit breakers are **disabled by default**. Add a `[breaker]` section to `rolter.toml` and set `enabled = true` to activate them.
+
+<ParamField path="enabled" default="false" type="bool">
+  Master switch. Set to `true` to activate circuit breakers on all targets. A `failure_threshold` of `0` also disables the breaker even when `enabled = true`.
+</ParamField>
+
+<ParamField path="failure_threshold" default="5" type="u32">
+  Number of consecutive transient failures (HTTP 429/5xx or connection error) required to trip a target open. Set to `0` to effectively disable the breaker.
+</ParamField>
+
+<ParamField path="open_secs" default="30" type="u64">
+  How long a tripped target stays open — and invisible to the balancer — before the first half-open probe is allowed through, in seconds.
+</ParamField>
+
+```toml rolter.toml
+[breaker]
+enabled = true
+failure_threshold = 3
+open_secs = 60
+```
+
+<Warning>
+  A low `failure_threshold` (e.g. `1` or `2`) combined with a high `open_secs` can trip a breaker on transient noise and keep a healthy target out of rotation for a long time. Start with conservative values (`failure_threshold = 3–5`, `open_secs = 30–60`) and adjust based on observed behaviour.
+</Warning>
+
+## Choosing between cooldowns and circuit breakers
+
+Both mechanisms protect your pool from a degraded target, but they operate on different time scales and failure patterns:
+
+<CardGroup cols={2}>
+  <Card title="Cooldowns" icon="clock">
+    Best for **individual wobbles** — a single 429, a momentary spike, or a brief connectivity hiccup. The target is back in rotation after a short, fixed window without any probe logic.
+  </Card>
+
+  <Card title="Circuit Breakers" icon="bolt">
+    Best for **sustained outages** — a target that fails consistently and repeatedly. The breaker keeps it fully out of rotation and uses a single controlled probe to detect recovery, minimising wasted capacity.
+  </Card>
+</CardGroup>
+
+<Note>
+  Circuit breakers complement cooldowns — they are not mutually exclusive. When both are configured, a single failure triggers a cooldown park; if failures accumulate past `failure_threshold` across those cooldown cycles, the breaker trips open and takes over with the longer `open_secs` window. You get short-term protection and long-term load shedding from a single configuration.
+</Note>

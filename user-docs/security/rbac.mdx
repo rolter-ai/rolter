@@ -1,0 +1,76 @@
+---
+title: "Rolter Control Plane: Roles, Scopes, and Permissions"
+sidebarTitle: "RBAC"
+description: "Assign admin, member, and viewer roles at org, team, or project scope to control what each user can manage in the Rolter control plane."
+---
+
+Rolter's role-based access control (RBAC) system governs what each human user can do in the control plane — creating routes, managing virtual keys, adjusting budgets, and reading dashboards. Roles are lightweight and composable: you assign them per scope, so a user can hold different permissions in different parts of your organisation.
+
+## Roles
+
+Rolter ships with three built-in roles. Every role applies within the scope it is granted — it does not automatically extend to parent or sibling scopes.
+
+<CardGroup cols={3}>
+  <Card title="admin" icon="shield-check">
+    Full control within the assigned scope. Admins can manage providers, routes, virtual keys, members, and budgets. Use this role sparingly — at most for a small platform team.
+  </Card>
+
+  <Card title="member" icon="pencil">
+    Create and edit routes and virtual keys within their scope. Members cannot change org-level settings or manage other users' memberships.
+  </Card>
+
+  <Card title="viewer" icon="eye">
+    Read-only access to dashboards, request logs, and usage data. Assign this role to stakeholders who need visibility without the ability to make changes.
+  </Card>
+</CardGroup>
+
+## Scopes
+
+Roles are always granted at a specific scope. Rolter organises resources in a four-level hierarchy:
+
+<Steps>
+  <Step title="Org">
+    The top-level container for all your teams, projects, and virtual keys. An org-level admin can manage everything beneath it.
+  </Step>
+  <Step title="Team">
+    A named group within an org — typically a product team or business unit. Teams own one or more projects.
+  </Step>
+  <Step title="Project">
+    The primary unit of work. Routes, virtual keys, and budgets are attached to projects. Most day-to-day administration happens at this level.
+  </Step>
+  <Step title="Virtual Key">
+    Individual API credentials. Budgets and rate limits can be scoped to a single key for fine-grained per-client control.
+  </Step>
+</Steps>
+
+## Assigning roles per scope
+
+A user can hold a different role at each scope level. For example, a developer might be a **member** in their team's project but only a **viewer** in the shared infrastructure project. Permission checks resolve the most specific membership for the resource being accessed.
+
+```text
+Alice  →  admin   at  org: acme
+Bob    →  member  at  project: payments-api
+Carol  →  viewer  at  team: platform
+```
+
+<Note>
+  The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it only checks that the incoming virtual key exists, is active, and is allowed to access the requested model. RBAC and virtual key auth are independent systems.
+</Note>
+
+## Most-restrictive-wins
+
+When evaluating budgets and rate limits, Rolter walks the scope chain from org down to the individual key and applies the most restrictive matching rule. This means an org-level budget acts as a hard ceiling even if a project-level budget is more generous — and a per-key rate limit can tighten throughput below what the project allows.
+
+<Tip>
+  Use this to your advantage: set a broad org-level budget as a safety net, then add project- or key-level limits to give individual teams or clients their own allocation. See [Budgets & Rate Limits](/security/budgets-and-rate-limits) for configuration details.
+</Tip>
+
+## User accounts
+
+Rolter v1 ships with **local user accounts** secured with username and password. You create and manage accounts through the control plane dashboard or API.
+
+**OAuth2 / OIDC SSO** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is on the roadmap and will be available in a future release.
+
+<Info>
+  If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
+</Info>

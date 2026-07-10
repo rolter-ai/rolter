@@ -1,0 +1,94 @@
+---
+title: "Active Health Checks for Upstream Providers in Rolter"
+sidebarTitle: "Health Checks"
+description: "Enable Rolter's background health probing to automatically skip unavailable upstream providers during routing, before a real request ever fails."
+---
+
+By default, Rolter discovers that an upstream is unhealthy only when a real request fails. Active health checks flip this around: a background task periodically issues a lightweight `GET` request to each provider, and any provider that fails those probes is marked unhealthy and pulled from rotation immediately — before it causes a client-visible error. When a later probe succeeds, the provider is quietly restored.
+
+## What counts as healthy
+
+Rolter probes each provider by sending a `GET {api_base}{path}` request. Any response that is **not** a 5xx status is treated as healthy, including `401 Unauthorized` and `404 Not Found`. This broad definition is intentional: managed AI APIs (OpenAI, Anthropic) and most self-hosted engines do not expose a dedicated health endpoint, so Rolter uses reachability as a proxy for availability. A timeout, connection failure, or 5xx response marks the provider unhealthy.
+
+**Fail-open guarantee:** when every target of a route is marked unhealthy, Rolter does not return an error. It fails open and still forwards the request, preferring a potential upstream error over a guaranteed 503 from the gateway.
+
+## Configuration
+
+Health checks are **disabled by default** because probing adds background traffic to every configured provider. Add a `[health]` section to `rolter.toml` and set `enabled = true` to activate them.
+
+<ParamField path="enabled" default="false" type="bool">
+  Master switch. Set to `true` to start the background probing task.
+</ParamField>
+
+<ParamField path="interval_secs" default="10" type="u64">
+  Seconds between probe sweeps. Every provider is probed once per sweep.
+</ParamField>
+
+<ParamField path="timeout_secs" default="2" type="u64">
+  Per-probe timeout in seconds. A probe that does not receive a response within this window is treated as a failure.
+</ParamField>
+
+<ParamField path="path" default="/" type="string">
+  Request path appended to each provider's `api_base` when probing. Change this if your upstreams expose a dedicated health route.
+</ParamField>
+
+```toml rolter.toml
+[health]
+enabled = true
+interval_secs = 15
+timeout_secs = 3
+path = "/health"
+```
+
+## Activation walkthrough
+
+<Steps>
+  <Step title="Enable health checks">
+    Add the `[health]` section to your `rolter.toml` with `enabled = true`. The background task starts when the gateway process starts.
+  </Step>
+  <Step title="Set a probe interval">
+    Choose `interval_secs` based on how quickly you need to detect an outage versus how much extra background traffic you are willing to generate. For self-hosted pools, 10–30 seconds is a reasonable starting point.
+  </Step>
+  <Step title="Set a probe path">
+    If your upstreams expose a dedicated health endpoint (e.g. `/health`, `/healthz`, `/ping`), set `path` to that route so the probe gets a meaningful response. If not, leave `path = "/"` — a 404 still counts as healthy.
+  </Step>
+  <Step title="Tune the timeout">
+    Set `timeout_secs` to a value lower than your `interval_secs`. A `timeout_secs = 2` with `interval_secs = 15` means a slow-responding provider is flagged promptly and the next sweep happens well before the previous probe would have hung the worker.
+  </Step>
+</Steps>
+
+<Tip>
+  Active health checks are most valuable for **self-hosted vLLM, TGI, or SGLang pools** where instances can crash or restart independently. For managed APIs like OpenAI and Anthropic, cooldowns and retries are usually sufficient — those providers are highly available and probing them generates billable traffic.
+</Tip>
+
+## Gateway liveness endpoint
+
+Separate from upstream health checks, Rolter exposes its own liveness endpoint at:
+
+```text
+GET /healthz
+```
+
+This endpoint always returns `200 OK` as long as the gateway process is running and able to serve requests. Use it to integrate Rolter with container orchestrators and load balancers:
+
+<CodeGroup>
+
+```yaml Kubernetes liveness probe
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 4000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
+```dockerfile Docker HEALTHCHECK
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
+  CMD curl -f http://localhost:4000/healthz || exit 1
+```
+
+</CodeGroup>
+
+<Info>
+  `/healthz` reflects only the gateway process's own health, not the health of upstream providers. An instance can return `200` on `/healthz` while all upstream providers are unhealthy — use the `[health]` probing config (above) to monitor upstream availability, and Prometheus metrics to alert on routing failures.
+</Info>

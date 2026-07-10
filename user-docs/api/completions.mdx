@@ -1,0 +1,166 @@
+---
+title: "POST /v1/completions — OpenAI Legacy Completions"
+sidebarTitle: "/v1/completions"
+description: "Create a text completion using the OpenAI legacy completions endpoint. Pass a prompt string and receive a completion response from your configured route."
+---
+
+The `/v1/completions` endpoint provides the OpenAI legacy text completions interface. Instead of a messages array, you pass a single `prompt` string and receive a generated completion. Rolter proxies the request to the upstream target selected by the named route, applying the same authentication, load balancing, and param injection as every other inference endpoint.
+
+<Note>
+  For most use cases, prefer `/v1/chat/completions`. The chat interface is the current OpenAI standard and is supported across all provider kinds (OpenAI, Anthropic, and OpenAI-compatible). This endpoint exists for backward compatibility with legacy clients and tooling that predate the chat format.
+</Note>
+
+## Request
+
+**`POST /v1/completions`**
+
+### Headers
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <virtual-key>` — your Rolter virtual key.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  Must be `application/json`.
+</ParamField>
+
+### Body
+
+<ParamField body="model" type="string" required>
+  The route name defined in your `rolter.toml`. Rolter rewrites this to the upstream model ID before forwarding. Returns `404` if no matching route exists.
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  The text prompt the model completes. Unlike the chat endpoint, this is a plain string rather than a structured messages array.
+</ParamField>
+
+<ParamField body="max_tokens" type="integer">
+  Maximum number of tokens to generate in the completion. Many upstream providers require this field for the legacy endpoint; check your upstream's documentation.
+</ParamField>
+
+<ParamField body="stream" default="false" type="boolean">
+  Set to `true` to receive the completion as a Server-Sent Events stream. Each event carries a delta chunk; the stream terminates with `data: [DONE]`.
+</ParamField>
+
+<ParamField body="temperature" type="number">
+  Sampling temperature between `0` and `2`. Passed through to the upstream and subject to the route's `param_policy`.
+</ParamField>
+
+<ParamField body="stop" type="string | array">
+  One or more sequences at which the model stops generating.
+</ParamField>
+
+<ParamField body="top_p" type="number">
+  Nucleus sampling probability mass.
+</ParamField>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:4000/v1/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "prompt": "Rust is",
+    "max_tokens": 50
+  }'
+```
+
+```bash curl (streaming)
+curl -N http://localhost:4000/v1/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "prompt": "Rust is",
+    "max_tokens": 50,
+    "stream": true
+  }'
+```
+
+```python OpenAI SDK
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key="sk-rolter-dev",
+)
+
+response = client.completions.create(
+    model="gpt-4o",
+    prompt="Rust is",
+    max_tokens=50,
+)
+
+print(response.choices[0].text)
+```
+
+</CodeGroup>
+
+## Response
+
+A successful non-streaming response follows the standard OpenAI completions shape:
+
+```json
+{
+  "id": "cmpl-abc123",
+  "object": "text_completion",
+  "created": 1720000000,
+  "model": "gpt-4o",
+  "choices": [
+    {
+      "text": " a systems programming language focused on safety and performance.",
+      "index": 0,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 3,
+    "completion_tokens": 12,
+    "total_tokens": 15
+  }
+}
+```
+
+<ResponseField name="id" type="string">
+  Unique identifier for this completion, prefixed with `cmpl-`.
+</ResponseField>
+
+<ResponseField name="choices" type="array">
+  Array of completion choices. Each entry contains:
+
+  <Expandable title="Choice object fields">
+    <ResponseField name="text" type="string">
+      The generated text continuation.
+    </ResponseField>
+
+    <ResponseField name="index" type="integer">
+      Zero-based index of this choice.
+    </ResponseField>
+
+    <ResponseField name="finish_reason" type="string">
+      Why generation stopped: `stop`, `length`, or `content_filter`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Token counts for the request.
+
+  <Expandable title="Usage fields">
+    <ResponseField name="prompt_tokens" type="integer">
+      Tokens in the prompt.
+    </ResponseField>
+
+    <ResponseField name="completion_tokens" type="integer">
+      Tokens generated.
+    </ResponseField>
+
+    <ResponseField name="total_tokens" type="integer">
+      Sum of prompt and completion tokens.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

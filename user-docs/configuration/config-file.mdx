@@ -1,0 +1,530 @@
+---
+title: "Rolter Config File Reference: rolter.toml Explained"
+sidebarTitle: "Config File"
+description: "Complete reference for rolter.toml covering server, providers, routes, virtual keys, model prices, budgets, rate limits, and reliability settings."
+---
+
+Rolter reads its configuration from a TOML file named `rolter.toml` by default. The repository ships a fully annotated example file you can copy as a starting point. Once you have the file, open it in your editor and work through each section before you start the gateway.
+
+```bash
+cp rolter.example.toml rolter.toml
+```
+
+---
+
+### \[server\]
+
+The `[server]` section controls how the gateway process binds and exposes its built-in endpoints.
+
+<ParamField path="host" default="0.0.0.0" type="string">
+  The address the gateway listens on. Use `127.0.0.1` to bind only to localhost.
+</ParamField>
+
+<ParamField path="port" default="4000" type="u16">
+  The TCP port the gateway listens on.
+</ParamField>
+
+<ParamField path="metrics_path" default="/metrics" type="string">
+  The path Rolter serves its Prometheus metrics on. Change this when another app or sidecar already owns `/metrics` behind the same reverse proxy. The value must start with `/` and must not collide with any built-in gateway route (`/healthz`, `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/models`).
+</ParamField>
+
+<ParamField path="key_pepper" type="string">
+  A deployment-wide secret mixed into virtual-key digests. Keeping a pepper means a leaked digest is useless without it. Omit this field and set the `ROLTER_KEY_PEPPER` environment variable instead — that keeps the secret out of your config file entirely.
+</ParamField>
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 4000
+metrics_path = "/metrics"
+```
+
+---
+
+### \[\[providers\]\]
+
+Each `[[providers]]` block registers an upstream provider the gateway can forward to. You can define as many as you need; each one is identified by its unique `name`.
+
+<ParamField path="name" type="string" required>
+  A unique identifier for this provider. Routes reference providers by this name.
+</ParamField>
+
+<ParamField path="kind" type="string" required>
+  The wire protocol this provider speaks. One of `openai`, `anthropic`, or `openai_compatible`. Use `openai_compatible` for vLLM, TGI, Ollama, or any other OpenAI-schema endpoint.
+</ParamField>
+
+<ParamField path="api_base" type="string" required>
+  The provider's base URL with no trailing slash, e.g. `https://api.openai.com`.
+</ParamField>
+
+<ParamField path="api_key_env" type="string">
+  The name of an environment variable to read the API key from. Preferred over `api_key` because it keeps secrets out of your config file.
+</ParamField>
+
+<ParamField path="api_key" type="string">
+  An inline API key. Use `api_key_env` instead wherever possible.
+</ParamField>
+
+<ParamField path="egress_proxy" type="string">
+  An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
+</ParamField>
+
+```toml
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[[providers]]
+name = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://localhost:8001"
+```
+
+---
+
+### \[\[routes\]\]
+
+Each `[[routes]]` block maps a public model name that clients request to one or more upstream targets and a load-balancing strategy.
+
+<ParamField path="model" type="string" required>
+  The public model name clients send in their request body, e.g. `gpt-4o`. Must be unique across all routes.
+</ParamField>
+
+<ParamField path="strategy" default="round_robin" type="string">
+  The load-balancing strategy used to pick a target. One of:
+
+  | Value | Behaviour |
+  | --- | --- |
+  | `round_robin` | Cycles through targets in order |
+  | `random` | Picks a target uniformly at random |
+  | `power_of_two` | Samples two targets and picks the one with fewer in-flight requests |
+  | `consistent_hash` | Routes the same request consistently to the same target |
+  | `cache_aware` | Steers toward the target most likely to have the request prefix cached |
+  | `weighted` | Smooth weighted round-robin proportional to each target's `weight` |
+  | `pipeline` | Composable scorer pipeline: combines static weight, in-flight load, and prefix-cache affinity |
+</ParamField>
+
+#### \[\[routes.targets\]\]
+
+<ParamField path="provider" type="string" required>
+  The `name` of a provider defined in `[[providers]]`.
+</ParamField>
+
+<ParamField path="model" type="string">
+  The upstream model ID to send to the provider. When omitted, the requested model name is forwarded as-is.
+</ParamField>
+
+<ParamField path="weight" default="1" type="u32">
+  The relative traffic weight for `weighted` and `pipeline` strategies. Ignored by other strategies.
+</ParamField>
+
+#### \[routes.params\]
+
+An optional table of admin-set default inference parameters injected into the request body. Any key accepted by the upstream provider is valid here (`temperature`, `max_tokens`, `stop`, etc.). A parameter you do not set here is passed through from the client untouched.
+
+#### \[routes.param\_policy\]
+
+Controls whether clients may override the values set in `[routes.params]`.
+
+<ParamField path="mode" default="allow" type="string">
+  The baseline override policy. `allow` lets clients override any param that is not in `deny`. `deny` pins every param except those in `allow`. When an override is denied, the admin default silently wins.
+</ParamField>
+
+<ParamField path="allow" default="[]" type="list">
+  Params clients may override when `mode = "deny"`.
+</ParamField>
+
+<ParamField path="deny" default="[]" type="list">
+  Params clients may not override when `mode = "allow"`.
+</ParamField>
+
+#### \[\[routes.variants\]\]
+
+Variants replace the top-level `targets`/`strategy` pool when you want A/B, canary, or traffic-split routing under a single model name. A request randomly samples one variant by weight (the primary) and falls back to the remaining variants in declared order if the primary fails.
+
+<ParamField path="name" type="string" required>
+  A stable identifier for this variant. Appears in request logs under the `variant` column for attribution and A/B analysis.
+</ParamField>
+
+<ParamField path="weight" default="1" type="u32">
+  The relative traffic share for this variant in the primary draw.
+</ParamField>
+
+<ParamField path="targets" type="array" required>
+  Ordered list of upstream targets tried within this variant. Same shape as `[[routes.targets]]`.
+</ParamField>
+
+<ParamField path="params" type="table">
+  Variant-scoped default inference params layered over `[routes.params]`. The variant value wins on any key collision.
+</ParamField>
+
+```toml
+# Simple round-robin across a single provider
+[[routes]]
+model = "gpt-4o"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+
+# Cache-aware routing across a self-hosted vLLM pool
+[[routes]]
+model = "llama"
+strategy = "cache_aware"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+
+# Weighted routing: 3× traffic to vllm-1
+[[routes]]
+model = "llama-weighted"
+strategy = "weighted"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 3
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+
+# Admin-pinned params with a partial caller-override allowance
+[[routes]]
+model = "gpt-4o-strict"
+strategy = "round_robin"
+[routes.params]
+temperature = 0.0
+max_tokens = 1024
+[routes.param_policy]
+mode = "deny"
+allow = ["max_tokens"]   # callers may still lower max_tokens
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+```
+
+---
+
+### \[\[virtual\_keys\]\]
+
+Virtual keys are the bearer tokens clients present to the gateway. Remove the entire `[[virtual_keys]]` section to run in open (unauthenticated) mode, which is suitable only for local development.
+
+<ParamField path="key" type="string" required>
+  The bearer token value. Clients send this in the `Authorization: Bearer <key>` header.
+</ParamField>
+
+<ParamField path="name" type="string">
+  A human-readable label for this key, used in logs and the dashboard.
+</ParamField>
+
+<ParamField path="models" default="[]" type="list">
+  Model allow-list. An empty list grants access to all models. When non-empty, requests for models not on the list are rejected.
+</ParamField>
+
+<ParamField path="disabled" default="false" type="boolean">
+  Set to `true` to revoke the key without deleting it from the config file. Useful for auditing.
+</ParamField>
+
+<ParamField path="expires_at" type="string">
+  An RFC3339 expiry timestamp. The key stops authenticating at or after this instant, e.g. `"2027-01-01T00:00:00Z"`.
+</ParamField>
+
+```toml
+[[virtual_keys]]
+key = "sk-rolter-dev"
+name = "local-dev"
+models = []        # empty = all models allowed
+disabled = false
+# expires_at = "2027-01-01T00:00:00Z"
+```
+
+---
+
+### \[\[model\_prices\]\]
+
+Define per-model token pricing so Rolter can compute a `cost_usd` value on every request log. Models without a price entry log a cost of `0`. Rates are in USD per million tokens, matching the convention used by major providers.
+
+<ParamField path="model" type="string" required>
+  The public model name this price applies to. Must match a route's `model` field.
+</ParamField>
+
+<ParamField path="input_per_mtok" type="float">
+  USD per million input (prompt) tokens.
+</ParamField>
+
+<ParamField path="output_per_mtok" type="float">
+  USD per million output (completion) tokens.
+</ParamField>
+
+<ParamField path="cached_input_per_mtok" type="float">
+  USD per million cache-hit input tokens. When omitted, falls back to `input_per_mtok`.
+</ParamField>
+
+```toml
+[[model_prices]]
+model = "gpt-4o"
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+cached_input_per_mtok = 1.25
+```
+
+---
+
+### \[\[budgets\]\]
+
+Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches its limit for the current period. Budgets are enforced using Redis-tracked costs; without a Redis connection, budgets fail open. The most restrictive matching budget across the scope chain wins.
+
+<Note>
+  The `id` field matches the UUID of an entity defined in the database (org, team, project, or virtual key). Config-file virtual keys carry no scope IDs, so `[[budgets]]` entries in `rolter.toml` are most useful when combined with the full control-plane stack.
+</Note>
+
+<ParamField path="scope" type="string" required>
+  The scope level this budget applies to. One of `org`, `team`, `project`, or `key`.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  The UUID of the scoped entity.
+</ParamField>
+
+<ParamField path="limit_usd" type="float" required>
+  The spend cap in USD for the current window. Must be a positive number.
+</ParamField>
+
+<ParamField path="period" default="monthly" type="string">
+  The rolling window the budget resets on. One of `monthly`, `daily`, or `total`. `total` is a lifetime cap that never resets.
+</ParamField>
+
+```toml
+[[budgets]]
+scope = "org"
+id = "org-uuid"
+limit_usd = 500.0
+period = "monthly"
+```
+
+---
+
+### \[\[rate\_limits\]\]
+
+Throughput caps reject excess requests with HTTP `429` and a `Retry-After` header. Limits use a Redis sliding-window counter; without Redis they fail open. At least one of `rpm` or `tpm` must be set — a limit with neither never blocks anything.
+
+<ParamField path="scope" type="string" required>
+  The scope level this limit applies to. One of `org`, `team`, `project`, or `key`.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  The UUID of the scoped entity.
+</ParamField>
+
+<ParamField path="rpm" type="u32">
+  Requests per minute cap. Omit to leave request rate uncapped.
+</ParamField>
+
+<ParamField path="tpm" type="u32">
+  Tokens per minute cap (prompt \+ completion combined). Omit to leave token rate uncapped.
+</ParamField>
+
+```toml
+[[rate_limits]]
+scope = "key"
+id = "vk-uuid"
+rpm = 600
+tpm = 150000
+```
+
+---
+
+### \[retry\]
+
+On a transient upstream failure (HTTP 408, 429, 5xx, or a connection error), Rolter re-picks a different target and retries. Retries only happen before any response bytes have been streamed to the client, so no partial response is ever duplicated.
+
+<ParamField path="max_retries" default="2" type="u32">
+  Extra attempts after the first. Set to `0` to disable retries entirely.
+</ParamField>
+
+<ParamField path="base_backoff_ms" default="100" type="u64">
+  The base delay in milliseconds for the first retry. Actual delay uses exponential backoff with full jitter. A `Retry-After` header from the upstream overrides the computed delay.
+</ParamField>
+
+<ParamField path="max_backoff_ms" default="2000" type="u64">
+  The ceiling for the backoff delay in milliseconds.
+</ParamField>
+
+```toml
+[retry]
+max_retries = 2
+base_backoff_ms = 100
+max_backoff_ms = 2000
+```
+
+---
+
+### \[cooldown\]
+
+After a target returns a transient failure, Rolter parks it for `base_secs` and the balancer skips it, shifting load to healthy siblings. When every sibling is parked, the gateway fails open rather than rejecting the request.
+
+<ParamField path="base_secs" default="5" type="u64">
+  How long a failing target is parked, in seconds. Set to `0` to disable cooldowns entirely.
+</ParamField>
+
+<ParamField path="max_secs" default="300" type="u64">
+  The ceiling for a cooldown duration derived from a `429 Retry-After` header.
+</ParamField>
+
+```toml
+[cooldown]
+base_secs = 5
+max_secs = 300
+```
+
+---
+
+### \[timeouts\]
+
+Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
+
+<ParamField path="connect_secs" default="10" type="u64">
+  The connection-establishment timeout in seconds. Set to `0` to disable.
+</ParamField>
+
+<ParamField path="request_secs" default="60" type="u64">
+  The time-to-response-headers timeout in seconds. Set to `0` to disable.
+</ParamField>
+
+```toml
+[timeouts]
+connect_secs = 10
+request_secs = 60
+```
+
+---
+
+### \[health\]
+
+When enabled, a background task periodically probes each provider with a lightweight `GET` request. A provider that times out, fails to connect, or returns `5xx` is marked unhealthy and its targets are skipped. Any non-5xx response (including `401` or `404`) counts as healthy. Disabled by default.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for active health probing.
+</ParamField>
+
+<ParamField path="interval_secs" default="10" type="u64">
+  Seconds between probe sweeps.
+</ParamField>
+
+<ParamField path="timeout_secs" default="2" type="u64">
+  Per-probe timeout in seconds.
+</ParamField>
+
+<ParamField path="path" default="/" type="string">
+  The request path appended to each provider's `api_base` when probing, e.g. `/health`.
+</ParamField>
+
+```toml
+[health]
+enabled = true
+interval_secs = 10
+timeout_secs = 2
+path = "/"
+```
+
+---
+
+### \[breaker\]
+
+The circuit breaker complements the short-lived cooldown with a longer-lived state machine. After `failure_threshold` consecutive transient failures a target trips **open** and is skipped for `open_secs`. The first request after that window probes the target in a **half-open** state; a success closes the breaker, a failure re-opens it. Disabled by default.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for the circuit breaker.
+</ParamField>
+
+<ParamField path="failure_threshold" default="5" type="u32">
+  Consecutive transient failures required to trip a target open. Setting this to `0` also disables the breaker.
+</ParamField>
+
+<ParamField path="open_secs" default="30" type="u64">
+  How long a tripped target stays open before a half-open probe, in seconds.
+</ParamField>
+
+```toml
+[breaker]
+enabled = true
+failure_threshold = 5
+open_secs = 30
+```
+
+---
+
+### \[metrics\_scrape\]
+
+When enabled, a background task periodically pulls each provider's Prometheus `/metrics` endpoint and extracts scheduler queue depth (vLLM `num_requests_waiting`, with SGLang/TGI fallbacks). That depth feeds into the balancer's in-flight load view so load-aware strategies (`power_of_two`, `pipeline`) steer away from backed-up engines. Disabled by default.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for background metrics scraping.
+</ParamField>
+
+<ParamField path="interval_secs" default="5" type="u64">
+  Seconds between scrape sweeps.
+</ParamField>
+
+<ParamField path="timeout_secs" default="2" type="u64">
+  Per-scrape timeout in seconds.
+</ParamField>
+
+<ParamField path="path" default="/metrics" type="string">
+  The request path appended to each provider's `api_base` when scraping.
+</ParamField>
+
+```toml
+[metrics_scrape]
+enabled = true
+interval_secs = 5
+timeout_secs = 2
+path = "/metrics"
+```
+
+---
+
+### \[logging\]
+
+Request and cost logs are written asynchronously in batches, off the hot request path. Logging is disabled entirely when `clickhouse_url` is unset. When the internal queue fills, records are dropped and counted rather than blocking request processing.
+
+<ParamField path="clickhouse_url" type="string">
+  The base URL of the ClickHouse HTTP interface, e.g. `http://localhost:8123`. Logging is disabled when this is not set.
+</ParamField>
+
+<ParamField path="batch_max" default="1000" type="integer">
+  Flush a batch once it reaches this many rows.
+</ParamField>
+
+<ParamField path="flush_ms" default="1000" type="integer">
+  Also flush a partial batch at least this often, in milliseconds.
+</ParamField>
+
+<ParamField path="queue_capacity" default="10000" type="integer">
+  The maximum number of log records buffered in-flight. Records are dropped when this queue is full.
+</ParamField>
+
+```toml
+[logging]
+clickhouse_url = "http://localhost:8123"
+batch_max = 1000
+flush_ms = 1000
+queue_capacity = 10000
+```
+
+---
+
+<Note>
+  The repository ships a fully annotated `rolter.example.toml` that includes every section with inline comments explaining each field. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need.
+</Note>

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "aspen",
+  "name": "Rolter",
+  "colors": {
+    "primary": "#7c7c7c",
+    "light": "#040404",
+    "dark": "#b6b6b6"
+  },
+  "logo": {
+    "light": "https://media.brand.dev/f054adef-0185-4730-acfc-02c46803b60f.svg",
+    "dark": "https://media.brand.dev/f054adef-0185-4730-acfc-02c46803b60f.svg"
+  },
+  "favicon": "https://media.brand.dev/d68ee850-8076-4de5-bd66-595011d97118.png",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/ormeilu/rolter"
+    }
+  },
+  "fonts": {
+    "heading": {
+      "family": "Geist"
+    },
+    "body": {
+      "family": "Geist"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/providers-and-routes",
+              "concepts/virtual-keys",
+              "concepts/load-balancing",
+              "concepts/cache-aware-routing"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/config-file",
+              "configuration/environment-variables",
+              "configuration/hot-reload"
+            ]
+          },
+          {
+            "group": "Reliability",
+            "pages": [
+              "reliability/retries-and-cooldowns",
+              "reliability/circuit-breakers",
+              "reliability/health-checks"
+            ]
+          },
+          {
+            "group": "Access & Security",
+            "pages": [
+              "security/authentication",
+              "security/rbac",
+              "security/budgets-and-rate-limits"
+            ]
+          },
+          {
+            "group": "Observability",
+            "pages": [
+              "observability/metrics",
+              "observability/logs-and-cost",
+              "observability/tracing"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Gateway API",
+            "pages": [
+              "api/overview",
+              "api/chat-completions",
+              "api/completions",
+              "api/messages",
+              "api/models",
+              "api/health-and-metrics"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
