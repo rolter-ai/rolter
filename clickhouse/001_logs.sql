@@ -14,6 +14,7 @@ create table if not exists request_logs (
     model             String,
     provider          String,
     target            String,
+    variant           String,
     status            UInt16,
     stream            UInt8,
     cache_hit         UInt8,

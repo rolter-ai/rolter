@@ -35,6 +35,9 @@ pub struct RequestLog {
     pub model: String,
     pub provider: String,
     pub target: String,
+    /// chosen variant name for A/B attribution; empty on the classic single-pool
+    /// path (a route with no variants)
+    pub variant: String,
     pub status: u16,
     pub stream: u8,
     pub cache_hit: u8,
@@ -58,6 +61,7 @@ impl Default for RequestLog {
             model: String::new(),
             provider: String::new(),
             target: String::new(),
+            variant: String::new(),
             status: 0,
             stream: 0,
             cache_hit: 0,

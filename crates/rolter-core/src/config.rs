@@ -239,6 +239,31 @@ impl ModelRoute {
         }
     }
 
+    /// Apply the route's param defaults with a variant's params layered over
+    /// them (the variant wins on a key collision), under the route's override
+    /// policy. Same per-param semantics as [`ModelRoute::apply_params`]: a
+    /// caller value survives only where the policy permits, otherwise the
+    /// (merged) admin default wins.
+    pub fn apply_variant_params(&self, variant: &Variant, body: &mut serde_json::Value) {
+        if self.params.is_empty() && variant.params.is_empty() {
+            return;
+        }
+        let Some(obj) = body.as_object_mut() else {
+            return;
+        };
+        // route defaults first, then the variant overrides them by key
+        let mut effective: HashMap<&String, &serde_json::Value> = self.params.iter().collect();
+        for (key, value) in &variant.params {
+            effective.insert(key, value);
+        }
+        for (key, default) in effective {
+            let caller_sent = obj.contains_key(key.as_str());
+            if !caller_sent || !self.param_policy.may_override(key) {
+                obj.insert(key.clone(), default.clone());
+            }
+        }
+    }
+
     /// Whether this route routes through weighted variants rather than a single
     /// target pool.
     pub fn has_variants(&self) -> bool {
@@ -1049,6 +1074,41 @@ mod tests {
         // fallback chain: primary first, then the rest in declared order
         assert_eq!(route.fallback_order(1), vec![1, 0, 2]);
         assert_eq!(route.fallback_order(0), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn apply_variant_params_layers_variant_over_route() {
+        // route default temperature=0; variant overrides it to 0.7 and adds top_p
+        let mut route = route_with(
+            &[("temperature", serde_json::json!(0.0))],
+            ParamPolicy::default(),
+        );
+        let mut v = variant("canary", 1);
+        v.params
+            .insert("temperature".to_string(), serde_json::json!(0.7));
+        v.params.insert("top_p".to_string(), serde_json::json!(0.9));
+
+        // caller sends nothing: merged admin defaults are injected
+        let mut body = serde_json::json!({"messages": []});
+        route.apply_variant_params(&v, &mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.7));
+        assert_eq!(body["top_p"], serde_json::json!(0.9));
+
+        // default allow policy lets the caller override the merged temperature
+        let mut body = serde_json::json!({"temperature": 0.2, "messages": []});
+        route.apply_variant_params(&v, &mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.2));
+        assert_eq!(body["top_p"], serde_json::json!(0.9));
+
+        // deny policy pins it: the variant default wins over the caller
+        route.param_policy = ParamPolicy {
+            mode: OverrideMode::Deny,
+            allow: vec![],
+            deny: vec![],
+        };
+        let mut body = serde_json::json!({"temperature": 0.2, "messages": []});
+        route.apply_variant_params(&v, &mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.7));
     }
 
     #[test]
