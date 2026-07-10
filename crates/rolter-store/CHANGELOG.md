@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/ormeilu/rolter/compare/rolter-store-v0.0.3...rolter-store-v0.0.4) - 2026-07-10
+
+### Added
+
+- *(store)* DB-defined per-model param defaults + override policy ([#71](https://github.com/ormeilu/rolter/pull/71))
+- *(core)* weighted variant abstraction with ordered fallback ([#65](https://github.com/ormeilu/rolter/pull/65))
+- *(gateway)* per-model default inference params with admin override policy ([#61](https://github.com/ormeilu/rolter/pull/61))
+- *(balancer)* wire the scorer pipeline in as a selectable `pipeline` strategy ([#59](https://github.com/ormeilu/rolter/pull/59))
+- *(balancer)* weighted selection honoring Target.weight [ROL-51] ([#50](https://github.com/ormeilu/rolter/pull/50))
+- *(gateway)* rpm/tpm rate limits with redis sliding window ([#42](https://github.com/ormeilu/rolter/pull/42))
+
+### Fixed
+
+- *(store)* package migrations inside rolter-store so the published crate builds ([#70](https://github.com/ormeilu/rolter/pull/70))
+
 ## [0.0.3](https://github.com/ormeilu/rolter/compare/rolter-store-v0.0.2...rolter-store-v0.0.3) - 2026-07-09
 
 ### Added
