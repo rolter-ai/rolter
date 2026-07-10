@@ -46,8 +46,97 @@ fn probe_request(
     }
 }
 
-/// Map of provider name to its last observed health (`true` = healthy).
-type HealthMap = HashMap<String, bool>;
+/// What a single probe observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// non-5xx response (401/404 included) — the API is up
+    Ok,
+    /// the probe itself was rate limited: the API is up, but probing must back
+    /// off so the prober never contributes to tripping provider limits
+    RateLimited,
+    /// connection failure, timeout, or 5xx
+    Failed,
+}
+
+/// Per-provider probe state machine: consecutive-failure/-success counters
+/// gate the healthy flag (no single-probe flips), and a 429 on the probe
+/// itself grows an exponential sweep-skipping backoff.
+#[derive(Debug, Clone)]
+struct ProbeState {
+    healthy: bool,
+    fails: u32,
+    oks: u32,
+    /// sweeps left to skip before probing this provider again
+    backoff_remaining: u32,
+    /// exponent for the next backoff window, capped
+    backoff_level: u32,
+}
+
+impl Default for ProbeState {
+    fn default() -> Self {
+        Self {
+            healthy: true,
+            fails: 0,
+            oks: 0,
+            backoff_remaining: 0,
+            backoff_level: 0,
+        }
+    }
+}
+
+/// longest 429-induced probe pause, in sweeps (2^3)
+const MAX_BACKOFF_LEVEL: u32 = 3;
+
+impl ProbeState {
+    /// Whether the next sweep should probe this provider; consumes one skipped
+    /// sweep from the backoff window when it is active.
+    fn should_probe(&mut self) -> bool {
+        if self.backoff_remaining > 0 {
+            self.backoff_remaining -= 1;
+            return false;
+        }
+        true
+    }
+
+    /// Fold one probe result in. Returns `Some(new_health)` when the healthy
+    /// flag flipped, `None` otherwise.
+    fn on_result(
+        &mut self,
+        outcome: ProbeOutcome,
+        fail_after: u32,
+        recover_after: u32,
+    ) -> Option<bool> {
+        match outcome {
+            ProbeOutcome::Ok | ProbeOutcome::RateLimited => {
+                if outcome == ProbeOutcome::RateLimited {
+                    // pause probing for 2^level sweeps, growing up to the cap
+                    self.backoff_remaining = 1 << self.backoff_level;
+                    self.backoff_level = (self.backoff_level + 1).min(MAX_BACKOFF_LEVEL);
+                } else {
+                    self.backoff_level = 0;
+                }
+                self.fails = 0;
+                self.oks = self.oks.saturating_add(1);
+                if !self.healthy && self.oks >= recover_after.max(1) {
+                    self.healthy = true;
+                    return Some(true);
+                }
+            }
+            ProbeOutcome::Failed => {
+                self.oks = 0;
+                self.fails = self.fails.saturating_add(1);
+                if self.healthy && self.fails >= fail_after.max(1) {
+                    self.healthy = false;
+                    return Some(false);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Map of provider name to its probe state.
+type HealthMap = HashMap<String, ProbeState>;
 
 /// Shared, cheaply-cloneable registry of provider health. The derived default
 /// (and any instance built from a disabled config) has no backing map and reports
@@ -72,15 +161,59 @@ impl Health {
         let Some(inner) = &self.inner else {
             return true;
         };
-        inner.lock().unwrap().get(provider).copied().unwrap_or(true)
+        inner
+            .lock()
+            .unwrap()
+            .get(provider)
+            .map(|s| s.healthy)
+            .unwrap_or(true)
     }
 
-    /// Record the latest probe result for `provider`.
+    /// Force-set a provider's health, resetting its counters. Used by tests and
+    /// as an escape hatch; the prober itself goes through [`Health::observe`].
     pub fn set(&self, provider: &str, healthy: bool) {
         let Some(inner) = &self.inner else {
             return;
         };
-        inner.lock().unwrap().insert(provider.to_string(), healthy);
+        inner.lock().unwrap().insert(
+            provider.to_string(),
+            ProbeState {
+                healthy,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Whether the prober should probe `provider` this sweep (false while its
+    /// 429 backoff window is active).
+    pub fn should_probe(&self, provider: &str) -> bool {
+        let Some(inner) = &self.inner else {
+            return false;
+        };
+        inner
+            .lock()
+            .unwrap()
+            .entry(provider.to_string())
+            .or_default()
+            .should_probe()
+    }
+
+    /// Fold a probe outcome into `provider`'s state machine. Returns the new
+    /// healthy flag when it flipped.
+    pub fn observe(
+        &self,
+        provider: &str,
+        outcome: ProbeOutcome,
+        fail_after: u32,
+        recover_after: u32,
+    ) -> Option<bool> {
+        let inner = self.inner.as_ref()?;
+        inner
+            .lock()
+            .unwrap()
+            .entry(provider.to_string())
+            .or_default()
+            .on_result(outcome, fail_after, recover_after)
     }
 }
 
@@ -108,6 +241,12 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
         Err(_) => return,
     };
     let mut ticker = tokio::time::interval(Duration::from_secs(cfg.interval_secs.max(1)));
+    // probes run concurrently but bounded, so a sweep can never stampede
+    // upstreams no matter how many providers are configured
+    let limiter = Arc::new(tokio::sync::Semaphore::new(cfg.probe_concurrency.max(1)));
+    // spread probes across the first quarter of the interval so sweeps for
+    // different providers never align into a synchronized burst
+    let jitter_window_ms = (cfg.interval_secs.max(1) * 1000 / 4).min(2000);
     loop {
         ticker.tick().await;
         // read providers off the current snapshot each sweep so hot-reloads and
@@ -119,33 +258,74 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
                 .map(|p| (p.name.clone(), p.api_base.clone(), p.kind))
                 .collect()
         };
+        let mut sweep = tokio::task::JoinSet::new();
         for (name, api_base, kind) in providers {
-            let (url, header) = probe_request(kind, &api_base, &cfg.path);
-            let mut req = client.get(&url);
-            if let Some((k, v)) = header {
-                req = req.header(k, v);
+            // a provider inside its 429 backoff window sits this sweep out
+            if !state.health.should_probe(&name) {
+                continue;
             }
-            let healthy = match req.send().await {
-                Ok(resp) => resp.status().as_u16() < 500,
-                Err(_) => false,
+            let (url, header) = probe_request(kind, &api_base, &cfg.path);
+            let client = client.clone();
+            let limiter = limiter.clone();
+            let jitter_ms = probe_jitter_ms(&name, jitter_window_ms);
+            sweep.spawn(async move {
+                let _permit = limiter.acquire_owned().await.ok()?;
+                tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+                let mut req = client.get(&url);
+                if let Some((k, v)) = header {
+                    req = req.header(k, v);
+                }
+                let outcome = match req.send().await {
+                    Ok(resp) => match resp.status().as_u16() {
+                        429 => ProbeOutcome::RateLimited,
+                        s if s < 500 => ProbeOutcome::Ok,
+                        _ => ProbeOutcome::Failed,
+                    },
+                    Err(_) => ProbeOutcome::Failed,
+                };
+                Some((name, outcome))
+            });
+        }
+        while let Some(joined) = sweep.join_next().await {
+            let Ok(Some((name, outcome))) = joined else {
+                continue;
             };
-            let was = state.health.is_healthy(&name);
-            state.health.set(&name, healthy);
-            if was != healthy {
-                if healthy {
+            let flipped = state.health.observe(
+                &name,
+                outcome,
+                cfg.consecutive_failure_threshold,
+                cfg.recovery_success_threshold,
+            );
+            match flipped {
+                Some(true) => {
                     state
                         .metrics
                         .health_recovered_total
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                } else {
+                }
+                Some(false) => {
                     state
                         .metrics
                         .health_down_total
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
+                None => {}
             }
         }
     }
+}
+
+/// Deterministic, dependency-free per-provider jitter in `[0, window_ms)`,
+/// derived from the provider name so each provider keeps a stable offset
+/// within the sweep instead of all probes firing at the tick.
+fn probe_jitter_ms(name: &str, window_ms: u64) -> u64 {
+    if window_ms == 0 {
+        return 0;
+    }
+    let hash: u64 = name
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    hash % window_ms
 }
 
 #[cfg(test)]
@@ -170,6 +350,77 @@ mod tests {
         assert!(!h.is_healthy("p"));
         h.set("p", true);
         assert!(h.is_healthy("p"));
+    }
+
+    #[test]
+    fn unhealthy_needs_consecutive_failures() {
+        let h = Health::new();
+        // two failures under a threshold of 3: still healthy, no flip reported
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), None);
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), None);
+        assert!(h.is_healthy("p"));
+        // a success in between resets the streak
+        assert_eq!(h.observe("p", ProbeOutcome::Ok, 3, 2), None);
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), None);
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), None);
+        assert!(h.is_healthy("p"));
+        // the third consecutive failure trips it
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), Some(false));
+        assert!(!h.is_healthy("p"));
+    }
+
+    #[test]
+    fn recovery_needs_consecutive_successes() {
+        let h = Health::new();
+        h.set("p", false);
+        // one success under a threshold of 2: still unhealthy
+        assert_eq!(h.observe("p", ProbeOutcome::Ok, 3, 2), None);
+        assert!(!h.is_healthy("p"));
+        // a failure resets the recovery streak
+        assert_eq!(h.observe("p", ProbeOutcome::Failed, 3, 2), None);
+        assert_eq!(h.observe("p", ProbeOutcome::Ok, 3, 2), None);
+        assert!(!h.is_healthy("p"));
+        // the second consecutive success recovers
+        assert_eq!(h.observe("p", ProbeOutcome::Ok, 3, 2), Some(true));
+        assert!(h.is_healthy("p"));
+    }
+
+    #[test]
+    fn rate_limited_probe_backs_off_exponentially() {
+        let h = Health::new();
+        // 429 counts as alive, never trips unhealthy
+        assert_eq!(h.observe("p", ProbeOutcome::RateLimited, 3, 2), None);
+        assert!(h.is_healthy("p"));
+        // first backoff window: skip exactly one sweep
+        assert!(!h.should_probe("p"));
+        assert!(h.should_probe("p"));
+        // second consecutive 429 doubles the window
+        h.observe("p", ProbeOutcome::RateLimited, 3, 2);
+        assert!(!h.should_probe("p"));
+        assert!(!h.should_probe("p"));
+        assert!(h.should_probe("p"));
+        // an ok probe resets the backoff level: next 429 skips one sweep again
+        h.observe("p", ProbeOutcome::Ok, 3, 2);
+        h.observe("p", ProbeOutcome::RateLimited, 3, 2);
+        assert!(!h.should_probe("p"));
+        assert!(h.should_probe("p"));
+    }
+
+    #[test]
+    fn backoff_level_is_capped() {
+        let mut s = ProbeState::default();
+        for _ in 0..10 {
+            s.on_result(ProbeOutcome::RateLimited, 3, 2);
+        }
+        assert_eq!(s.backoff_remaining, 1 << MAX_BACKOFF_LEVEL);
+    }
+
+    #[test]
+    fn jitter_is_stable_and_bounded() {
+        let a = probe_jitter_ms("openai", 2000);
+        assert_eq!(a, probe_jitter_ms("openai", 2000));
+        assert!(a < 2000);
+        assert_eq!(probe_jitter_ms("anything", 0), 0);
     }
 
     #[test]
