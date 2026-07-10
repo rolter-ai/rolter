@@ -32,7 +32,11 @@ impl ClickHouseClient {
 
     /// Run `sql` (which must end with `FORMAT JSON`) with the given ClickHouse
     /// `param_*` bindings and return the parsed `data` array.
-    async fn query(&self, sql: &str, params: &[(String, String)]) -> anyhow::Result<Vec<Value>> {
+    pub(crate) async fn query(
+        &self,
+        sql: &str,
+        params: &[(String, String)],
+    ) -> anyhow::Result<Vec<Value>> {
         let mut req = self
             .client
             .post(format!("{}/", self.base))
@@ -57,7 +61,7 @@ impl ClickHouseClient {
 
 /// Map a bucket name to a ClickHouse start-of-interval function. Whitelisted so
 /// the returned string is safe to splice into SQL.
-fn bucket_fn(bucket: &str) -> Option<&'static str> {
+pub(crate) fn bucket_fn(bucket: &str) -> Option<&'static str> {
     match bucket {
         "hour" => Some("toStartOfHour"),
         "day" => Some("toStartOfDay"),
@@ -70,15 +74,15 @@ fn bucket_fn(bucket: &str) -> Option<&'static str> {
 #[derive(Debug, Deserialize)]
 pub struct WindowQuery {
     /// inclusive lower bound (RFC3339); defaults to 7 days ago
-    since: Option<String>,
+    pub(crate) since: Option<String>,
     /// exclusive upper bound (RFC3339); defaults to now
-    until: Option<String>,
+    pub(crate) until: Option<String>,
     /// time bucket for the timeseries endpoint: hour|day|week|month
-    bucket: Option<String>,
+    pub(crate) bucket: Option<String>,
 }
 
 /// Build the `param_*` bindings for the time window, applying defaults.
-fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
+pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
     vec![
         (
             "param_since".to_string(),
@@ -93,7 +97,7 @@ fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
 
 /// The shared `where` clause. Empty since/until fall back to a default range so
 /// callers can omit either bound.
-const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffort({since:String})) \
+pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffort({since:String})) \
      and ts < if({until:String} = '', now64(3), parseDateTime64BestEffort({until:String}))";
 
 pub fn router() -> Router<crate::ControlState> {
@@ -104,7 +108,7 @@ pub fn router() -> Router<crate::ControlState> {
 }
 
 #[allow(clippy::result_large_err)]
-fn client_or_503(state: &crate::ControlState) -> Result<&ClickHouseClient, Response> {
+pub(crate) fn client_or_503(state: &crate::ControlState) -> Result<&ClickHouseClient, Response> {
     state.clickhouse.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -114,7 +118,7 @@ fn client_or_503(state: &crate::ControlState) -> Result<&ClickHouseClient, Respo
     })
 }
 
-fn run(rows: anyhow::Result<Vec<Value>>) -> Response {
+pub(crate) fn run(rows: anyhow::Result<Vec<Value>>) -> Response {
     match rows {
         Ok(data) => Json(json!({ "data": data })).into_response(),
         Err(err) => {
