@@ -6,7 +6,7 @@
 //! of rolter's own probes failing. It is **secondary only**: it never marks a
 //! provider unhealthy or affects routing — it does not touch [`crate::health`].
 //!
-//! Failures degrade gracefully: an unreachable page, a non-2xx, or unparseable
+//! Failures degrade gracefully: an unreachable page, a non-2xx, or invalid
 //! JSON is logged at `warn` and the signal is skipped for that cycle, never
 //! recorded as a provider error.
 
