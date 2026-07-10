@@ -7,7 +7,9 @@
 //! monolithic [`LoadBalancer`] strategies into composable
 //! plugins so cache/load/cost signals can be mixed per route.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -97,13 +99,14 @@ impl Pipeline {
         }
     }
 
-    /// The default composable stack over `weights.len()` targets: configured
-    /// per-target weight, in-flight load, and prefix-cache affinity, each
-    /// contributing equally. The foundation strategy the roadmap's cost/latency
-    /// scorers slot into.
+    /// The default composable stack over `weights.len()` targets: session
+    /// affinity, configured per-target weight, in-flight load, and prefix-cache
+    /// affinity, each contributing equally. The foundation strategy the
+    /// roadmap's cost/latency scorers slot into.
     pub fn default_stack(weights: &[u32]) -> Self {
         let n = weights.len();
         Self::new(n)
+            .with(Box::new(SessionAffinityScorer::new(n)), 1.0)
             .with(Box::new(StaticScorer::new(weights)), 1.0)
             .with(Box::new(LeastLoadScorer::new(n)), 1.0)
             .with(Box::new(PrefixCacheScorer::new(n)), 1.0)
@@ -269,6 +272,82 @@ impl Scorer for PrefixCacheScorer {
     }
 }
 
+/// Default time-to-live for a session's affinity to its last-served target.
+const DEFAULT_AFFINITY_TTL: Duration = Duration::from_secs(300);
+/// Default cap on tracked sessions, bounding memory under churn.
+const DEFAULT_AFFINITY_CAP: usize = 100_000;
+
+/// Session affinity. Boosts the target that last served a given session so
+/// repeat requests reuse its warm KV/prefix cache. The boost expires after a
+/// TTL (so a session doesn't pin to a since-degraded node forever) and the
+/// tracking map is capped (so unbounded distinct sessions can't grow it without
+/// limit). Health/cooldown filtering happens upstream in the pipeline, so a
+/// boosted-but-ineligible target is simply never a candidate.
+pub struct SessionAffinityScorer {
+    n: usize,
+    ttl: Duration,
+    cap: usize,
+    /// session key to (last-served target, when it was recorded)
+    last: Mutex<HashMap<String, (usize, Instant)>>,
+}
+
+impl SessionAffinityScorer {
+    pub fn new(n: usize) -> Self {
+        Self::with_ttl(n, DEFAULT_AFFINITY_TTL)
+    }
+
+    /// Construct with an explicit affinity TTL (a zero TTL makes every entry
+    /// immediately stale, i.e. affinity off).
+    pub fn with_ttl(n: usize, ttl: Duration) -> Self {
+        Self {
+            n,
+            ttl,
+            cap: DEFAULT_AFFINITY_CAP,
+            last: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Scorer for SessionAffinityScorer {
+    fn name(&self) -> &'static str {
+        "session_affinity"
+    }
+
+    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+        let mut scores = vec![0.0; candidates.len()];
+        let Some(key) = ctx.session_key else {
+            return scores;
+        };
+        let map = self.last.lock();
+        if let Some((target, at)) = map.get(key) {
+            if at.elapsed() < self.ttl {
+                if let Some(k) = candidates.iter().position(|&c| c == *target) {
+                    scores[k] = 1.0;
+                }
+            }
+        }
+        scores
+    }
+
+    fn observe(&self, target: usize, ctx: &RouteContext) {
+        if target >= self.n {
+            return;
+        }
+        let Some(key) = ctx.session_key else {
+            return;
+        };
+        let mut map = self.last.lock();
+        // bound the map: when at capacity and inserting a new session, drop an
+        // arbitrary existing entry (cheap eviction; affinity is best-effort)
+        if map.len() >= self.cap && !map.contains_key(key) {
+            if let Some(evict) = map.keys().next().cloned() {
+                map.remove(&evict);
+            }
+        }
+        map.insert(key.to_string(), (target, Instant::now()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +410,53 @@ mod tests {
         // warm: the served target now has the resident prefix and must win
         let second = p.select(&ctx, &[], |_| true).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn session_affinity_pins_to_last_target() {
+        let scorer = Box::new(SessionAffinityScorer::new(3));
+        let p = Pipeline::new(3).with(scorer, 1.0);
+        let ctx = RouteContext {
+            session_key: Some("user-1"),
+            prompt: None,
+        };
+        // cold: no affinity, all candidates tie -> record whichever wins as served
+        p.observe(2, &ctx);
+        // warm: target 2 boosted -> it wins even though nothing else differs
+        assert_eq!(p.select(&ctx, &[], |_| true), Some(2));
+    }
+
+    #[test]
+    fn session_affinity_ignored_without_key() {
+        let scorer = SessionAffinityScorer::new(2);
+        let ctx = RouteContext::default();
+        // no session key -> neutral zero scores, observe is a no-op
+        scorer.observe(1, &ctx);
+        assert_eq!(scorer.score(&ctx, &[0, 1], &[]), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn session_affinity_expires_after_ttl() {
+        let scorer = SessionAffinityScorer::with_ttl(2, Duration::ZERO);
+        let ctx = RouteContext {
+            session_key: Some("s"),
+            prompt: None,
+        };
+        scorer.observe(1, &ctx);
+        // zero ttl -> entry is immediately stale, so no boost
+        assert_eq!(scorer.score(&ctx, &[0, 1], &[]), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn session_affinity_skips_when_target_filtered_out() {
+        let scorer = SessionAffinityScorer::new(3);
+        let ctx = RouteContext {
+            session_key: Some("s"),
+            prompt: None,
+        };
+        scorer.observe(2, &ctx);
+        // target 2 not in the candidate set -> no boost applied
+        assert_eq!(scorer.score(&ctx, &[0, 1], &[]), vec![0.0, 0.0]);
     }
 
     #[test]
