@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/ormeilu/rolter/compare/rolter-balancer-v0.0.3...rolter-balancer-v0.0.4) - 2026-07-10
+
+### Added
+
+- *(balancer)* bound the cache-aware trie with LRU node eviction ([#63](https://github.com/ormeilu/rolter/pull/63))
+- *(balancer)* session-affinity scorer for warm-cache reuse ([#62](https://github.com/ormeilu/rolter/pull/62))
+- *(balancer)* wire the scorer pipeline in as a selectable `pipeline` strategy ([#59](https://github.com/ormeilu/rolter/pull/59))
+- *(balancer)* composable filter → weighted-score → argmax scorer pipeline ([#58](https://github.com/ormeilu/rolter/pull/58))
+- *(balancer)* weighted selection honoring Target.weight [ROL-51] ([#50](https://github.com/ormeilu/rolter/pull/50))
+
 ## [0.0.2](https://github.com/ormeilu/rolter/compare/v0.0.1...v0.0.2) - 2026-07-02
 
 ### Added
