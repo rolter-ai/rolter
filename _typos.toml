@@ -3,12 +3,12 @@
 # regex ignores just that literal rather than globally redefining a word.
 [default]
 extend-ignore-re = [
-    # "HashiCorp" (Vault) in the security docs
-    "HashiCorp",
-    # "mis-enforce" in comments about skipping unknown scopes
-    "mis-enforce",
-    # "sk-abd": a deliberately-wrong virtual key in the auth verify tests
-    "sk-abd",
-    # "abc"/"abd": trie test fixtures exercising shared-prefix node counting
-    "\"abd\"",
+  # "HashiCorp" (Vault) in the security docs
+  "HashiCorp",
+  # "mis-enforce" in comments about skipping unknown scopes
+  "mis-enforce",
+  # "sk-abd": a deliberately-wrong virtual key in the auth verify tests
+  "sk-abd",
+  # "abc"/"abd": trie test fixtures exercising shared-prefix node counting
+  "\"abd\"",
 ]

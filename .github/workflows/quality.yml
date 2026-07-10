@@ -221,12 +221,10 @@ jobs:
         run: cargo llvm-cov --workspace --all-features --summary-only
 
   # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
-  # informational until the tree's baseline formatting is confirmed clean, then
-  # promote to blocking (ROL-124).
+  # blocking: the whole tree is taplo-formatted, so any drift is a real diff.
   taplo:
-    name: taplo fmt (informational)
+    name: taplo fmt
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: taiki-e/install-action@taplo
