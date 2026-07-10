@@ -14,6 +14,7 @@ mod error;
 mod fake_llm;
 mod handlers;
 mod health;
+mod health_events;
 mod load;
 mod logging;
 mod metrics;

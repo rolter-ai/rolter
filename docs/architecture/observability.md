@@ -32,6 +32,15 @@ Recommended topology: rolter → **OpenTelemetry Collector** → fan-out to the 
 - Writes are **async and batched off the hot path** so logging never adds request latency.
 - The dashboard queries ClickHouse for usage, spend, latency percentiles and error rates, sliced by org/team/project/key/model.
 
+## Provider health events
+
+- Every health signal is written to **ClickHouse** (`provider_health_events`): `target_id`, `provider`, `source`, `outcome`, `status_code`, `latency_ms`, `error_kind`, timestamped by ClickHouse on insert.
+- `source` distinguishes where the observation came from: `passive` (real traffic completing through the request funnel), `probe` (active liveness sweeps), and the opt-in `llm_call` / `status_page` sources.
+- `outcome` is `ok` / `error` / `timeout`; `error_kind` gives a coarse label (`rate_limited`, `upstream_error`, `connect_error`, `timeout`).
+- Writes reuse the same **async, batched, off-hot-path** writer and ClickHouse endpoint as `request_logs`; when no `clickhouse_url` is configured the sink is a no-op.
+- Counters `rolter_health_events_written_total` and `rolter_health_events_dropped_total` track the writer, mirroring the request-log counters.
+- This event stream feeds uptime %/MTTR rollups and the dashboard health panel.
+
 ## Health
 
 - `GET /healthz` on both binaries for liveness/readiness probes.
