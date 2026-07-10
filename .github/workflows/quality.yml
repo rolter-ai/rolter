@@ -219,3 +219,58 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: cargo llvm-cov
         run: cargo llvm-cov --workspace --all-features --summary-only
+
+  # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
+  # informational until the tree's baseline formatting is confirmed clean, then
+  # promote to blocking (ROL-124).
+  taplo:
+    name: taplo fmt (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@taplo
+      - name: taplo fmt --check
+        run: taplo fmt --check --diff
+
+  # ── MSRV: build on the pinned minimum supported rust version ─────────────────
+  # agents can silently adopt newer-than-declared language features; this catches
+  # it against `rust-version` in Cargo.toml. informational until the baseline is
+  # green on the pinned toolchain.
+  msrv:
+    name: msrv build (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (msrv)
+        run: cargo check --workspace --all-features
+
+  # ── cross-platform: check the workspace builds off linux ────────────────────
+  # linux is covered by every job above; macOS catches os-specific breakage.
+  # informational for now (adds runner minutes); promote if it earns its keep.
+  cross-platform:
+    name: macos check (informational)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (macos)
+        run: cargo check --workspace --all-features
+
+  # ── semver: no accidental breaking API change in published crates ───────────
+  # meaningful once crates are published (ROL-117); informational until a
+  # baseline version exists on crates.io to diff against.
+  semver-checks:
+    name: semver-checks (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
