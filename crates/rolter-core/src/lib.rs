@@ -12,6 +12,7 @@ pub use config::{
     GatewayConfig, HealthConfig, LoggingConfig, MetricsScrapeConfig, ModelPriceConfig, ModelRoute,
     OverrideMode, ParamPolicy, ProviderConfig, ProviderKind, RateLimitConfig, RetryConfig,
     ServerConfig, Target, TimeoutConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
+    RESERVED_PATHS,
 };
 pub use error::{Error, Result};
 

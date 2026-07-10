@@ -7,6 +7,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 ### `[server]`
 - `host` (string, default `0.0.0.0`)
 - `port` (u16, default `4000`)
+- `metrics_path` (string, default `/metrics`) — path the Prometheus metrics endpoint is served on; change it to avoid colliding with an upstream app or sidecar that already owns `/metrics`. Must be rooted (`/…`) and must not collide with a built-in route (`/healthz`, `/v1/*`).
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets

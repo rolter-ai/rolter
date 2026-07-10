@@ -156,6 +156,31 @@ async fn missing_model_field_is_rejected() {
 }
 
 #[tokio::test]
+async fn metrics_served_on_configured_path() {
+    let mut config = config_for("test-model", vec![]);
+    config.server.metrics_path = "/internal/metrics".to_string();
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    // the configured path serves prometheus text
+    let resp = client
+        .get(format!("http://{gw}/internal/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.text().await.unwrap().contains("rolter_requests_total"));
+
+    // the default /metrics no longer exists
+    let resp = client
+        .get(format!("http://{gw}/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
 async fn unknown_model_returns_404() {
     let gw = serve_gateway(&config_for("test-model", vec![])).await;
 

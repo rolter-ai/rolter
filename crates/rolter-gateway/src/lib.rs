@@ -114,9 +114,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }
 
-    let app = build_router(state);
+    let app = build_router(state, &config.server.metrics_path);
 
-    tracing::info!(%addr, "rolter-gateway listening");
+    tracing::info!(%addr, metrics_path = %config.server.metrics_path, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // drain in-flight requests on SIGINT/SIGTERM instead of dropping them
     axum::serve(listener, app)
@@ -126,13 +126,26 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Assemble the gateway's axum router over a built [`AppState`]. Extracted so
-/// integration tests can drive the full request pipeline in-process without
-/// binding a socket.
-pub fn build_router(state: AppState) -> Router {
+/// Assemble the gateway's axum router over a built [`AppState`], serving the
+/// prometheus endpoint on `metrics_path`. Extracted so integration tests can
+/// drive the full request pipeline in-process without binding a socket. A
+/// `metrics_path` that is empty, unrooted, or collides with a built-in route is
+/// rejected in favour of the default `/metrics` so router construction never
+/// panics on a bad config.
+pub fn build_router(state: AppState, metrics_path: &str) -> Router {
+    let metrics_path =
+        if metrics_path.starts_with('/') && !rolter_core::RESERVED_PATHS.contains(&metrics_path) {
+            metrics_path
+        } else {
+            tracing::warn!(
+                path = %metrics_path,
+                "invalid or colliding metrics_path; falling back to /metrics"
+            );
+            "/metrics"
+        };
     Router::new()
         .route("/healthz", get(handlers::healthz))
-        .route("/metrics", get(handlers::metrics))
+        .route(metrics_path, get(handlers::metrics))
         .route("/v1/models", get(handlers::list_models))
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
@@ -146,7 +159,10 @@ pub fn build_router(state: AppState) -> Router {
 /// and embedders that just want a ready-to-serve `Router`. Must be called from
 /// within a Tokio runtime.
 pub fn build_router_from_config(config: &GatewayConfig) -> Router {
-    build_router(AppState::with_logging(config, None))
+    build_router(
+        AppState::with_logging(config, None),
+        &config.server.metrics_path,
+    )
 }
 
 /// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
