@@ -37,9 +37,9 @@ rand = { workspace = true, optional = true }
 [features]
 default = []
 postgres = [
-    "rolter-store/postgres",
-    "dep:sqlx",
-    "dep:uuid",
-    "dep:argon2",
-    "dep:rand",
+  "rolter-store/postgres",
+  "dep:sqlx",
+  "dep:uuid",
+  "dep:argon2",
+  "dep:rand",
 ]
