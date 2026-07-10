@@ -1,0 +1,26 @@
+name: audit
+
+# scheduled supply-chain audit. cargo-deny runs on every PR (quality.yml) against
+# the committed lockfile, but new RUSTSEC advisories land on already-merged code
+# with no PR to trigger them. this runs daily so a fresh advisory on master
+# surfaces as a failing scheduled run (and an issue) rather than sitting unseen.
+on:
+  schedule:
+    # every day at 07:00 UTC
+    - cron: "0 7 * * *"
+  # allow a manual run from the actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
