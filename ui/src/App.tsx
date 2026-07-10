@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 
+import Health from "@/pages/Health";
 import Keys from "@/pages/Keys";
 import Logs from "@/pages/Logs";
 import Models from "@/pages/Models";
@@ -8,6 +9,7 @@ import { cn } from "@/lib/utils";
 const nav = [
   { to: "/", label: "Models", end: true },
   { to: "/keys", label: "Keys", end: false },
+  { to: "/health", label: "Health", end: false },
   { to: "/logs", label: "Logs", end: false },
 ];
 
@@ -40,6 +42,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Models />} />
           <Route path="/keys" element={<Keys />} />
+          <Route path="/health" element={<Health />} />
           <Route path="/logs" element={<Logs />} />
         </Routes>
       </main>
