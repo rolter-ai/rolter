@@ -1,0 +1,18 @@
+[book]
+title = "rolter"
+authors = ["rolter contributors"]
+description = "contributor and architecture documentation for the rolter AI gateway"
+src = "."
+language = "en"
+
+# contributor docs are authored as plain markdown under docs/ and rendered to a
+# static site by mdbook; the polished user-facing docs live separately under
+# user-docs/ (mintlify). build output goes to docs/book/ (gitignored).
+[output.html]
+git-repository-url = "https://github.com/ormeilu/rolter"
+edit-url-template = "https://github.com/ormeilu/rolter/edit/master/docs/{path}"
+default-theme = "rust"
+
+[output.html.fold]
+enable = true
+level = 1
