@@ -69,6 +69,24 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
   An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
 </ParamField>
 
+<ParamField path="api_keys" type="array of tables">
+  Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down.
+
+  ```toml
+  [[providers]]
+  name = "openai"
+  kind = "openai"
+  api_base = "https://api.openai.com"
+
+  [[providers.api_keys]]
+  env = "OPENAI_API_KEY_PRIMARY"
+  weight = 3
+
+  [[providers.api_keys]]
+  env = "OPENAI_API_KEY_SECONDARY"
+  ```
+</ParamField>
+
 ```toml
 [[providers]]
 name = "openai"

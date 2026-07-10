@@ -14,6 +14,11 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `kind` (`openai` | `anthropic` | `openai_compatible`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
+- `api_key_env` (string, optional) — environment variable to read the key from
+- `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
+  - `key` (string, optional) — inline key value; prefer `env`
+  - `env` (string, optional) — environment variable to read the key from
+  - `weight` (u32, default `1`) — relative selection weight
 - `api_key_env` (string, optional) — env var to read the key from
 - `egress_proxy` (string, optional) — HTTP/HTTPS/SOCKS5 outbound proxy
 

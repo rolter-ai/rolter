@@ -197,6 +197,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            api_keys: Vec::new(),
         }
     }
 
@@ -293,6 +294,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            api_keys: Vec::new(),
         };
         let err = fwd
             .forward_json(
