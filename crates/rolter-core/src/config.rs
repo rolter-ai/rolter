@@ -158,6 +158,12 @@ pub struct ProviderConfig {
     /// upstream model id, e.g. `gpt-4o-mini`). Ignored unless the flag is set
     #[serde(default)]
     pub llm_probe_model: Option<String>,
+    /// optional statuspage.io-style status JSON url (e.g.
+    /// `https://status.anthropic.com/api/v2/status.json`). When set, a slow
+    /// background poll records the provider's public status as a secondary
+    /// `status_page` health signal; it never gates routing on its own
+    #[serde(default)]
+    pub status_page_url: Option<String>,
 }
 
 /// One of a provider's weighted API keys. Same inline-vs-env split as the
@@ -794,6 +800,10 @@ pub struct HealthConfig {
     /// consecutive probe successes before an unhealthy provider recovers
     #[serde(default = "default_health_recovery_threshold")]
     pub recovery_success_threshold: u32,
+    /// seconds between provider status-page polls (a slow, secondary signal);
+    /// only providers with a `status_page_url` are polled
+    #[serde(default = "default_status_page_interval_secs")]
+    pub status_page_interval_secs: u64,
 }
 
 impl Default for HealthConfig {
@@ -806,8 +816,13 @@ impl Default for HealthConfig {
             probe_concurrency: default_health_probe_concurrency(),
             consecutive_failure_threshold: default_health_failure_threshold(),
             recovery_success_threshold: default_health_recovery_threshold(),
+            status_page_interval_secs: default_status_page_interval_secs(),
         }
     }
+}
+
+fn default_status_page_interval_secs() -> u64 {
+    60
 }
 
 fn default_health_interval_secs() -> u64 {
@@ -1177,6 +1192,7 @@ mod tests {
             api_keys,
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         }
     }
 

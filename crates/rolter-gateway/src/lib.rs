@@ -20,6 +20,7 @@ mod logging;
 mod metrics;
 mod rate_limits;
 mod state;
+mod status_page;
 mod upstream_metrics;
 mod watcher;
 
@@ -105,6 +106,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         health::spawn_prober(&config, state.clone());
         upstream_metrics::spawn_scraper(&config, state.clone());
     }
+
+    // the status-page poller is an independent secondary signal: it runs whenever
+    // any provider sets status_page_url, regardless of active probing
+    status_page::spawn_poller(&config, state.clone());
 
     // start the reload-free config watcher when a control plane is configured
     if let Some(snapshot_url) = args.snapshot_url {

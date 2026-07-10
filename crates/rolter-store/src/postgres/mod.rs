@@ -70,6 +70,7 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         })
     }
 }

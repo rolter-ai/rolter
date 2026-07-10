@@ -87,6 +87,26 @@ llm_probe_model = "gpt-4o-mini"
   The tokens spent scale with your sweep frequency: one completion per provider per `interval_secs`. On a 10s interval that is ~8,640 tiny calls per provider per day. Prefer a longer `interval_secs` for LLM-call checks.
 </Warning>
 
+## Status-page signal (secondary)
+
+Set a provider's `status_page_url` to a statuspage.io-style `status.json` and rolter polls it on a slow cadence (`health.status_page_interval_secs`, default 60s). A non-operational indicator is recorded as a `status_page` event in `provider_health_events` and increments `rolter_status_page_degraded_total` — so a provider-wide incident surfaces on your dashboard *before* rolter's own probes start failing.
+
+<Info>
+  This is a **secondary** signal only. It never marks a provider unhealthy or changes routing on its own — it exists to give early visibility. Transport or JSON-parse failures are logged and skipped, never counted as a provider error. The poller runs whenever any provider sets `status_page_url`, even with `health.enabled = false`.
+</Info>
+
+```toml rolter.toml
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+status_page_url = "https://status.anthropic.com/api/v2/status.json"
+
+[health]
+status_page_interval_secs = 60
+```
+
 ## Activation walkthrough
 
 <Steps>
