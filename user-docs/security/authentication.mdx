@@ -1,0 +1,137 @@
+---
+title: "How to Authenticate Requests to the Rolter Gateway"
+sidebarTitle: "Authentication"
+description: "Pass a virtual key in every request using the OpenAI or Anthropic header style; manage key access and expiry through virtual key properties."
+---
+
+Every request that reaches Rolter must carry a virtual key — a gateway-scoped credential that controls which models a client can access and counts against any configured budgets or rate limits. Rolter accepts the same virtual keys in two header styles so it stays compatible with any OpenAI- or Anthropic-SDK-based client out of the box.
+
+## Header styles
+
+Rolter recognises two authentication headers. Use whichever your SDK or client already produces — both accept the same virtual keys.
+
+<CardGroup cols={2}>
+  <Card title="OpenAI style" icon="key">
+    `Authorization: Bearer <virtual-key>`
+
+    Used with `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
+  </Card>
+
+  <Card title="Anthropic style" icon="key">
+    `x-api-key: <virtual-key>`
+
+    Used with `/v1/messages`.
+  </Card>
+</CardGroup>
+
+<CodeGroup>
+
+```bash OpenAI style
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
+```
+
+```bash Anthropic style
+curl http://localhost:4000/v1/messages \
+  -H "x-api-key: sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+</CodeGroup>
+
+## Open mode (local development)
+
+When no `[[virtual_keys]]` entries are present in your configuration, Rolter runs in **open mode** and forwards every request without checking credentials. This is convenient when developing locally against a private gateway instance.
+
+```toml rolter.toml
+# Remove or comment out all [[virtual_keys]] blocks to enable open mode.
+# [[virtual_keys]]
+# key = "sk-rolter-dev"
+```
+
+<Warning>
+  Never run in open mode on a publicly reachable gateway. Any caller would be able to consume your upstream provider quota without restriction.
+</Warning>
+
+## Configuring virtual keys
+
+Add one `[[virtual_keys]]` block per key to your `rolter.toml`. Each block supports the following properties:
+
+<ParamField path="key" type="string" required>
+  The raw key value clients present in the `Authorization` or `x-api-key` header.
+</ParamField>
+
+<ParamField path="name" type="string">
+  A human-readable label for the key — shown in logs and the dashboard.
+</ParamField>
+
+<ParamField path="models" type="array of strings">
+  An allow-list of model names this key may request. An empty array (the default) grants access to every route.
+</ParamField>
+
+<ParamField path="disabled" default="false" type="boolean">
+  Set to `true` to revoke the key immediately without removing it from your config. The key will be rejected as if it did not exist.
+</ParamField>
+
+<ParamField path="expires_at" type="string (RFC 3339)">
+  An optional expiry instant in RFC 3339 format. Rolter rejects the key at or after this time. Leave unset for a non-expiring key.
+</ParamField>
+
+```toml rolter.toml
+[[virtual_keys]]
+key = "sk-rolter-dev"
+name = "local-dev"
+models = []           # empty = all models allowed
+disabled = false
+
+[[virtual_keys]]
+key = "sk-rolter-prod-readonly"
+name = "read-only client"
+models = ["gpt-4o"]
+expires_at = "2027-01-01T00:00:00Z"
+```
+
+<Note>
+  The raw key value is visible only at the moment you add it to your configuration or create it via the API. Store it in a secrets manager (such as a CI secret or a vault) immediately — it cannot be recovered later.
+</Note>
+
+## Session affinity
+
+For multi-turn conversations where you need the same upstream replica to handle every turn, attach a session identifier to your request. Rolter uses this header with the `consistent_hash` and `pipeline` load-balancing strategies to pin the conversation to one backend.
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "x-session-id: user-42-thread-7" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"continue our chat"}]}'
+```
+
+<Tip>
+  Use a stable, opaque identifier like a user-and-thread composite key. Rolter hashes the value to select a target — it is never forwarded to the upstream provider.
+</Tip>
+
+## Error responses
+
+Rolter returns standard HTTP error codes for authentication and authorisation failures.
+
+<AccordionGroup>
+  <Accordion title="401 — Missing or invalid key">
+    Returned when the request carries no auth header, or when the presented key does not match any active virtual key. Check that the `Authorization: Bearer` or `x-api-key` header is present and contains the correct value.
+  </Accordion>
+
+  <Accordion title="403 — Model not allowed">
+    Returned when the virtual key's `models` allow-list does not include the model you requested. Either add the model to the key's allow-list or use a key that grants access to that model.
+  </Accordion>
+
+  <Accordion title="402 — Budget exceeded">
+    Returned when a spend budget at any scope (org, team, project, or key) has been exhausted for the current period. See [Budgets & Rate Limits](/security/budgets-and-rate-limits) to adjust or reset limits.
+  </Accordion>
+
+  <Accordion title="429 — Rate limit hit">
+    Returned when the request or token rate for the key's scope chain has exceeded its per-minute cap. The response includes a `Retry-After` header indicating how many seconds to wait before retrying.
+  </Accordion>
+</AccordionGroup>

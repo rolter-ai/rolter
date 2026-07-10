@@ -1,0 +1,204 @@
+---
+title: "Providers & Routes: Configure LLM Routing in Rolter"
+sidebarTitle: "Providers & Routes"
+description: "Learn how providers define upstream AI services and how routes map public model names to those upstreams with strategies, param defaults, and variants."
+---
+
+Rolter sits between your application and one or more AI backends. You teach it where to forward traffic by declaring **providers** (the upstream services) and **routes** (the rules that decide which provider handles each model request). Together they give you a clean public API surface — your code always calls the same model name — while the gateway handles routing, failover, and load balancing behind the scenes.
+
+## Providers
+
+A provider is an upstream AI service that Rolter can forward requests to. Each provider entry names the service, tells Rolter which wire protocol it speaks (`kind`), and supplies the base URL and API key.
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | ✅ | Unique identifier referenced by routes and targets |
+| `kind` | ✅ | Wire protocol: `openai`, `anthropic`, or `openai_compatible` |
+| `api_base` | ✅ | Base URL without a trailing slash, e.g. `https://api.openai.com` |
+| `api_key_env` | — | Name of an env var holding the upstream API key (preferred over `api_key`) |
+| `api_key` | — | Inline API key — avoid in committed config files |
+| `egress_proxy` | — | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
+
+### Provider kinds
+
+| Kind | Use case |
+| --- | --- |
+| `openai` | OpenAI's native Chat Completions API |
+| `anthropic` | Anthropic's native Messages API |
+| `openai_compatible` | Any OpenAI-compatible endpoint: vLLM, TGI, Ollama, and similar |
+
+<Note>
+  Use `api_key_env` to reference a secret by environment variable name — never commit plaintext API keys to your config file.
+</Note>
+
+### Provider config example
+
+```toml rolter.toml
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[[providers]]
+name = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://localhost:8001"
+# no api_key needed for local instances
+
+[[providers]]
+name = "vllm-2"
+kind = "openai_compatible"
+api_base = "http://localhost:8002"
+egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
+```
+
+---
+
+## Routes
+
+A route maps a **public model name** — what your application actually sends in the `"model"` field — to one or more upstream targets plus a load-balancing strategy. When a request arrives for `"gpt-4o"`, Rolter looks up the matching route and forwards it to the appropriate provider.
+
+| Field | Description |
+| --- | --- |
+| `model` | Public model name clients request (must be unique across routes) |
+| `strategy` | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing)) |
+| `[[routes.targets]]` | One or more upstream targets to balance across |
+| `targets[].provider` | Name of a declared provider |
+| `targets[].model` | Upstream model identifier; omit to forward the public name as-is |
+| `targets[].weight` | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`) |
+
+### Basic route example
+
+```toml rolter.toml
+[[routes]]
+model = "gpt-4o"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+
+[[routes]]
+model = "claude"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+```
+
+---
+
+## Inference params
+
+You can inject admin-controlled default inference parameters into every request on a route using `[routes.params]`. Any parameter key the upstream model accepts is valid — `temperature`, `max_tokens`, `stop`, `top_p`, and so on.
+
+When a caller omits a parameter, the admin default is injected. When a caller sends a value, the **param policy** decides whether their override stands or the admin default silently wins.
+
+### Param policy
+
+`[routes.param_policy]` has two modes:
+
+- **`allow`** (default) — callers may override any default _except_ those listed in `deny`
+- **`deny`** — callers may override _no_ default except those explicitly listed in `allow`
+
+```toml rolter.toml
+[[routes]]
+model = "gpt-4o"
+strategy = "round_robin"
+
+[routes.params]
+temperature = 0.0    # force deterministic output
+max_tokens = 1024    # cap output length
+
+[routes.param_policy]
+mode = "deny"
+allow = ["max_tokens"]   # callers may still lower max_tokens, but not change temperature
+
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+```
+
+<Tip>
+  Use `mode = "deny"` with an empty `allow` list to fully pin all parameters — useful for compliance or cost-control scenarios where you need exact, reproducible outputs.
+</Tip>
+
+---
+
+## Variants
+
+Variants let you run **A/B tests**, **canary deployments**, and **per-key traffic splits** under a single route. Instead of defining a flat `targets` pool, you define named variant buckets, each with its own weight, targets, and optional param overrides.
+
+<Steps>
+  <Step title="Request arrives">
+    Rolter samples one variant proportionally by weight — this is the _primary_ variant.
+  </Step>
+  <Step title="Primary attempted">
+    Rolter forwards the request through the primary variant's targets.
+  </Step>
+  <Step title="Fallback on failure">
+    If the primary fails, Rolter tries the remaining variants in declared order until one succeeds.
+  </Step>
+  <Step title="Attribution">
+    The chosen variant name is written to the `variant` column in request logs for analysis.
+  </Step>
+</Steps>
+
+Each variant can carry its own `params` table. Variant params **layer over** the route-level params (variant wins on collision), and the route's `param_policy` governs both.
+
+```toml rolter.toml
+[[routes]]
+model = "chat"
+
+[[routes.variants]]
+name = "control"
+weight = 9
+[[routes.variants.targets]]
+provider = "openai"
+model = "gpt-4o"
+
+[[routes.variants]]
+name = "canary"
+weight = 1
+[[routes.variants.targets]]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+```
+
+<Info>
+  The `weight` on each variant controls proportional sampling — `9:1` sends 90 % of requests to `control` and 10 % to `canary`. A route uses either `[[routes.variants]]` _or_ a `[[routes.targets]]` pool, not both.
+</Info>
+
+### Variant-level param overrides
+
+```toml rolter.toml
+[[routes]]
+model = "chat"
+
+[routes.params]
+temperature = 0.7    # route-level default
+
+[[routes.variants]]
+name = "control"
+weight = 9
+[[routes.variants.targets]]
+provider = "openai"
+model = "gpt-4o"
+
+[[routes.variants]]
+name = "experimental"
+weight = 1
+
+[routes.variants.params]
+temperature = 1.2    # overrides the route default for this variant only
+
+[[routes.variants.targets]]
+provider = "openai"
+model = "gpt-4o"
+```

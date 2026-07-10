@@ -1,0 +1,114 @@
+---
+title: "GET /v1/models: List the Model Routes Your Key Can Access"
+sidebarTitle: "/v1/models"
+description: "List the model route names configured in Rolter that your virtual key is authorized to use, filtered by the key allow-list defined in rolter.toml."
+---
+
+The `/v1/models` endpoint returns the public model names — route names — that are configured in your `rolter.toml` and accessible to the authenticated virtual key. You can use this endpoint to discover which model names to pass in the `model` field of chat, completion, or messages requests.
+
+## What is returned
+
+The response lists **Rolter route names**, not upstream model IDs. For example, a route configured with `model = "gpt-4o"` that targets the upstream model `gpt-4o-2024-11-20` appears in this list as `gpt-4o`. The upstream model ID is an internal concern managed by your route configuration.
+
+When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all routes.
+
+<Note>
+  Rolter also exposes a built-in `fake-llm` model that responds locally without forwarding to any upstream. It appears in the model list unless a configured route shadows it with the same name. It is useful for testing authentication and connectivity without incurring upstream costs.
+</Note>
+
+## Request
+
+**`GET /v1/models`**
+
+### Headers
+
+<ParamField header="Authorization" type="string">
+  `Bearer <virtual-key>` — your Rolter virtual key. Required when virtual keys are configured. Omit only when the gateway is running open (no keys configured).
+</ParamField>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:4000/v1/models \
+  -H "Authorization: Bearer sk-rolter-dev"
+```
+
+```python OpenAI SDK
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key="sk-rolter-dev",
+)
+
+models = client.models.list()
+for model in models:
+    print(model.id)
+```
+
+</CodeGroup>
+
+## Response
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gpt-4o",
+      "object": "model",
+      "owned_by": "rolter"
+    },
+    {
+      "id": "claude",
+      "object": "model",
+      "owned_by": "rolter"
+    },
+    {
+      "id": "llama",
+      "object": "model",
+      "owned_by": "rolter"
+    }
+  ]
+}
+```
+
+<ResponseField name="object" type="string">
+  Always `"list"`.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Array of model objects, one per accessible route.
+
+  <Expandable title="Model object fields">
+    <ResponseField name="id" type="string">
+      The route name you pass as `model` in request bodies (e.g. `"gpt-4o"`, `"claude"`, `"llama"`).
+    </ResponseField>
+
+    <ResponseField name="object" type="string">
+      Always `"model"`.
+    </ResponseField>
+
+    <ResponseField name="owned_by" type="string">
+      Always `"rolter"` — these are gateway-level route names, not upstream provider objects.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Virtual key filtering
+
+If your key is scoped to a subset of models, only those appear in the response. For example, a key configured as:
+
+```toml
+[[virtual_keys]]
+key = "sk-gpt-only"
+models = ["gpt-4o"]
+```
+
+returns only the `gpt-4o` entry, even if `claude` and `llama` routes are defined. Requesting a model outside the key's allow-list on an inference endpoint returns `403 Forbidden`.
+
+<Tip>
+  Use this endpoint from your application at startup to validate that the expected model routes are reachable with the configured key before serving user traffic.
+</Tip>

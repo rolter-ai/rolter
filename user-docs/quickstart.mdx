@@ -1,0 +1,152 @@
+---
+title: "Rolter Quickstart: Send Your First Request in 5 Min"
+sidebarTitle: "Quickstart"
+description: "Follow these steps to install Rolter, configure your first provider, start the gateway, and send a chat completions request in under five minutes."
+---
+
+The fastest way to try Rolter is with Docker Compose — it starts the gateway alongside all supporting services with a single command. If you prefer a binary install, see the [Installation guide](/installation). By the end of this guide you'll have a running gateway and a verified response from your first AI request.
+
+<Steps>
+  <Step title="Install Rolter">
+    Docker Compose is the recommended path for a first-time setup. Make sure you have [Docker](https://docs.docker.com/get-docker/) installed, then clone the repository.
+
+    ```bash
+    git clone https://github.com/ormeilu/rolter.git
+    cd rolter
+    ```
+
+    <Tip>
+      Prefer a local binary? The [Installation page](/installation) covers `cargo install` and `uv tool install rolter` as alternatives.
+    </Tip>
+  </Step>
+  <Step title="Create your config file">
+    Rolter ships with an annotated example configuration. Copy it and open it in your editor — the only value you must set before starting is your provider API key.
+
+    ```bash
+    cp rolter.example.toml rolter.toml
+    ```
+
+    The example config already defines routes for `gpt-4o`, `claude`, and a local vLLM pool. At a minimum, export the environment variable that your chosen provider's entry references:
+
+    ```bash
+    # for OpenAI
+    export OPENAI_API_KEY=sk-...
+    
+    # for Anthropic
+    export ANTHROPIC_API_KEY=sk-ant-...
+    ```
+
+    Your `rolter.toml` references these via `api_key_env` — the key is never stored in the config file itself.
+
+    <Note>
+      The example config includes a pre-configured virtual key `sk-rolter-dev` so you can start testing immediately. For any environment beyond local development, replace it with a strong, randomly generated value.
+    </Note>
+  </Step>
+  <Step title="Start the gateway">
+    Bring up the full stack — gateway, control plane, Postgres, Redis, and ClickHouse — with one command:
+
+    ```bash
+    cp .env.example .env   # add OPENAI_API_KEY and any other provider keys here
+    docker compose -f docker/docker-compose.yml up -d
+    ```
+
+    Once the containers are running:
+
+    - **Gateway** (data plane): [http://localhost:4000](http://localhost:4000)
+    - **Control plane \+ dashboard**: [http://localhost:4001](http://localhost:4001)
+
+    You can tail the gateway logs to confirm it has loaded your config:
+
+    ```bash
+    docker compose -f docker/docker-compose.yml logs -f gateway
+    ```
+
+    <Tip>
+      Prefer to run without Docker? Use `cargo run -p rolter-gateway -- --config rolter.toml` after exporting your provider API key. See the [Installation page](/installation) for details.
+    </Tip>
+  </Step>
+  <Step title="Send a chat completions request">
+    With the gateway up, send a request using the virtual key from your config. The `model` field matches the route name you defined in `rolter.toml` — Rolter takes care of rewriting it to the upstream model ID.
+
+    <CodeGroup>
+
+    ```bash cURL
+    curl -s http://localhost:4000/v1/chat/completions \
+      -H "Authorization: Bearer sk-rolter-dev" \
+      -H "Content-Type: application/json" \
+      -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+    ```
+
+    ```python Python (OpenAI SDK)
+    from openai import OpenAI
+    
+    client = OpenAI(
+        base_url="http://localhost:4000/v1",
+        api_key="sk-rolter-dev",
+    )
+    
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello!"}],
+    )
+    print(response.choices[0].message.content)
+    ```
+
+    ```bash cURL (Anthropic)
+    curl -s http://localhost:4000/v1/messages \
+      -H "x-api-key: sk-rolter-dev" \
+      -H "Content-Type: application/json" \
+      -d '{"model":"claude","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}'
+    ```
+
+    </CodeGroup>
+
+    You should receive a standard OpenAI or Anthropic response object — exactly what your existing code already expects.
+
+    <Info>
+      Streaming works too. Add `"stream": true` to your request body and Rolter will forward the SSE stream from the upstream provider directly to your client.
+    </Info>
+  </Step>
+  <Step title="Verify with the models endpoint">
+    Confirm the gateway is healthy and listing your configured routes:
+
+    ```bash
+    curl -s http://localhost:4000/v1/models \
+      -H "Authorization: Bearer sk-rolter-dev"
+    ```
+
+    The response will list the public model names you defined in `rolter.toml` — `gpt-4o`, `claude`, `llama`, and any others you added.
+
+    You can also hit the liveness endpoint at any time without a key:
+
+    ```bash
+    curl -s http://localhost:4000/healthz
+    ```
+
+    <Note>
+      A Prometheus-format metrics endpoint is available at `GET /metrics` for integration with Grafana, Datadog, or any other scraper.
+    </Note>
+  </Step>
+</Steps>
+
+## What's next?
+
+Now that requests are flowing through the gateway, you can explore more of what Rolter offers:
+
+<CardGroup cols={2}>
+  <Card title="Configure routes & strategies" icon="sitemap" href="/concepts/load-balancing">
+    Set up weighted routing, cache-aware balancing for vLLM pools, A/B variants, and request parameter policies.
+  </Card>
+
+  <Card title="Manage virtual keys" icon="key" href="/concepts/virtual-keys">
+    Create scoped keys for each team or service, set expiry dates, and revoke them without restarting the gateway.
+  </Card>
+
+  <Card title="Set budgets & rate limits" icon="gauge-high" href="/security/budgets-and-rate-limits">
+    Add monthly spend caps and per-minute token limits per org, team, project, or individual key.
+  </Card>
+
+  <Card title="API reference" icon="code" href="/api/chat-completions">
+    Browse the full list of supported endpoints, request fields, and authentication schemes.
+  </Card>
+</CardGroup>

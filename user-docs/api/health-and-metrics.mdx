@@ -1,0 +1,112 @@
+---
+title: "Health and Metrics Endpoints for the Rolter Gateway"
+sidebarTitle: "Health & Metrics"
+description: "Use GET /healthz for liveness probes and GET /metrics for Prometheus scraping to integrate Rolter into your monitoring and orchestration stack."
+---
+
+Rolter exposes two operational endpoints that require no authentication and are designed to be scraped or probed directly by your infrastructure tooling. Use `/healthz` for container orchestration liveness checks and `/metrics` for Prometheus scraping.
+
+## GET /healthz
+
+The liveness endpoint returns `200 OK` with the body `ok` when the gateway process is running and its HTTP server is accepting connections. No authentication is required.
+
+Use this endpoint for:
+
+- **Kubernetes** `livenessProbe` and `readinessProbe` configuration
+- **Docker** `HEALTHCHECK` instructions
+- **Load balancer** health checks in front of multiple gateway instances
+
+```bash
+curl http://localhost:4000/healthz
+# → 200 OK
+# → ok
+```
+
+```yaml Kubernetes liveness probe
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 4000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
+## GET /metrics
+
+The metrics endpoint serves Prometheus exposition-format text. Scrape it with any Prometheus-compatible collector. No authentication is required.
+
+```bash
+curl http://localhost:4000/metrics
+```
+
+The default path is `/metrics`. You can change it in `rolter.toml` to avoid collisions with an upstream application or sidecar that already owns `/metrics` behind the same reverse proxy:
+
+```toml
+[server]
+metrics_path = "/internal/metrics"
+```
+
+<Note>
+  The metrics path must start with `/` and must not collide with any of Rolter's built-in request paths (`/healthz`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/messages`). Rolter validates this at startup and reports an error if a collision is detected.
+</Note>
+
+## Key metrics
+
+The following metrics are included in the Prometheus output. All are counters or histograms scoped to the gateway process.
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `rolter_requests_total` | Counter | Total number of inference requests proxied by the gateway |
+| `rolter_request_latency_ms_bucket` | Histogram | End-to-end request latency in milliseconds, labelled by model route |
+| `rolter_request_ttft_ms_bucket` | Histogram | Time-to-first-token in milliseconds for streaming requests, labelled by model route |
+| `rolter_upstream_errors_total` | Counter | Number of requests that exhausted all retries and returned an upstream error |
+| `rolter_auth_failures_total` | Counter | Number of authentication failures (missing, invalid, expired, or revoked keys) |
+| `rolter_config_version` | Gauge | Monotonically increasing version of the active configuration snapshot; increments on each hot reload |
+
+### Additional counters
+
+| Metric | Description |
+| --- | --- |
+| `rolter_retries_total` | Total retry attempts triggered by transient upstream failures |
+| `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure |
+| `rolter_breaker_opened_total` | Number of times a circuit breaker tripped open |
+| `rolter_breaker_closed_total` | Number of times a circuit breaker closed after a successful probe |
+| `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits |
+| `rolter_budget_blocks_total` | Requests blocked due to an exceeded spend budget |
+
+## Prometheus scrape config
+
+Add the following job to your `prometheus.yml` to scrape the default metrics path:
+
+```yaml
+scrape_configs:
+  - job_name: rolter
+    static_configs:
+      - targets:
+          - "localhost:4000"
+    metrics_path: /metrics
+```
+
+If you customised `metrics_path` in `rolter.toml`, update the `metrics_path` field in the scrape config to match:
+
+```yaml
+scrape_configs:
+  - job_name: rolter
+    static_configs:
+      - targets:
+          - "localhost:4000"
+    metrics_path: /internal/metrics
+```
+
+## Security note
+
+<Warning>
+  Neither `/healthz` nor `/metrics` require authentication. In production, restrict access to `/metrics` at your reverse proxy layer to prevent leaking operational data. A typical nginx rule:
+
+  ```nginx
+  location /metrics {
+      allow 10.0.0.0/8;
+      deny all;
+  }
+  ```
+</Warning>

@@ -1,0 +1,137 @@
+---
+title: "Rolter Production Deployment: Security and Ops Checklist"
+sidebarTitle: "Production"
+description: "Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups."
+---
+
+Running Rolter in production requires a few deliberate decisions around network exposure, secret management, and operational hygiene. This page walks you through the key concerns so you can deploy with confidence and keep your gateway secure, observable, and easy to operate at scale.
+
+<Warning>
+  Never expose the control plane (`rolter-control`, port 4001) to the public internet. It has full write access to your entire gateway configuration — providers, virtual keys, routes, and stored secrets. Place it on a private network and restrict access to trusted operators only.
+</Warning>
+
+## Checklist
+
+Work through these steps before sending production traffic to your gateway:
+
+<Steps>
+  <Step title="Terminate TLS at your ingress or load balancer">
+    Rolter's gateway listens on plain HTTP by default. Put a TLS-terminating ingress controller, reverse proxy (e.g. nginx, Caddy, Traefik), or cloud load balancer in front of port 4000. Your clients connect over HTTPS to the ingress; the ingress forwards cleartext HTTP to the gateway over your private network.
+
+    Keep the control plane (port 4001) off public-facing load balancers entirely. Route admin traffic through a VPN or SSH tunnel instead.
+  </Step>
+  <Step title="Generate and store a strong ROLTER_MASTER_KEY">
+    The master key is the AES-256-GCM key-encryption key (KEK) used to protect all provider API secrets at rest. Generate a cryptographically random 32-byte value and store it in your secrets manager:
+
+    ```bash
+    openssl rand -hex 32
+    ```
+
+    Inject it into both the gateway and control plane containers as the `ROLTER_MASTER_KEY` environment variable. Back it up securely — losing this key means losing access to all stored provider credentials.
+  </Step>
+  <Step title="Supply all credentials via environment variables">
+    Never write API keys or passwords inline in `rolter.toml` or into container images. Instead:
+
+    - Reference provider keys with `api_key_env` in your config — Rolter reads the key from the named environment variable at runtime.
+    - Supply `DATABASE_URL`, `REDIS_URL`, and `CLICKHOUSE_URL` as environment variables or inject them from a secrets manager (AWS Secrets Manager, HashiCorp Vault, Kubernetes Secrets, etc.).
+
+    ```toml
+    [[providers]]
+    name = "openai-prod"
+    kind = "openai"
+    api_base = "https://api.openai.com"
+    api_key_env = "OPENAI_API_KEY"   # never use api_key = "sk-..."
+    ```
+  </Step>
+  <Step title="Run multiple gateway replicas for high availability">
+    The gateway is stateless — it reads its working config from an in-memory snapshot that is refreshed from Redis. You can run as many gateway replicas as you need behind a load balancer. When you push a config change through the control plane, all replicas receive the hot-reload event via Redis and swap in the new config simultaneously without restarting.
+
+    PostgreSQL and ClickHouse are shared across all replicas, so request logs and config changes are always consistent regardless of which replica handles a request.
+
+    <Tip>
+      The gateway can run independently from the control plane using just a `rolter.toml` file — no Redis, PostgreSQL, or ClickHouse required. This is ideal for zero-dependency edge deployments or resource-constrained environments where you manage config changes through file updates instead of the dashboard.
+    </Tip>
+  </Step>
+  <Step title="Configure health probes">
+    Point your load balancer or container orchestrator's liveness and readiness probes at the gateway's health endpoint:
+
+    ```text
+    GET /healthz  →  port 4000
+    ```
+
+    A `200 OK` response indicates the gateway process is up and ready to serve traffic. Configure both liveness and readiness probes to this endpoint to give your orchestrator accurate signal for routing and restart decisions.
+
+    ```yaml
+    # Example Kubernetes probe config
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 4000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: 4000
+      initialDelaySeconds: 3
+      periodSeconds: 5
+    ```
+  </Step>
+  <Step title="Back up PostgreSQL regularly">
+    PostgreSQL is the single source of truth for all Rolter configuration — providers, routes, virtual keys, RBAC policies, and budgets. Schedule regular automated backups using `pg_dump` or your cloud provider's managed backup tooling. Test restore procedures before you need them.
+
+    ClickHouse holds request logs and analytics data. Back it up according to your own retention and compliance requirements, but losing ClickHouse data does not affect gateway operation or config.
+  </Step>
+  <Step title="Set appropriate log levels">
+    Use `RUST_LOG=info` (or `warn`) in production. The `info` level gives you startup messages, config reload events, and error conditions without overwhelming your log aggregation system.
+
+    ```bash
+    RUST_LOG=info
+    ```
+
+    Switch to `debug` temporarily when diagnosing a specific issue, then revert. You can also scope debug logging to a single crate to reduce noise:
+
+    ```bash
+    RUST_LOG=info,rolter_gateway=debug
+    ```
+  </Step>
+  <Step title="Set resource limits on gateway containers">
+    If you are running in Kubernetes or another container orchestrator, set explicit CPU and memory requests and limits on gateway containers. The gateway is a Rust process with predictable memory usage under steady load — baseline it in staging and set limits with appropriate headroom.
+
+    ```yaml
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "128Mi"
+      limits:
+        cpu: "1000m"
+        memory: "512Mi"
+    ```
+  </Step>
+</Steps>
+
+## Secrets reference
+
+Here is a consolidated view of every secret and credential the stack requires:
+
+| Variable | Used by | Notes |
+| --- | --- | --- |
+| `ROLTER_MASTER_KEY` | gateway, control | 32-byte hex; AES-256-GCM KEK — never rotate without a migration plan |
+| `DATABASE_URL` | control | Postgres connection string, e.g. `postgres://user:pass@host:5432/rolter` |
+| `REDIS_URL` | gateway, control | e.g. `redis://host:6379` |
+| `CLICKHOUSE_URL` | gateway, control | e.g. `http://host:8123` |
+| `OPENAI_API_KEY` | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML |
+| `ANTHROPIC_API_KEY` | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML |
+
+<Info>
+  You can reference any arbitrarily named environment variable in `api_key_env`. If you manage provider keys in a secrets manager that injects them under custom names (e.g. `PROD_OPENAI_KEY`), set `api_key_env = "PROD_OPENAI_KEY"` in your provider config — Rolter will read from that variable at startup.
+</Info>
+
+## Rotate provider API keys periodically
+
+Rotate your upstream provider API keys on a schedule (e.g. every 90 days) or immediately if a key is suspected to be compromised. Because keys are referenced by environment variable name rather than stored inline, rotation is a two-step operation:
+
+1. Update the secret value in your secrets manager or environment.
+2. Restart or re-deploy the gateway containers to pick up the new value.
+
+If you use the control plane to manage providers, you can update the encrypted secret through the dashboard without touching the TOML file or restarting containers.

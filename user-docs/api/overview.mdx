@@ -1,0 +1,100 @@
+---
+title: "Rolter Gateway API: Endpoints, Auth, and Error Codes"
+sidebarTitle: "Overview"
+description: "The Rolter gateway exposes OpenAI and Anthropic-compatible endpoints. Authenticate with a virtual key as a Bearer token or x-api-key header."
+---
+
+Rolter is a high-performance AI gateway written in Rust that sits in front of your upstream model providers. Any SDK or HTTP client that already speaks the OpenAI or Anthropic API works with Rolter unchanged — point it at the gateway base URL and supply a Rolter virtual key. Rolter handles authentication, load balancing, retries, rate limiting, and spend enforcement before the request ever reaches an upstream.
+
+## Base URL
+
+```text
+http://<your-gateway-host>:4000
+```
+
+The default port is `4000`, configurable via `[server] port` in `rolter.toml`.
+
+## Authentication
+
+Every inference endpoint requires a virtual key. You can pass it in either of two ways, matching the convention of the SDK you are using:
+
+| Style | Header |
+| --- | --- |
+| OpenAI-style | `Authorization: Bearer <virtual-key>` |
+| Anthropic-style | `x-api-key: <virtual-key>` |
+
+When no virtual keys are configured in `rolter.toml` the gateway runs open, which is convenient for local development. In production, define at least one key under `[[virtual_keys]]`.
+
+<Note>
+  Virtual keys are stored as peppered digests — the plaintext key never persists in gateway memory after the initial handshake. Revoke a key instantly by setting `disabled = true` in your config, or set `expires_at` for time-bounded access.
+</Note>
+
+## Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE) |
+| `POST` | `/v1/completions` | OpenAI legacy text completions |
+| `POST` | `/v1/messages` | Anthropic Messages API; streaming supported |
+| `GET` | `/v1/models` | List configured model route names your key can access |
+| `GET` | `/healthz` | Liveness check — returns `200 OK` when the gateway is running |
+| `GET` | `/metrics` | Prometheus metrics in exposition format |
+
+## Routing via the `model` field
+
+The `model` field in your request body selects a **route** defined in `rolter.toml`, not necessarily a literal upstream model name. Rolter looks up the route, applies any admin-configured param defaults, picks a target according to the route's balancing strategy, rewrites `model` to the target's upstream model ID, and forwards the request with the provider's credentials.
+
+```text
+client request                   Rolter                          upstream
+  model: "gpt-4o"    ──────►  route lookup    ──────►  model: "gpt-4o"
+                               picks target             Authorization: Bearer $OPENAI_API_KEY
+```
+
+If the requested model name does not match any configured route, Rolter returns `404` with `"code": "model_not_found"`.
+
+## Request headers
+
+<ParamField header="Authorization" type="string">
+  Bearer token carrying your virtual key: `Authorization: Bearer <virtual-key>`. Required on all `/v1/*` endpoints when virtual keys are configured.
+</ParamField>
+
+<ParamField header="x-api-key" type="string">
+  Alternative to `Authorization`. Accepted on all `/v1/*` endpoints; preferred by Anthropic SDKs.
+</ParamField>
+
+<ParamField header="x-session-id" type="string">
+  Pass a stable session identifier (e.g. a user or conversation ID) to enable **session affinity**. When present, the consistent-hash and cache-aware balancers pin the request to the same upstream replica, improving KV-cache hit rates across multi-turn conversations.
+</ParamField>
+
+<ParamField header="x-request-id" type="string">
+  An optional client-supplied request identifier. Rolter echoes it in response headers and includes it in request logs for correlation.
+</ParamField>
+
+<ParamField header="x-correlation-id" type="string">
+  Alias for `x-request-id`. Both are accepted and echoed.
+</ParamField>
+
+## Error responses
+
+Rolter returns OpenAI-style JSON error bodies on every error path, so existing error-handling code works unchanged.
+
+```json
+{
+  "error": {
+    "message": "model not allowed for this key",
+    "type": "invalid_request_error",
+    "code": "model_not_allowed",
+    "param": "model"
+  }
+}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `401 Unauthorized` | Missing or invalid virtual key |
+| `403 Forbidden` | Key is valid but not permitted to use the requested model |
+| `402 Payment Required` | A spend budget for the key, project, team, or org has been exceeded |
+| `429 Too Many Requests` | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header |
+| `404 Not Found` | No route matches the requested `model` name |
+| `502 Bad Gateway` | All upstream targets failed or were unreachable after retries |
+| `503 Service Unavailable` | Route has no available targets |

@@ -1,0 +1,126 @@
+---
+title: "OpenTelemetry Distributed Tracing with Rolter Gateway"
+sidebarTitle: "Tracing"
+description: "Configure Rolter to export OpenTelemetry traces to Grafana, Honeycomb, Datadog, SigNoz, or Langfuse for end-to-end LLM observability."
+---
+
+Rolter emits distributed traces via OpenTelemetry OTLP (gRPC or HTTP), which means you can send spans to any OTel-compatible backend without changing any Rolter code — just set environment variables. Rolter also propagates trace context both inbound (from your clients) and outbound (to upstream engines), so a single trace can span your entire LLM request path from client to model.
+
+<Note>
+  Tracing and request logging are independent features. You can use one, both, or neither depending on your observability setup.
+</Note>
+
+## Supported backends
+
+<CardGroup cols={3}>
+  <Card title="Grafana Tempo" icon="chart-bar">
+  </Card>
+
+  <Card title="Honeycomb" icon="hexagon">
+  </Card>
+
+  <Card title="Datadog" icon="dog">
+  </Card>
+
+  <Card title="SigNoz" icon="signal">
+  </Card>
+
+  <Card title="Langfuse" icon="flask">
+  </Card>
+
+  <Card title="Any OTel Collector" icon="server">
+  </Card>
+</CardGroup>
+
+All of these accept standard OTLP, so the configuration pattern is the same regardless of which backend you use.
+
+## Configuration via environment variables
+
+Rolter reads the standard OpenTelemetry SDK environment variables. You don't add anything to `rolter.toml` for tracing — set these in your process environment, systemd unit, Docker Compose file, or Kubernetes deployment:
+
+| Variable | Purpose |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP receiver URL, e.g. `http://otel-collector:4317` for gRPC |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Authentication headers for managed backends (comma-separated `key=value`) |
+| `OTEL_SERVICE_NAME` | Service name that appears on spans in your backend — use something like `rolter-gateway` |
+
+## Quick-start examples
+
+<CodeGroup>
+
+```bash Grafana Tempo
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+export OTEL_SERVICE_NAME=rolter-gateway
+```
+
+```bash Honeycomb
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=YOUR_API_KEY"
+export OTEL_SERVICE_NAME=rolter-gateway
+```
+
+```bash Datadog (via OTLP intake)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://datadog-agent:4317
+export OTEL_SERVICE_NAME=rolter-gateway
+```
+
+```bash SigNoz
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://signoz-otel-collector:4317
+export OTEL_SERVICE_NAME=rolter-gateway
+```
+
+```bash Langfuse
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64-encoded-public-secret-key>"
+export OTEL_SERVICE_NAME=rolter-gateway
+```
+
+</CodeGroup>
+
+## Trace context propagation
+
+Rolter participates in distributed tracing on both sides of the gateway:
+
+<Steps>
+  <Step title="Inbound context continuation">
+    When a client sends a request with W3C `traceparent` / `tracestate` headers (or `b3` headers), Rolter reads them and continues the existing trace. The gateway span becomes a child of the caller's span — ideal for applications that already instrument their HTTP clients.
+  </Step>
+  <Step title="Request ID correlation">
+    Rolter generates a unique `x-request-id` for every request (or honours a caller-supplied one). This ID is echoed in the response header and stamped on logs, metric exemplars, and spans, giving you a single key to correlate across all three observability signals.
+  </Step>
+  <Step title="Outbound context injection">
+    Rolter injects the active trace context into every upstream request it makes. If your self-hosted engine (vLLM, SGLang, TGI) exports its own spans, they join the same distributed trace automatically — no glue code required.
+  </Step>
+</Steps>
+
+## Recommended topology
+
+For production setups, deploy an OpenTelemetry Collector as an intermediary between Rolter and your backends. This decouples your gateway from vendor specifics and lets you fan out to multiple backends or change destinations without restarting Rolter.
+
+```text
+Rolter gateway
+    │
+    │  OTLP (gRPC/HTTP)
+    ▼
+OpenTelemetry Collector
+    │           │           │
+    ▼           ▼           ▼
+  Grafana    Honeycomb   Datadog
+  Tempo
+```
+
+The Collector can also scrape Rolter's `/metrics` endpoint and your upstream engines' `/metrics` endpoints in the same deployment, keeping all telemetry paths consistent.
+
+## End-to-end traces with vLLM
+
+<Tip>
+  If you run vLLM with `--otlp-traces-endpoint` pointing at the same OpenTelemetry Collector as Rolter, engine-level prefill and decode spans will appear as children of Rolter's gateway span in the same distributed trace. You get a complete picture — from the client request, through gateway routing, down to individual inference steps — in a single trace view.
+</Tip>
+
+```bash vLLM launch with tracing
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --otlp-traces-endpoint http://otel-collector:4317
+```
+
+Point `OTEL_EXPORTER_OTLP_ENDPOINT` for Rolter at the same collector and the spans join automatically via the injected `traceparent` header.

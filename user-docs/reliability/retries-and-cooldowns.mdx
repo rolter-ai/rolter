@@ -1,0 +1,88 @@
+---
+title: "Automatic Retries & Cooldowns for Upstream Failures"
+sidebarTitle: "Retries & Cooldowns"
+description: "Configure automatic retries and per-target cooldowns so Rolter handles transient upstream failures transparently, without changes to your client code."
+---
+
+When an upstream provider returns a transient error — a 408 timeout, a 429 rate-limit, any 5xx, or a dropped connection — Rolter can automatically retry the request against a different target and temporarily park the failing one so it stops absorbing load. Both mechanisms work together and are tunable through two sections of your `rolter.toml`.
+
+## Retries
+
+On a transient upstream failure, Rolter re-picks a target from the route's pool, deliberately excluding any targets already tried in this request, and forwards the request again. This means retries naturally fail over to sibling targets rather than hammering the same broken one.
+
+**Important safety guarantee:** retries only happen before any response body bytes have been streamed to the client. Once Rolter starts forwarding a response, it never retries mid-stream, so your client never receives a duplicated or spliced response.
+
+### Backoff
+
+Rolter waits between attempts using exponential backoff with full jitter — it picks a random delay in the range `[0, min(base × 2^(attempt−1), max_backoff_ms)]`. The randomness spreads retry storms across time when many requests hit a flapping target simultaneously. If the upstream returned a `429` with a `Retry-After` header, that value takes precedence over the computed delay.
+
+### Configuration
+
+Add a `[retry]` section to `rolter.toml`. All fields are optional — omit the section entirely to use the defaults shown below.
+
+<ParamField path="max_retries" default="2" type="u32">
+  Extra attempts after the first request. Set to `0` to disable retries entirely.
+</ParamField>
+
+<ParamField path="base_backoff_ms" default="100" type="u64">
+  Starting delay in milliseconds for the first retry. The backoff doubles on each subsequent attempt before jitter is applied.
+</ParamField>
+
+<ParamField path="max_backoff_ms" default="2000" type="u64">
+  Upper ceiling for the backoff delay in milliseconds. No retry will wait longer than this value regardless of how many attempts have been made.
+</ParamField>
+
+```toml rolter.toml
+[retry]
+max_retries = 3
+base_backoff_ms = 200
+max_backoff_ms = 5000
+```
+
+---
+
+## Cooldowns
+
+After a target returns a transient failure, Rolter parks that target for `base_secs` seconds. While a target is parked, the balancer skips it and routes new requests to healthy siblings instead. When the park timer expires, the target automatically re-enters the pool.
+
+If the upstream's `429` response included a `Retry-After` header, Rolter uses that hint as the cooldown duration (clamped between `base_secs` and `max_secs`), so you respect the upstream's own backoff guidance automatically.
+
+**Fail-open guarantee:** if every target in a route is simultaneously parked, Rolter does not reject the request. It fails open and forwards anyway, preferring a possible upstream error over a guaranteed gateway error.
+
+### Configuration
+
+Add a `[cooldown]` section to `rolter.toml`. All fields are optional.
+
+<ParamField path="base_secs" default="5" type="u64">
+  How long a failing target is parked, in seconds. Set to `0` to disable cooldowns entirely.
+</ParamField>
+
+<ParamField path="max_secs" default="300" type="u64">
+  Ceiling for a cooldown duration derived from a `429 Retry-After` hint. A hint larger than this value is clamped to `max_secs`.
+</ParamField>
+
+```toml rolter.toml
+[cooldown]
+base_secs = 10
+max_secs = 120
+```
+
+---
+
+## Putting it together
+
+<Steps>
+  <Step title="Handle transient wobbles with retries">
+    Set `max_retries` to the number of extra attempts you want. For a pool with three targets, `max_retries = 2` means Rolter can try all three targets before giving up.
+  </Step>
+  <Step title="Reduce steady-state pressure with cooldowns">
+    Tune `base_secs` to match how long your upstreams typically need to recover from a spike. A short value (5–15 s) works well for most managed APIs; longer values suit self-hosted models with slower restart cycles.
+  </Step>
+  <Step title="Validate your config">
+    Run `rolter --check` to catch any syntax or structural issues before deploying.
+  </Step>
+</Steps>
+
+<Tip>
+  Use retries for transient wobbles — a brief 503 or a connection hiccup — and let **circuit breakers** handle targets that are down hard and stay down. See [Circuit Breakers](/reliability/circuit-breakers) for the complementary longer-lived state machine.
+</Tip>

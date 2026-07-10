@@ -1,0 +1,112 @@
+---
+title: "Virtual Keys: Client Authentication and Access Control"
+sidebarTitle: "Virtual Keys"
+description: "Understand how virtual keys authenticate clients, restrict model access, and support expiry and revocation — all without storing plaintext secrets."
+---
+
+Virtual keys are the bearer tokens your applications present to Rolter's gateway. They let you issue separate credentials to different callers, scope each credential to specific models, and revoke or expire them independently — without ever rotating your upstream provider API keys. Rolter stores keys as cryptographic hashes, so even if your config is leaked, raw key material is never exposed.
+
+## How authentication works
+
+Rolter accepts virtual keys in the same two ways that OpenAI and Anthropic do, so existing SDKs work without modification:
+
+| Style | Header |
+| --- | --- |
+| OpenAI-style | `Authorization: Bearer <key>` |
+| Anthropic-style | `x-api-key: <key>` |
+
+On each request, Rolter hashes the presented key (with an optional server-side pepper) and compares it in constant time against the stored digest. If no match is found, or if the matching key is disabled or expired, the gateway returns `401 Unauthorized`.
+
+<Note>
+  Keys are stored as hashes — Rolter never holds plaintext key material in memory after startup. Treat each key value like a password: record it at creation time, because you cannot retrieve it later.
+</Note>
+
+---
+
+## Key configuration fields
+
+You declare virtual keys in `rolter.toml` under `[[virtual_keys]]`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `key` | string | The bearer token value clients present — stored as a hash |
+| `name` | string | Human-readable label for logs and dashboards |
+| `models` | list | Model names this key may access; empty list means **all models allowed** |
+| `disabled` | bool | Set `true` to revoke the key without deleting it (default: `false`) |
+| `expires_at` | RFC 3339 datetime | Optional expiry — the key stops working at or after this instant |
+
+### Example
+
+```toml rolter.toml
+[[virtual_keys]]
+key = "sk-rolter-dev"
+name = "local-dev"
+models = []           # empty = all models allowed
+disabled = false
+
+[[virtual_keys]]
+key = "sk-my-app"
+name = "production-app"
+models = ["gpt-4o", "claude"]
+expires_at = "2027-01-01T00:00:00Z"
+```
+
+The `production-app` key above may only call the `gpt-4o` and `claude` routes. Any request for a model not in the list is rejected with `403 Forbidden`.
+
+---
+
+## Running without virtual keys
+
+If you remove (or never add) the `[[virtual_keys]]` section, Rolter runs **open** — any client can reach the gateway without presenting a key. This is convenient for local development and internal tooling behind a network perimeter, but you should always configure virtual keys before exposing the gateway to the internet.
+
+<Warning>
+  An open gateway forwards all requests to your upstream providers. Anyone who can reach the gateway URL will consume your API quota. Always configure virtual keys in production.
+</Warning>
+
+---
+
+## Revoking and expiring keys
+
+You have two non-destructive ways to stop a key from working:
+
+<CardGroup cols={2}>
+  <Card title="Soft revocation" icon="ban">
+    Set `disabled = true` on the key. The entry stays in your config for auditing but all requests using it are immediately rejected. Re-enable by setting `disabled = false`.
+  </Card>
+
+  <Card title="Time-bound expiry" icon="clock">
+    Set `expires_at` to an RFC 3339 timestamp. The key works until that instant and stops automatically. Useful for contractor access or short-lived integrations.
+  </Card>
+</CardGroup>
+
+---
+
+## Session affinity with `x-session-id`
+
+When you want all requests in a logical session to land on the same upstream target — for example, to benefit from a warm KV cache in a multi-turn conversation — send the `x-session-id` header:
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer sk-my-app
+x-session-id: user-abc-conversation-42
+Content-Type: application/json
+```
+
+Rolter uses this header as the affinity key in `consistent_hash` and `pipeline` strategies, and as a tiebreaker in `cache_aware` routing. The value can be any stable string that identifies the session — a user ID, conversation ID, or a combination.
+
+<Tip>
+  Pair `x-session-id` with the `consistent_hash` or `pipeline` strategy on your route to maximize KV cache reuse and reduce time-to-first-token on multi-turn conversations.
+</Tip>
+
+---
+
+## Key pepper
+
+To harden virtual key storage, you can mix a deployment-wide secret into the digest. Set it via the environment variable `ROLTER_KEY_PEPPER` (preferred) or inline in `rolter.toml`:
+
+```toml rolter.toml
+[server]
+key_pepper = "change-me-to-a-random-secret"
+```
+
+With a pepper set, a leaked key digest is useless without the pepper value. Use a long random string and treat it like any other infrastructure secret.

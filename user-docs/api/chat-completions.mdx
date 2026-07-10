@@ -1,0 +1,192 @@
+---
+title: "POST /v1/chat/completions: OpenAI Chat Completions API"
+sidebarTitle: "/v1/chat/completions"
+description: "Create a chat completion by sending a list of messages. Supports streaming via Server-Sent Events and is fully OpenAI SDK-compatible."
+---
+
+The `/v1/chat/completions` endpoint is fully compatible with the OpenAI Chat Completions API. Any client or SDK that already targets OpenAI works with Rolter without code changes — set `base_url` to your gateway address and supply a Rolter virtual key as the API key. Rolter authenticates the request, selects an upstream target based on your route configuration, optionally injects admin-configured param defaults, and forwards the request transparently.
+
+## Request
+
+**`POST /v1/chat/completions`**
+
+### Headers
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <virtual-key>` — your Rolter virtual key.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  Must be `application/json`.
+</ParamField>
+
+<ParamField header="x-session-id" type="string">
+  Optional session identifier for affinity-based routing. Pass a stable value (e.g. a user or conversation ID) to pin multi-turn requests to the same upstream replica and improve KV-cache hit rates.
+</ParamField>
+
+### Body
+
+<ParamField body="model" type="string" required>
+  The route name defined in your `rolter.toml`, for example `gpt-4o`. Rolter looks up this route and rewrites `model` to the upstream model ID before forwarding. Returns `404` if no matching route exists.
+</ParamField>
+
+<ParamField body="messages" type="array" required>
+  Array of message objects forming the conversation history.
+
+  <Expandable title="Message object fields">
+    <ParamField body="role" type="string" required>
+      The speaker role: `system`, `user`, or `assistant`.
+    </ParamField>
+
+    <ParamField body="content" type="string" required>
+      The text content of the message.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="stream" default="false" type="boolean">
+  Set to `true` to receive a streaming response over Server-Sent Events (SSE). Each event carries a `data:` line with a JSON delta chunk; the stream terminates with `data: [DONE]`.
+</ParamField>
+
+<ParamField body="temperature" type="number">
+  Sampling temperature between `0` and `2`. Higher values produce more random output. Passed through to the upstream; may be overridden or pinned by the route's `param_policy` in your config.
+</ParamField>
+
+<ParamField body="max_tokens" type="integer">
+  Maximum number of tokens to generate. Passed through to the upstream; may be capped by the route's `params` defaults.
+</ParamField>
+
+<ParamField body="stop" type="string | array">
+  One or more sequences at which the model stops generating further tokens.
+</ParamField>
+
+<ParamField body="top_p" type="number">
+  Nucleus sampling probability mass. An alternative to `temperature`; most providers recommend adjusting one but not both.
+</ParamField>
+
+<Note>
+  Any additional fields you include in the body — `frequency_penalty`, `presence_penalty`, `logit_bias`, `tools`, `response_format`, and others — are forwarded to the upstream as-is. Rolter only reads `model` and `stream` for its own logic.
+</Note>
+
+## Streaming
+
+When `"stream": true`, Rolter proxies the upstream's Server-Sent Events stream directly to your client. Each event looks like:
+
+```text
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"},"index":0}]}
+
+data: [DONE]
+```
+
+Use curl's `-N` flag (`--no-buffer`) to disable output buffering when testing streaming from the command line.
+
+## Examples
+
+<CodeGroup>
+
+```bash curl (non-streaming)
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+```bash curl (streaming)
+curl -N http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+```python OpenAI SDK
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key="sk-rolter-dev",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+print(response.choices[0].message.content)
+```
+
+```python OpenAI SDK (streaming)
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key="sk-rolter-dev",
+)
+
+stream = client.chat.completions.create(
+    model="gpt-4o",
+    stream=True,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+for chunk in stream:
+    delta = chunk.choices[0].delta.content
+    if delta:
+        print(delta, end="", flush=True)
+```
+
+</CodeGroup>
+
+## Session affinity for multi-turn conversations
+
+Pass `x-session-id` to pin a conversation thread to the same upstream replica. This is especially useful with self-hosted vLLM or SGLang pools where KV-cache reuse across turns can significantly reduce latency and cost.
+
+```bash curl (session affinity)
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -H "x-session-id: user-abc123" \
+  -d '{
+    "model": "llama",
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"}
+    ]
+  }'
+```
+
+```python OpenAI SDK (session affinity)
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:4000/v1",
+    api_key="sk-rolter-dev",
+    default_headers={"x-session-id": "user-abc123"},
+)
+
+response = client.chat.completions.create(
+    model="llama",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+)
+
+print(response.choices[0].message.content)
+```
+
+## Param policy
+
+Your `rolter.toml` can attach default inference parameters to a route under `[routes.params]` (e.g. `temperature = 0.0`, `max_tokens = 1024`). The route's `param_policy` then controls whether callers can override those defaults:
+
+- **`mode = "allow"` (default)** — callers may override any default except params listed in `deny`.
+- **`mode = "deny"`** — the admin default wins for every param except those listed in `allow`.
+
+When an override is denied, the admin default silently replaces the caller-supplied value before the request reaches the upstream.

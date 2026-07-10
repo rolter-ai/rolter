@@ -1,0 +1,176 @@
+---
+title: "Spend Budgets and Rate Limits for LLM Cost Control"
+sidebarTitle: "Budgets & Rate Limits"
+description: "Configure USD spend caps and RPM/TPM throughput limits at org, team, project, or key scope to control LLM costs and prevent runaway usage."
+---
+
+Rolter gives you two complementary levers for controlling how much your gateway spends and how fast it moves traffic: **spend budgets** block requests once a cumulative USD ceiling is reached, and **rate limits** reject requests that exceed per-minute throughput thresholds. Both systems operate across the same four-level scope hierarchy (org → team → project → key) and apply a most-restrictive-wins policy when multiple rules match a single request.
+
+<Warning>
+  Budgets and rate limits both require Redis (`REDIS_URL`). Rolter uses Redis for distributed counters so limits remain accurate across multiple gateway instances. Without Redis, both budgets and rate limits **fail open** — they are not enforced and all requests pass through.
+</Warning>
+
+## Step 1 — Define model prices
+
+Before budgets can track spend, Rolter needs to know the cost of each model's tokens. Add one `[[model_prices]]` block per model with rates in USD per million tokens.
+
+<ParamField path="model" type="string" required>
+  The public model name as it appears in your `[[routes]]` configuration.
+</ParamField>
+
+<ParamField path="input_per_mtok" type="float">
+  Cost in USD per million input (prompt) tokens.
+</ParamField>
+
+<ParamField path="output_per_mtok" type="float">
+  Cost in USD per million output (completion) tokens.
+</ParamField>
+
+<ParamField path="cached_input_per_mtok" type="float">
+  Cost in USD per million cache-hit input tokens. Defaults to `input_per_mtok` when omitted.
+</ParamField>
+
+```toml rolter.toml
+[[model_prices]]
+model = "gpt-4o"
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+cached_input_per_mtok = 1.25
+
+[[model_prices]]
+model = "claude"
+input_per_mtok = 3.0
+output_per_mtok = 15.0
+```
+
+<Info>
+  Models without a `[[model_prices]]` entry log a `cost_usd` of `0` per request. They can still be used, but their spend does not count toward any budget. Add a price entry for every model you want budgets to track.
+</Info>
+
+## Step 2 — Configure spend budgets
+
+A spend budget blocks incoming requests with **HTTP 402** once the cumulative cost for a scope reaches `limit_usd` within the configured period. Add one `[[budgets]]` block per scope you want to cap.
+
+<ParamField path="scope" type="string" required>
+  The scope level this budget applies to. One of `org`, `team`, `project`, or `key`.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  The UUID of the entity at the chosen scope (org ID, team ID, project ID, or virtual key ID).
+</ParamField>
+
+<ParamField path="limit_usd" type="float" required>
+  The maximum cumulative spend in USD for the period before requests are blocked.
+</ParamField>
+
+<ParamField path="period" default="monthly" type="string">
+  The window over which spend accumulates. One of `monthly`, `daily`, or `total`. `monthly` and `daily` windows reset automatically; `total` is a lifetime cap that never resets.
+</ParamField>
+
+```toml rolter.toml
+# Hard ceiling for the entire org — resets on the first of each month
+[[budgets]]
+scope = "org"
+id = "org-uuid"
+limit_usd = 500.0
+period = "monthly"
+
+# Tighter daily cap for a specific project
+[[budgets]]
+scope = "project"
+id = "project-uuid"
+limit_usd = 20.0
+period = "daily"
+
+# Lifetime cap on a single virtual key
+[[budgets]]
+scope = "key"
+id = "vk-uuid"
+limit_usd = 100.0
+period = "total"
+```
+
+When a request's scope chain matches multiple budget rules (e.g. both an org budget and a project budget), Rolter applies **most-restrictive-wins**: the request is blocked as soon as any matching budget is exhausted.
+
+<Tip>
+  Set an org-level budget as a hard ceiling to protect against unexpected runaway costs, then add project- or key-level budgets to allocate share to individual teams or clients.
+</Tip>
+
+## Step 3 — Configure rate limits
+
+A rate limit rejects requests with **HTTP 429** (plus a `Retry-After` header) when the number of requests or tokens in the trailing one-minute window exceeds the cap. Add one `[[rate_limits]]` block per scope you want to throttle.
+
+<ParamField path="scope" type="string" required>
+  The scope level this limit applies to. One of `org`, `team`, `project`, or `key`.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  The UUID of the entity at the chosen scope.
+</ParamField>
+
+<ParamField path="rpm" type="integer">
+  Maximum requests per minute. Omit to leave request count uncapped.
+</ParamField>
+
+<ParamField path="tpm" type="integer">
+  Maximum tokens per minute (prompt \+ completion combined). Omit to leave token throughput uncapped.
+</ParamField>
+
+```toml rolter.toml
+# Cap a single virtual key to 600 req/min and 150k tok/min
+[[rate_limits]]
+scope = "key"
+id = "vk-uuid"
+rpm = 600
+tpm = 150000
+
+# Cap an entire project to 2000 req/min (no token cap)
+[[rate_limits]]
+scope = "project"
+id = "project-uuid"
+rpm = 2000
+```
+
+<Note>
+  At least one of `rpm` or `tpm` must be set. A `[[rate_limits]]` block with neither field never actually caps anything — Rolter will warn about this during config validation.
+</Note>
+
+Like budgets, rate limits follow **most-restrictive-wins** across the scope chain. A per-key limit can throttle a client well below the project-level ceiling, and an org-level limit acts as a global backstop.
+
+## How counters work
+
+Rolter maintains sliding-window counters in Redis — one counter per (scope, id, window bucket) combination. Each counter is updated atomically on every request, so limits remain accurate even when you run multiple gateway instances behind a load balancer. The `Retry-After` response header on a 429 tells the client how many seconds to wait before the trailing window slides enough to admit the next request.
+
+## Complete example
+
+The following snippet brings together pricing, a budget, and a rate limit for a production setup:
+
+```toml rolter.toml
+# Per-model pricing
+[[model_prices]]
+model = "gpt-4o"
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+cached_input_per_mtok = 1.25
+
+# Org-wide monthly spend cap
+[[budgets]]
+scope = "org"
+id = "acme-org-uuid"
+limit_usd = 500.0
+period = "monthly"
+
+# Tighter cap for the analytics project
+[[budgets]]
+scope = "project"
+id = "analytics-project-uuid"
+limit_usd = 50.0
+period = "monthly"
+
+# Per-key throughput limit for a high-volume client
+[[rate_limits]]
+scope = "key"
+id = "analytics-vk-uuid"
+rpm = 600
+tpm = 150000
+```

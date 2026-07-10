@@ -1,0 +1,131 @@
+---
+title: "Cache-Aware Routing: Maximize KV Cache Reuse in Rolter"
+sidebarTitle: "Cache-Aware Routing"
+description: "Learn how Rolter's cache-aware strategy maximizes KV cache reuse across vLLM replicas, reducing time-to-first-token on prefix-heavy workloads."
+---
+
+When you run multiple vLLM replicas behind a gateway, the engine's KV cache is one of the most valuable resources you have. vLLM automatically reuses the cached attention tensors for any shared prompt prefix — system prompts, few-shot examples, conversation history — but that only helps if the next matching request lands on the **same** replica. A naive round-robin scatters requests across replicas and destroys this locality, forcing each engine to recompute prefixes it has already processed. Cache-aware routing solves this.
+
+## The problem: cache locality vs. load distribution
+
+Consider a fleet of two vLLM replicas serving a chatbot with a 2 000-token system prompt. Under round-robin:
+
+- Request 1 → replica A computes and caches the system prompt
+- Request 2 → replica B computes and caches the same system prompt
+- Request 3 → replica A, warm cache ✅
+- Request 4 → replica B, warm cache ✅
+
+In practice, sessions aren't strictly alternating, so you end up with both replicas burning compute on the same prefix repeatedly. As the fleet scales, the problem compounds. Cache-aware routing keeps related requests together, so each replica builds a deep, reusable cache rather than a shallow, scattered one.
+
+---
+
+## How cache-aware routing works
+
+Rolter's `cache_aware` strategy maintains a **per-target byte trie** of the prompts each target has served. When a new request arrives:
+
+1. Rolter scores every target by computing the **fraction of leading prompt bytes** already present in that target's trie.
+2. If the best-matching target's score meets or exceeds the threshold (default `0.5` — at least half the prompt prefix is cached), Rolter **pins the request** to that target.
+3. If no target clears the threshold, Rolter routes to the **least-warmed target** to spread the cache-building work evenly.
+4. After forwarding, Rolter records the served prompt in the winning target's trie, keeping the affinity map up to date.
+
+The trie is capped at a node ceiling (default 1 million nodes) with LRU eviction: when the cap is reached, the least-recently-inserted prompt is pruned, but shared prefix nodes that are still referenced by other prompts survive.
+
+<Note>
+  Cache-aware routing is **approximate** — Rolter tracks prompt byte prefixes in its own trie, not vLLM's internal block state. It does not require any changes to vLLM configuration and works with any OpenAI-compatible engine. A precise mode that subscribes to vLLM KV-cache events over ZMQ is on the roadmap.
+</Note>
+
+---
+
+## Configuration
+
+Set `strategy = "cache_aware"` on the route. No additional parameters are required.
+
+```toml rolter.toml
+[[providers]]
+name = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://localhost:8001"
+
+[[providers]]
+name = "vllm-2"
+kind = "openai_compatible"
+api_base = "http://localhost:8002"
+
+[[routes]]
+model = "llama"
+strategy = "cache_aware"
+
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+```
+
+Your application requests the model as `"llama"` and Rolter handles all the routing decisions transparently.
+
+---
+
+## The `pipeline` strategy: adding load and weight signals
+
+`cache_aware` optimizes purely for prefix affinity. If you also need to account for in-flight load and capacity-weighted targets, use the `pipeline` strategy instead. It runs a three-stage selection:
+
+1. **Filter** — drop targets that are ineligible (unhealthy or on cooldown)
+2. **Score** — combine static weight \+ in-flight load \+ prefix-cache affinity into a weighted sum for each target
+3. **Argmax** — pick the highest-scoring target, with random tiebreaking
+
+Session affinity via `x-session-id` pins repeat requests to their last-served target within a TTL window, layered on top of the cache-affinity scoring.
+
+```toml rolter.toml
+[[routes]]
+model = "llama-pipeline"
+strategy = "pipeline"
+
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 2
+
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+```
+
+The `weight = 2` on `vllm-1` tells the pipeline scorer to bias toward that target — useful when one replica has more GPU memory or headroom.
+
+<Tip>
+  Enable `[metrics_scrape]` to pull each engine's scheduler queue depth into Rolter's load view. The `pipeline` strategy uses this data alongside in-flight counts, giving you the most accurate load signal available without any changes to the engine.
+</Tip>
+
+---
+
+## When to use cache-aware routing
+
+Cache-aware routing delivers the biggest benefit when your prompts share a long common prefix:
+
+<CardGroup cols={2}>
+  <Card title="Shared system prompts" icon="message">
+    Every request starts with the same multi-paragraph system prompt. Cache-aware routing keeps those requests on the same replica, so the system prompt is computed once and reused for all subsequent calls.
+  </Card>
+
+  <Card title="Few-shot examples" icon="list">
+    Prompts that embed the same set of examples before the user query benefit from prefix affinity in the same way as system prompts.
+  </Card>
+
+  <Card title="RAG pipelines" icon="database">
+    Retrieval-augmented prompts that inject the same documents or context chunks gain cache reuse when the retrieved context lands on the same replica repeatedly.
+  </Card>
+
+  <Card title="Multi-turn conversations" icon="comments">
+    Each turn appends to the previous conversation history. Cache-aware routing (or `consistent_hash`) keeps the conversation on one replica so the growing context is served from cache rather than recomputed.
+  </Card>
+</CardGroup>
+
+---
+
+## Roadmap: precise KV-cache mode
+
+The current approximate mode gives meaningful TTFT improvements without any engine coupling. A **precise mode** is planned that subscribes to vLLM KV-cache events over ZMQ, hashes blocks the same way vLLM does, and maintains a gateway-side block→target index. This will score targets by their exact resident-prefix fraction blended with live load — delivering the largest and most reliable wins on prefix-heavy workloads, mirroring how llm-d's prefix-cache-aware scheduling works. Precise mode requires vLLM 0.10 or later.
