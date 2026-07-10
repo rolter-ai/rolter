@@ -31,7 +31,7 @@ use clap::Parser;
 use tower_http::trace::TraceLayer;
 
 use rolter_core::GatewayConfig;
-use state::AppState;
+pub use state::AppState;
 
 #[derive(Parser, Debug)]
 #[command(name = "rolter-gateway", version, about = "rolter data-plane gateway")]
@@ -114,15 +114,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }
 
-    let app = Router::new()
-        .route("/healthz", get(handlers::healthz))
-        .route("/metrics", get(handlers::metrics))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/completions", post(handlers::completions))
-        .route("/v1/messages", post(handlers::messages))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+    let app = build_router(state);
 
     tracing::info!(%addr, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -132,6 +124,29 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         .await?;
     tracing::info!("rolter-gateway shut down cleanly");
     Ok(())
+}
+
+/// Assemble the gateway's axum router over a built [`AppState`]. Extracted so
+/// integration tests can drive the full request pipeline in-process without
+/// binding a socket.
+pub fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(handlers::healthz))
+        .route("/metrics", get(handlers::metrics))
+        .route("/v1/models", get(handlers::list_models))
+        .route("/v1/chat/completions", post(handlers::chat_completions))
+        .route("/v1/completions", post(handlers::completions))
+        .route("/v1/messages", post(handlers::messages))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// Build the gateway router directly from a config, assembling a fresh
+/// [`AppState`] (logging and redis disabled). Convenience for integration tests
+/// and embedders that just want a ready-to-serve `Router`. Must be called from
+/// within a Tokio runtime.
+pub fn build_router_from_config(config: &GatewayConfig) -> Router {
+    build_router(AppState::with_logging(config, None))
 }
 
 /// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
