@@ -2,8 +2,9 @@
 
 ## Metrics
 
-- The gateway exposes Prometheus metrics at `GET /metrics`. The MVP ships counters (`rolter_requests_total`, `rolter_upstream_errors_total`, `rolter_auth_failures_total`).
-- Roadmap: migrate to the `metrics` facade + prometheus exporter with **latency histograms** (TTFT, total), per-route/model/provider labels, in-flight gauges, cache-hit ratio, and circuit-breaker state.
+- The gateway exposes Prometheus metrics at `GET /metrics`: counters (`rolter_requests_total`, `rolter_upstream_errors_total`, `rolter_auth_failures_total`, reload/log/budget/rate-limit/retry/cooldown/health/breaker/scrape counters), a `rolter_config_version` gauge, and per-model **latency histograms** — `rolter_request_latency_ms` (total) and `rolter_request_ttft_ms` (time-to-first-token), each labelled `{model=...}` with the standard `_bucket`/`_sum`/`_count` series. Histograms are observed once per completed request from the log sink, off the response hot path.
+- The exporter is hand-rolled (atomic counters + non-cumulative histogram buckets cumulated at render) rather than the `metrics` facade + global recorder, which does not fit the lock-free `arc-swap` design where an explicit `Arc<Metrics>` is threaded through the request path.
+- Roadmap: add per-provider/route labels, in-flight gauges, cache-hit ratio, and circuit-breaker state gauges.
 - Roadmap: **scrape/federate upstream engine metrics** from vLLM/SGLang/TGI `/metrics` and correlate them per target (queue depth, KV-cache usage, running/waiting requests) to feed load- and cache-aware routing and the dashboard.
 
 ## Tracing & context propagation
