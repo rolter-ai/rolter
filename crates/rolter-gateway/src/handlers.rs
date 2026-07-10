@@ -368,9 +368,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 };
                 last_provider = target.provider.clone();
                 last_target = target.model.clone().unwrap_or_else(|| model.clone());
-                // weighted pick across the provider's key pool (single-key
-                // providers always yield their one key)
-                let api_key = provider.pick_api_key(jitter(started));
+                // weighted pick across the provider's key pool, skipping keys
+                // parked on a cooldown (single-key providers yield their one key)
+                let multi_key = provider.api_keys.len() > 1;
+                let key_ns = key_pool_key(&target.provider);
+                let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
+                    multi_key && state.cooldowns.is_parked(&key_ns, i)
+                });
+                let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
                 let upstream_model = target.model.as_deref();
 
                 match state
@@ -379,14 +384,40 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         provider,
                         path,
                         forward_body.clone(),
-                        api_key.as_deref(),
+                        api_key,
                         upstream_model,
                     )
                     .await
                 {
                     Ok(response) => {
                         let status = response.status().as_u16();
-                        if is_retryable_status(status) {
+                        // a 429/401 on a multi-key provider is a key-level
+                        // failure: park the key, keep the target in rotation
+                        // and retry — a sibling key usually succeeds
+                        let key_failure = multi_key && (status == 429 || status == 401);
+                        if key_failure {
+                            if let Some((ki, _)) = &picked_key {
+                                let secs = cooldown.duration_secs(retry_after_secs(&response));
+                                state.cooldowns.park(&key_ns, *ki, secs.max(1));
+                                state
+                                    .metrics
+                                    .key_cooldowns_tripped_total
+                                    .fetch_add(1, Relaxed);
+                            }
+                            // let the same target be re-picked with a fresh key
+                            tried.pop();
+                            if attempt < retry.max_retries {
+                                state.metrics.retries_total.fetch_add(1, Relaxed);
+                                sleep(Duration::from_millis(retry_delay_ms(
+                                    retry,
+                                    &response,
+                                    attempt + 1,
+                                    started,
+                                )))
+                                .await;
+                                continue;
+                            }
+                        } else if is_retryable_status(status) {
                             // park the failing target so siblings absorb the load
                             if cd_enabled {
                                 let secs = cooldown.duration_secs(retry_after_secs(&response));
@@ -533,6 +564,12 @@ fn variant_key(model: &str, variant: &str) -> String {
     format!("{model}::{variant}")
 }
 
+/// Namespaces the per-key cooldown registry: keys are parked per provider,
+/// shared across every route and variant that uses that provider.
+fn key_pool_key(provider: &str) -> String {
+    format!("key::{provider}")
+}
+
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
 /// pool), then the remaining targets follow in declared order so the fallback
@@ -660,24 +697,48 @@ async fn forward_variants(
 
         // count this attempt as in-flight under the variant's key
         let guard = state.loads.begin(&key, ti);
-        // weighted pick across the provider's key pool, same as the classic path
-        let api_key = provider.pick_api_key(jitter(started));
+        // weighted pick across the provider's key pool, skipping keys parked
+        // on a cooldown — same policy as the classic path
+        let multi_key = provider.api_keys.len() > 1;
+        let key_ns = key_pool_key(&target.provider);
+        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
+            multi_key && state.cooldowns.is_parked(&key_ns, i)
+        });
+        let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
         let upstream_model = target.model.as_deref();
 
         match state
             .forwarder
-            .forward_json(
-                provider,
-                path,
-                forward_body,
-                api_key.as_deref(),
-                upstream_model,
-            )
+            .forward_json(provider, path, forward_body, api_key, upstream_model)
             .await
         {
             Ok(response) => {
                 let status = response.status().as_u16();
-                if is_retryable_status(status) {
+                // key-level failure on a multi-key provider: park the key,
+                // keep the candidate in rotation and retry on a sibling key
+                let key_failure = multi_key && (status == 429 || status == 401);
+                if key_failure {
+                    if let Some((ki, _)) = &picked_key {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&key_ns, *ki, secs.max(1));
+                        state
+                            .metrics
+                            .key_cooldowns_tripped_total
+                            .fetch_add(1, Relaxed);
+                    }
+                    tried.pop();
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(retry_delay_ms(
+                            retry,
+                            &response,
+                            attempt + 1,
+                            started,
+                        )))
+                        .await;
+                        continue;
+                    }
+                } else if is_retryable_status(status) {
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
                         state.cooldowns.park(&key, ti, secs);

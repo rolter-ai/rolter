@@ -211,12 +211,33 @@ impl ProviderConfig {
     /// `[0.0, 1.0)`. A single-key provider always yields that key; `None` only
     /// when no key resolves at all.
     pub fn pick_api_key(&self, r: f64) -> Option<String> {
+        self.pick_api_key_indexed(r, |_| false).map(|(_, k)| k)
+    }
+
+    /// Weighted pick that skips keys whose index is `blocked` (e.g. parked on a
+    /// cooldown) and reports the chosen index for attribution. When every key
+    /// is blocked the pick fails open to the full pool, so requests still flow.
+    pub fn pick_api_key_indexed(
+        &self,
+        r: f64,
+        blocked: impl Fn(usize) -> bool,
+    ) -> Option<(usize, String)> {
         let mut keys = self.resolve_api_keys();
-        match keys.len() {
-            0 => None,
-            1 => Some(keys.remove(0).0),
-            _ => weighted_index(keys.iter().map(|(_, w)| *w), r).map(|i| keys.swap_remove(i).0),
+        if keys.is_empty() {
+            return None;
         }
+        if keys.len() == 1 {
+            return Some((0, keys.remove(0).0));
+        }
+        let open: Vec<usize> = (0..keys.len()).filter(|i| !blocked(*i)).collect();
+        let pool: Vec<usize> = if open.is_empty() {
+            (0..keys.len()).collect()
+        } else {
+            open
+        };
+        let picked = weighted_index(pool.iter().map(|&i| keys[i].1), r)?;
+        let i = pool[picked];
+        Some((i, std::mem::take(&mut keys[i].0)))
     }
 }
 
@@ -1221,6 +1242,34 @@ mod tests {
             ..provider_with_keys(Vec::new())
         };
         assert_eq!(none.pick_api_key(0.5), None);
+    }
+
+    #[test]
+    fn indexed_pick_skips_blocked_keys_and_fails_open() {
+        let p = provider_with_keys(vec![
+            ApiKeyConfig {
+                key: Some("k1".to_string()),
+                env: None,
+                weight: 3,
+            },
+            ApiKeyConfig {
+                key: Some("k2".to_string()),
+                env: None,
+                weight: 1,
+            },
+        ]);
+        // k1 blocked: every draw lands on k2
+        let picked = p.pick_api_key_indexed(0.1, |i| i == 0).unwrap();
+        assert_eq!(picked, (1, "k2".to_string()));
+        // all keys blocked: fail open to the full weighted pool
+        let picked = p.pick_api_key_indexed(0.1, |_| true).unwrap();
+        assert_eq!(picked, (0, "k1".to_string()));
+        // single-key providers ignore blocking entirely
+        let single = provider_with_keys(Vec::new());
+        assert_eq!(
+            single.pick_api_key_indexed(0.9, |_| true).unwrap(),
+            (0, "legacy".to_string())
+        );
     }
 
     #[test]
