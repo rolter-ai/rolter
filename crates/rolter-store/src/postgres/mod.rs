@@ -178,6 +178,7 @@ impl PostgresConfigStore {
                     // per-model params land with the store-schema follow-up
                     params: Default::default(),
                     param_policy: Default::default(),
+                    variants: Default::default(),
                 })
             })
             .collect()
