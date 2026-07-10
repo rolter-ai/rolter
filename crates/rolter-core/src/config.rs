@@ -689,6 +689,15 @@ pub struct HealthConfig {
     /// request path appended to each provider's `api_base` when probing
     #[serde(default = "default_health_path")]
     pub path: String,
+    /// maximum probes in flight at once during a sweep
+    #[serde(default = "default_health_probe_concurrency")]
+    pub probe_concurrency: usize,
+    /// consecutive probe failures before a provider is marked unhealthy
+    #[serde(default = "default_health_failure_threshold")]
+    pub consecutive_failure_threshold: u32,
+    /// consecutive probe successes before an unhealthy provider recovers
+    #[serde(default = "default_health_recovery_threshold")]
+    pub recovery_success_threshold: u32,
 }
 
 impl Default for HealthConfig {
@@ -698,6 +707,9 @@ impl Default for HealthConfig {
             interval_secs: default_health_interval_secs(),
             timeout_secs: default_health_timeout_secs(),
             path: default_health_path(),
+            probe_concurrency: default_health_probe_concurrency(),
+            consecutive_failure_threshold: default_health_failure_threshold(),
+            recovery_success_threshold: default_health_recovery_threshold(),
         }
     }
 }
@@ -712,6 +724,18 @@ fn default_health_timeout_secs() -> u64 {
 
 fn default_health_path() -> String {
     "/".to_string()
+}
+
+fn default_health_probe_concurrency() -> usize {
+    2
+}
+
+fn default_health_failure_threshold() -> u32 {
+    3
+}
+
+fn default_health_recovery_threshold() -> u32 {
+    2
 }
 
 /// Background scrape of each upstream engine's Prometheus `/metrics`. When

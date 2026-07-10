@@ -44,6 +44,16 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 ### `[logging]`
 - `clickhouse_url` (string, optional)
 
+### `[health]`
+- `enabled` (bool, default `false`) — master switch for active upstream probing
+- `interval_secs` (u64, default `10`) — seconds between probe sweeps
+- `timeout_secs` (u64, default `2`) — per-probe timeout
+- `path` (string, default `/`) — probe path; the default resolves to each provider kind's free liveness endpoint (`/v1/models`)
+- `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
+- `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
+- `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers
+- probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
+
 ## Environment variables
 
 - `ROLTER_CONFIG`, `ROLTER_HOST`, `ROLTER_PORT` — gateway

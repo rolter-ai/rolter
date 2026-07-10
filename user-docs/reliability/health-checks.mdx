@@ -4,11 +4,11 @@ sidebarTitle: "Health Checks"
 description: "Enable Rolter's background health probing to automatically skip unavailable upstream providers during routing, before a real request ever fails."
 ---
 
-By default, Rolter discovers that an upstream is unhealthy only when a real request fails. Active health checks flip this around: a background task periodically issues a lightweight `GET` request to each provider, and any provider that fails those probes is marked unhealthy and pulled from rotation immediately — before it causes a client-visible error. When a later probe succeeds, the provider is quietly restored.
+By default, Rolter discovers that an upstream is unhealthy only when a real request fails. Active health checks flip this around: a background task periodically issues a lightweight `GET` request to each provider, and any provider that fails several consecutive probes is marked unhealthy and pulled from rotation — before it causes a client-visible error. After enough consecutive successful probes, the provider is quietly restored.
 
 ## What counts as healthy
 
-Rolter probes each provider with a lightweight `GET`. Any response that is **not** a 5xx status is treated as healthy, including `401 Unauthorized` and `404 Not Found` — a timeout, connection failure, or 5xx marks the provider unhealthy.
+Rolter probes each provider with a lightweight `GET`. Any response that is **not** a 5xx status is treated as healthy, including `401 Unauthorized` and `404 Not Found` — a timeout, connection failure, or 5xx counts as a probe failure. A single failed probe never flips a provider: it takes `consecutive_failure_threshold` failures in a row (default 3) to mark it unhealthy, and `recovery_success_threshold` successes in a row (default 2) to restore it, so one transient blip neither removes a provider nor bounces it in and out of rotation.
 
 By default (`path = "/"`), the probe targets each provider kind's **free, non-inference liveness endpoint** so a healthy result means the API itself is up, not merely that the host answers TCP — and it burns no tokens:
 
@@ -41,6 +41,18 @@ Health checks are **disabled by default** because probing adds background traffi
   Request path appended to each provider's `api_base` when probing. Change this if your upstreams expose a dedicated health route.
 </ParamField>
 
+<ParamField path="probe_concurrency" default="2" type="usize">
+  Maximum probes in flight at once during a sweep. Probing is bounded and jittered (each provider gets a stable offset within the first quarter of the interval), so a sweep never hits all upstreams simultaneously.
+</ParamField>
+
+<ParamField path="consecutive_failure_threshold" default="3" type="u32">
+  Consecutive probe failures required before a provider is marked unhealthy.
+</ParamField>
+
+<ParamField path="recovery_success_threshold" default="2" type="u32">
+  Consecutive probe successes required before an unhealthy provider returns to rotation.
+</ParamField>
+
 ```toml rolter.toml
 [health]
 enabled = true
@@ -65,6 +77,10 @@ path = "/health"
     Set `timeout_secs` to a value lower than your `interval_secs`. A `timeout_secs = 2` with `interval_secs = 15` means a slow-responding provider is flagged promptly and the next sweep happens well before the previous probe would have hung the worker.
   </Step>
 </Steps>
+
+<Info>
+  If a probe itself receives `429 Too Many Requests`, the provider still counts as healthy (the API is up), but Rolter pauses probing that provider with exponential backoff — 1, 2, 4, then 8 sweeps — so the prober never contributes to tripping your provider's rate limits.
+</Info>
 
 <Tip>
   Active health checks are most valuable for **self-hosted vLLM, TGI, or SGLang pools** where instances can crash or restart independently. For managed APIs like OpenAI and Anthropic, cooldowns and retries are usually sufficient — those providers are highly available and probing them generates billable traffic.
