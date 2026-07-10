@@ -427,7 +427,7 @@ When enabled, a background task periodically probes each provider with a lightwe
 </ParamField>
 
 <ParamField path="path" default="/" type="string">
-  The request path appended to each provider's `api_base` when probing, e.g. `/health`.
+  The request path appended to each provider's `api_base` when probing. Left at the default `/`, Rolter probes each provider kind's free non-inference liveness endpoint instead (`/v1/models` for `openai`/`openai_compatible`, and `/v1/models` with an `anthropic-version` header for `anthropic`) — no token cost. Set an explicit path (e.g. `/health`) to override this for all providers.
 </ParamField>
 
 ```toml

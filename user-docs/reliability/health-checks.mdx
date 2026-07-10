@@ -8,7 +8,16 @@ By default, Rolter discovers that an upstream is unhealthy only when a real requ
 
 ## What counts as healthy
 
-Rolter probes each provider by sending a `GET {api_base}{path}` request. Any response that is **not** a 5xx status is treated as healthy, including `401 Unauthorized` and `404 Not Found`. This broad definition is intentional: managed AI APIs (OpenAI, Anthropic) and most self-hosted engines do not expose a dedicated health endpoint, so Rolter uses reachability as a proxy for availability. A timeout, connection failure, or 5xx response marks the provider unhealthy.
+Rolter probes each provider with a lightweight `GET`. Any response that is **not** a 5xx status is treated as healthy, including `401 Unauthorized` and `404 Not Found` — a timeout, connection failure, or 5xx marks the provider unhealthy.
+
+By default (`path = "/"`), the probe targets each provider kind's **free, non-inference liveness endpoint** so a healthy result means the API itself is up, not merely that the host answers TCP — and it burns no tokens:
+
+| Provider kind | Probe |
+| --- | --- |
+| `openai`, `openai_compatible` | `GET {api_base}/v1/models` |
+| `anthropic` | `GET {api_base}/v1/models` with the required `anthropic-version` header |
+
+Set an explicit `path` (e.g. `/healthz`) to override this for every provider and probe that exact route instead.
 
 **Fail-open guarantee:** when every target of a route is marked unhealthy, Rolter does not return an error. It fails open and still forwards the request, preferring a potential upstream error over a guaranteed 503 from the gateway.
 
