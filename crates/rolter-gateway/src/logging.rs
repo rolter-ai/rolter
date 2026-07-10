@@ -323,6 +323,10 @@ impl LogSink {
     /// Enqueue a record without blocking. Drops (and counts) the record if the
     /// queue is full or the writer has stopped.
     pub fn log(&self, record: RequestLog) {
+        // observe latency/ttft histograms for every completed request, even when
+        // clickhouse logging is disabled (metrics are always present)
+        self.metrics
+            .observe_request(&record.model, record.latency_ms, record.ttft_ms);
         let Some(tx) = &self.tx else {
             return;
         };
