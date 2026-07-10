@@ -23,6 +23,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `egress_proxy` (string, optional) — HTTP/HTTPS/SOCKS5 outbound proxy
 - `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
 - `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.
+- `status_page_url` (string, optional) — statuspage.io-style `status.json` URL (e.g. `https://status.anthropic.com/api/v2/status.json`). When set, a slow background poll records the provider's public status as a **secondary** `status_page` health signal — it surfaces in `provider_health_events`, the dashboard and `rolter_status_page_degraded_total`, but never marks the provider unhealthy or affects routing on its own. Parse/transport failures are logged and skipped.
 
 ### `[[routes]]`
 - `model` (string) — public model name clients request
@@ -59,6 +60,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
 - `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
 - `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers
+- `status_page_interval_secs` (u64, default `60`) — seconds between provider status-page polls; only providers with a `status_page_url` are polled, and the poller runs even when `enabled = false`
 - probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
 
 ## Environment variables

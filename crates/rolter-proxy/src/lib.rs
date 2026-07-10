@@ -200,6 +200,7 @@ mod tests {
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         }
     }
 
@@ -299,6 +300,7 @@ mod tests {
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         };
         let err = fwd
             .forward_json(

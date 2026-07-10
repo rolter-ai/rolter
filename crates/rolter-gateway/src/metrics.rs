@@ -106,6 +106,9 @@ pub struct Metrics {
     pub health_down_total: AtomicU64,
     /// times a health probe transitioned a provider from down to healthy
     pub health_recovered_total: AtomicU64,
+    /// status-page polls that observed a non-operational provider (secondary
+    /// signal only; never gates routing)
+    pub status_page_degraded_total: AtomicU64,
     /// times a circuit breaker tripped a target open after sustained failures
     pub breaker_opened_total: AtomicU64,
     /// times a circuit breaker closed a target after a successful half-open probe
@@ -283,6 +286,13 @@ impl Metrics {
             "rolter_health_recovered_total",
             "providers restored to healthy by an active health probe",
             self.health_recovered_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_status_page_degraded_total",
+            "status-page polls that saw a non-operational provider (secondary signal)",
+            self.status_page_degraded_total.load(Relaxed),
         );
         metric(
             &mut out,

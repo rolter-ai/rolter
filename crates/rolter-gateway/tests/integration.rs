@@ -79,6 +79,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         });
     }
     config.routes.push(ModelRoute {
@@ -207,6 +208,7 @@ async fn variant_routing_fails_over_to_next_variant() {
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
+            status_page_url: None,
         });
     }
     let mk_variant = |name: &str, provider: &str, weight: u32| Variant {
