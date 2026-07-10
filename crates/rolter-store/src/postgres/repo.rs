@@ -231,7 +231,7 @@ pub struct RouteRepo<'a>(pub &'a PgPool);
 impl RouteRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<Route>> {
         sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, created_at
+            "select id, project_id, model, strategy, enabled, params, param_policy, created_at
              from routes where project_id = $1 order by model",
         )
         .bind(project_id)
@@ -242,7 +242,7 @@ impl RouteRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Route> {
         sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, created_at from routes where id = $1",
+            "select id, project_id, model, strategy, enabled, params, param_policy, created_at from routes where id = $1",
         )
         .bind(id)
         .fetch_optional(self.0)
@@ -254,7 +254,7 @@ impl RouteRepo<'_> {
     pub async fn create(&self, project_id: Uuid, model: &str, strategy: &str) -> Result<Route> {
         sqlx::query_as(
             "insert into routes (project_id, model, strategy) values ($1, $2, $3)
-             returning id, project_id, model, strategy, enabled, created_at",
+             returning id, project_id, model, strategy, enabled, params, param_policy, created_at",
         )
         .bind(project_id)
         .bind(model)
@@ -267,10 +267,32 @@ impl RouteRepo<'_> {
     pub async fn set_enabled(&self, id: Uuid, enabled: bool) -> Result<Route> {
         sqlx::query_as(
             "update routes set enabled = $2 where id = $1
-             returning id, project_id, model, strategy, enabled, created_at",
+             returning id, project_id, model, strategy, enabled, params, param_policy, created_at",
         )
         .bind(id)
         .bind(enabled)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+    }
+
+    /// Set a route's admin param defaults and override policy (both jsonb).
+    /// `params` is an object of default inference params; `param_policy` is
+    /// `{mode, allow, deny}`. Mirrors config `[routes.params]`/`[routes.param_policy]`.
+    pub async fn set_params(
+        &self,
+        id: Uuid,
+        params: &serde_json::Value,
+        param_policy: &serde_json::Value,
+    ) -> Result<Route> {
+        sqlx::query_as(
+            "update routes set params = $2, param_policy = $3 where id = $1
+             returning id, project_id, model, strategy, enabled, params, param_policy, created_at",
+        )
+        .bind(id)
+        .bind(params)
+        .bind(param_policy)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?

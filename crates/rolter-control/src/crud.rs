@@ -54,6 +54,7 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/routes/{id}",
             put(set_route_enabled).delete(delete_route),
         )
+        .route("/api/v1/routes/{id}/params", put(set_route_params))
         .route(
             "/api/v1/routes/{route_id}/targets",
             get(list_route_targets).post(create_route_target),
@@ -352,12 +353,14 @@ fn default_strategy() -> String {
     "round_robin".to_string()
 }
 
-const STRATEGIES: [&str; 5] = [
+const STRATEGIES: [&str; 7] = [
     "round_robin",
     "random",
     "power_of_two",
     "consistent_hash",
     "cache_aware",
+    "weighted",
+    "pipeline",
 ];
 
 async fn create_route(
@@ -394,6 +397,44 @@ async fn set_route_enabled(
         .await?;
     publish_config_change(&state).await?;
     Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+struct SetRouteParams {
+    /// admin default inference params (json object, e.g. {"temperature": 0})
+    #[serde(default)]
+    params: serde_json::Value,
+    /// override policy {mode, allow, deny}
+    #[serde(default)]
+    param_policy: serde_json::Value,
+}
+
+async fn set_route_params(
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetRouteParams>,
+) -> ApiResult<Json<Route>> {
+    // both must be json objects (or null → treated as empty) so the gateway can
+    // deserialize them into the param map / policy
+    let params = normalize_json_object(body.params, "params")?;
+    let param_policy = normalize_json_object(body.param_policy, "param_policy")?;
+    let row = RouteRepo(pool(&state))
+        .set_params(id, &params, &param_policy)
+        .await?;
+    publish_config_change(&state).await?;
+    Ok(Json(row))
+}
+
+/// Coerce a json value to an object: `null` becomes `{}`, an object passes
+/// through, anything else is a client error.
+fn normalize_json_object(value: serde_json::Value, field: &str) -> ApiResult<serde_json::Value> {
+    match value {
+        serde_json::Value::Null => Ok(serde_json::json!({})),
+        v @ serde_json::Value::Object(_) => Ok(v),
+        _ => Err(ApiError::Core(Error::Config(format!(
+            "{field} must be a json object"
+        )))),
+    }
 }
 
 async fn delete_route(

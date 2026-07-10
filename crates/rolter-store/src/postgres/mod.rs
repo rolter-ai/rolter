@@ -76,6 +76,8 @@ struct RouteRow {
     id: Uuid,
     model: String,
     strategy: String,
+    params: serde_json::Value,
+    param_policy: serde_json::Value,
 }
 
 #[derive(FromRow)]
@@ -143,11 +145,13 @@ impl PostgresConfigStore {
     }
 
     async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
-        let route_rows: Vec<RouteRow> =
-            sqlx::query_as("select id, model, strategy from routes where enabled order by model")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(store_err)?;
+        let route_rows: Vec<RouteRow> = sqlx::query_as(
+            "select id, model, strategy, params, param_policy
+             from routes where enabled order by model",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
             "select rt.route_id, p.name as provider_name, rt.upstream_model, rt.weight
@@ -171,14 +175,17 @@ impl PostgresConfigStore {
                         weight: t.weight.max(0) as u32,
                     })
                     .collect();
+                // jsonb → typed; a malformed value falls back to the permissive
+                // default rather than failing the whole config load
+                let params = serde_json::from_value(r.params).unwrap_or_default();
+                let param_policy = serde_json::from_value(r.param_policy).unwrap_or_default();
                 Ok(ModelRoute {
                     model: r.model,
                     strategy,
                     targets,
-                    // param defaults are config-defined only for now; db-backed
-                    // per-model params land with the store-schema follow-up
-                    params: Default::default(),
-                    param_policy: Default::default(),
+                    params,
+                    param_policy,
+                    // db-backed variants land with their own store follow-up
                     variants: Default::default(),
                 })
             })

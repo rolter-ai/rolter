@@ -1780,6 +1780,7 @@ dependencies = [
  "parking_lot",
  "rolter-core",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
  "uuid",

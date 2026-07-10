@@ -196,6 +196,20 @@ async fn import_bootstrap_toml(
             None => routes.create(project_id, &r.model, strategy).await?,
         };
 
+        // round-trip the admin param defaults + override policy (idempotent:
+        // re-importing overwrites with the toml's current values)
+        if !r.params.is_empty()
+            || r.param_policy.mode != rolter_core::OverrideMode::Allow
+            || !r.param_policy.allow.is_empty()
+            || !r.param_policy.deny.is_empty()
+        {
+            let params = serde_json::to_value(&r.params)?;
+            let param_policy = serde_json::to_value(&r.param_policy)?;
+            routes
+                .set_params(route_row.id, &params, &param_policy)
+                .await?;
+        }
+
         let existing_targets = targets.list(route_row.id).await?;
         for t in &r.targets {
             let Some(&provider_id) = provider_ids.get(&t.provider) else {
