@@ -625,6 +625,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![Target {
                 provider: "openai".to_string(),
                 model: None,
@@ -636,6 +637,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![Target {
                 provider: "anthropic".to_string(),
                 model: None,
@@ -863,6 +865,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -912,6 +915,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -951,6 +955,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -990,6 +995,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            variants: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),

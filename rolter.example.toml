@@ -102,6 +102,27 @@ provider = "vllm-2"
 model = "meta-llama/Llama-3.1-8B-Instruct"
 weight = 1
 
+# weighted variants: A/B, canary, and key-split traffic under one schema. a
+# request samples one variant by weight (the primary) and, on failure, falls
+# back to the remaining variants in declared order; within a variant the
+# targets are tried in order. a route uses variants instead of the top-level
+# targets/strategy pool. (config foundation; handler wiring is tracked
+# separately.)
+# [[routes]]
+# model = "chat"
+# [[routes.variants]]
+# name = "control"
+# weight = 9
+# [[routes.variants.targets]]
+# provider = "openai"
+# model = "gpt-4o"
+# [[routes.variants]]
+# name = "canary"
+# weight = 1
+# [[routes.variants.targets]]
+# provider = "anthropic"
+# model = "claude-sonnet-4-20250514"
+
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
 

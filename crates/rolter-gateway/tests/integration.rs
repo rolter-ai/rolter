@@ -84,6 +84,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         targets,
         params: Default::default(),
         param_policy: Default::default(),
+        variants: Default::default(),
     });
     config
 }

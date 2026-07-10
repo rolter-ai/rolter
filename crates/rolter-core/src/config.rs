@@ -176,6 +176,9 @@ pub struct ModelRoute {
     pub model: String,
     #[serde(default)]
     pub strategy: BalancingStrategy,
+    /// upstream targets for the classic single-pool path; may be empty when the
+    /// route routes through [`ModelRoute::variants`] instead
+    #[serde(default)]
     pub targets: Vec<Target>,
     /// admin-set default inference params injected into the request body (e.g.
     /// `temperature`, `max_tokens`, `stop`). An unset param is passed through
@@ -185,6 +188,12 @@ pub struct ModelRoute {
     /// whether callers may override the admin defaults in [`ModelRoute::params`]
     #[serde(default)]
     pub param_policy: ParamPolicy,
+    /// optional weighted variants for A/B, canary, and key-split traffic. When
+    /// present, a request samples one variant by weight (the primary) and falls
+    /// back to the remaining variants in declared order; `targets`/`strategy`
+    /// above drive the classic single-pool path when this is empty.
+    #[serde(default)]
+    pub variants: Vec<Variant>,
 }
 
 impl ModelRoute {
@@ -209,6 +218,73 @@ impl ModelRoute {
             }
         }
     }
+
+    /// Whether this route routes through weighted variants rather than a single
+    /// target pool.
+    pub fn has_variants(&self) -> bool {
+        !self.variants.is_empty()
+    }
+
+    /// Sample the primary variant index by weight, given a random draw `r` in
+    /// `[0.0, 1.0)`. Returns `None` only when there are no variants.
+    pub fn sample_variant(&self, r: f64) -> Option<usize> {
+        weighted_index(self.variants.iter().map(|v| v.weight), r)
+    }
+
+    /// The order variants are tried for a request whose primary is `primary`:
+    /// the primary first, then every other variant in declared order (the
+    /// deterministic fallback chain).
+    pub fn fallback_order(&self, primary: usize) -> Vec<usize> {
+        let n = self.variants.len();
+        let mut order = Vec::with_capacity(n);
+        if primary < n {
+            order.push(primary);
+        }
+        order.extend((0..n).filter(|&i| i != primary));
+        order
+    }
+}
+
+/// A weighted routing variant: a named, weighted bundle of ordered targets plus
+/// optional param defaults. A logical model maps to a set of these for A/B,
+/// canary, and per-key traffic splitting under one schema (TensorZero pattern).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Variant {
+    /// stable identifier for the variant (used in logs/metrics/attribution)
+    pub name: String,
+    /// relative traffic share; clamped to at least 1 when sampling
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    /// ordered upstream targets tried within this variant (provider routing order)
+    pub targets: Vec<Target>,
+    /// variant-scoped default inference params (same semantics as route params)
+    #[serde(default)]
+    pub params: HashMap<String, serde_json::Value>,
+}
+
+/// Pick an index from a sequence of weights proportional to weight, given a
+/// random draw `r` in `[0.0, 1.0)`. Each weight is clamped to at least 1 so a
+/// zero-weight entry can still be selected as a fallback. Returns `None` for an
+/// empty sequence.
+fn weighted_index(weights: impl Iterator<Item = u32>, r: f64) -> Option<usize> {
+    let clamped: Vec<u64> = weights.map(|w| w.max(1) as u64).collect();
+    if clamped.is_empty() {
+        return None;
+    }
+    let total: u64 = clamped.iter().sum();
+    // map r into [0, total); guard against r outside [0,1) landing past the end
+    let mut point = (r.clamp(0.0, 1.0) * total as f64) as u64;
+    if point >= total {
+        point = total - 1;
+    }
+    let mut acc = 0u64;
+    for (i, w) in clamped.iter().enumerate() {
+        acc += w;
+        if point < acc {
+            return Some(i);
+        }
+    }
+    Some(clamped.len() - 1)
 }
 
 /// Default override mode for a route's params: whether callers may override the
@@ -784,8 +860,11 @@ impl GatewayConfig {
             } else if !route_models.insert(route.model.as_str()) {
                 problems.push(format!("duplicate route model '{}'", route.model));
             }
-            if route.targets.is_empty() {
-                problems.push(format!("route '{}' has no targets", route.model));
+            if route.targets.is_empty() && route.variants.is_empty() {
+                problems.push(format!(
+                    "route '{}' has neither targets nor variants",
+                    route.model
+                ));
             }
             for target in &route.targets {
                 if !provider_names.contains(target.provider.as_str()) {
@@ -799,6 +878,28 @@ impl GatewayConfig {
                         "route '{}' target '{}' has zero weight",
                         route.model, target.provider
                     ));
+                }
+            }
+            for variant in &route.variants {
+                if variant.name.trim().is_empty() {
+                    problems.push(format!(
+                        "route '{}' has a variant with an empty name",
+                        route.model
+                    ));
+                }
+                if variant.targets.is_empty() {
+                    problems.push(format!(
+                        "route '{}' variant '{}' has no targets",
+                        route.model, variant.name
+                    ));
+                }
+                for target in &variant.targets {
+                    if !provider_names.contains(target.provider.as_str()) {
+                        problems.push(format!(
+                            "route '{}' variant '{}' targets unknown provider '{}'",
+                            route.model, variant.name, target.provider
+                        ));
+                    }
                 }
             }
         }
@@ -873,7 +974,76 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
             param_policy: policy,
+            variants: vec![],
         }
+    }
+
+    fn variant(name: &str, weight: u32) -> Variant {
+        Variant {
+            name: name.to_string(),
+            weight,
+            targets: vec![],
+            params: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn weighted_index_respects_proportions() {
+        // weights 3:1 over [0,1): the first 3/4 map to index 0, the last 1/4 to 1
+        let w = || [3u32, 1].into_iter();
+        assert_eq!(weighted_index(w(), 0.0), Some(0));
+        assert_eq!(weighted_index(w(), 0.74), Some(0));
+        assert_eq!(weighted_index(w(), 0.75), Some(1));
+        assert_eq!(weighted_index(w(), 0.99), Some(1));
+    }
+
+    #[test]
+    fn weighted_index_clamps_out_of_range_and_empty() {
+        assert_eq!(weighted_index([1u32, 1].into_iter(), 1.5), Some(1));
+        assert_eq!(weighted_index(std::iter::empty::<u32>(), 0.5), None);
+        // zero-weight entries are clamped to 1 so they remain selectable
+        assert_eq!(weighted_index([0u32, 0].into_iter(), 0.0), Some(0));
+    }
+
+    #[test]
+    fn sample_variant_and_fallback_order() {
+        let mut route = route_with(&[], ParamPolicy::default());
+        route.variants = vec![variant("a", 3), variant("b", 1), variant("c", 1)];
+        assert!(route.has_variants());
+        assert_eq!(route.sample_variant(0.0), Some(0));
+        assert_eq!(route.sample_variant(0.9), Some(2));
+        // fallback chain: primary first, then the rest in declared order
+        assert_eq!(route.fallback_order(1), vec![1, 0, 2]);
+        assert_eq!(route.fallback_order(0), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn variants_round_trip_through_toml() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[routes]]
+            model = "chat"
+            [[routes.variants]]
+            name = "control"
+            weight = 9
+            [[routes.variants.targets]]
+            provider = "openai"
+            model = "gpt-4o"
+            [[routes.variants]]
+            name = "canary"
+            weight = 1
+            [[routes.variants.targets]]
+            provider = "anthropic"
+            model = "claude-sonnet-4-20250514"
+            "#,
+        )
+        .unwrap();
+        let route = &cfg.routes[0];
+        assert_eq!(route.variants.len(), 2);
+        assert_eq!(route.variants[0].name, "control");
+        assert_eq!(route.variants[0].weight, 9);
+        assert_eq!(route.variants[0].targets[0].provider, "openai");
+        assert_eq!(route.variants[1].name, "canary");
     }
 
     #[test]
@@ -1070,7 +1240,9 @@ mod tests {
         let problems = cfg.validate().unwrap_err();
         assert!(problems.iter().any(|p| p.contains("invalid api_base")));
         assert!(problems.iter().any(|p| p.contains("invalid egress_proxy")));
-        assert!(problems.iter().any(|p| p.contains("has no targets")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("has neither targets nor variants")));
         assert!(problems.iter().any(|p| p.contains("duplicate virtual key")));
         assert!(problems
             .iter()

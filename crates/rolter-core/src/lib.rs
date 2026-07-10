@@ -11,7 +11,7 @@ pub use config::{
     BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CooldownConfig,
     GatewayConfig, HealthConfig, LoggingConfig, MetricsScrapeConfig, ModelPriceConfig, ModelRoute,
     OverrideMode, ParamPolicy, ProviderConfig, ProviderKind, RateLimitConfig, RetryConfig,
-    ServerConfig, Target, TimeoutConfig, VirtualKeyConfig, VirtualKeyRecord,
+    ServerConfig, Target, TimeoutConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
 };
 pub use error::{Error, Result};
 
