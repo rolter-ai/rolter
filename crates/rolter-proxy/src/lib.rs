@@ -164,6 +164,109 @@ mod tests {
         assert_eq!(out, body);
     }
 
+    /// Accept one connection, capture the raw request head, answer a minimal
+    /// 200 and hand the head back for inspection.
+    async fn capture_one_request(listener: tokio::net::TcpListener) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            buf.extend_from_slice(&chunk[..n]);
+            if n == 0 || buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+        let head_end = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..head_end]).to_lowercase()
+    }
+
+    fn provider(kind: ProviderKind, api_base: String) -> ProviderConfig {
+        ProviderConfig {
+            name: "p".to_string(),
+            kind,
+            api_base,
+            api_key: None,
+            api_key_env: None,
+            egress_proxy: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_wire_carries_no_rolter_signature() {
+        // golden guarantee (ROL-100): the upstream sees nothing identifying
+        // rolter — no user-agent, no x-* or via headers, no proxy marks
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::OpenaiCompatible, format!("http://{addr}"));
+        fwd.forward_json(
+            &p,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("sk-test"),
+            None,
+        )
+        .await
+        .unwrap();
+        let head = capture.await.unwrap();
+
+        assert!(!head.contains("rolter"), "rolter mark on the wire:\n{head}");
+        for line in head.lines().skip(1).filter(|l| !l.is_empty()) {
+            let name = line.split(':').next().unwrap_or("").trim();
+            assert!(
+                matches!(
+                    name,
+                    "content-type" | "authorization" | "host" | "content-length" | "accept"
+                ),
+                "unexpected outbound header `{name}`:\n{head}"
+            );
+        }
+        assert!(!head.contains("user-agent"), "user-agent leaked:\n{head}");
+        assert!(head.contains("authorization: bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_wire_carries_only_required_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::Anthropic, format!("http://{addr}"));
+        fwd.forward_json(
+            &p,
+            "/v1/messages",
+            Bytes::from_static(b"{}"),
+            Some("sk-ant"),
+            None,
+        )
+        .await
+        .unwrap();
+        let head = capture.await.unwrap();
+
+        assert!(!head.contains("rolter"), "rolter mark on the wire:\n{head}");
+        assert!(!head.contains("user-agent"), "user-agent leaked:\n{head}");
+        // the only x-* header is the one anthropic's api itself requires
+        for line in head.lines().filter(|l| l.starts_with("x-")) {
+            assert!(
+                line.starts_with("x-api-key:"),
+                "unexpected x-* header:\n{head}"
+            );
+        }
+        assert!(head.contains("anthropic-version: 2023-06-01"));
+    }
+
     #[tokio::test]
     async fn request_timeout_fires_on_a_silent_upstream() {
         // a listener that accepts connections but never writes a response,

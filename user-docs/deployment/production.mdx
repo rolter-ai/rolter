@@ -110,6 +110,10 @@ Work through these steps before sending production traffic to your gateway:
   </Step>
 </Steps>
 
+## Wire transparency
+
+Rolter is invisible to your upstream providers. Outbound requests carry no gateway-identifying marks — no `User-Agent`, no added `X-*` or `Via` headers, and no metadata injected into the request body. The only headers sent upstream are the functionally required ones: `content-type`, the provider's own auth header, and `anthropic-version` for Anthropic. Responses returned to your clients likewise gain no Rolter-added headers. No configuration is needed — this is the default and only behavior, locked in by wire-level tests.
+
 ## Secrets reference
 
 Here is a consolidated view of every secret and credential the stack requires:
