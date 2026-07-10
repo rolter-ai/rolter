@@ -70,7 +70,7 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 </ParamField>
 
 <ParamField path="api_keys" type="array of tables">
-  Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight.
+  Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key — the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
 
   ```toml
   [[providers]]

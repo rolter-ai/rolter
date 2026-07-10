@@ -318,3 +318,52 @@ async fn round_robin_spreads_across_healthy_targets() {
     assert!(a_hits.load(Ordering::SeqCst) > 0, "target a never hit");
     assert!(b_hits.load(Ordering::SeqCst) > 0, "target b never hit");
 }
+
+#[tokio::test]
+async fn revoked_key_fails_over_to_sibling_key_in_request() {
+    use axum::http::HeaderMap;
+    use rolter_core::ApiKeyConfig;
+
+    // an upstream that 401s the bad key and answers 200 for the good one
+    async fn key_gate(headers: HeaderMap, body: Json<Value>) -> axum::response::Response {
+        let auth = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if auth == "Bearer good-key" {
+            mock_openai(body).await
+        } else {
+            (axum::http::StatusCode::UNAUTHORIZED, "bad key").into_response()
+        }
+    }
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(key_gate))).await;
+
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    // the bad key's weight dwarfs the good one, so the first pick is always
+    // the bad key (the jitter draw never reaches the good key's sliver) and a
+    // 200 can only come from the in-request sibling-key failover
+    config.providers[0].api_keys = vec![
+        ApiKeyConfig {
+            key: Some("bad-key".to_string()),
+            env: None,
+            weight: 999_999,
+        },
+        ApiKeyConfig {
+            key: Some("good-key".to_string()),
+            env: None,
+            weight: 1,
+        },
+    ];
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200, "sibling key failover did not happen");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "pong");
+}
