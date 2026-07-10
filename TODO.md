@@ -109,7 +109,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 
 ## Cross-cutting / tech debt
 - [ ] Publish `rolter` to PyPI (no wheel there yet). crates.io is done (all 8 crates @0.0.2). PyPI trusted publisher (OIDC) is configured as a *pending* publisher (repo `ormeilu/rolter`, workflow `release.yml`, env `pypi`); `PYPI_PUBLISH_ENABLED=true` is set. Blocker: the `v0.0.2` tag predates `crates/rolter`, so its wheel would ship the gateway-only binary. Fix: cut a fresh tag off master (v0.0.3 via release-plz) so `release.yml` builds the unified-launcher wheel and the pending publisher activates on first upload.
-- [ ] Integration tests for the gateway (mock upstream) + streaming assertions
+- [x] Integration tests for the gateway (mock upstream) + streaming assertions
 - [ ] `criterion` benches for `pick`/trie; `oha`/`k6` load tests
 - [ ] Structured error type surfaced as OpenAI-style JSON everywhere
 - [ ] Config schema validation + helpful startup errors
