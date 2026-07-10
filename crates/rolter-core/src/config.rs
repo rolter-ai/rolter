@@ -63,6 +63,11 @@ pub struct ServerConfig {
     /// [`ServerConfig::resolve_key_pepper`]).
     #[serde(default)]
     pub key_pepper: Option<String>,
+    /// path the prometheus metrics endpoint is served on. configurable so it
+    /// doesn't collide with an upstream app or sidecar that already owns
+    /// `/metrics` behind the same reverse proxy. defaults to `/metrics`.
+    #[serde(default = "default_metrics_path")]
+    pub metrics_path: String,
 }
 
 impl ServerConfig {
@@ -82,6 +87,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             key_pepper: None,
+            metrics_path: default_metrics_path(),
         }
     }
 }
@@ -93,6 +99,20 @@ fn default_host() -> String {
 fn default_port() -> u16 {
     4000
 }
+
+fn default_metrics_path() -> String {
+    "/metrics".to_string()
+}
+
+/// Gateway request paths reserved by the built-in routes; the metrics path must
+/// not collide with any of these.
+pub const RESERVED_PATHS: &[&str] = &[
+    "/healthz",
+    "/v1/models",
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/messages",
+];
 
 /// The wire protocol a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -830,6 +850,20 @@ impl GatewayConfig {
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
         let mut problems = Vec::new();
 
+        // the metrics path must be a rooted path that does not shadow a built-in
+        // request route
+        let metrics_path = self.server.metrics_path.as_str();
+        if !metrics_path.starts_with('/') {
+            problems.push(format!(
+                "server.metrics_path '{metrics_path}' must start with '/'"
+            ));
+        }
+        if RESERVED_PATHS.contains(&metrics_path) {
+            problems.push(format!(
+                "server.metrics_path '{metrics_path}' collides with a built-in route"
+            ));
+        }
+
         let mut provider_names = std::collections::HashSet::new();
         for provider in &self.providers {
             if provider.name.trim().is_empty() {
@@ -1248,6 +1282,32 @@ mod tests {
             .iter()
             .any(|p| p.contains("non-positive limit_usd")));
         assert!(problems.iter().any(|p| p.contains("neither rpm nor tpm")));
+    }
+
+    #[test]
+    fn metrics_path_defaults_and_validates() {
+        // default is /metrics and passes validation
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.server.metrics_path, "/metrics");
+
+        // unrooted path is rejected
+        let mut bad = GatewayConfig::default();
+        bad.server.metrics_path = "metrics".to_string();
+        let problems = bad.validate().unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("must start with '/'")));
+
+        // colliding with a built-in route is rejected
+        let mut collide = GatewayConfig::default();
+        collide.server.metrics_path = "/v1/models".to_string();
+        let problems = collide.validate().unwrap_err();
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("collides with a built-in route")));
+
+        // a custom rooted path is accepted
+        let mut ok = GatewayConfig::default();
+        ok.server.metrics_path = "/internal/metrics".to_string();
+        assert!(ok.validate().is_ok());
     }
 
     #[test]

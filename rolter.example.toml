@@ -6,6 +6,10 @@
 [server]
 host = "0.0.0.0"
 port = 4000
+# path the prometheus metrics endpoint is served on. change it when an upstream
+# app or sidecar already owns /metrics behind the same reverse proxy. defaults
+# to "/metrics"; must be rooted and must not collide with a built-in route.
+# metrics_path = "/internal/metrics"
 # secret mixed into virtual-key digests (keeps plaintext keys out of gateway
 # memory). prefer the ROLTER_KEY_PEPPER env var over writing it inline.
 # key_pepper = "change-me"
