@@ -304,8 +304,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // classic single-pool balancer.
     let (outcome, last_provider, last_target, last_error, inflight_guard, chosen_variant) =
         if entry.route.has_variants() {
-            let fwd =
-                forward_variants(&state, entry, &snap, &model, &parsed, &body, path, started).await;
+            let fwd = forward_variants(
+                &state, entry, &snap, &model, &ctx, &parsed, &body, path, started,
+            )
+            .await;
             (
                 fwd.outcome,
                 fwd.last_provider,
@@ -529,10 +531,37 @@ fn variant_key(model: &str, variant: &str) -> String {
     format!("{model}::{variant}")
 }
 
+/// The order a variant's targets are tried: the variant balancer's pick leads
+/// (fed the same live in-flight + upstream queue-depth signal as the classic
+/// pool), then the remaining targets follow in declared order so the fallback
+/// tail stays deterministic. A route without variant balancers (or a pick out
+/// of range) degrades to plain declared order.
+fn variant_target_order(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext<'_>,
+    vi: usize,
+    n: usize,
+    loads: &[u64],
+) -> Vec<usize> {
+    let lead = entry
+        .variant_balancers
+        .get(vi)
+        .and_then(|b| b.pick(ctx, loads))
+        .filter(|&i| i < n);
+    let mut order = Vec::with_capacity(n);
+    if let Some(i) = lead {
+        order.push(i);
+    }
+    order.extend((0..n).filter(|&i| Some(i) != lead));
+    order
+}
+
 /// Forward through the weighted-variant fallback chain. Samples a primary
 /// variant by weight, then flattens the deterministic fallback order into an
-/// ordered candidate list (each variant's targets in declared order) and drives
-/// it through the same retry/cooldown/breaker machinery as the classic path.
+/// ordered candidate list and drives it through the same retry/cooldown/breaker
+/// machinery as the classic path. Within each variant the route's balancing
+/// strategy leads: the variant balancer's pick goes first, the remaining
+/// targets follow in declared order as the deterministic fallback tail.
 /// Variant-level params are merged over route-level params per candidate before
 /// the override policy is applied.
 #[allow(clippy::too_many_arguments)]
@@ -541,6 +570,7 @@ async fn forward_variants(
     entry: &crate::state::RouteEntry,
     snap: &Snapshot,
     model: &str,
+    ctx: &RouteContext<'_>,
     parsed: &Value,
     body: &Bytes,
     path: &str,
@@ -552,12 +582,20 @@ async fn forward_variants(
     let cd_enabled = cooldown.enabled();
 
     // primary by weight, then the rest in declared order; flatten each variant's
-    // targets (provider routing order) into one ordered candidate list
+    // targets into one ordered candidate list, letting the variant's balancer
+    // choose which of its targets leads
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
     let mut candidates: Vec<(usize, usize)> = Vec::new();
     for vi in route.fallback_order(primary) {
         if let Some(v) = route.variants.get(vi) {
-            for ti in 0..v.targets.len() {
+            let key = variant_key(model, &v.name);
+            let mut loads = state.loads.snapshot(&key, v.targets.len());
+            for (i, target) in v.targets.iter().enumerate() {
+                if let Some(l) = loads.get_mut(i) {
+                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+                }
+            }
+            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads) {
                 candidates.push((vi, ti));
             }
         }
@@ -595,6 +633,10 @@ async fn forward_variants(
         let v = &route.variants[vi];
         let target = &v.targets[ti];
         let key = variant_key(model, &v.name);
+        // let learning strategies (cache-aware) see which target actually served
+        if let Some(b) = entry.variant_balancers.get(vi) {
+            b.observe(ti, ctx);
+        }
 
         let provider = match snap.providers.get(&target.provider) {
             Some(provider) => provider,
@@ -1063,6 +1105,101 @@ mod tests {
     }
 
     #[test]
+    fn variant_order_led_by_balancer_pick() {
+        struct Fixed(usize);
+        impl rolter_balancer::LoadBalancer for Fixed {
+            fn name(&self) -> &'static str {
+                "fixed"
+            }
+            fn pick(&self, _: &RouteContext, _: &[u64]) -> Option<usize> {
+                Some(self.0)
+            }
+        }
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            targets: Vec::new(),
+            variants: vec![rolter_core::Variant {
+                name: "v".to_string(),
+                weight: 1,
+                params: Default::default(),
+                targets: vec![
+                    Target {
+                        provider: "a".to_string(),
+                        model: None,
+                        weight: 1,
+                    },
+                    Target {
+                        provider: "b".to_string(),
+                        model: None,
+                        weight: 1,
+                    },
+                ],
+            }],
+        };
+        let ctx = RouteContext::default();
+        // the balancer's pick leads; declared order forms the fallback tail
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[]),
+            variant_balancers: vec![Box::new(Fixed(1))],
+            route: route.clone(),
+        };
+        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![1, 0]);
+        // an out-of-range pick degrades to plain declared order
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[]),
+            variant_balancers: vec![Box::new(Fixed(9))],
+            route: route.clone(),
+        };
+        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        // no balancer built for the variant: declared order
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[]),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+    }
+
+    #[test]
+    fn snapshot_builds_one_balancer_per_variant() {
+        let mut config = config_with_keys();
+        config.routes.push(rolter_core::ModelRoute {
+            model: "ab".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            targets: Vec::new(),
+            variants: vec![
+                rolter_core::Variant {
+                    name: "control".to_string(),
+                    weight: 1,
+                    params: Default::default(),
+                    targets: vec![Target {
+                        provider: "a".to_string(),
+                        model: None,
+                        weight: 1,
+                    }],
+                },
+                rolter_core::Variant {
+                    name: "canary".to_string(),
+                    weight: 1,
+                    params: Default::default(),
+                    targets: vec![Target {
+                        provider: "b".to_string(),
+                        model: None,
+                        weight: 1,
+                    }],
+                },
+            ],
+        });
+        let snap = crate::state::Snapshot::build(&config);
+        assert_eq!(snap.routes["ab"].variant_balancers.len(), 2);
+    }
+
+    #[test]
     fn pick_untried_fails_over_to_sibling() {
         let route = ModelRoute {
             model: "m".to_string(),
@@ -1085,6 +1222,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            variant_balancers: Vec::new(),
             route,
         };
         let ctx = RouteContext::default();
@@ -1135,6 +1273,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            variant_balancers: Vec::new(),
             route,
         };
         let ctx = RouteContext::default();
@@ -1175,6 +1314,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            variant_balancers: Vec::new(),
             route,
         };
         let ctx = RouteContext::default();
@@ -1215,6 +1355,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            variant_balancers: Vec::new(),
             route,
         };
         let ctx = RouteContext::default();

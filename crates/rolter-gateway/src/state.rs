@@ -20,6 +20,10 @@ use crate::rate_limits::RateLimiter;
 pub struct RouteEntry {
     pub route: ModelRoute,
     pub balancer: Box<dyn LoadBalancer>,
+    /// one balancer per variant (index-aligned with `route.variants`), built
+    /// from the route's strategy and the variant's target weights so selection
+    /// inside a variant honours the same strategy as the classic pool
+    pub variant_balancers: Vec<Box<dyn LoadBalancer>>,
 }
 
 /// A virtual key as the request path sees it: identity/scope for attribution
@@ -78,11 +82,20 @@ impl Snapshot {
         for route in &config.routes {
             let weights: Vec<u32> = route.targets.iter().map(|t| t.weight).collect();
             let balancer = build(route.strategy, &weights);
+            let variant_balancers = route
+                .variants
+                .iter()
+                .map(|v| {
+                    let w: Vec<u32> = v.targets.iter().map(|t| t.weight).collect();
+                    build(route.strategy, &w)
+                })
+                .collect();
             routes.insert(
                 route.model.clone(),
                 RouteEntry {
                     route: route.clone(),
                     balancer,
+                    variant_balancers,
                 },
             );
         }

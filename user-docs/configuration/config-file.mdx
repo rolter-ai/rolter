@@ -148,7 +148,7 @@ Controls whether clients may override the values set in `[routes.params]`.
 
 #### \[\[routes.variants\]\]
 
-Variants replace the top-level `targets`/`strategy` pool when you want A/B, canary, or traffic-split routing under a single model name. A request randomly samples one variant by weight (the primary) and falls back to the remaining variants in declared order if the primary fails.
+Variants replace the top-level `targets`/`strategy` pool when you want A/B, canary, or traffic-split routing under a single model name. A request randomly samples one variant by weight (the primary) and falls back to the remaining variants in declared order if the primary fails. Within a variant, the route's `strategy` picks which target is tried first; the remaining targets follow in declared order.
 
 <ParamField path="name" type="string" required>
   A stable identifier for this variant. Appears in request logs under the `variant` column for attribution and A/B analysis.
