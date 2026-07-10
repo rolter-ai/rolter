@@ -142,17 +142,69 @@ pub struct ProviderConfig {
     /// optional outbound egress proxy url (http/https/socks5)
     #[serde(default)]
     pub egress_proxy: Option<String>,
+    /// multiple weighted api keys for this provider; when non-empty it takes
+    /// precedence over the single `api_key`/`api_key_env` pair. Providers cap
+    /// throughput per key, so rotating across keys multiplies effective RPM/TPM
+    #[serde(default)]
+    pub api_keys: Vec<ApiKeyConfig>,
+}
+
+/// One of a provider's weighted API keys. Same inline-vs-env split as the
+/// provider-level pair: prefer `env` so secrets stay out of config files.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiKeyConfig {
+    /// inline key value; prefer `env`
+    #[serde(default)]
+    pub key: Option<String>,
+    /// name of an environment variable to read the key from
+    #[serde(default)]
+    pub env: Option<String>,
+    /// relative selection weight; clamped to at least 1 when sampling
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+impl ApiKeyConfig {
+    /// Resolve this entry's key, preferring the inline value then the env var.
+    pub fn resolve(&self) -> Option<String> {
+        if let Some(k) = &self.key {
+            return Some(k.clone());
+        }
+        self.env.as_ref().and_then(|e| std::env::var(e).ok())
+    }
 }
 
 impl ProviderConfig {
-    /// Resolve the effective api key, preferring the inline value then the env var.
+    /// Resolve the effective api key. With `api_keys` configured this is the
+    /// first resolvable entry; otherwise the legacy single `api_key`/`api_key_env`
+    /// pair. Callers that balance across keys use [`Self::resolve_api_keys`].
     pub fn resolve_api_key(&self) -> Option<String> {
+        if !self.api_keys.is_empty() {
+            return self.api_keys.iter().find_map(|k| k.resolve());
+        }
         if let Some(k) = &self.api_key {
             return Some(k.clone());
         }
         self.api_key_env
             .as_ref()
             .and_then(|e| std::env::var(e).ok())
+    }
+
+    /// Resolve every configured key with its weight. A legacy single-key
+    /// provider yields a one-element list with weight 1, so callers can treat
+    /// every provider uniformly. Entries whose secret cannot be resolved
+    /// (missing env var) are skipped.
+    pub fn resolve_api_keys(&self) -> Vec<(String, u32)> {
+        if self.api_keys.is_empty() {
+            return self
+                .resolve_api_key()
+                .map(|k| vec![(k, 1)])
+                .unwrap_or_default();
+        }
+        self.api_keys
+            .iter()
+            .filter_map(|k| k.resolve().map(|s| (s, k.weight.max(1))))
+            .collect()
     }
 }
 
@@ -1068,6 +1120,87 @@ mod tests {
             targets: vec![],
             params: HashMap::new(),
         }
+    }
+
+    fn provider_with_keys(api_keys: Vec<ApiKeyConfig>) -> ProviderConfig {
+        ProviderConfig {
+            name: "p".to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: "http://x".to_string(),
+            api_key: Some("legacy".to_string()),
+            api_key_env: None,
+            egress_proxy: None,
+            api_keys,
+        }
+    }
+
+    #[test]
+    fn single_key_provider_resolves_one_element_list() {
+        // legacy configs behave exactly as before: one key, weight 1
+        let p = provider_with_keys(Vec::new());
+        assert_eq!(p.resolve_api_key().as_deref(), Some("legacy"));
+        assert_eq!(p.resolve_api_keys(), vec![("legacy".to_string(), 1)]);
+    }
+
+    #[test]
+    fn multi_key_list_takes_precedence_and_keeps_weights() {
+        let p = provider_with_keys(vec![
+            ApiKeyConfig {
+                key: Some("k1".to_string()),
+                env: None,
+                weight: 3,
+            },
+            ApiKeyConfig {
+                key: Some("k2".to_string()),
+                env: None,
+                weight: 0, // clamped to 1
+            },
+        ]);
+        // the legacy pair is ignored once api_keys is non-empty
+        assert_eq!(p.resolve_api_key().as_deref(), Some("k1"));
+        assert_eq!(
+            p.resolve_api_keys(),
+            vec![("k1".to_string(), 3), ("k2".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn unresolvable_key_entries_are_skipped() {
+        let p = provider_with_keys(vec![
+            ApiKeyConfig {
+                key: None,
+                env: Some("ROLTER_TEST_KEY_THAT_DOES_NOT_EXIST".to_string()),
+                weight: 5,
+            },
+            ApiKeyConfig {
+                key: Some("k2".to_string()),
+                env: None,
+                weight: 2,
+            },
+        ]);
+        assert_eq!(p.resolve_api_key().as_deref(), Some("k2"));
+        assert_eq!(p.resolve_api_keys(), vec![("k2".to_string(), 2)]);
+    }
+
+    #[test]
+    fn api_keys_parse_from_toml_with_default_weight() {
+        let cfg: ProviderConfig = toml::from_str(
+            r#"
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+            [[api_keys]]
+            key = "a"
+            [[api_keys]]
+            key = "b"
+            weight = 4
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.resolve_api_keys(),
+            vec![("a".to_string(), 1), ("b".to_string(), 4)]
+        );
     }
 
     #[test]
