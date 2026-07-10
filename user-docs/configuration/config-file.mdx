@@ -87,6 +87,14 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
   ```
 </ParamField>
 
+<ParamField path="also_track_via_llm_call" type="bool" default="false">
+  Make active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **Costs a few tokens on every sweep** — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events` and fed through the same failure/recovery thresholds as free probes. See [Health checks](/reliability/health-checks).
+</ParamField>
+
+<ParamField path="llm_probe_model" type="string">
+  The upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). Required when the flag is on; otherwise the checker warns and falls back to the free probe.
+</ParamField>
+
 ```toml
 [[providers]]
 name = "openai"

@@ -147,6 +147,17 @@ pub struct ProviderConfig {
     /// throughput per key, so rotating across keys multiplies effective RPM/TPM
     #[serde(default)]
     pub api_keys: Vec<ApiKeyConfig>,
+    /// when true, active health checks send a minimal real completion
+    /// (`max_tokens = 1`) to this provider instead of the free liveness probe,
+    /// so a healthy result proves end-to-end inference works — not merely that
+    /// the API answers. Off by default: every sweep burns a few tokens. Requires
+    /// `llm_probe_model` to name a model to call
+    #[serde(default)]
+    pub also_track_via_llm_call: bool,
+    /// model name to use for the `also_track_via_llm_call` completion (the
+    /// upstream model id, e.g. `gpt-4o-mini`). Ignored unless the flag is set
+    #[serde(default)]
+    pub llm_probe_model: Option<String>,
 }
 
 /// One of a provider's weighted API keys. Same inline-vs-env split as the
@@ -1164,6 +1175,8 @@ mod tests {
             api_key_env: None,
             egress_proxy: None,
             api_keys,
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
         }
     }
 
