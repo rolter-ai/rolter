@@ -368,7 +368,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 };
                 last_provider = target.provider.clone();
                 last_target = target.model.clone().unwrap_or_else(|| model.clone());
-                let api_key = provider.resolve_api_key();
+                // weighted pick across the provider's key pool (single-key
+                // providers always yield their one key)
+                let api_key = provider.pick_api_key(jitter(started));
                 let upstream_model = target.model.as_deref();
 
                 match state
@@ -658,7 +660,8 @@ async fn forward_variants(
 
         // count this attempt as in-flight under the variant's key
         let guard = state.loads.begin(&key, ti);
-        let api_key = provider.resolve_api_key();
+        // weighted pick across the provider's key pool, same as the classic path
+        let api_key = provider.pick_api_key(jitter(started));
         let upstream_model = target.model.as_deref();
 
         match state

@@ -206,6 +206,18 @@ impl ProviderConfig {
             .filter_map(|k| k.resolve().map(|s| (s, k.weight.max(1))))
             .collect()
     }
+
+    /// Pick one resolved api key by weight, given a random draw `r` in
+    /// `[0.0, 1.0)`. A single-key provider always yields that key; `None` only
+    /// when no key resolves at all.
+    pub fn pick_api_key(&self, r: f64) -> Option<String> {
+        let mut keys = self.resolve_api_keys();
+        match keys.len() {
+            0 => None,
+            1 => Some(keys.remove(0).0),
+            _ => weighted_index(keys.iter().map(|(_, w)| *w), r).map(|i| keys.swap_remove(i).0),
+        }
+    }
 }
 
 /// Load-balancing strategy applied to a route's targets.
@@ -1180,6 +1192,35 @@ mod tests {
         ]);
         assert_eq!(p.resolve_api_key().as_deref(), Some("k2"));
         assert_eq!(p.resolve_api_keys(), vec![("k2".to_string(), 2)]);
+    }
+
+    #[test]
+    fn pick_api_key_respects_weights() {
+        let p = provider_with_keys(vec![
+            ApiKeyConfig {
+                key: Some("k1".to_string()),
+                env: None,
+                weight: 3,
+            },
+            ApiKeyConfig {
+                key: Some("k2".to_string()),
+                env: None,
+                weight: 1,
+            },
+        ]);
+        // weights 3:1 over [0,1): first 3/4 of the draw space maps to k1
+        assert_eq!(p.pick_api_key(0.0).as_deref(), Some("k1"));
+        assert_eq!(p.pick_api_key(0.74).as_deref(), Some("k1"));
+        assert_eq!(p.pick_api_key(0.76).as_deref(), Some("k2"));
+        // a single-key provider always yields its one key
+        let single = provider_with_keys(Vec::new());
+        assert_eq!(single.pick_api_key(0.99).as_deref(), Some("legacy"));
+        // no resolvable key at all
+        let none = ProviderConfig {
+            api_key: None,
+            ..provider_with_keys(Vec::new())
+        };
+        assert_eq!(none.pick_api_key(0.5), None);
     }
 
     #[test]
