@@ -265,7 +265,9 @@ impl CacheAware {
         let mut tries = Vec::with_capacity(n);
         let mut sizes = Vec::with_capacity(n);
         for _ in 0..n {
-            tries.push(Mutex::new(Trie::default()));
+            tries.push(Mutex::new(Trie::with_capacity(
+                scorer::DEFAULT_PREFIX_MAX_NODES,
+            )));
             sizes.push(AtomicU64::new(0));
         }
         Self {

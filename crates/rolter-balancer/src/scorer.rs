@@ -228,12 +228,16 @@ pub struct PrefixCacheScorer {
     sizes: Vec<AtomicU64>,
 }
 
+/// Default per-target node cap for prefix-cache tries, bounding memory while
+/// still holding a large working set of prompts.
+pub const DEFAULT_PREFIX_MAX_NODES: usize = 1_000_000;
+
 impl PrefixCacheScorer {
     pub fn new(n: usize) -> Self {
         let mut tries = Vec::with_capacity(n);
         let mut sizes = Vec::with_capacity(n);
         for _ in 0..n {
-            tries.push(Mutex::new(Trie::default()));
+            tries.push(Mutex::new(Trie::with_capacity(DEFAULT_PREFIX_MAX_NODES)));
             sizes.push(AtomicU64::new(0));
         }
         Self { n, tries, sizes }
