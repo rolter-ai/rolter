@@ -27,3 +27,6 @@ rolter.toml
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+
+# mdbook build output (contributor docs); source is docs/*.md
+docs/book/

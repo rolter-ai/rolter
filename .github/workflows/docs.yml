@@ -1,0 +1,41 @@
+name: docs
+
+# build the contributor mdbook (docs/) and publish it to github pages. the
+# polished user docs (user-docs/, mintlify) deploy separately to the mintlify
+# domain and are not built here.
+on:
+  push:
+    branches: [master]
+    paths:
+      - docs/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# allow one concurrent deployment; don't cancel an in-progress publish
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: install mdbook
+        uses: taiki-e/install-action@mdbook
+      - name: build
+        run: mdbook build docs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+      - id: deploy
+        uses: actions/deploy-pages@v4
