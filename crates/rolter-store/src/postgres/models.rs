@@ -50,9 +50,13 @@ pub struct Route {
     pub id: Uuid,
     pub project_id: Uuid,
     pub model: String,
-    /// one of `round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted`
+    /// one of `round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline`
     pub strategy: String,
     pub enabled: bool,
+    /// admin default inference params (jsonb object); mirrors config `[routes.params]`
+    pub params: serde_json::Value,
+    /// override policy (jsonb `{mode, allow, deny}`); mirrors config `[routes.param_policy]`
+    pub param_policy: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 
