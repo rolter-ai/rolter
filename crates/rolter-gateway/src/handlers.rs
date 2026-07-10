@@ -246,7 +246,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .into_response()
         }
     };
-    if entry.route.targets.is_empty() {
+    if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
 
@@ -299,135 +299,159 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     // pick a target and forward, retrying transient failures on a fresh target
     // (exponential backoff + jitter). retries happen before any body bytes reach
-    // the client, so a partial response is never duplicated.
-    let retry = &snap.retry;
-    let cooldown = &snap.cooldown;
-    let cd_enabled = cooldown.enabled();
-    // live per-target in-flight counts steer load-aware strategies away from busy
-    // targets; the count for the chosen target is held for the whole request.
-    // scraped upstream queue depth (when enabled) is folded in so the balancer
-    // also sees pressure that hasn't reached this gateway's own counters
-    let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
-    for (i, target) in entry.route.targets.iter().enumerate() {
-        if let Some(l) = loads.get_mut(i) {
-            *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-        }
-    }
-    let mut tried: Vec<usize> = Vec::new();
-    let mut last_provider = String::new();
-    let mut last_target = model.clone();
-    let mut last_error: Option<String> = None;
-    let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
-    let mut inflight_guard: Option<crate::load::LoadGuard> = None;
-
-    for attempt in 0..=retry.max_retries {
-        let idx = match pick_untried(
-            entry,
-            &ctx,
-            &tried,
-            &loads,
-            &state.cooldowns,
-            &state.health,
-            &state.breaker,
-            &model,
-            cd_enabled,
-        ) {
-            Some(i) => i,
-            None => break, // no untried target left to fail over to
-        };
-        entry.balancer.observe(idx, &ctx);
-        tried.push(idx);
-        // count this attempt as in-flight; the guard falls out of scope (and
-        // decrements) on retry, or is moved into the stream wrapper on success
-        let guard = state.loads.begin(&model, idx);
-
-        let target = &entry.route.targets[idx];
-        let provider = match snap.providers.get(&target.provider) {
-            Some(provider) => provider,
-            None => {
-                last_error = Some("configured target provider not found".to_string());
-                break;
-            }
-        };
-        last_provider = target.provider.clone();
-        last_target = target.model.clone().unwrap_or_else(|| model.clone());
-        let api_key = provider.resolve_api_key();
-        let upstream_model = target.model.as_deref();
-
-        match state
-            .forwarder
-            .forward_json(
-                provider,
-                path,
-                forward_body.clone(),
-                api_key.as_deref(),
-                upstream_model,
+    // the client, so a partial response is never duplicated. a route with
+    // variants routes through the weighted-variant fallback chain instead of the
+    // classic single-pool balancer.
+    let (outcome, last_provider, last_target, last_error, inflight_guard, chosen_variant) =
+        if entry.route.has_variants() {
+            let fwd =
+                forward_variants(&state, entry, &snap, &model, &parsed, &body, path, started).await;
+            (
+                fwd.outcome,
+                fwd.last_provider,
+                fwd.last_target,
+                fwd.last_error,
+                fwd.inflight_guard,
+                fwd.variant,
             )
-            .await
-        {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                if is_retryable_status(status) {
-                    // park the failing target so siblings absorb the load
-                    if cd_enabled {
-                        let secs = cooldown.duration_secs(retry_after_secs(&response));
-                        state.cooldowns.park(&model, idx, secs);
-                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                    }
-                    // feed the circuit breaker; a sustained run trips the target open
-                    if state.breaker.on_failure(&model, idx) {
-                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                    }
-                    if attempt < retry.max_retries {
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(retry_delay_ms(
-                            retry,
-                            &response,
-                            attempt + 1,
-                            started,
-                        )))
-                        .await;
-                        continue;
-                    }
-                } else if state.breaker.on_success(&model, idx) {
-                    // a good response closes a breaker that was probing (half-open)
-                    state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+        } else {
+            let retry = &snap.retry;
+            let cooldown = &snap.cooldown;
+            let cd_enabled = cooldown.enabled();
+            // live per-target in-flight counts steer load-aware strategies away from busy
+            // targets; the count for the chosen target is held for the whole request.
+            // scraped upstream queue depth (when enabled) is folded in so the balancer
+            // also sees pressure that hasn't reached this gateway's own counters
+            let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+            for (i, target) in entry.route.targets.iter().enumerate() {
+                if let Some(l) = loads.get_mut(i) {
+                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
                 }
-                let is_sse = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(|ct| ct.contains("event-stream"))
-                    .unwrap_or(false);
-                inflight_guard = Some(guard);
-                outcome = Some((response, status, is_sse));
-                break;
             }
-            Err(err) => {
-                last_error = Some(err.to_string());
-                // a connection-level failure parks the target too
-                if cd_enabled {
-                    state
-                        .cooldowns
-                        .park(&model, idx, cooldown.duration_secs(None));
-                    state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+            let mut tried: Vec<usize> = Vec::new();
+            let mut last_provider = String::new();
+            let mut last_target = model.clone();
+            let mut last_error: Option<String> = None;
+            let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+            let mut inflight_guard: Option<crate::load::LoadGuard> = None;
+
+            for attempt in 0..=retry.max_retries {
+                let idx = match pick_untried(
+                    entry,
+                    &ctx,
+                    &tried,
+                    &loads,
+                    &state.cooldowns,
+                    &state.health,
+                    &state.breaker,
+                    &model,
+                    cd_enabled,
+                ) {
+                    Some(i) => i,
+                    None => break, // no untried target left to fail over to
+                };
+                entry.balancer.observe(idx, &ctx);
+                tried.push(idx);
+                // count this attempt as in-flight; the guard falls out of scope (and
+                // decrements) on retry, or is moved into the stream wrapper on success
+                let guard = state.loads.begin(&model, idx);
+
+                let target = &entry.route.targets[idx];
+                let provider = match snap.providers.get(&target.provider) {
+                    Some(provider) => provider,
+                    None => {
+                        last_error = Some("configured target provider not found".to_string());
+                        break;
+                    }
+                };
+                last_provider = target.provider.clone();
+                last_target = target.model.clone().unwrap_or_else(|| model.clone());
+                let api_key = provider.resolve_api_key();
+                let upstream_model = target.model.as_deref();
+
+                match state
+                    .forwarder
+                    .forward_json(
+                        provider,
+                        path,
+                        forward_body.clone(),
+                        api_key.as_deref(),
+                        upstream_model,
+                    )
+                    .await
+                {
+                    Ok(response) => {
+                        let status = response.status().as_u16();
+                        if is_retryable_status(status) {
+                            // park the failing target so siblings absorb the load
+                            if cd_enabled {
+                                let secs = cooldown.duration_secs(retry_after_secs(&response));
+                                state.cooldowns.park(&model, idx, secs);
+                                state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                            }
+                            // feed the circuit breaker; a sustained run trips the target open
+                            if state.breaker.on_failure(&model, idx) {
+                                state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                            }
+                            if attempt < retry.max_retries {
+                                state.metrics.retries_total.fetch_add(1, Relaxed);
+                                sleep(Duration::from_millis(retry_delay_ms(
+                                    retry,
+                                    &response,
+                                    attempt + 1,
+                                    started,
+                                )))
+                                .await;
+                                continue;
+                            }
+                        } else if state.breaker.on_success(&model, idx) {
+                            // a good response closes a breaker that was probing (half-open)
+                            state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                        }
+                        let is_sse = response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .map(|ct| ct.contains("event-stream"))
+                            .unwrap_or(false);
+                        inflight_guard = Some(guard);
+                        outcome = Some((response, status, is_sse));
+                        break;
+                    }
+                    Err(err) => {
+                        last_error = Some(err.to_string());
+                        // a connection-level failure parks the target too
+                        if cd_enabled {
+                            state
+                                .cooldowns
+                                .park(&model, idx, cooldown.duration_secs(None));
+                            state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                        }
+                        // and counts against the circuit breaker
+                        if state.breaker.on_failure(&model, idx) {
+                            state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                        }
+                        if attempt < retry.max_retries {
+                            state.metrics.retries_total.fetch_add(1, Relaxed);
+                            sleep(Duration::from_millis(
+                                retry.backoff_ms(attempt + 1, jitter(started)),
+                            ))
+                            .await;
+                            continue;
+                        }
+                        break;
+                    }
                 }
-                // and counts against the circuit breaker
-                if state.breaker.on_failure(&model, idx) {
-                    state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                }
-                if attempt < retry.max_retries {
-                    state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(
-                        retry.backoff_ms(attempt + 1, jitter(started)),
-                    ))
-                    .await;
-                    continue;
-                }
-                break;
             }
-        }
-    }
+            (
+                outcome,
+                last_provider,
+                last_target,
+                last_error,
+                inflight_guard,
+                String::new(),
+            )
+        };
 
     match outcome {
         // token counts, latency and ttft are filled by the stream wrapper once
@@ -442,6 +466,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 model,
                 provider: last_provider,
                 target: last_target,
+                variant: chosen_variant,
                 status,
                 stream: stream as u8,
                 ..Default::default()
@@ -474,6 +499,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 model,
                 provider: last_provider,
                 target: last_target,
+                variant: chosen_variant,
                 status: StatusCode::BAD_GATEWAY.as_u16(),
                 stream: stream as u8,
                 latency_ms: started.elapsed().as_millis() as u32,
@@ -483,6 +509,184 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             error_json(StatusCode::BAD_GATEWAY, &message)
         }
     }
+}
+
+/// The result of a forward loop, threaded back into the shared logging/response
+/// tail so the classic and variant paths converge on one exit.
+struct ForwardOutcome {
+    outcome: Option<(reqwest::Response, u16, bool)>,
+    last_provider: String,
+    last_target: String,
+    last_error: Option<String>,
+    inflight_guard: Option<crate::load::LoadGuard>,
+    /// chosen variant name for attribution
+    variant: String,
+}
+
+/// Namespaces the per-target reliability registries (cooldown/breaker/load) by
+/// variant so a target's health under one variant never leaks into another.
+fn variant_key(model: &str, variant: &str) -> String {
+    format!("{model}::{variant}")
+}
+
+/// Forward through the weighted-variant fallback chain. Samples a primary
+/// variant by weight, then flattens the deterministic fallback order into an
+/// ordered candidate list (each variant's targets in declared order) and drives
+/// it through the same retry/cooldown/breaker machinery as the classic path.
+/// Variant-level params are merged over route-level params per candidate before
+/// the override policy is applied.
+#[allow(clippy::too_many_arguments)]
+async fn forward_variants(
+    state: &AppState,
+    entry: &crate::state::RouteEntry,
+    snap: &Snapshot,
+    model: &str,
+    parsed: &Value,
+    body: &Bytes,
+    path: &str,
+    started: Instant,
+) -> ForwardOutcome {
+    let route = &entry.route;
+    let retry = &snap.retry;
+    let cooldown = &snap.cooldown;
+    let cd_enabled = cooldown.enabled();
+
+    // primary by weight, then the rest in declared order; flatten each variant's
+    // targets (provider routing order) into one ordered candidate list
+    let primary = route.sample_variant(jitter(started)).unwrap_or(0);
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for vi in route.fallback_order(primary) {
+        if let Some(v) = route.variants.get(vi) {
+            for ti in 0..v.targets.len() {
+                candidates.push((vi, ti));
+            }
+        }
+    }
+
+    let mut out = ForwardOutcome {
+        outcome: None,
+        last_provider: String::new(),
+        last_target: model.to_string(),
+        last_error: None,
+        inflight_guard: None,
+        variant: String::new(),
+    };
+    let mut tried: Vec<usize> = Vec::new();
+
+    for attempt in 0..=retry.max_retries {
+        // a candidate is skippable when its target is parked, its provider is
+        // unhealthy, or its breaker is open — keyed per variant
+        let skip = |&(vi, ti): &(usize, usize)| {
+            let v = &route.variants[vi];
+            let key = variant_key(model, &v.name);
+            (cd_enabled && state.cooldowns.is_parked(&key, ti))
+                || !state.health.is_healthy(&v.targets[ti].provider)
+                || !state.breaker.allows(&key, ti)
+        };
+        // prefer an untried, non-skipped candidate; fail open to any untried one
+        // when every remaining candidate is parked/unhealthy/open
+        let fresh = (0..candidates.len()).find(|ci| !tried.contains(ci) && !skip(&candidates[*ci]));
+        let ci = match fresh.or_else(|| (0..candidates.len()).find(|ci| !tried.contains(ci))) {
+            Some(ci) => ci,
+            None => break, // no untried candidate left to fail over to
+        };
+        tried.push(ci);
+        let (vi, ti) = candidates[ci];
+        let v = &route.variants[vi];
+        let target = &v.targets[ti];
+        let key = variant_key(model, &v.name);
+
+        let provider = match snap.providers.get(&target.provider) {
+            Some(provider) => provider,
+            None => {
+                out.last_error = Some("configured target provider not found".to_string());
+                break;
+            }
+        };
+        out.variant = v.name.clone();
+        out.last_provider = target.provider.clone();
+        out.last_target = target.model.clone().unwrap_or_else(|| model.to_string());
+
+        // merge variant params over route params for this candidate's body
+        let mut injected = parsed.clone();
+        route.apply_variant_params(v, &mut injected);
+        let forward_body = serde_json::to_vec(&injected)
+            .map(Bytes::from)
+            .unwrap_or_else(|_| body.clone());
+
+        // count this attempt as in-flight under the variant's key
+        let guard = state.loads.begin(&key, ti);
+        let api_key = provider.resolve_api_key();
+        let upstream_model = target.model.as_deref();
+
+        match state
+            .forwarder
+            .forward_json(
+                provider,
+                path,
+                forward_body,
+                api_key.as_deref(),
+                upstream_model,
+            )
+            .await
+        {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if is_retryable_status(status) {
+                    if cd_enabled {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&key, ti, secs);
+                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                    }
+                    if state.breaker.on_failure(&key, ti) {
+                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                    }
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(retry_delay_ms(
+                            retry,
+                            &response,
+                            attempt + 1,
+                            started,
+                        )))
+                        .await;
+                        continue;
+                    }
+                } else if state.breaker.on_success(&key, ti) {
+                    state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                }
+                let is_sse = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|ct| ct.contains("event-stream"))
+                    .unwrap_or(false);
+                out.inflight_guard = Some(guard);
+                out.outcome = Some((response, status, is_sse));
+                break;
+            }
+            Err(err) => {
+                out.last_error = Some(err.to_string());
+                if cd_enabled {
+                    state.cooldowns.park(&key, ti, cooldown.duration_secs(None));
+                    state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                }
+                if state.breaker.on_failure(&key, ti) {
+                    state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                }
+                if attempt < retry.max_retries {
+                    state.metrics.retries_total.fetch_add(1, Relaxed);
+                    sleep(Duration::from_millis(
+                        retry.backoff_ms(attempt + 1, jitter(started)),
+                    ))
+                    .await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Pick a target the request has not tried yet, preferring one that is not on a

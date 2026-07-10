@@ -181,6 +181,65 @@ async fn metrics_served_on_configured_path() {
 }
 
 #[tokio::test]
+async fn variant_routing_fails_over_to_next_variant() {
+    use rolter_core::Variant;
+    // primary variant's target always 500 (retryable); the fallback variant is
+    // healthy. the request should fall over across variants and succeed.
+    let down = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
+    ))
+    .await;
+    let up = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+
+    let mut config = GatewayConfig::default();
+    for (name, addr) in [("down", down), ("up", up)] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{addr}"),
+            api_key: None,
+            api_key_env: None,
+            egress_proxy: None,
+        });
+    }
+    let mk_variant = |name: &str, provider: &str, weight: u32| Variant {
+        name: name.to_string(),
+        weight,
+        targets: vec![Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        }],
+        params: Default::default(),
+    };
+    config.routes.push(ModelRoute {
+        model: "ab-model".to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: Default::default(),
+        params: Default::default(),
+        param_policy: Default::default(),
+        // heavily weight the failing variant as primary so failover is exercised
+        variants: vec![
+            mk_variant("control", "down", 100),
+            mk_variant("canary", "up", 1),
+        ],
+    });
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "ab-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "pong");
+}
+
+#[tokio::test]
 async fn unknown_model_returns_404() {
     let gw = serve_gateway(&config_for("test-model", vec![])).await;
 

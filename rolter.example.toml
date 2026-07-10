@@ -109,9 +109,10 @@ weight = 1
 # weighted variants: A/B, canary, and key-split traffic under one schema. a
 # request samples one variant by weight (the primary) and, on failure, falls
 # back to the remaining variants in declared order; within a variant the
-# targets are tried in order. a route uses variants instead of the top-level
-# targets/strategy pool. (config foundation; handler wiring is tracked
-# separately.)
+# targets are tried in order. variant-level params (below) layer over the
+# route-level params. the chosen variant name is attributed in request logs
+# (the `variant` column) for A/B analysis. a route uses variants instead of the
+# top-level targets/strategy pool.
 # [[routes]]
 # model = "chat"
 # [[routes.variants]]

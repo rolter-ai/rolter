@@ -30,6 +30,11 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
   - `allow` (string[], default `[]`) — params callers may override when `mode = "deny"`
   - `deny` (string[], default `[]`) — params callers may not override when `mode = "allow"`
   - when an override is denied and the caller sends the param anyway, the admin default silently wins
+- `[[routes.variants]]` (optional) — weighted variants for A/B, canary, and key-split traffic. When present, the route ignores the top-level `targets`/`strategy` pool: a request samples one variant by weight (the primary) and, on failure, falls over to the remaining variants in declared order; within a variant the `targets` are tried in order.
+  - `name` (string) — variant identifier, attributed in request logs (the `variant` column)
+  - `weight` (u32, default `1`) — relative traffic share for the primary draw
+  - `[[routes.variants.targets]]` — same shape as `[[routes.targets]]`
+  - `[routes.variants.params]` (table, optional) — variant-scoped param defaults, layered over `[routes.params]` (the variant wins) under the route's `param_policy`
 
 ### `[[virtual_keys]]`
 - `key` (string) — the bearer token clients present
