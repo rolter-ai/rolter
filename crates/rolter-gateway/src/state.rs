@@ -12,6 +12,7 @@ use rolter_core::{
 use rolter_proxy::Forwarder;
 
 use crate::budgets::BudgetEnforcer;
+use crate::health_events::HealthEventSink;
 use crate::logging::LogSink;
 use crate::metrics::Metrics;
 use crate::rate_limits::RateLimiter;
@@ -155,6 +156,8 @@ pub struct AppState {
     pub forwarder: Arc<Forwarder>,
     pub metrics: Arc<Metrics>,
     pub log: LogSink,
+    /// batched writer for provider health events; disabled when no clickhouse url
+    pub health_events: HealthEventSink,
     /// enforces spend caps against Redis; disabled when no redis url is set
     pub budgets: BudgetEnforcer,
     /// enforces throughput caps against Redis; disabled when no redis url is set
@@ -178,10 +181,12 @@ impl AppState {
     pub fn new(config: &GatewayConfig) -> Self {
         let metrics = Arc::new(Metrics::default());
         let log = LogSink::disabled(metrics.clone());
+        let health_events = HealthEventSink::disabled(metrics.clone());
         Self::assemble(
             config,
             metrics,
             log,
+            health_events,
             BudgetEnforcer::disabled(),
             RateLimiter::disabled(),
         )
@@ -202,17 +207,31 @@ impl AppState {
             ),
             None => LogSink::disabled(metrics.clone()),
         };
+        // reuse the same clickhouse endpoint and batching knobs as request logs
+        let health_events = match &config.logging.clickhouse_url {
+            Some(url) => HealthEventSink::spawn(
+                url.clone(),
+                config.logging.batch_max,
+                Duration::from_millis(config.logging.flush_ms),
+                config.logging.queue_capacity,
+                metrics.clone(),
+            ),
+            None => HealthEventSink::disabled(metrics.clone()),
+        };
+        // the request funnel doubles as the passive health-event source
+        let log = log.with_health_events(health_events.clone());
         let (budgets, rate_limiter) = match redis_url {
             Some(url) => (BudgetEnforcer::new(url), RateLimiter::new(url)),
             None => (BudgetEnforcer::disabled(), RateLimiter::disabled()),
         };
-        Self::assemble(config, metrics, log, budgets, rate_limiter)
+        Self::assemble(config, metrics, log, health_events, budgets, rate_limiter)
     }
 
     fn assemble(
         config: &GatewayConfig,
         metrics: Arc<Metrics>,
         log: LogSink,
+        health_events: HealthEventSink,
         budgets: BudgetEnforcer,
         rate_limiter: RateLimiter,
     ) -> Self {
@@ -221,6 +240,7 @@ impl AppState {
             forwarder: Arc::new(Forwarder::with_timeouts(&config.timeouts)),
             metrics,
             log,
+            health_events,
             budgets,
             rate_limiter,
             cooldowns: crate::cooldowns::Cooldowns::new(),

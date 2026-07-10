@@ -87,6 +87,10 @@ pub struct Metrics {
     pub logs_written_total: AtomicU64,
     /// request-log rows dropped (queue full or write failed)
     pub logs_dropped_total: AtomicU64,
+    /// provider-health-event rows successfully written to clickhouse
+    pub health_events_written_total: AtomicU64,
+    /// provider-health-event rows dropped (queue full or write failed)
+    pub health_events_dropped_total: AtomicU64,
     /// requests rejected because a matching budget was exhausted
     pub budget_blocks_total: AtomicU64,
     /// requests rejected because a matching rpm/tpm rate limit was exhausted
@@ -216,6 +220,20 @@ impl Metrics {
             "rolter_logs_dropped_total",
             "request-log rows dropped (queue full or write failed)",
             self.logs_dropped_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_health_events_written_total",
+            "provider-health-event rows written to clickhouse",
+            self.health_events_written_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_health_events_dropped_total",
+            "provider-health-event rows dropped (queue full or write failed)",
+            self.health_events_dropped_total.load(Relaxed),
         );
         metric(
             &mut out,

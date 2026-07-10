@@ -275,21 +275,31 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
                 if let Some((k, v)) = header {
                     req = req.header(k, v);
                 }
-                let outcome = match req.send().await {
-                    Ok(resp) => match resp.status().as_u16() {
-                        429 => ProbeOutcome::RateLimited,
-                        s if s < 500 => ProbeOutcome::Ok,
-                        _ => ProbeOutcome::Failed,
-                    },
-                    Err(_) => ProbeOutcome::Failed,
+                let started = std::time::Instant::now();
+                let (outcome, status, timed_out) = match req.send().await {
+                    Ok(resp) => {
+                        let code = resp.status().as_u16();
+                        let out = match code {
+                            429 => ProbeOutcome::RateLimited,
+                            s if s < 500 => ProbeOutcome::Ok,
+                            _ => ProbeOutcome::Failed,
+                        };
+                        (out, Some(code), false)
+                    }
+                    Err(e) => (ProbeOutcome::Failed, None, e.is_timeout()),
                 };
-                Some((name, outcome))
+                let latency_ms = started.elapsed().as_millis() as u32;
+                Some((name, outcome, status, latency_ms, timed_out))
             });
         }
         while let Some(joined) = sweep.join_next().await {
-            let Ok(Some((name, outcome))) = joined else {
+            let Ok(Some((name, outcome, status, latency_ms, timed_out))) = joined else {
                 continue;
             };
+            // record a probe health event for every sweep observation (ROL-197)
+            state.health_events.emit(probe_health_event(
+                &name, outcome, status, latency_ms, timed_out,
+            ));
             let flipped = state.health.observe(
                 &name,
                 outcome,
@@ -312,6 +322,42 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
                 None => {}
             }
         }
+    }
+}
+
+/// Build a probe [`HealthEvent`](crate::health_events::HealthEvent) from a sweep
+/// observation. Probes are per-provider, so `target_id` carries the provider
+/// name. A 429 is `error`/`rate_limited`; a client timeout is `timeout`; any
+/// other failure is `error`.
+fn probe_health_event(
+    provider: &str,
+    outcome: ProbeOutcome,
+    status: Option<u16>,
+    latency_ms: u32,
+    timed_out: bool,
+) -> crate::health_events::HealthEvent {
+    use crate::health_events::{HealthEvent, HealthOutcome, HealthSource};
+    let (health_outcome, error_kind) = match outcome {
+        ProbeOutcome::Ok => (HealthOutcome::Ok, None),
+        ProbeOutcome::RateLimited => (HealthOutcome::Error, Some("rate_limited".to_string())),
+        ProbeOutcome::Failed if timed_out => (HealthOutcome::Timeout, Some("timeout".to_string())),
+        ProbeOutcome::Failed => {
+            let kind = match status {
+                Some(s) if s >= 500 => "upstream_error",
+                Some(_) => "error",
+                None => "connect_error",
+            };
+            (HealthOutcome::Error, Some(kind.to_string()))
+        }
+    };
+    HealthEvent {
+        target_id: provider.to_string(),
+        provider: provider.to_string(),
+        source: HealthSource::Probe,
+        outcome: health_outcome,
+        status_code: status,
+        latency_ms,
+        error_kind,
     }
 }
 

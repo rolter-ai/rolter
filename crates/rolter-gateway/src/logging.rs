@@ -279,17 +279,70 @@ impl Drop for UsageLoggingStream {
     }
 }
 
+/// Derive a passive [`HealthEvent`](crate::health_events::HealthEvent) from a
+/// completed request. A 2xx is `ok`; a timed-out upstream is `timeout`; anything
+/// else is `error`. `status` 0 means the request never reached the upstream
+/// (connect failure), so no status code is reported.
+fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEvent {
+    use crate::health_events::{HealthEvent, HealthOutcome, HealthSource};
+    let ok = (200..300).contains(&record.status);
+    let timed_out = record.error.contains("timed out") || record.error.contains("timeout");
+    let outcome = if ok {
+        HealthOutcome::Ok
+    } else if timed_out {
+        HealthOutcome::Timeout
+    } else {
+        HealthOutcome::Error
+    };
+    let error_kind = match outcome {
+        HealthOutcome::Ok => None,
+        HealthOutcome::Timeout => Some("timeout".to_string()),
+        HealthOutcome::Error => Some(if record.status == 429 {
+            "rate_limited".to_string()
+        } else if record.status >= 500 {
+            "upstream_error".to_string()
+        } else if record.status == 0 {
+            "connect_error".to_string()
+        } else {
+            "error".to_string()
+        }),
+    };
+    HealthEvent {
+        target_id: record.target.clone(),
+        provider: record.provider.clone(),
+        source: HealthSource::Passive,
+        outcome,
+        status_code: (record.status > 0).then_some(record.status),
+        latency_ms: record.latency_ms,
+        error_kind,
+    }
+}
+
 /// Handle used by request handlers to emit logs. Cheap to clone.
 #[derive(Clone)]
 pub struct LogSink {
     tx: Option<mpsc::Sender<RequestLog>>,
     metrics: Arc<Metrics>,
+    // the passive funnel also feeds provider health events (ROL-197); disabled
+    // when no clickhouse url is set
+    health_events: crate::health_events::HealthEventSink,
 }
 
 impl LogSink {
     /// A sink that discards everything (logging disabled / used in tests).
     pub fn disabled(metrics: Arc<Metrics>) -> Self {
-        Self { tx: None, metrics }
+        Self {
+            tx: None,
+            health_events: crate::health_events::HealthEventSink::disabled(metrics.clone()),
+            metrics,
+        }
+    }
+
+    /// Attach the health-event sink fed by the passive request funnel. Returns
+    /// `self` so it composes with the constructors.
+    pub fn with_health_events(mut self, sink: crate::health_events::HealthEventSink) -> Self {
+        self.health_events = sink;
+        self
     }
 
     /// Build a sink and spawn the background batch writer targeting the
@@ -316,6 +369,7 @@ impl LogSink {
         tokio::spawn(writer.run(rx));
         Self {
             tx: Some(tx),
+            health_events: crate::health_events::HealthEventSink::disabled(metrics.clone()),
             metrics,
         }
     }
@@ -334,6 +388,11 @@ impl LogSink {
             (200..300).contains(&record.status),
         );
         self.metrics.observe_variant(&record.model, &record.variant);
+        // funnel a passive health event for every real upstream target (skip the
+        // builtin fake-llm and any row without a provider/target)
+        if !record.provider.is_empty() && !record.target.is_empty() {
+            self.health_events.emit(passive_health_event(&record));
+        }
         let Some(tx) = &self.tx else {
             return;
         };
@@ -508,6 +567,58 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
     #[test]
     fn missing_usage_is_zero() {
         assert_eq!(parse_usage(false, b"{\"id\":\"x\"}"), Usage::default());
+    }
+
+    #[test]
+    fn passive_event_maps_status_to_outcome() {
+        use crate::health_events::{HealthOutcome, HealthSource};
+        let base = RequestLog {
+            provider: "openai".to_string(),
+            target: "openai/gpt-4o".to_string(),
+            latency_ms: 15,
+            ..Default::default()
+        };
+
+        let ok = passive_health_event(&RequestLog {
+            status: 200,
+            ..base.clone()
+        });
+        assert_eq!(ok.source, HealthSource::Passive);
+        assert_eq!(ok.outcome, HealthOutcome::Ok);
+        assert_eq!(ok.status_code, Some(200));
+        assert!(ok.error_kind.is_none());
+
+        let rl = passive_health_event(&RequestLog {
+            status: 429,
+            ..base.clone()
+        });
+        assert_eq!(rl.outcome, HealthOutcome::Error);
+        assert_eq!(rl.error_kind.as_deref(), Some("rate_limited"));
+
+        let up = passive_health_event(&RequestLog {
+            status: 503,
+            ..base.clone()
+        });
+        assert_eq!(up.error_kind.as_deref(), Some("upstream_error"));
+
+        // never reached upstream: status 0, no status code, timeout error text
+        let to = passive_health_event(&RequestLog {
+            status: 0,
+            error: "upstream request timed out after 30s".to_string(),
+            ..base.clone()
+        });
+        assert_eq!(to.outcome, HealthOutcome::Timeout);
+        assert_eq!(to.status_code, None);
+        assert_eq!(to.error_kind.as_deref(), Some("timeout"));
+
+        // connect failure: status 0, non-timeout error
+        let ce = passive_health_event(&RequestLog {
+            status: 0,
+            error: "connection refused".to_string(),
+            ..base
+        });
+        assert_eq!(ce.outcome, HealthOutcome::Error);
+        assert_eq!(ce.error_kind.as_deref(), Some("connect_error"));
     }
 
     #[test]
