@@ -68,6 +68,8 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
             api_keys: Vec::new(),
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
         })
     }
 }

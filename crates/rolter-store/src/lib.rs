@@ -152,6 +152,8 @@ mod tests {
             api_key_env: None,
             egress_proxy: None,
             api_keys: Vec::new(),
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
         }
     }
 

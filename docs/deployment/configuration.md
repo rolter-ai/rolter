@@ -21,6 +21,8 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
   - `weight` (u32, default `1`) — relative selection weight
 - `api_key_env` (string, optional) — env var to read the key from
 - `egress_proxy` (string, optional) — HTTP/HTTPS/SOCKS5 outbound proxy
+- `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
+- `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.
 
 ### `[[routes]]`
 - `model` (string) — public model name clients request

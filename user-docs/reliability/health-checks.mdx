@@ -61,6 +61,32 @@ timeout_secs = 3
 path = "/health"
 ```
 
+## End-to-end (LLM-call) checks
+
+By default the probe hits a free liveness endpoint that burns no tokens. If you need a signal that real inference works — not just that the API answers — enable `also_track_via_llm_call` on a provider. Each sweep then sends a minimal `max_tokens = 1` completion instead of the free probe.
+
+<ParamField path="also_track_via_llm_call" default="false" type="bool">
+  Send a real `max_tokens = 1` completion instead of the free `/v1/models` probe. **Costs a few tokens on every sweep** (`interval_secs`) — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`; it feeds the same failure/recovery thresholds as the free probe.
+</ParamField>
+
+<ParamField path="llm_probe_model" type="string">
+  The upstream model id the check calls (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or a resolvable api key) the checker logs a warning and falls back to the free probe.
+</ParamField>
+
+```toml rolter.toml
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+also_track_via_llm_call = true
+llm_probe_model = "gpt-4o-mini"
+```
+
+<Warning>
+  The tokens spent scale with your sweep frequency: one completion per provider per `interval_secs`. On a 10s interval that is ~8,640 tiny calls per provider per day. Prefer a longer `interval_secs` for LLM-call checks.
+</Warning>
+
 ## Activation walkthrough
 
 <Steps>

@@ -46,6 +46,102 @@ fn probe_request(
     }
 }
 
+/// A fully-resolved probe request for one provider: either a free liveness GET
+/// or an opt-in minimal completion POST (`also_track_via_llm_call`, ROL-199).
+/// Owns every value so the spawned sweep task needs no borrow of the config.
+enum ProbePlan {
+    /// free, non-inference liveness GET
+    Free {
+        url: String,
+        header: Option<(&'static str, &'static str)>,
+    },
+    /// a real `max_tokens = 1` completion that proves inference works end to end
+    LlmCall {
+        url: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    },
+}
+
+impl ProbePlan {
+    fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+        match self {
+            ProbePlan::Free { url, header } => {
+                let mut req = client.get(&url);
+                if let Some((k, v)) = header {
+                    req = req.header(k, v);
+                }
+                req
+            }
+            ProbePlan::LlmCall { url, headers, body } => {
+                let mut req = client
+                    .post(&url)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json");
+                for (k, v) in headers {
+                    req = req.header(k, v);
+                }
+                req.body(body)
+            }
+        }
+    }
+}
+
+/// Decide how to probe `provider`: the opt-in llm-call check when enabled and
+/// fully configured, else the free liveness probe. Falls back to the free probe
+/// (with a warning) when the flag is on but the model or api key is missing, so
+/// a misconfiguration degrades to the free signal rather than silently reporting
+/// the provider down.
+fn build_probe_plan(
+    provider: &rolter_core::ProviderConfig,
+    configured_path: &str,
+) -> (ProbePlan, crate::health_events::HealthSource) {
+    use crate::health_events::HealthSource;
+    let base = provider.api_base.trim_end_matches('/');
+    if provider.also_track_via_llm_call {
+        match (&provider.llm_probe_model, provider.resolve_api_key()) {
+            (Some(model), Some(key)) => {
+                let (path, headers) = match provider.kind {
+                    ProviderKind::Anthropic => (
+                        "/v1/messages",
+                        vec![
+                            ("x-api-key".to_string(), key),
+                            (
+                                "anthropic-version".to_string(),
+                                ANTHROPIC_VERSION.to_string(),
+                            ),
+                        ],
+                    ),
+                    _ => (
+                        "/v1/chat/completions",
+                        vec![("authorization".to_string(), format!("Bearer {key}"))],
+                    ),
+                };
+                let body = format!(
+                    "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1}}",
+                    serde_json::Value::String(model.clone())
+                );
+                return (
+                    ProbePlan::LlmCall {
+                        url: format!("{base}{path}"),
+                        headers,
+                        body,
+                    },
+                    HealthSource::LlmCall,
+                );
+            }
+            _ => {
+                tracing::warn!(
+                    provider = %provider.name,
+                    "also_track_via_llm_call is set but llm_probe_model or api key is missing; \
+                     falling back to the free liveness probe"
+                );
+            }
+        }
+    }
+    let (url, header) = probe_request(provider.kind, &provider.api_base, configured_path);
+    (ProbePlan::Free { url, header }, HealthSource::Probe)
+}
+
 /// What a single probe observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -250,31 +346,32 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
     loop {
         ticker.tick().await;
         // read providers off the current snapshot each sweep so hot-reloads and
-        // newly-added providers are picked up without restarting the prober
-        let providers: Vec<(String, String, ProviderKind)> = {
+        // newly-added providers are picked up without restarting the prober.
+        // resolve the whole probe plan here (while we hold the config) so the
+        // spawned tasks own everything they need
+        let plans: Vec<(String, ProbePlan, crate::health_events::HealthSource)> = {
             let snap = state.snapshot.load();
             snap.providers
                 .values()
-                .map(|p| (p.name.clone(), p.api_base.clone(), p.kind))
+                .map(|p| {
+                    let (plan, source) = build_probe_plan(p, &cfg.path);
+                    (p.name.clone(), plan, source)
+                })
                 .collect()
         };
         let mut sweep = tokio::task::JoinSet::new();
-        for (name, api_base, kind) in providers {
+        for (name, plan, source) in plans {
             // a provider inside its 429 backoff window sits this sweep out
             if !state.health.should_probe(&name) {
                 continue;
             }
-            let (url, header) = probe_request(kind, &api_base, &cfg.path);
             let client = client.clone();
             let limiter = limiter.clone();
             let jitter_ms = probe_jitter_ms(&name, jitter_window_ms);
             sweep.spawn(async move {
                 let _permit = limiter.acquire_owned().await.ok()?;
                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
-                let mut req = client.get(&url);
-                if let Some((k, v)) = header {
-                    req = req.header(k, v);
-                }
+                let req = plan.build(&client);
                 let started = std::time::Instant::now();
                 let (outcome, status, timed_out) = match req.send().await {
                     Ok(resp) => {
@@ -289,16 +386,17 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
                     Err(e) => (ProbeOutcome::Failed, None, e.is_timeout()),
                 };
                 let latency_ms = started.elapsed().as_millis() as u32;
-                Some((name, outcome, status, latency_ms, timed_out))
+                Some((name, source, outcome, status, latency_ms, timed_out))
             });
         }
         while let Some(joined) = sweep.join_next().await {
-            let Ok(Some((name, outcome, status, latency_ms, timed_out))) = joined else {
+            let Ok(Some((name, source, outcome, status, latency_ms, timed_out))) = joined else {
                 continue;
             };
-            // record a probe health event for every sweep observation (ROL-197)
+            // record a health event for every sweep observation (ROL-197); the
+            // source distinguishes free probes from llm-call checks (ROL-199)
             state.health_events.emit(probe_health_event(
-                &name, outcome, status, latency_ms, timed_out,
+                &name, source, outcome, status, latency_ms, timed_out,
             ));
             let flipped = state.health.observe(
                 &name,
@@ -331,12 +429,13 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
 /// other failure is `error`.
 fn probe_health_event(
     provider: &str,
+    source: crate::health_events::HealthSource,
     outcome: ProbeOutcome,
     status: Option<u16>,
     latency_ms: u32,
     timed_out: bool,
 ) -> crate::health_events::HealthEvent {
-    use crate::health_events::{HealthEvent, HealthOutcome, HealthSource};
+    use crate::health_events::{HealthEvent, HealthOutcome};
     let (health_outcome, error_kind) = match outcome {
         ProbeOutcome::Ok => (HealthOutcome::Ok, None),
         ProbeOutcome::RateLimited => (HealthOutcome::Error, Some("rate_limited".to_string())),
@@ -353,7 +452,7 @@ fn probe_health_event(
     HealthEvent {
         target_id: provider.to_string(),
         provider: provider.to_string(),
-        source: HealthSource::Probe,
+        source,
         outcome: health_outcome,
         status_code: status,
         latency_ms,
@@ -489,5 +588,78 @@ mod tests {
         let (url, hdr) = probe_request(ProviderKind::Anthropic, "https://x.test", "/healthz");
         assert_eq!(url, "https://x.test/healthz");
         assert!(hdr.is_none());
+    }
+
+    fn provider(kind: ProviderKind) -> rolter_core::ProviderConfig {
+        rolter_core::ProviderConfig {
+            name: "p".to_string(),
+            kind,
+            api_base: "https://api.test".to_string(),
+            api_key: None,
+            api_key_env: None,
+            egress_proxy: None,
+            api_keys: Vec::new(),
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
+        }
+    }
+
+    #[test]
+    fn plan_defaults_to_free_probe() {
+        let (plan, source) = build_probe_plan(&provider(ProviderKind::Openai), "/");
+        assert!(matches!(plan, ProbePlan::Free { .. }));
+        assert_eq!(source, crate::health_events::HealthSource::Probe);
+    }
+
+    #[test]
+    fn plan_uses_llm_call_when_enabled_and_configured() {
+        let mut p = provider(ProviderKind::Openai);
+        p.also_track_via_llm_call = true;
+        p.llm_probe_model = Some("gpt-4o-mini".to_string());
+        p.api_key = Some("sk-test".to_string());
+        let (plan, source) = build_probe_plan(&p, "/");
+        assert_eq!(source, crate::health_events::HealthSource::LlmCall);
+        match plan {
+            ProbePlan::LlmCall { url, headers, body } => {
+                assert_eq!(url, "https://api.test/v1/chat/completions");
+                assert!(headers
+                    .iter()
+                    .any(|(k, v)| k == "authorization" && v == "Bearer sk-test"));
+                assert!(body.contains("\"model\":\"gpt-4o-mini\""));
+                assert!(body.contains("\"max_tokens\":1"));
+            }
+            _ => panic!("expected an llm-call plan"),
+        }
+    }
+
+    #[test]
+    fn plan_anthropic_llm_call_targets_messages_with_version() {
+        let mut p = provider(ProviderKind::Anthropic);
+        p.also_track_via_llm_call = true;
+        p.llm_probe_model = Some("claude-3-5-haiku".to_string());
+        p.api_key = Some("sk-ant".to_string());
+        let (plan, _) = build_probe_plan(&p, "/");
+        match plan {
+            ProbePlan::LlmCall { url, headers, .. } => {
+                assert_eq!(url, "https://api.test/v1/messages");
+                assert!(headers
+                    .iter()
+                    .any(|(k, v)| k == "x-api-key" && v == "sk-ant"));
+                assert!(headers
+                    .iter()
+                    .any(|(k, v)| k == "anthropic-version" && v == ANTHROPIC_VERSION));
+            }
+            _ => panic!("expected an llm-call plan"),
+        }
+    }
+
+    #[test]
+    fn plan_falls_back_to_free_when_llm_misconfigured() {
+        // flag on but no model/key: degrade to the free probe rather than fail
+        let mut p = provider(ProviderKind::Openai);
+        p.also_track_via_llm_call = true;
+        let (plan, source) = build_probe_plan(&p, "/");
+        assert!(matches!(plan, ProbePlan::Free { .. }));
+        assert_eq!(source, crate::health_events::HealthSource::Probe);
     }
 }
