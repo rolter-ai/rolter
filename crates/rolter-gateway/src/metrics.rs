@@ -109,6 +109,8 @@ pub struct Metrics {
     by_model: DashMap<String, ModelHist>,
     /// passive per-target success/error tally, keyed by (provider, target)
     by_target: DashMap<(String, String), TargetStats>,
+    /// per-variant request tally for A/B attribution, keyed by (model, variant)
+    by_variant: DashMap<(String, String), AtomicU64>,
 }
 
 impl Metrics {
@@ -139,6 +141,18 @@ impl Metrics {
         } else {
             stats.err.fetch_add(1, Relaxed);
         }
+    }
+
+    /// Record one completed request against the A/B variant that served it.
+    /// Classic single-pool routes pass an empty variant and are not counted.
+    pub fn observe_variant(&self, model: &str, variant: &str) {
+        if variant.is_empty() {
+            return;
+        }
+        self.by_variant
+            .entry((model.to_string(), variant.to_string()))
+            .or_default()
+            .fetch_add(1, Relaxed);
     }
 
     /// Render the counters in Prometheus text exposition format.
@@ -276,7 +290,29 @@ impl Metrics {
             |m| &m.ttft,
         );
         self.render_target_counters(&mut out);
+        self.render_variant_counters(&mut out);
         out
+    }
+
+    /// Append the per-variant request counter, one `{model,variant}` series per
+    /// (model, variant). Lets Prometheus/Grafana show A/B traffic splits without
+    /// querying ClickHouse.
+    fn render_variant_counters(&self, out: &mut String) {
+        let name = "rolter_variant_requests_total";
+        let _ = writeln!(
+            out,
+            "# HELP {name} proxied requests per A/B variant by model"
+        );
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_variant.iter() {
+            let (model, variant) = entry.key();
+            let (model, variant) = (escape_label(model), escape_label(variant));
+            let _ = writeln!(
+                out,
+                "{name}{{model=\"{model}\",variant=\"{variant}\"}} {}",
+                entry.value().load(Relaxed)
+            );
+        }
     }
 
     /// Append the passive per-target outcome counter, one `{provider,target,
@@ -417,5 +453,21 @@ mod tests {
         ));
         // the empty-label observation created no series
         assert!(!out.contains("provider=\"\",target=\"\""));
+    }
+
+    #[test]
+    fn variant_counter_tallies_and_skips_empty() {
+        let m = Metrics::default();
+        m.observe_variant("chat", "control");
+        m.observe_variant("chat", "control");
+        m.observe_variant("chat", "canary");
+        // classic single-pool route (no variant) is not counted
+        m.observe_variant("gpt-4o", "");
+        let out = m.render();
+
+        assert!(out.contains("# TYPE rolter_variant_requests_total counter"));
+        assert!(out.contains("rolter_variant_requests_total{model=\"chat\",variant=\"control\"} 2"));
+        assert!(out.contains("rolter_variant_requests_total{model=\"chat\",variant=\"canary\"} 1"));
+        assert!(!out.contains("model=\"gpt-4o\""));
     }
 }

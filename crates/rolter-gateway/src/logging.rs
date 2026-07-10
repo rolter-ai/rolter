@@ -333,6 +333,7 @@ impl LogSink {
             &record.target,
             (200..300).contains(&record.status),
         );
+        self.metrics.observe_variant(&record.model, &record.variant);
         let Some(tx) = &self.tx else {
             return;
         };
