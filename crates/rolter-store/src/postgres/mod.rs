@@ -30,11 +30,12 @@ pub async fn connect(database_url: &str) -> Result<PgPool> {
         .map_err(store_err)
 }
 
-/// Run pending migrations against `pool`. The migration set lives in the
-/// repo-root `migrations/` directory, shared with the `docker-compose` initdb
-/// bootstrap.
+/// Run pending migrations against `pool`. The migration set lives in this
+/// crate's own `migrations/` directory so it is embedded at compile time and
+/// packaged with the published crate; `docker-compose` mounts the same dir for
+/// its initdb bootstrap.
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    sqlx::migrate!("../../migrations")
+    sqlx::migrate!("./migrations")
         .run(pool)
         .await
         .map_err(|err| Error::Store(err.to_string()))
