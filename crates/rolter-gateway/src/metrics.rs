@@ -58,6 +58,14 @@ impl ModelHist {
     }
 }
 
+/// Passive per-target request-outcome tally, derived from real traffic (no extra
+/// upstream calls). Feeds provider stability / uptime SLA views.
+#[derive(Default)]
+struct TargetStats {
+    ok: AtomicU64,
+    err: AtomicU64,
+}
+
 /// Lightweight Prometheus metrics rendered as text.
 ///
 /// Hand-rolled counters/gauges plus per-model latency and TTFT histograms — this
@@ -99,6 +107,8 @@ pub struct Metrics {
     pub metrics_scrapes_total: AtomicU64,
     /// per-model latency + TTFT histograms, keyed by public model name
     by_model: DashMap<String, ModelHist>,
+    /// passive per-target success/error tally, keyed by (provider, target)
+    by_target: DashMap<(String, String), TargetStats>,
 }
 
 impl Metrics {
@@ -111,6 +121,24 @@ impl Metrics {
             .or_insert_with(ModelHist::new);
         hist.latency.observe(latency_ms);
         hist.ttft.observe(ttft_ms);
+    }
+
+    /// Record one completed request's outcome against its upstream target.
+    /// `ok` is a 2xx response; anything else counts as an error. Rows with no
+    /// resolved target (builtin fake-llm, pre-routing rejects) are skipped.
+    pub fn observe_target(&self, provider: &str, target: &str, ok: bool) {
+        if provider.is_empty() && target.is_empty() {
+            return;
+        }
+        let stats = self
+            .by_target
+            .entry((provider.to_string(), target.to_string()))
+            .or_default();
+        if ok {
+            stats.ok.fetch_add(1, Relaxed);
+        } else {
+            stats.err.fetch_add(1, Relaxed);
+        }
     }
 
     /// Render the counters in Prometheus text exposition format.
@@ -247,7 +275,35 @@ impl Metrics {
             "time to first token in milliseconds",
             |m| &m.ttft,
         );
+        self.render_target_counters(&mut out);
         out
+    }
+
+    /// Append the passive per-target outcome counter, one `{provider,target,
+    /// outcome}` series per (target, outcome). A per-target error rate / uptime
+    /// is `sum(rate(..{outcome="error"})) / sum(rate(..))` in Prometheus.
+    fn render_target_counters(&self, out: &mut String) {
+        let name = "rolter_target_requests_total";
+        let _ = writeln!(
+            out,
+            "# HELP {name} proxied requests per upstream target by outcome"
+        );
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_target.iter() {
+            let (provider, target) = entry.key();
+            let (provider, target) = (escape_label(provider), escape_label(target));
+            let stats = entry.value();
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{provider}\",target=\"{target}\",outcome=\"ok\"}} {}",
+                stats.ok.load(Relaxed)
+            );
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{provider}\",target=\"{target}\",outcome=\"error\"}} {}",
+                stats.err.load(Relaxed)
+            );
+        }
     }
 
     /// Append a per-model histogram (one `{model=...}` series per model) in the
@@ -340,5 +396,26 @@ mod tests {
     #[test]
     fn label_values_are_escaped() {
         assert_eq!(escape_label("a\"b\\c"), "a\\\"b\\\\c");
+    }
+
+    #[test]
+    fn target_counters_tally_by_outcome() {
+        let m = Metrics::default();
+        m.observe_target("openai", "gpt-4o", true);
+        m.observe_target("openai", "gpt-4o", true);
+        m.observe_target("openai", "gpt-4o", false);
+        // empty provider+target (builtin/pre-routing) is skipped
+        m.observe_target("", "", false);
+        let out = m.render();
+
+        assert!(out.contains("# TYPE rolter_target_requests_total counter"));
+        assert!(out.contains(
+            "rolter_target_requests_total{provider=\"openai\",target=\"gpt-4o\",outcome=\"ok\"} 2"
+        ));
+        assert!(out.contains(
+            "rolter_target_requests_total{provider=\"openai\",target=\"gpt-4o\",outcome=\"error\"} 1"
+        ));
+        // the empty-label observation created no series
+        assert!(!out.contains("provider=\"\",target=\"\""));
     }
 }
