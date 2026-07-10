@@ -174,6 +174,10 @@ impl PostgresConfigStore {
                     model: r.model,
                     strategy,
                     targets,
+                    // param defaults are config-defined only for now; db-backed
+                    // per-model params land with the store-schema follow-up
+                    params: Default::default(),
+                    param_policy: Default::default(),
                 })
             })
             .collect()

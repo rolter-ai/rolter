@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::Result;
@@ -176,6 +177,75 @@ pub struct ModelRoute {
     #[serde(default)]
     pub strategy: BalancingStrategy,
     pub targets: Vec<Target>,
+    /// admin-set default inference params injected into the request body (e.g.
+    /// `temperature`, `max_tokens`, `stop`). An unset param is passed through
+    /// untouched. Provider-agnostic: keys are whatever the upstream accepts.
+    #[serde(default)]
+    pub params: HashMap<String, serde_json::Value>,
+    /// whether callers may override the admin defaults in [`ModelRoute::params`]
+    #[serde(default)]
+    pub param_policy: ParamPolicy,
+}
+
+impl ModelRoute {
+    /// Apply the admin param defaults to a parsed JSON request body in place.
+    ///
+    /// For each configured default param: when the caller did not send it, the
+    /// default is injected; when the caller did send it, the value is kept only
+    /// if [`ParamPolicy`] permits overriding that param, otherwise the admin
+    /// default silently wins (the safer default, matching most gateways). Params
+    /// with no configured default are never touched.
+    pub fn apply_params(&self, body: &mut serde_json::Value) {
+        if self.params.is_empty() {
+            return;
+        }
+        let Some(obj) = body.as_object_mut() else {
+            return;
+        };
+        for (key, default) in &self.params {
+            let caller_sent = obj.contains_key(key);
+            if !caller_sent || !self.param_policy.may_override(key) {
+                obj.insert(key.clone(), default.clone());
+            }
+        }
+    }
+}
+
+/// Default override mode for a route's params: whether callers may override the
+/// admin defaults unless listed as an exception.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideMode {
+    /// callers may override any default except those in `deny`
+    #[default]
+    Allow,
+    /// callers may override no default except those in `allow`
+    Deny,
+}
+
+/// Per-route policy governing whether callers may override the admin param
+/// defaults. The `mode` sets the baseline; `allow`/`deny` are per-param
+/// exceptions to it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ParamPolicy {
+    #[serde(default)]
+    pub mode: OverrideMode,
+    /// params callers may override when `mode = "deny"`
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// params callers may not override when `mode = "allow"`
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+impl ParamPolicy {
+    /// Whether a caller-supplied value for `param` may override the admin default.
+    pub fn may_override(&self, param: &str) -> bool {
+        match self.mode {
+            OverrideMode::Allow => !self.deny.iter().any(|p| p == param),
+            OverrideMode::Deny => self.allow.iter().any(|p| p == param),
+        }
+    }
 }
 
 /// A virtual api key that clients present to the gateway.
@@ -792,6 +862,109 @@ fn is_proxy_url(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn route_with(params: &[(&str, serde_json::Value)], policy: ParamPolicy) -> ModelRoute {
+        ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::default(),
+            targets: vec![],
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+            param_policy: policy,
+        }
+    }
+
+    #[test]
+    fn injects_default_when_caller_omits() {
+        let route = route_with(
+            &[("temperature", serde_json::json!(0.0))],
+            ParamPolicy::default(),
+        );
+        let mut body = serde_json::json!({"model": "m", "messages": []});
+        route.apply_params(&mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.0));
+    }
+
+    #[test]
+    fn allow_mode_keeps_caller_value() {
+        // default mode is allow: caller override survives
+        let route = route_with(
+            &[("temperature", serde_json::json!(0.0))],
+            ParamPolicy::default(),
+        );
+        let mut body = serde_json::json!({"temperature": 0.9});
+        route.apply_params(&mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.9));
+    }
+
+    #[test]
+    fn allow_mode_deny_exception_forces_default() {
+        let policy = ParamPolicy {
+            mode: OverrideMode::Allow,
+            allow: vec![],
+            deny: vec!["temperature".to_string()],
+        };
+        let route = route_with(&[("temperature", serde_json::json!(0.0))], policy);
+        let mut body = serde_json::json!({"temperature": 0.9});
+        route.apply_params(&mut body);
+        // override denied for this param -> admin default silently wins
+        assert_eq!(body["temperature"], serde_json::json!(0.0));
+    }
+
+    #[test]
+    fn deny_mode_forces_default_but_allow_exception_passes() {
+        let policy = ParamPolicy {
+            mode: OverrideMode::Deny,
+            allow: vec!["max_tokens".to_string()],
+            deny: vec![],
+        };
+        let route = route_with(
+            &[
+                ("temperature", serde_json::json!(0.0)),
+                ("max_tokens", serde_json::json!(256)),
+            ],
+            policy,
+        );
+        let mut body = serde_json::json!({"temperature": 0.9, "max_tokens": 999});
+        route.apply_params(&mut body);
+        // temperature override denied -> default wins; max_tokens allowed -> kept
+        assert_eq!(body["temperature"], serde_json::json!(0.0));
+        assert_eq!(body["max_tokens"], serde_json::json!(999));
+    }
+
+    #[test]
+    fn no_params_leaves_body_untouched() {
+        let route = route_with(&[], ParamPolicy::default());
+        let mut body = serde_json::json!({"temperature": 0.9});
+        route.apply_params(&mut body);
+        assert_eq!(body["temperature"], serde_json::json!(0.9));
+    }
+
+    #[test]
+    fn params_round_trip_through_toml() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[routes]]
+            model = "gpt-4o"
+            [routes.params]
+            temperature = 0.0
+            max_tokens = 512
+            [routes.param_policy]
+            mode = "deny"
+            allow = ["max_tokens"]
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        )
+        .unwrap();
+        let route = &cfg.routes[0];
+        assert_eq!(route.params["temperature"], serde_json::json!(0.0));
+        assert_eq!(route.param_policy.mode, OverrideMode::Deny);
+        assert!(route.param_policy.may_override("max_tokens"));
+        assert!(!route.param_policy.may_override("temperature"));
+    }
 
     #[test]
     fn parses_minimal_config() {

@@ -137,6 +137,8 @@ mod tests {
             model: model.to_string(),
             strategy: Default::default(),
             targets: vec![],
+            params: Default::default(),
+            param_policy: Default::default(),
         }
     }
 

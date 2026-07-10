@@ -250,6 +250,19 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
 
+    // inject the admin's per-model param defaults (temperature, max_tokens, ...)
+    // before forwarding; caller values survive only where the override policy
+    // permits. falls back to the untouched body if re-serialization fails
+    let forward_body = if entry.route.params.is_empty() {
+        body.clone()
+    } else {
+        let mut injected = parsed.clone();
+        entry.route.apply_params(&mut injected);
+        serde_json::to_vec(&injected)
+            .map(Bytes::from)
+            .unwrap_or_else(|_| body.clone())
+    };
+
     // capture log fields independent of the chosen target
     let stream = parsed
         .get("stream")
@@ -346,7 +359,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .forward_json(
                 provider,
                 path,
-                body.clone(),
+                forward_body.clone(),
                 api_key.as_deref(),
                 upstream_model,
             )
@@ -610,6 +623,8 @@ mod tests {
         config.routes.push(ModelRoute {
             model: "gpt-4o".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![Target {
                 provider: "openai".to_string(),
                 model: None,
@@ -619,6 +634,8 @@ mod tests {
         config.routes.push(ModelRoute {
             model: "claude".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![Target {
                 provider: "anthropic".to_string(),
                 model: None,
@@ -844,6 +861,8 @@ mod tests {
         let route = ModelRoute {
             model: "m".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -891,6 +910,8 @@ mod tests {
         let route = ModelRoute {
             model: "m".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -928,6 +949,8 @@ mod tests {
         let route = ModelRoute {
             model: "m".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),
@@ -965,6 +988,8 @@ mod tests {
         let route = ModelRoute {
             model: "m".to_string(),
             strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
             targets: vec![
                 Target {
                     provider: "a".to_string(),

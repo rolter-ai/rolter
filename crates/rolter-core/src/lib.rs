@@ -10,8 +10,8 @@ pub mod telemetry;
 pub use config::{
     BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CooldownConfig,
     GatewayConfig, HealthConfig, LoggingConfig, MetricsScrapeConfig, ModelPriceConfig, ModelRoute,
-    ProviderConfig, ProviderKind, RateLimitConfig, RetryConfig, ServerConfig, Target,
-    TimeoutConfig, VirtualKeyConfig, VirtualKeyRecord,
+    OverrideMode, ParamPolicy, ProviderConfig, ProviderKind, RateLimitConfig, RetryConfig,
+    ServerConfig, Target, TimeoutConfig, VirtualKeyConfig, VirtualKeyRecord,
 };
 pub use error::{Error, Result};
 
