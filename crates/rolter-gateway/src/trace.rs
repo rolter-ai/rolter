@@ -76,6 +76,35 @@ fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// standard distributed-trace headers propagated verbatim to the upstream
+const PROPAGATED_TRACE_HEADERS: &[&str] = &[
+    "traceparent",
+    "tracestate",
+    "b3",
+    "x-b3-traceid",
+    "x-b3-spanid",
+    "x-b3-sampled",
+    "x-b3-parentspanid",
+    "x-b3-flags",
+];
+
+/// Collect the caller's inbound trace-context headers so the forwarder can
+/// propagate them verbatim to the upstream, letting vLLM/SGLang/TGI continue the
+/// same trace (ROL-61). Returns an empty vec when the caller sent none, so an
+/// untraced request adds nothing to the wire.
+pub fn outbound_trace_headers(headers: &HeaderMap) -> Vec<(&'static str, String)> {
+    PROPAGATED_TRACE_HEADERS
+        .iter()
+        .filter_map(|&name| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .filter(|s| !s.is_empty())
+                .map(|v| (name, v.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -299,6 +299,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         session_key,
         prompt,
     };
+    // the caller's inbound trace context, propagated verbatim to whichever
+    // upstream is chosen so it continues the same distributed trace (ROL-61)
+    let trace_ctx = crate::trace::outbound_trace_headers(&headers);
+    let trace_headers: Vec<(&str, &str)> =
+        trace_ctx.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     // pick a target and forward, retrying transient failures on a fresh target
     // (exponential backoff + jitter). retries happen before any body bytes reach
@@ -308,7 +313,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let (outcome, last_provider, last_target, last_error, inflight_guard, chosen_variant) =
         if entry.route.has_variants() {
             let fwd = forward_variants(
-                &state, entry, &snap, &model, &ctx, &parsed, &body, path, started,
+                &state,
+                entry,
+                &snap,
+                &model,
+                &ctx,
+                &parsed,
+                &body,
+                path,
+                started,
+                &trace_headers,
             )
             .await;
             (
@@ -389,6 +403,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         forward_body.clone(),
                         api_key,
                         upstream_model,
+                        &trace_headers,
                     )
                     .await
                 {
@@ -619,6 +634,7 @@ async fn forward_variants(
     body: &Bytes,
     path: &str,
     started: Instant,
+    trace_headers: &[(&str, &str)],
 ) -> ForwardOutcome {
     let route = &entry.route;
     let retry = &snap.retry;
@@ -714,7 +730,14 @@ async fn forward_variants(
 
         match state
             .forwarder
-            .forward_json(provider, path, forward_body, api_key, upstream_model)
+            .forward_json(
+                provider,
+                path,
+                forward_body,
+                api_key,
+                upstream_model,
+                trace_headers,
+            )
             .await
         {
             Ok(response) => {

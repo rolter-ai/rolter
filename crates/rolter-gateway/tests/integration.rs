@@ -477,6 +477,83 @@ async fn fake_llm_anthropic_messages_streams_sse() {
     assert!(text.contains("data:"), "missing SSE data frames");
 }
 
+// ── outbound trace propagation to the upstream (ROL-61) ──────────────────────
+
+#[tokio::test]
+async fn propagates_inbound_traceparent_to_upstream() {
+    use axum::http::HeaderMap;
+    use std::sync::Mutex;
+
+    // an upstream that records the traceparent header it received
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured = seen.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |headers: HeaderMap, _body: Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                *captured.lock().unwrap() = headers
+                    .get("traceparent")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                Json(json!({"choices": [{"message": {"content": "ok"}}]}))
+            }
+        }),
+    );
+    let upstream = serve(app).await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+
+    let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0da902b7-01";
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("traceparent", tp)
+        .json(&json!({"model": "test-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some(tp),
+        "gateway did not propagate the caller's traceparent to the upstream"
+    );
+}
+
+#[tokio::test]
+async fn untraced_request_sends_no_traceparent_upstream() {
+    use axum::http::HeaderMap;
+    use std::sync::Mutex;
+
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured = seen.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |headers: HeaderMap, _body: Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                *captured.lock().unwrap() = headers
+                    .get("traceparent")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                Json(json!({"choices": [{"message": {"content": "ok"}}]}))
+            }
+        }),
+    );
+    let upstream = serve(app).await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+
+    reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    // no inbound trace context → nothing added to the upstream wire
+    assert_eq!(seen.lock().unwrap().as_deref(), None);
+}
+
 // ── request id: generated when absent, echoed when supplied (ROL-60) ─────────
 
 #[tokio::test]
