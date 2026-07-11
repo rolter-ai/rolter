@@ -17,6 +17,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/completions` | OpenAI legacy completions |
 | POST | `/v1/messages` | Anthropic Messages; streaming supported |
 | POST | `/v1/embeddings` | OpenAI embeddings; non-streaming |
+| POST | `/v1/rerank` | Cohere/Jina rerank; non-streaming |
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/healthz` | liveness |
 | GET | `/metrics` | Prometheus exposition |
@@ -56,4 +57,4 @@ curl http://localhost:4000/v1/chat/completions \
 
 ## Roadmap
 
-`/v1/images/generations`, `/v1/audio/*`, `/v1/rerank`, plus OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.
+`/v1/images/generations`, `/v1/audio/*`, plus OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.

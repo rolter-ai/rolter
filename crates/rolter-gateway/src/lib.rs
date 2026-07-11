@@ -158,6 +158,7 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
         .route("/v1/completions", post(handlers::completions))
         .route("/v1/messages", post(handlers::messages))
         .route("/v1/embeddings", post(handlers::embeddings))
+        .route("/v1/rerank", post(handlers::rerank))
         // ensure every request carries an x-request-id (generated when absent)
         // and echo it on the response, for end-to-end correlation
         .layer(axum::middleware::from_fn(trace::ensure_request_id))

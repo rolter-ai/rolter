@@ -305,6 +305,101 @@ pub fn embeddings(body: &Value) -> Response {
     Json(payload).into_response()
 }
 
+/// collect the `documents` field: an array of strings, or objects carrying a
+/// `text` field (Cohere/Jina both accept the latter)
+fn rerank_documents(body: &Value) -> Vec<String> {
+    match body.get("documents") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                Value::Object(_) => v
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string()),
+                other => other.to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// deterministic relevance score in (0, 1) derived from query+document bytes so
+/// repeated calls rank identically (stable smoke tests)
+fn fake_score(query: &str, doc: &str) -> f64 {
+    let mut seed: u64 = 1469598103934665603; // fnv offset basis
+    for b in query.bytes().chain(std::iter::once(0)).chain(doc.bytes()) {
+        seed ^= b as u64;
+        seed = seed.wrapping_mul(1099511628211); // fnv prime
+    }
+    // map to (0, 1), avoiding exact 0/1 endpoints
+    ((seed >> 11) as f64 + 1.0) / ((1u64 << 53) as f64 + 2.0)
+}
+
+/// Handle a `/v1/rerank` request for `fake-llm` (Cohere/Jina-compatible).
+pub fn rerank(body: &Value) -> Response {
+    let query = match body.get("query").and_then(Value::as_str) {
+        Some(q) => q,
+        None => {
+            return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing 'query' field")
+                .with_code("missing_required_parameter")
+                .with_param("query")
+                .into_response()
+        }
+    };
+    let documents = rerank_documents(body);
+    if documents.is_empty() {
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing or empty 'documents' field",
+        )
+        .with_code("missing_required_parameter")
+        .with_param("documents")
+        .into_response();
+    }
+    let return_documents = body
+        .get("return_documents")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // score every document, then rank by descending relevance
+    let mut ranked: Vec<(usize, f64)> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| (i, fake_score(query, doc)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    // honor top_n when the caller caps the result count
+    if let Some(top_n) = body.get("top_n").and_then(Value::as_u64) {
+        ranked.truncate(top_n as usize);
+    }
+
+    let results: Vec<Value> = ranked
+        .iter()
+        .map(|&(index, score)| {
+            let mut entry = json!({"index": index, "relevance_score": score});
+            if return_documents {
+                entry["document"] = json!({"text": documents[index]});
+            }
+            entry
+        })
+        .collect();
+
+    let prompt_tokens: u64 =
+        approx_tokens(query) + documents.iter().map(|d| approx_tokens(d)).sum::<u64>();
+    let payload = json!({
+        "model": MODEL_NAME,
+        "results": results,
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+        },
+    });
+    Json(payload).into_response()
+}
+
 fn sse_event(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
@@ -402,6 +497,50 @@ mod tests {
     async fn embeddings_missing_input_is_400() {
         let resp = embeddings(&json!({"model": MODEL_NAME}));
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rerank_ranks_and_respects_top_n() {
+        let req = json!({
+            "model": MODEL_NAME,
+            "query": "capital of france",
+            "documents": ["paris", "berlin", "rome", "madrid"],
+            "top_n": 2,
+            "return_documents": true,
+        });
+        let resp = rerank(&req);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let results = value["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2); // top_n cap
+                                      // sorted by descending relevance_score
+        let s0 = results[0]["relevance_score"].as_f64().unwrap();
+        let s1 = results[1]["relevance_score"].as_f64().unwrap();
+        assert!(s0 >= s1);
+        // return_documents surfaces the original text
+        assert!(results[0]["document"]["text"].is_string());
+        assert!(value["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn rerank_deterministic_scores() {
+        let req = json!({"model": MODEL_NAME, "query": "q", "documents": ["a", "b"]});
+        let first = to_bytes(rerank(&req).into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second = to_bytes(rerank(&req).into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn rerank_missing_query_or_documents_is_400() {
+        let no_query = rerank(&json!({"model": MODEL_NAME, "documents": ["a"]}));
+        assert_eq!(no_query.status(), StatusCode::BAD_REQUEST);
+        let no_docs = rerank(&json!({"model": MODEL_NAME, "query": "q"}));
+        assert_eq!(no_docs.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

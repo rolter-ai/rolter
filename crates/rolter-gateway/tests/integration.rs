@@ -206,6 +206,34 @@ async fn builtin_fake_llm_serves_embeddings() {
 }
 
 #[tokio::test]
+async fn builtin_fake_llm_serves_rerank() {
+    // no routes configured: the built-in fake-llm answers /v1/rerank locally
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{gw}/v1/rerank"))
+        .json(&json!({
+            "model": "fake-llm",
+            "query": "capital of france",
+            "documents": ["paris", "berlin", "rome"],
+            "top_n": 2,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[0]["relevance_score"].as_f64().unwrap()
+            >= results[1]["relevance_score"].as_f64().unwrap()
+    );
+    assert!(body["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
 async fn variant_routing_fails_over_to_next_variant() {
     use rolter_core::Variant;
     // primary variant's target always 500 (retryable); the fallback variant is
