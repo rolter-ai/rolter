@@ -49,6 +49,24 @@ jobs:
   test:
     name: nextest / doctests
     runs-on: ubuntu-latest
+    # a real postgres so the store + control-plane integration tests actually
+    # run (they self-skip when ROLTER_TEST_DATABASE_URL is unset) rather than
+    # passing as silent no-ops
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rolter_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ROLTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rolter_test
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

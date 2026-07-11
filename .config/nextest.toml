@@ -1,0 +1,14 @@
+# nextest configuration.
+#
+# The rolter-store and rolter-control tests share a single Postgres and each
+# resets the `public` schema at the start of a test, so they must never run
+# concurrently with one another. A single-threaded test group serializes every
+# test in both packages (their non-DB unit tests are few and fast, so the
+# over-serialization is negligible).
+
+[test-groups]
+serial-db = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(rolter-store) | package(rolter-control)'
+test-group = 'serial-db'
