@@ -492,6 +492,19 @@ pub fn speech(body: &Value) -> Response {
         })
 }
 
+/// Handle a `/v1/audio/transcriptions` or `/v1/audio/translations` request for
+/// `fake-llm`. The uploaded audio is ignored; a deterministic lorem transcript
+/// is returned so the multipart path is exercisable without an STT provider.
+/// `response_format` selects the OpenAI shape: `text` yields plain text, all
+/// others (`json`, `verbose_json`, ...) yield `{"text": ...}`.
+pub fn transcription(response_format: Option<&str>) -> Response {
+    let text = lorem_text();
+    if response_format == Some("text") {
+        return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response();
+    }
+    Json(json!({"text": text})).into_response()
+}
+
 fn sse_event(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
@@ -701,6 +714,26 @@ mod tests {
     async fn speech_missing_input_is_400() {
         let resp = speech(&json!({"model": MODEL_NAME}));
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn transcription_json_and_text_shapes() {
+        let resp = transcription(None);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert!(value["text"].as_str().unwrap().contains("Lorem"));
+
+        let resp = transcription(Some("text"));
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ct.starts_with("text/plain"));
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8(body.to_vec()).unwrap().contains("Lorem"));
     }
 
     #[tokio::test]

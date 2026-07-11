@@ -104,6 +104,57 @@ impl Forwarder {
         let send = req.body(body).send();
         // bound time-to-response-headers only; the body stream is untouched so
         // long SSE responses are never cut short
+        self.await_send(send).await
+    }
+
+    /// Forward a raw request body verbatim under an explicit `content_type`.
+    ///
+    /// Unlike [`Self::forward_json`], the body is passed through untouched (no
+    /// `model` rewrite, no JSON assumptions) and the caller's `content-type` —
+    /// including any multipart boundary — is preserved. Used for multipart
+    /// uploads (`/v1/audio/transcriptions`, `/v1/audio/translations`). API-key
+    /// injection and trace-context passthrough match `forward_json`.
+    pub async fn forward_raw(
+        &self,
+        provider: &ProviderConfig,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+        api_key: Option<&str>,
+        passthrough_headers: &[(&str, &str)],
+    ) -> Result<Response> {
+        let base = provider.api_base.trim_end_matches('/');
+        let url = format!("{base}{path}");
+        let client = self.client_for(provider);
+        let mut req = client
+            .request(Method::POST, &url)
+            .header(reqwest::header::CONTENT_TYPE, content_type.to_string());
+        match provider.kind {
+            ProviderKind::Anthropic => {
+                if let Some(key) = api_key {
+                    req = req.header("x-api-key", key);
+                }
+                req = req.header("anthropic-version", "2023-06-01");
+            }
+            _ => {
+                if let Some(key) = api_key {
+                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
+                }
+            }
+        }
+        for (name, value) in passthrough_headers {
+            req = req.header(*name, *value);
+        }
+        let send = req.body(body).send();
+        self.await_send(send).await
+    }
+
+    /// Await an upstream send under the configured time-to-headers budget. The
+    /// body stream is left untouched so long/streamed responses aren't cut off.
+    async fn await_send(
+        &self,
+        send: impl std::future::Future<Output = std::result::Result<Response, reqwest::Error>>,
+    ) -> Result<Response> {
         match self.request_timeout {
             Some(limit) => match tokio::time::timeout(limit, send).await {
                 Ok(res) => res.map_err(|e| Error::Upstream(e.to_string())),
