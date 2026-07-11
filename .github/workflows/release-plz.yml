@@ -4,9 +4,10 @@ on:
   push:
     branches: [master]
 
+# least-privilege default; only the two release-plz jobs need write (the
+# `verify` reusable call runs read-only), so the write grant lives per-job below
 permissions:
-  pull-requests: write
-  contents: write
+  contents: read
 
 concurrency:
   group: release-plz-${{ github.ref }}
@@ -18,13 +19,20 @@ jobs:
   release-plz-pr:
     name: release-plz pr
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release branch
+      pull-requests: write # open/update the release PR
     steps:
-      - uses: actions/checkout@v7
+      # release-plz pushes the release branch with the persisted token, so
+      # persist-credentials must stay on here
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
       - name: run release-plz
-        uses: release-plz/action@v0.5.130
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release-pr
         env:
@@ -46,13 +54,20 @@ jobs:
     name: release-plz release
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push tags + create the github release
+      pull-requests: write # release-plz reconciles the release PR state
     steps:
-      - uses: actions/checkout@v7
+      # release-plz pushes tags with the persisted token, so persist-credentials
+      # must stay on here
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
       - name: run release-plz
-        uses: release-plz/action@v0.5.130
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release
         env:
