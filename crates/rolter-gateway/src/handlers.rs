@@ -90,6 +90,14 @@ pub async fn rerank(State(state): State<AppState>, headers: HeaderMap, body: Byt
     proxy(state, headers, body, "/v1/rerank").await
 }
 
+pub async fn images_generations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, body, "/v1/images/generations").await
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -241,6 +249,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             "/v1/messages" => fake_llm::messages(&parsed),
             "/v1/embeddings" => fake_llm::embeddings(&parsed),
             "/v1/rerank" => fake_llm::rerank(&parsed),
+            "/v1/images/generations" => fake_llm::images(&parsed),
             _ => error_json(
                 StatusCode::NOT_FOUND,
                 &format!("'{model}' is not served on {path}"),
