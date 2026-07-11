@@ -86,7 +86,8 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] OpenAI⇄Anthropic request/response translation (+ streaming)
 - [x] `/v1/embeddings` (OpenAI-compatible passthrough; built-in `fake-llm` serves deterministic vectors)
 - [x] `/v1/images/generations` (OpenAI-compatible passthrough; built-in `fake-llm` returns a deterministic 1x1 png)
-- [ ] `/v1/audio/*` (transcriptions/speech)
+- [x] `/v1/audio/speech` (OpenAI-compatible TTS passthrough; built-in `fake-llm` returns a silent wav)
+- [ ] `/v1/audio/transcriptions`, `/v1/audio/translations` (multipart upload; proxy currently assumes a JSON body)
 - [x] `/v1/rerank` (Cohere/Jina-compatible passthrough; built-in `fake-llm` ranks deterministically)
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing)
 - [ ] Served OpenAPI document

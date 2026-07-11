@@ -443,6 +443,55 @@ pub fn images(body: &Value) -> Response {
     Json(json!({"created": unix_now(), "data": data})).into_response()
 }
 
+/// build a minimal but valid WAV container: a 44-byte PCM header describing
+/// `samples` bytes of 8-bit mono 8kHz audio, followed by that many silence
+/// (0x80 mid-point) samples. deterministic and playable by any decoder
+fn fake_wav(samples: usize) -> Vec<u8> {
+    let data_len = samples as u32;
+    let mut wav = Vec::with_capacity(44 + samples);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes()); // chunk size
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // subchunk1 size (PCM)
+    wav.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // channels = mono
+    wav.extend_from_slice(&8000u32.to_le_bytes()); // sample rate
+    wav.extend_from_slice(&8000u32.to_le_bytes()); // byte rate
+    wav.extend_from_slice(&1u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&8u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(44 + samples, 0x80); // 8-bit PCM silence (mid-point)
+    wav
+}
+
+/// Handle a `/v1/audio/speech` request for `fake-llm` (OpenAI-compatible).
+/// Returns a short silent WAV clip so the binary-response path is exercisable
+/// without an upstream TTS provider.
+pub fn speech(body: &Value) -> Response {
+    let input = match body.get("input").and_then(Value::as_str) {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing 'input' field")
+                .with_code("missing_required_parameter")
+                .with_param("input")
+                .into_response()
+        }
+    };
+    // clip length scales with the input word count (bounded), so different
+    // requests yield different-sized but deterministic audio
+    let samples = (approx_tokens(input) as usize * 100).clamp(100, 8000);
+    let wav = fake_wav(samples);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .body(Body::from(wav))
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to build audio").into_response()
+        })
+}
+
 fn sse_event(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
@@ -613,6 +662,44 @@ mod tests {
     #[tokio::test]
     async fn images_missing_prompt_is_400() {
         let resp = images(&json!({"model": MODEL_NAME}));
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn speech_returns_valid_wav() {
+        let resp = speech(&json!({"model": MODEL_NAME, "input": "hello there", "voice": "alloy"}));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(ct, "audio/wav");
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        // RIFF/WAVE magic + a data chunk consistent with the declared length
+        assert_eq!(&body[0..4], b"RIFF");
+        assert_eq!(&body[8..12], b"WAVE");
+        assert!(body.len() > 44);
+        let declared = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
+        assert_eq!(declared, body.len() - 8);
+    }
+
+    #[tokio::test]
+    async fn speech_deterministic() {
+        let req = json!({"model": MODEL_NAME, "input": "same text"});
+        let a = to_bytes(speech(&req).into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let b = to_bytes(speech(&req).into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[tokio::test]
+    async fn speech_missing_input_is_400() {
+        let resp = speech(&json!({"model": MODEL_NAME}));
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 

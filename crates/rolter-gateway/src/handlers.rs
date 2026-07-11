@@ -98,6 +98,14 @@ pub async fn images_generations(
     proxy(state, headers, body, "/v1/images/generations").await
 }
 
+pub async fn audio_speech(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, body, "/v1/audio/speech").await
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -250,6 +258,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             "/v1/embeddings" => fake_llm::embeddings(&parsed),
             "/v1/rerank" => fake_llm::rerank(&parsed),
             "/v1/images/generations" => fake_llm::images(&parsed),
+            "/v1/audio/speech" => fake_llm::speech(&parsed),
             _ => error_json(
                 StatusCode::NOT_FOUND,
                 &format!("'{model}' is not served on {path}"),

@@ -256,6 +256,31 @@ async fn builtin_fake_llm_serves_images() {
 }
 
 #[tokio::test]
+async fn builtin_fake_llm_serves_audio_speech() {
+    // no routes configured: the built-in fake-llm returns a silent wav clip
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{gw}/v1/audio/speech"))
+        .json(&json!({"model": "fake-llm", "input": "hello world", "voice": "alloy"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.contains("audio/wav"), "expected wav, got {ct}");
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+}
+
+#[tokio::test]
 async fn variant_routing_fails_over_to_next_variant() {
     use rolter_core::Variant;
     // primary variant's target always 500 (retryable); the fallback variant is
