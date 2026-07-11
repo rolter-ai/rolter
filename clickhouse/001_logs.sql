@@ -7,6 +7,7 @@
 create table if not exists request_logs (
     ts                DateTime64(3) default now64(3),
     request_id        String,
+    trace_id          String,
     org_id            String,
     team_id           String,
     project_id        String,

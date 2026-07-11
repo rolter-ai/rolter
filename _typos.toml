@@ -11,4 +11,8 @@ extend-ignore-re = [
   "sk-abd",
   # "abc"/"abd": trie test fixtures exercising shared-prefix node counting
   "\"abd\"",
+  # canonical W3C traceparent / B3 example ids in the trace tests: hex spans the
+  # dictionary reads as words (e.g. "ba" inside a span/trace id)
+  "00f067aa0ba902b7",
+  "80f198ee56343ba864fe8b2a57d3eff7",
 ]

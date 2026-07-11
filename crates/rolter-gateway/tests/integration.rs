@@ -477,6 +477,51 @@ async fn fake_llm_anthropic_messages_streams_sse() {
     assert!(text.contains("data:"), "missing SSE data frames");
 }
 
+// ── request id: generated when absent, echoed when supplied (ROL-60) ─────────
+
+#[tokio::test]
+async fn generates_and_echoes_request_id_when_absent() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "fake-llm", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    let id = resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    // a v4 uuid is 36 chars; just assert a non-empty id was minted and returned
+    assert!(!id.is_empty(), "gateway did not return an x-request-id");
+    assert_eq!(id.len(), 36, "expected a uuid request id, got `{id}`");
+}
+
+#[tokio::test]
+async fn preserves_caller_supplied_request_id() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("x-request-id", "caller-abc-123")
+        .json(&json!({"model": "fake-llm", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("caller-abc-123"),
+        "caller's x-request-id should be echoed unchanged"
+    );
+}
+
 // ── config hot-reload: arc-swap snapshot swap serves new routing live ────────
 
 #[tokio::test]

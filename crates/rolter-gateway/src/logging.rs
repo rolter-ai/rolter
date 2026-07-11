@@ -28,6 +28,9 @@ use crate::metrics::Metrics;
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestLog {
     pub request_id: String,
+    /// inbound distributed-trace id (W3C traceparent / B3), empty when the caller
+    /// sent none — lets logs join a caller's trace across services
+    pub trace_id: String,
     pub org_id: String,
     pub team_id: String,
     pub project_id: String,
@@ -54,6 +57,7 @@ impl Default for RequestLog {
     fn default() -> Self {
         Self {
             request_id: String::new(),
+            trace_id: String::new(),
             org_id: String::new(),
             team_id: String::new(),
             project_id: String::new(),

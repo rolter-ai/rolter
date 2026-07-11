@@ -268,11 +268,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         .get("stream")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
+    // the ensure_request_id middleware guarantees this header is present
     let request_id = headers
-        .get("x-request-id")
+        .get(crate::trace::REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
+    // adopt the caller's distributed trace when one was propagated inbound
+    let trace_id = crate::trace::inbound_trace_id(&headers);
     // scope identity for log attribution (empty for config-defined keys)
     let (vk_id, org_id, team_id, project_id) = (
         scope.key.clone(),
@@ -494,6 +497,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         Some((response, status, is_sse)) => {
             let log = RequestLog {
                 request_id,
+                trace_id,
                 virtual_key_id: vk_id,
                 org_id,
                 team_id,
@@ -527,6 +531,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             let message = last_error.unwrap_or_default();
             state.log.log(RequestLog {
                 request_id,
+                trace_id,
                 virtual_key_id: vk_id,
                 org_id,
                 team_id,

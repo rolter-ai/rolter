@@ -1758,6 +1758,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
