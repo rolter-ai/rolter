@@ -84,7 +84,7 @@ subtle = "2"
 
 # postgres persistence (rolter-store `postgres` feature)
 argon2 = "0.5"
-sha2 = "0.10"
+sha2 = "0.11"
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio-rustls",
   "postgres",
