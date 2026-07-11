@@ -155,6 +155,20 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clickhouse,
     };
 
+    let app = build_app(state)
+        // anything not matched by the api falls through to the built SPA
+        .fallback_service(ServeDir::new(&args.ui_dir));
+
+    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Assemble the control-plane API router (no SPA fallback) with `state` applied.
+/// The CRUD routes are only mounted when a postgres pool is present.
+fn build_app(state: ControlState) -> Router {
     #[allow(unused_mut)]
     let mut api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -169,20 +183,30 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         .merge(health::router());
 
     #[cfg(feature = "postgres")]
-    if pool.is_some() {
+    if state.pool.is_some() {
         api = api.merge(crud::router());
     }
 
-    let app = api
-        .with_state(state)
-        // anything not matched by the api falls through to the built SPA
-        .fallback_service(ServeDir::new(&args.ui_dir));
+    api.with_state(state)
+}
 
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-    tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+/// Build a postgres-backed control-plane API router for integration tests.
+/// Runs migrations on `pool`, mounts the full CRUD API and `/internal/snapshot`,
+/// and omits redis/clickhouse and the SPA fallback. Intended to be served on an
+/// ephemeral port by the test harness.
+#[cfg(feature = "postgres")]
+pub async fn test_app(pool: sqlx::PgPool) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let store: Arc<dyn ConfigStore> =
+        Arc::new(rolter_store::PostgresConfigStore::new(pool.clone()));
+    let state = ControlState {
+        store,
+        config_owned: Arc::new(ConfigOwned::default()),
+        redis: None,
+        clickhouse: None,
+        pool: Some(pool),
+    };
+    Ok(build_app(state))
 }
 
 /// Build the config store: postgres-backed when `--database-url` is set
