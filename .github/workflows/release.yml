@@ -150,8 +150,10 @@ jobs:
   # GHCR always publishes (via GITHUB_TOKEN). Docker Hub is added when the
   # DOCKERHUB_IMAGE repo variable (e.g. docker.io/acme/rolter) plus the
   # DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets are present — the image repo name
-  # (`rolter`) and tags stay identical across both registries. Multi-arch is
-  # tracked separately (ROL-76); this ships linux/amd64.
+  # (`rolter`) and tags stay identical across both registries. builds a
+  # multi-arch manifest (linux/amd64 + linux/arm64); the arm64 layer is built
+  # via QEMU emulation, so release builds are slower — native cross-compilation
+  # is the follow-up speed optimization (ROL-76).
   publish-docker:
     name: publish docker images
     if: vars.DOCKER_PUBLISH_ENABLED == 'true'
@@ -170,6 +172,11 @@ jobs:
         env:
           REF: ${{ inputs.tag || github.ref_name }}
         run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: set up qemu (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: set up buildx
         uses: docker/setup-buildx-action@v3
@@ -207,7 +214,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           target: runtime
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
