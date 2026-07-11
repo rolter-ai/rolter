@@ -195,6 +195,20 @@ pub async fn docs_bundle() -> Response {
     }
 }
 
+/// `GET /` — a small service-info landing so the root is never a bare 404.
+/// JSON (not HTML) keeps it machine-friendly for probes and humans alike.
+pub async fn root() -> Response {
+    Json(json!({
+        "service": "rolter-gateway",
+        "version": env!("CARGO_PKG_VERSION"),
+        "docs": "/docs",
+        "openapi": "/openapi.json",
+        "health": "/healthz",
+        "models": "/v1/models",
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
