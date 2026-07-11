@@ -19,6 +19,7 @@ mod load;
 mod logging;
 mod metrics;
 mod multipart;
+mod openapi;
 mod rate_limits;
 mod state;
 mod status_page;
@@ -155,6 +156,9 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
         .route("/healthz", get(handlers::healthz))
         .route(metrics_path, get(handlers::metrics))
         .route("/v1/models", get(handlers::list_models))
+        .route("/openapi.json", get(openapi::openapi_json))
+        .route("/docs", get(openapi::docs))
+        .route(openapi::DOCS_BUNDLE_PATH, get(openapi::docs_bundle))
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
         .route("/v1/messages", post(handlers::messages))

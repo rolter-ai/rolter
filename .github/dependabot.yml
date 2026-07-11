@@ -1,0 +1,28 @@
+# dependency version updates. security alerts are enabled repo-side; this adds
+# scheduled version bumps so pinned deps (e.g. scalar_api_reference, whose crate
+# embeds the Scalar JS bundle we serve at /docs) don't silently go stale.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm # covers the bun-managed ui workspace
+    directory: /ui
+    schedule:
+      interval: weekly
+    groups:
+      ui-minor-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
