@@ -153,6 +153,7 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
             "/metrics"
         };
     Router::new()
+        .route("/", get(openapi::root))
         .route("/healthz", get(handlers::healthz))
         .route(metrics_path, get(handlers::metrics))
         .route("/v1/models", get(handlers::list_models))

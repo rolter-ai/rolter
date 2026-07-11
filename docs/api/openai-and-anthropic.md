@@ -25,6 +25,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/openapi.json` | OpenAPI 3.1 description of this request surface (self-contained, no external assets) |
 | GET | `/docs` | interactive Scalar API reference (assets embedded in the binary — works air-gapped) |
+| GET | `/` | service-info landing (version + links to docs/openapi/health) |
 | GET | `/healthz` | liveness |
 | GET | `/metrics` | Prometheus exposition |
 
