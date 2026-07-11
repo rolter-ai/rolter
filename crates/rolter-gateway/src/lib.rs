@@ -18,6 +18,7 @@ mod health_events;
 mod load;
 mod logging;
 mod metrics;
+mod multipart;
 mod rate_limits;
 mod state;
 mod status_page;
@@ -161,6 +162,11 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
         .route("/v1/rerank", post(handlers::rerank))
         .route("/v1/images/generations", post(handlers::images_generations))
         .route("/v1/audio/speech", post(handlers::audio_speech))
+        .route(
+            "/v1/audio/transcriptions",
+            post(handlers::audio_transcriptions),
+        )
+        .route("/v1/audio/translations", post(handlers::audio_translations))
         // ensure every request carries an x-request-id (generated when absent)
         // and echo it on the response, for end-to-end correlation
         .layer(axum::middleware::from_fn(trace::ensure_request_id))

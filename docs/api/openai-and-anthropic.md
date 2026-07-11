@@ -20,6 +20,8 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/rerank` | Cohere/Jina rerank; non-streaming |
 | POST | `/v1/images/generations` | OpenAI image generation; non-streaming |
 | POST | `/v1/audio/speech` | OpenAI text-to-speech; binary audio response |
+| POST | `/v1/audio/transcriptions` | OpenAI speech-to-text; `multipart/form-data` upload |
+| POST | `/v1/audio/translations` | OpenAI audio translation; `multipart/form-data` upload |
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/healthz` | liveness |
 | GET | `/metrics` | Prometheus exposition |
@@ -59,4 +61,6 @@ curl http://localhost:4000/v1/chat/completions \
 
 ## Roadmap
 
-`/v1/audio/transcriptions` and `/v1/audio/translations` (multipart upload), plus OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.
+OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.
+
+> Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and variant routing / per-model param defaults (JSON-only) do not apply.

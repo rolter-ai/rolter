@@ -281,6 +281,46 @@ async fn builtin_fake_llm_serves_audio_speech() {
 }
 
 #[tokio::test]
+async fn builtin_fake_llm_serves_audio_transcriptions() {
+    // no routes configured: the built-in fake-llm answers multipart transcriptions
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let boundary = "ROLTERBOUND";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nfake-llm\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+         Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
+        b = boundary
+    );
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/audio/transcriptions"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let value: Value = resp.json().await.unwrap();
+    assert!(!value["text"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn audio_translations_rejects_non_multipart() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/audio/translations"))
+        .json(&json!({"model": "fake-llm"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_content_type");
+}
+
+#[tokio::test]
 async fn variant_routing_fails_over_to_next_variant() {
     use rolter_core::Variant;
     // primary variant's target always 500 (retryable); the fallback variant is

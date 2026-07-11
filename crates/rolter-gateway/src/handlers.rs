@@ -106,6 +106,22 @@ pub async fn audio_speech(
     proxy(state, headers, body, "/v1/audio/speech").await
 }
 
+pub async fn audio_transcriptions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy_multipart(state, headers, body, "/v1/audio/transcriptions").await
+}
+
+pub async fn audio_translations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy_multipart(state, headers, body, "/v1/audio/translations").await
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -589,6 +605,349 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 variant: chosen_variant,
                 status: StatusCode::BAD_GATEWAY.as_u16(),
                 stream: stream as u8,
+                latency_ms: started.elapsed().as_millis() as u32,
+                error: message.clone(),
+                ..Default::default()
+            });
+            error_json(StatusCode::BAD_GATEWAY, &message)
+        }
+    }
+}
+
+/// Multipart sibling of [`proxy`] for the audio upload endpoints
+/// (`/v1/audio/transcriptions`, `/v1/audio/translations`). The body is
+/// `multipart/form-data`, so the JSON pipeline can't parse it: instead the
+/// `model` is read from the form fields and the raw body is forwarded verbatim
+/// (content-type + boundary preserved) via [`Forwarder::forward_raw`]. Auth,
+/// budgets, rate limits, routing, retries, cooldowns and the circuit breaker
+/// match the classic single-pool path; variant routing and per-model param
+/// injection do not apply (they're JSON-only), and the route target's upstream
+/// model name is not rewritten into the multipart body.
+async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
+    state.metrics.requests_total.fetch_add(1, Relaxed);
+    let started = Instant::now();
+
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let boundary = match crate::multipart::boundary(&content_type) {
+        Some(b) => b,
+        None => {
+            return crate::error::ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "expected multipart/form-data body",
+            )
+            .with_code("invalid_content_type")
+            .into_response()
+        }
+    };
+    let model = match crate::multipart::text_field(&body, &boundary, "model") {
+        Some(m) => m,
+        None => {
+            return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing model field")
+                .with_code("missing_required_parameter")
+                .with_param("model")
+                .into_response()
+        }
+    };
+    let response_format = crate::multipart::text_field(&body, &boundary, "response_format");
+
+    let snap = state.snapshot.load();
+
+    let vk = match authenticate(&state, &snap, &headers) {
+        Ok(vk) => vk,
+        Err(resp) => return resp,
+    };
+    if let Some(vk) = &vk {
+        if !rolter_auth::model_allowed(&vk.models, &model) {
+            return crate::error::ApiError::new(
+                StatusCode::FORBIDDEN,
+                "model not allowed for this key",
+            )
+            .with_code("model_not_allowed")
+            .with_param("model")
+            .into_response();
+        }
+    }
+
+    let scope = vk
+        .as_ref()
+        .map(|v| ScopeIds {
+            org: v.org_id.clone(),
+            team: v.team_id.clone(),
+            project: v.project_id.clone(),
+            key: v.id.clone(),
+        })
+        .unwrap_or_default();
+
+    if let Some(exceeded) = state.budgets.exceeded(&snap.budgets, &scope).await {
+        state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
+        return crate::error::ApiError::new(
+            StatusCode::PAYMENT_REQUIRED,
+            format!(
+                "budget exceeded for {:?} '{}' (limit ${:.2})",
+                exceeded.scope, exceeded.id, exceeded.limit_usd
+            ),
+        )
+        .with_code("insufficient_quota")
+        .into_response();
+    }
+
+    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
+        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
+        let mut resp = crate::error::ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
+                hit.kind, hit.scope, hit.id, hit.limit
+            ),
+        )
+        .with_code("rate_limit_exceeded")
+        .into_response();
+        resp.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
+        return resp;
+    }
+
+    // built-in fake-llm answers locally unless a configured route shadows it
+    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+        return fake_llm::transcription(response_format.as_deref());
+    }
+
+    let entry = match snap.routes.get(&model) {
+        Some(entry) => entry,
+        None => {
+            return crate::error::ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no route for model '{model}'"),
+            )
+            .with_code("model_not_found")
+            .with_param("model")
+            .into_response()
+        }
+    };
+    if entry.route.targets.is_empty() {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
+    }
+
+    let request_id = headers
+        .get(crate::trace::REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let trace_id = crate::trace::inbound_trace_id(&headers);
+    let (vk_id, org_id, team_id, project_id) = (
+        scope.key.clone(),
+        scope.org.clone(),
+        scope.team.clone(),
+        scope.project.clone(),
+    );
+    let token_recorder = TokenRecorder::new(
+        state.rate_limiter.clone(),
+        snap.rate_limits.clone(),
+        scope.clone(),
+    );
+    let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
+    let price = snap.prices.get(&model).cloned();
+
+    let ctx = RouteContext {
+        session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
+        prompt: None,
+    };
+    let trace_ctx = crate::trace::outbound_trace_headers(&headers);
+    let trace_headers: Vec<(&str, &str)> =
+        trace_ctx.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let retry = &snap.retry;
+    let cooldown = &snap.cooldown;
+    let cd_enabled = cooldown.enabled();
+    let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+    for (i, target) in entry.route.targets.iter().enumerate() {
+        if let Some(l) = loads.get_mut(i) {
+            *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+        }
+    }
+    let mut tried: Vec<usize> = Vec::new();
+    let mut last_provider = String::new();
+    let mut last_target = model.clone();
+    let mut last_error: Option<String> = None;
+    let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+    let mut inflight_guard: Option<crate::load::LoadGuard> = None;
+
+    for attempt in 0..=retry.max_retries {
+        let idx = match pick_untried(
+            entry,
+            &ctx,
+            &tried,
+            &loads,
+            &state.cooldowns,
+            &state.health,
+            &state.breaker,
+            &model,
+            cd_enabled,
+        ) {
+            Some(i) => i,
+            None => break,
+        };
+        entry.balancer.observe(idx, &ctx);
+        tried.push(idx);
+        let guard = state.loads.begin(&model, idx);
+
+        let target = &entry.route.targets[idx];
+        let provider = match snap.providers.get(&target.provider) {
+            Some(provider) => provider,
+            None => {
+                last_error = Some("configured target provider not found".to_string());
+                break;
+            }
+        };
+        last_provider = target.provider.clone();
+        last_target = target.model.clone().unwrap_or_else(|| model.clone());
+        let multi_key = provider.api_keys.len() > 1;
+        let key_ns = key_pool_key(&target.provider);
+        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
+            multi_key && state.cooldowns.is_parked(&key_ns, i)
+        });
+        let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
+
+        match state
+            .forwarder
+            .forward_raw(
+                provider,
+                path,
+                body.clone(),
+                &content_type,
+                api_key,
+                &trace_headers,
+            )
+            .await
+        {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let key_failure = multi_key && (status == 429 || status == 401);
+                if key_failure {
+                    if let Some((ki, _)) = &picked_key {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&key_ns, *ki, secs.max(1));
+                        state
+                            .metrics
+                            .key_cooldowns_tripped_total
+                            .fetch_add(1, Relaxed);
+                    }
+                    tried.pop();
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(retry_delay_ms(
+                            retry,
+                            &response,
+                            attempt + 1,
+                            started,
+                        )))
+                        .await;
+                        continue;
+                    }
+                } else if is_retryable_status(status) {
+                    if cd_enabled {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&model, idx, secs);
+                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                    }
+                    if state.breaker.on_failure(&model, idx) {
+                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                    }
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(retry_delay_ms(
+                            retry,
+                            &response,
+                            attempt + 1,
+                            started,
+                        )))
+                        .await;
+                        continue;
+                    }
+                } else if state.breaker.on_success(&model, idx) {
+                    state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                }
+                inflight_guard = Some(guard);
+                // transcription responses are JSON (or text), never SSE
+                outcome = Some((response, status, false));
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err.to_string());
+                if cd_enabled {
+                    state
+                        .cooldowns
+                        .park(&model, idx, cooldown.duration_secs(None));
+                    state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                }
+                if state.breaker.on_failure(&model, idx) {
+                    state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                }
+                if attempt < retry.max_retries {
+                    state.metrics.retries_total.fetch_add(1, Relaxed);
+                    sleep(Duration::from_millis(
+                        retry.backoff_ms(attempt + 1, jitter(started)),
+                    ))
+                    .await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    match outcome {
+        Some((response, status, is_sse)) => {
+            let log = RequestLog {
+                request_id,
+                trace_id,
+                virtual_key_id: vk_id,
+                org_id,
+                team_id,
+                project_id,
+                model,
+                provider: last_provider,
+                target: last_target,
+                variant: String::new(),
+                status,
+                stream: 0,
+                ..Default::default()
+            };
+            stream_response(
+                response,
+                is_sse,
+                started,
+                state.log.clone(),
+                price,
+                log,
+                recorder,
+                token_recorder,
+                inflight_guard,
+            )
+        }
+        None => {
+            if last_error.is_none() {
+                return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
+            }
+            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+            let message = last_error.unwrap_or_default();
+            state.log.log(RequestLog {
+                request_id,
+                trace_id,
+                virtual_key_id: vk_id,
+                org_id,
+                team_id,
+                project_id,
+                model,
+                provider: last_provider,
+                target: last_target,
+                variant: String::new(),
+                status: StatusCode::BAD_GATEWAY.as_u16(),
+                stream: 0,
                 latency_ms: started.elapsed().as_millis() as u32,
                 error: message.clone(),
                 ..Default::default()
