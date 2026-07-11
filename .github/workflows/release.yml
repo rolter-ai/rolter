@@ -19,6 +19,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# least-privilege default; jobs that publish widen their own grant below
+permissions:
+  contents: read
+
 jobs:
   # ── quality/security gate ───────────────────────────────────────────────────
   # runs the same fmt/clippy/test/cargo-deny pipeline as CI on the tagged
@@ -78,6 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
       - name: build wheels (linux)
@@ -165,6 +170,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
       - name: resolve version
