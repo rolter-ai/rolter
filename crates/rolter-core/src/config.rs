@@ -107,6 +107,7 @@ fn default_metrics_path() -> String {
 /// Gateway request paths reserved by the built-in routes; the metrics path must
 /// not collide with any of these.
 pub const RESERVED_PATHS: &[&str] = &[
+    "/",
     "/healthz",
     "/openapi.json",
     "/docs",
