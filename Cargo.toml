@@ -47,6 +47,16 @@ tracing-subscriber = { version = "0.3", features = [
   "json",
 ] }
 
+# opentelemetry otlp trace export (rolter-core `otlp` feature)
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = [
+  "grpc-tonic",
+  "http-proto",
+  "reqwest-client",
+] }
+tracing-opentelemetry = "0.33"
+
 # http client for upstream forwarding
 reqwest = { version = "0.12", default-features = false, features = [
   "json",

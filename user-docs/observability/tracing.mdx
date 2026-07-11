@@ -40,9 +40,14 @@ Rolter reads the standard OpenTelemetry SDK environment variables. You don't add
 
 | Variable | Purpose |
 | --- | --- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP receiver URL, e.g. `http://otel-collector:4317` for gRPC |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP receiver URL, e.g. `http://otel-collector:4317` for gRPC. **Setting this turns trace export on**; unset keeps tracing stdout-only. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default, port 4317) or `http/protobuf` (port 4318) — match your collector's receiver |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Authentication headers for managed backends (comma-separated `key=value`) |
-| `OTEL_SERVICE_NAME` | Service name that appears on spans in your backend — use something like `rolter-gateway` |
+| `OTEL_SERVICE_NAME` | Service name that appears on spans in your backend (default `rolter`) — use something like `rolter-gateway` |
+
+<Note>
+  Rolter exports **traces** over OTLP. Metrics are exposed on the Prometheus `/metrics` endpoint; point your collector's Prometheus receiver at it (see the topology below) to bring metrics into the same pipeline.
+</Note>
 
 ## Quick-start examples
 
