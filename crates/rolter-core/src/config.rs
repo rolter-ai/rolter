@@ -108,10 +108,19 @@ fn default_metrics_path() -> String {
 /// not collide with any of these.
 pub const RESERVED_PATHS: &[&str] = &[
     "/healthz",
+    "/openapi.json",
+    "/docs",
+    "/docs/scalar.js",
     "/v1/models",
     "/v1/chat/completions",
     "/v1/completions",
     "/v1/messages",
+    "/v1/embeddings",
+    "/v1/rerank",
+    "/v1/images/generations",
+    "/v1/audio/speech",
+    "/v1/audio/transcriptions",
+    "/v1/audio/translations",
 ];
 
 /// The wire protocol a provider speaks.

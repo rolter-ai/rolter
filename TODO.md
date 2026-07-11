@@ -90,7 +90,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] `/v1/audio/transcriptions`, `/v1/audio/translations` (multipart passthrough; routes on the `model` form field, forwards the upload verbatim)
 - [x] `/v1/rerank` (Cohere/Jina-compatible passthrough; built-in `fake-llm` ranks deterministically)
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing)
-- [ ] Served OpenAPI document
+- [x] Served OpenAPI document (`GET /openapi.json`, hand-authored 3.1) + interactive Scalar reference (`GET /docs`, bundle embedded in the binary — air-gapped safe)
 
 ## Phase 9 — Packaging & release
 - [ ] Unified `rolter` CLI with `gateway`/`control` subcommands (one wheel ships both)

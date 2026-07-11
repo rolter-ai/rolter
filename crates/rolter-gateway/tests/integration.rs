@@ -281,6 +281,57 @@ async fn builtin_fake_llm_serves_audio_speech() {
 }
 
 #[tokio::test]
+async fn serves_openapi_document() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    // openapi spec is valid JSON describing the endpoints, no external assets
+    let resp = client
+        .get(format!("http://{gw}/openapi.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let doc: Value = resp.json().await.unwrap();
+    assert_eq!(doc["openapi"], "3.1.0");
+    assert!(doc["paths"]["/v1/embeddings"].is_object());
+    assert!(doc["paths"]["/v1/audio/transcriptions"].is_object());
+}
+
+#[tokio::test]
+async fn serves_scalar_docs_air_gapped() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    // the docs page loads its bundle from this gateway, never a cdn
+    let resp = client
+        .get(format!("http://{gw}/docs"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let html = resp.text().await.unwrap();
+    assert!(html.contains("/docs/scalar.js"));
+    assert!(!html.contains("cdn.jsdelivr.net"));
+
+    // the embedded bundle is actually served
+    let resp = client
+        .get(format!("http://{gw}/docs/scalar.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.contains("javascript"), "expected js, got {ct}");
+    assert!(!resp.bytes().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn builtin_fake_llm_serves_audio_transcriptions() {
     // no routes configured: the built-in fake-llm answers multipart transcriptions
     let gw = serve_gateway(&GatewayConfig::default()).await;

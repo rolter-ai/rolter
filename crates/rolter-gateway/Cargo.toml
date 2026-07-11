@@ -31,3 +31,4 @@ anyhow.workspace = true
 tracing.workspace = true
 clap.workspace = true
 chrono.workspace = true
+scalar_api_reference = { version = "0.2.2", default-features = false }
