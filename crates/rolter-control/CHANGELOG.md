@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/ormeilu/rolter/compare/rolter-control-v0.0.4...rolter-control-v0.0.5) - 2026-07-11
+
+### Added
+
+- *(control)* uptime %/MTTR/timeline rollup api over provider_health_events ([#87](https://github.com/ormeilu/rolter/pull/87))
+
+### Other
+
+- *(control)* postgres-backed CRUD + snapshot integration tests, run in CI ([#92](https://github.com/ormeilu/rolter/pull/92))
+
 ## [0.0.4](https://github.com/ormeilu/rolter/compare/rolter-control-v0.0.3...rolter-control-v0.0.4) - 2026-07-10
 
 ### Added

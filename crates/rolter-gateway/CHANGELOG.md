@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/ormeilu/rolter/compare/v0.0.4...v0.0.5) - 2026-07-11
+
+### Added
+
+- *(gateway)* propagate caller trace context to upstream ([#96](https://github.com/ormeilu/rolter/pull/96))
+- *(gateway)* end-to-end request id + inbound trace continuation [ROL-60] ([#95](https://github.com/ormeilu/rolter/pull/95))
+- *(gateway)* provider status-page secondary health signal [ROL-200] ([#90](https://github.com/ormeilu/rolter/pull/90))
+- *(gateway)* opt-in also_track_via_llm_call end-to-end health check ([#89](https://github.com/ormeilu/rolter/pull/89))
+- *(gateway)* provider_health_events clickhouse table + async writer ([#86](https://github.com/ormeilu/rolter/pull/86))
+- *(gateway)* per-key cooldown + sibling-key failover ([#85](https://github.com/ormeilu/rolter/pull/85))
+- *(gateway)* weighted api-key selection per request ([#84](https://github.com/ormeilu/rolter/pull/84))
+- *(core)* multiple weighted api keys per provider ([#83](https://github.com/ormeilu/rolter/pull/83))
+- *(gateway)* probe guardrails — concurrency cap, jitter, 429 backoff, flip thresholds ([#82](https://github.com/ormeilu/rolter/pull/82))
+- *(gateway)* strategy-aware target selection within variants ([#80](https://github.com/ormeilu/rolter/pull/80))
+- *(gateway)* per-variant request counter in /metrics [ROL-195] ([#79](https://github.com/ormeilu/rolter/pull/79))
+- *(gateway)* kind-aware free liveness probes for active health checks [ROL-123] ([#78](https://github.com/ormeilu/rolter/pull/78))
+- *(gateway)* passive per-target SLA counters in /metrics [ROL-194] ([#77](https://github.com/ormeilu/rolter/pull/77))
+
+### Other
+
+- *(gateway)* built-in fake-llm and config hot-reload integration coverage ([#91](https://github.com/ormeilu/rolter/pull/91))
+
 ## [0.0.4](https://github.com/ormeilu/rolter/compare/v0.0.3...v0.0.4) - 2026-07-10
 
 ### Added

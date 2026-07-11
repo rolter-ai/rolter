@@ -276,9 +276,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.2.66"
+version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "rolter"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-auth"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "serde",
  "sha2",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-balancer"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "ahash",
  "parking_lot",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-control"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-core"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "chrono",
  "serde",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-gateway"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-proxy"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "bytes",
  "dashmap",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-store"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1944,9 +1944,9 @@ dependencies = [
 
 [[package]]
 name = "sha1"
-version = "0.10.6"
+version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
@@ -2323,9 +2323,9 @@ dependencies = [
 
 [[package]]
 name = "thread_local"
-version = "1.1.9"
+version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
 ]
@@ -2342,9 +2342,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.11.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+checksum = "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
 dependencies = [
  "tinyvec_macros",
 ]
