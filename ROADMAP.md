@@ -32,8 +32,8 @@ More providers (Azure, Bedrock, Vertex, Gemini, Mistral, …); OpenAI⇄Anthropi
 ## Phase 9 — Packaging & release
 Unified `rolter` CLI (gateway/control subcommands); cibuildwheel/maturin wheels to PyPI; crates.io; multi-arch GHCR images; Helm chart / K8s manifests; release automation from Conventional Commits.
 
-## Phase 10 — Dashboard build-out
-Full CRUD screens (providers/routes/keys/members/budgets), live logs and cost analytics, auth/SSO screens, in-UI config editing with reload-free apply.
+## Phase 10 — Control panel
+Full-featured hostable web control panel, not a read-only dashboard. Admins get complete CRUD over models, providers, routes, virtual keys, users/teams/roles, budgets, and pricing, plus reload-free in-UI config editing. End users get a scoped self-service panel for their own keys and usage. Live logs, cost/latency analytics, auth/SSO screens, role-aware UI throughout.
 
 ## Stretch
-Optional Rust/Python SDKs, MCP/A2A gateways, guardrails (PII/content/prompt-injection), A/B traffic mirroring, multi-region.
+Beyond the core phased roadmap: Rust/Python SDKs, MCP gateway (proxy MCP tool servers through rolter), A2A gateway, multi-region deployment. (Guardrails and A/B traffic mirroring moved into Phase 3 / Phase 5 respectively — see TODO.md.)
