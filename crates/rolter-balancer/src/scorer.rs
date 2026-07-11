@@ -39,6 +39,8 @@ pub struct Pipeline {
     scorers: Vec<(Box<dyn Scorer>, f32)>,
     /// route width (number of targets)
     n: usize,
+    /// strategy name surfaced in logs/metrics ("pipeline", "cheapest", ...)
+    name: &'static str,
 }
 
 impl Pipeline {
@@ -47,7 +49,14 @@ impl Pipeline {
         Self {
             scorers: Vec::new(),
             n,
+            name: "pipeline",
         }
+    }
+
+    /// Override the strategy name surfaced by [`LoadBalancer::name`].
+    pub fn named(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
     }
 
     /// Add a scorer contributing `weight` to the combined score. A non-positive
@@ -111,11 +120,23 @@ impl Pipeline {
             .with(Box::new(LeastLoadScorer::new(n)), 1.0)
             .with(Box::new(PrefixCacheScorer::new(n)), 1.0)
     }
+
+    /// The cost-aware stack: catalog price dominates, with in-flight load as a
+    /// light tiebreaker so equal-cost targets still spread instead of piling
+    /// onto one. `costs[i]` is any consistent per-token rate for target `i`
+    /// (`<= 0` = unknown; see [`CheapestScorer`]).
+    pub fn cheapest_stack(costs: &[f64]) -> Self {
+        let n = costs.len();
+        Self::new(n)
+            .named("cheapest")
+            .with(Box::new(CheapestScorer::new(costs)), 1.0)
+            .with(Box::new(LeastLoadScorer::new(n)), 0.25)
+    }
 }
 
 impl LoadBalancer for Pipeline {
     fn name(&self) -> &'static str {
-        "pipeline"
+        self.name
     }
 
     fn pick(&self, ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
@@ -179,6 +200,54 @@ impl Scorer for StaticScorer {
         candidates
             .iter()
             .map(|&i| self.weights.get(i).copied().unwrap_or(1.0) / self.max)
+            .collect()
+    }
+}
+
+/// Prefer the cheapest target by catalog price. Costs are any consistent
+/// per-token rate, index-aligned with the route targets; only relative order
+/// matters. The cheapest candidate scores `1.0` down toward `0.0` for the most
+/// expensive; a target with no known price (cost `<= 0`) scores a neutral
+/// `0.5`, and all-equal (or all-unknown) costs score a flat `1.0` so the
+/// scorer never skews a route the catalog doesn't cover.
+pub struct CheapestScorer {
+    /// per-target cost, index-aligned with the route targets (`<= 0` = unknown)
+    costs: Vec<f64>,
+}
+
+impl CheapestScorer {
+    pub fn new(costs: &[f64]) -> Self {
+        Self {
+            costs: costs.to_vec(),
+        }
+    }
+}
+
+impl Scorer for CheapestScorer {
+    fn name(&self) -> &'static str {
+        "cheapest"
+    }
+    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+        // known costs among the candidates bound the normalization window
+        let known: Vec<f64> = candidates
+            .iter()
+            .filter_map(|&i| self.costs.get(i).copied())
+            .filter(|&c| c > 0.0)
+            .collect();
+        let (min, max) = known
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
+                (lo.min(c), hi.max(c))
+            });
+        if known.is_empty() || min >= max {
+            return vec![1.0; candidates.len()];
+        }
+        candidates
+            .iter()
+            .map(|&i| match self.costs.get(i).copied() {
+                Some(c) if c > 0.0 => (1.0 - (c - min) / (max - min)) as f32,
+                _ => 0.5,
+            })
             .collect()
     }
 }
@@ -390,6 +459,45 @@ mod tests {
         let p = Pipeline::new(2).with(Box::new(StaticScorer::new(&[1, 9])), 1.0);
         // target 1 has 9x the weight; deterministic (no tie) so it always wins
         assert_eq!(p.select(&RouteContext::default(), &[], |_| true), Some(1));
+    }
+
+    #[test]
+    fn cheapest_prefers_lowest_cost() {
+        let p = Pipeline::cheapest_stack(&[3.0, 0.5, 10.0]);
+        assert_eq!(p.select(&RouteContext::default(), &[], |_| true), Some(1));
+        // eligibility still filters: cheapest surviving target wins
+        assert_eq!(p.select(&RouteContext::default(), &[], |i| i != 1), Some(0));
+    }
+
+    #[test]
+    fn cheapest_unknown_cost_scores_neutral() {
+        let scorer = CheapestScorer::new(&[2.0, 0.0, 4.0]);
+        let scores = scorer.score(&RouteContext::default(), &[0, 1, 2], &[]);
+        assert_eq!(scores, vec![1.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn cheapest_all_unknown_or_equal_is_flat() {
+        let scorer = CheapestScorer::new(&[0.0, 0.0]);
+        assert_eq!(
+            scorer.score(&RouteContext::default(), &[0, 1], &[]),
+            vec![1.0, 1.0]
+        );
+        let scorer = CheapestScorer::new(&[5.0, 5.0]);
+        assert_eq!(
+            scorer.score(&RouteContext::default(), &[0, 1], &[]),
+            vec![1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn cheapest_ties_break_by_load() {
+        // equal cost: the 0.25-weight load scorer decides
+        let p = Pipeline::cheapest_stack(&[1.0, 1.0]);
+        assert_eq!(
+            p.select(&RouteContext::default(), &[9, 0], |_| true),
+            Some(1)
+        );
     }
 
     #[test]

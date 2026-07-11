@@ -283,6 +283,9 @@ pub enum BalancingStrategy {
     /// composable filter → weighted-score → argmax pipeline (static weight +
     /// in-flight load + prefix-cache affinity scorers)
     Pipeline,
+    /// cost-aware: prefer the target with the lowest catalog price for its
+    /// upstream model (in-flight load breaks ties)
+    Cheapest,
 }
 
 /// A single upstream target within a route.

@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
-use rolter_balancer::{build, LoadBalancer};
+use rolter_balancer::{build_with_stats, LoadBalancer, TargetStats};
 use rolter_core::{
     BudgetConfig, CooldownConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
-    RateLimitConfig, RetryConfig,
+    RateLimitConfig, RetryConfig, Target,
 };
 use rolter_proxy::Forwarder;
 
@@ -79,16 +79,28 @@ impl Snapshot {
             .cloned()
             .map(|p| (p.name.clone(), p))
             .collect();
+        let prices: HashMap<String, ModelPriceConfig> = config
+            .model_prices
+            .iter()
+            .cloned()
+            .map(|p| (p.model.clone(), p))
+            .collect();
         let mut routes = HashMap::new();
         for route in &config.routes {
             let weights: Vec<u32> = route.targets.iter().map(|t| t.weight).collect();
-            let balancer = build(route.strategy, &weights);
+            let stats = TargetStats {
+                cost_per_mtok: target_costs(&route.targets, &route.model, &prices),
+            };
+            let balancer = build_with_stats(route.strategy, &weights, &stats);
             let variant_balancers = route
                 .variants
                 .iter()
                 .map(|v| {
                     let w: Vec<u32> = v.targets.iter().map(|t| t.weight).collect();
-                    build(route.strategy, &w)
+                    let s = TargetStats {
+                        cost_per_mtok: target_costs(&v.targets, &route.model, &prices),
+                    };
+                    build_with_stats(route.strategy, &w, &s)
                 })
                 .collect();
             routes.insert(
@@ -129,12 +141,6 @@ impl Snapshot {
                 },
             );
         }
-        let prices = config
-            .model_prices
-            .iter()
-            .cloned()
-            .map(|p| (p.model.clone(), p))
-            .collect();
         Self {
             providers,
             routes,
@@ -147,6 +153,30 @@ impl Snapshot {
             cooldown: config.cooldown.clone(),
         }
     }
+}
+
+/// Per-target catalog cost for the `cheapest` strategy: the price of the
+/// target's upstream model, falling back to the route's public model when the
+/// target does not rename it. The rate is `input + output $/Mtok` — only the
+/// relative order between targets matters to the scorer, and summing both
+/// sides ranks sensibly without assuming a token mix. Unknown = `0.0`
+/// (scored neutrally).
+fn target_costs(
+    targets: &[Target],
+    public_model: &str,
+    prices: &HashMap<String, ModelPriceConfig>,
+) -> Vec<f64> {
+    targets
+        .iter()
+        .map(|t| {
+            let model = t.model.as_deref().unwrap_or(public_model);
+            prices
+                .get(model)
+                .or_else(|| prices.get(public_model))
+                .map(|p| p.input_per_mtok + p.output_per_mtok)
+                .unwrap_or(0.0)
+        })
+        .collect()
 }
 
 /// Shared state handed to every request handler. Cheap to clone (all `Arc`).
@@ -282,5 +312,50 @@ impl AppState {
         self.metrics
             .config_reloads_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn price(model: &str, input: f64, output: f64) -> ModelPriceConfig {
+        ModelPriceConfig {
+            model: model.to_string(),
+            input_per_mtok: input,
+            output_per_mtok: output,
+            cached_input_per_mtok: None,
+        }
+    }
+
+    fn target(provider: &str, model: Option<&str>) -> Target {
+        Target {
+            provider: provider.to_string(),
+            model: model.map(str::to_string),
+            weight: 1,
+        }
+    }
+
+    #[test]
+    fn target_costs_prefer_upstream_model_price() {
+        let prices: HashMap<String, ModelPriceConfig> = [
+            ("gpt".to_string(), price("gpt", 2.0, 8.0)),
+            ("gpt-mini".to_string(), price("gpt-mini", 0.1, 0.4)),
+        ]
+        .into();
+        let targets = vec![
+            target("a", Some("gpt-mini")), // upstream price wins
+            target("b", None),             // falls back to the public model
+            target("c", Some("unpriced")), // unknown upstream -> public fallback
+        ];
+        let costs = target_costs(&targets, "gpt", &prices);
+        assert_eq!(costs, vec![0.5, 10.0, 10.0]);
+    }
+
+    #[test]
+    fn target_costs_unknown_everywhere_is_zero() {
+        let prices = HashMap::new();
+        let targets = vec![target("a", None)];
+        assert_eq!(target_costs(&targets, "gpt", &prices), vec![0.0]);
     }
 }

@@ -31,6 +31,7 @@ pub trait LoadBalancer: Send + Sync {
 | Multi-turn chat, sticky session | `consistent_hash` |
 | Shared system prompts / few-shot / RAG | `cache_aware` |
 | Blend cache + load + weight signals | `pipeline` |
+| Mixed-price providers, minimize spend | `cheapest` |
 
 ## Roadmap
 
@@ -38,7 +39,7 @@ The trait is the extension point. Planned strategies:
 
 - **precise cache-aware** — subscribe to vLLM KV-cache events (ZMQ), index block hashes, score targets by resident-prefix fraction blended with load. Requires vLLM ≥ 0.10 with matching `--block-size` / hash seed.
 - **lmcache-aware** — query an LMCache controller for real cache occupancy.
-- **latency-based** and **cost-based** — route by observed p50/p95 latency or per-token price.
+- **latency-based** — route by observed p50/p95 latency (cost-based shipped as `cheapest`: catalog price per target with load tiebreak).
 - **weighted** selection honoring `Target.weight`.
 - **health/circuit breaking + cooldowns** — skip unhealthy targets; exponential backoff on 429/5xx.
 
