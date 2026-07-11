@@ -7,10 +7,14 @@
 //! ```text
 //! rolter gateway --config rolter.toml
 //! rolter control --database-url postgres://...
+//! rolter easy-up            # gateway + control + UI in one supervised process
 //! ```
 //!
-//! Each subcommand reuses the exact argument set of the standalone binary via
-//! [`rolter_gateway::Args`] / [`rolter_control::Args`].
+//! The `gateway`/`control` subcommands reuse the exact argument set of the
+//! standalone binaries via [`rolter_gateway::Args`] / [`rolter_control::Args`];
+//! `easy-up` composes both for a zero-config one-command bring-up.
+
+mod easy_up;
 
 use clap::{Parser, Subcommand};
 
@@ -31,6 +35,9 @@ enum Command {
     Gateway(rolter_gateway::Args),
     /// run the control plane (management api + static ui host)
     Control(rolter_control::Args),
+    /// bring up gateway + control + UI in one supervised process (zero-config
+    /// with the built-in fake-llm model, or database-backed with --database-url)
+    EasyUp(easy_up::EasyUpArgs),
 }
 
 #[tokio::main]
@@ -39,5 +46,6 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Gateway(args) => rolter_gateway::run(args).await,
         Command::Control(args) => rolter_control::run(args).await,
+        Command::EasyUp(args) => easy_up::run(args).await,
     }
 }
