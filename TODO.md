@@ -99,9 +99,13 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Release automation (release-please/semantic-release) from Conventional Commits
 - [ ] `cargo deny` + dependency/advisory scanning in CI
 
-## Phase 10 — Dashboard build-out
+## Phase 10 — Control panel
+Full-featured hostable web control panel, not a read-only dashboard.
 - [ ] Auth screens (login, SSO)
 - [ ] CRUD: providers, routes (+ targets/strategy), virtual keys, members, budgets, pricing
+- [ ] Model management UI: add/edit/enable-disable/delete models + provider/route binding
+- [ ] User & team management UI: create/invite/edit/deactivate users, assign roles/teams
+- [ ] End-user self-service panel: personal API keys + usage/spend view
 - [ ] In-UI config editing with reload-free apply + validation feedback
 - [ ] Logs explorer + cost/usage dashboards (ClickHouse), latency percentiles, error rates
 - [ ] Org/team/project switcher; role-aware UI
@@ -116,3 +120,11 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Secret backends (Vault/cloud KMS) behind the encryption trait
 - [ ] Guardrails (PII/content/prompt-injection) hooks
 - [ ] A/B traffic mirroring
+
+## Stretch
+Beyond the core phased roadmap.
+- [ ] Rust SDK: client library for rolter gateway + control API
+- [ ] Python SDK: client library for rolter gateway + control API
+- [ ] MCP gateway: proxy MCP tool servers through rolter with per-key auth
+- [ ] A2A gateway: agent-to-agent protocol bridge through rolter
+- [ ] Multi-region deployment: cross-region routing + config sync
