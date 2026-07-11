@@ -76,13 +76,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: build wheels (linux)
         if: matrix.os == 'ubuntu-latest'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           args: --release --out dist --manifest-path crates/rolter/Cargo.toml
@@ -91,7 +91,7 @@ jobs:
 
       - name: build wheels (linux aarch64)
         if: matrix.os == 'ubuntu-latest'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         env:
           # the manylinux2014 aarch64 cross toolchain drives ring's perlasm
           # through a gas that doesn't predefine __ARM_ARCH, so ring's build
@@ -105,13 +105,13 @@ jobs:
 
       - name: build wheels (macos / windows)
         if: matrix.os != 'ubuntu-latest'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           args: --release --out dist --manifest-path crates/rolter/Cargo.toml
 
       - name: upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheels-${{ matrix.os }}
           path: dist/
@@ -132,14 +132,14 @@ jobs:
       id-token: write  # trusted publishing (OIDC)
     steps:
       - name: download all wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist/
 
       - name: publish to pypi
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: upload
           args: --non-interactive --skip-existing dist/*
@@ -163,7 +163,7 @@ jobs:
       contents: read
       packages: write # push to GHCR under the repo owner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -174,15 +174,15 @@ jobs:
         run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
 
       - name: set up qemu (arm64 emulation)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
 
       - name: set up buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -190,7 +190,7 @@ jobs:
 
       - name: log in to Docker Hub
         if: vars.DOCKERHUB_IMAGE != ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -199,7 +199,7 @@ jobs:
       # stay aligned. DOCKERHUB_IMAGE is omitted (blank line ignored) when unset.
       - name: docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
             ghcr.io/${{ github.repository }}
@@ -209,7 +209,7 @@ jobs:
             type=raw,value=latest
 
       - name: build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/Dockerfile
