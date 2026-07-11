@@ -16,6 +16,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/chat/completions` | OpenAI chat; streaming via `"stream": true` (SSE) |
 | POST | `/v1/completions` | OpenAI legacy completions |
 | POST | `/v1/messages` | Anthropic Messages; streaming supported |
+| POST | `/v1/embeddings` | OpenAI embeddings; non-streaming |
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/healthz` | liveness |
 | GET | `/metrics` | Prometheus exposition |
@@ -39,6 +40,12 @@ curl http://localhost:4000/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model":"claude","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
 
+# openai embeddings
+curl http://localhost:4000/v1/embeddings \
+  -H "Authorization: Bearer sk-rolter-dev" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"text-embedding-3-small","input":["hello","world"]}'
+
 # self-hosted vllm pool via a public model name
 curl http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer sk-rolter-dev" \
@@ -49,4 +56,4 @@ curl http://localhost:4000/v1/chat/completions \
 
 ## Roadmap
 
-`/v1/embeddings`, `/v1/images/generations`, `/v1/audio/*`, `/v1/rerank`, plus OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.
+`/v1/images/generations`, `/v1/audio/*`, `/v1/rerank`, plus OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.

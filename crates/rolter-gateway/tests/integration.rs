@@ -185,6 +185,27 @@ async fn metrics_served_on_configured_path() {
 }
 
 #[tokio::test]
+async fn builtin_fake_llm_serves_embeddings() {
+    // no routes configured: the built-in fake-llm answers /v1/embeddings locally
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{gw}/v1/embeddings"))
+        .json(&json!({"model": "fake-llm", "input": ["hello", "world"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "list");
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
+    assert_eq!(body["data"][0]["object"], "embedding");
+    assert!(!body["data"][0]["embedding"].as_array().unwrap().is_empty());
+    assert!(body["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
 async fn variant_routing_fails_over_to_next_variant() {
     use rolter_core::Variant;
     // primary variant's target always 500 (retryable); the fallback variant is
