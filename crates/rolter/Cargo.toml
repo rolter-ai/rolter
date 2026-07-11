@@ -17,11 +17,18 @@ path = "src/main.rs"
 rolter-core.workspace = true
 rolter-gateway.workspace = true
 rolter-control.workspace = true
+rolter-store = { workspace = true, optional = true }
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 
 [features]
 default = []
-# enable the control plane's postgres-backed store, CRUD API and migrations
-postgres = ["rolter-control/postgres"]
+# enable the control plane's postgres-backed store, CRUD API and migrations,
+# and the database path of `easy-up` (migrations + idempotent seed)
+postgres = [
+  "rolter-control/postgres",
+  "dep:rolter-store",
+  "rolter-store/postgres",
+]

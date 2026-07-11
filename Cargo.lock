@@ -1678,7 +1678,9 @@ dependencies = [
  "rolter-control",
  "rolter-core",
  "rolter-gateway",
+ "rolter-store",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

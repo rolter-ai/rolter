@@ -24,6 +24,7 @@ RUN bun run build
 # (multi-arch: amd64 + arm64).
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151 AS runtime
 WORKDIR /app
+COPY --from=rust-builder /app/target/release/rolter /usr/local/bin/rolter
 COPY --from=rust-builder /app/target/release/rolter-gateway /usr/local/bin/rolter-gateway
 COPY --from=rust-builder /app/target/release/rolter-control /usr/local/bin/rolter-control
 COPY --from=ui-builder /ui/dist /app/ui/dist

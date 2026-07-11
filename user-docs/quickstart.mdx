@@ -62,7 +62,7 @@ The fastest way to try Rolter is with Docker Compose — it starts the gateway a
     ```
 
     <Tip>
-      Prefer to run without Docker? Use `cargo run -p rolter-gateway -- --config rolter.toml` after exporting your provider API key. See the [Installation page](/installation) for details.
+      Prefer to run without Docker? Use `rolter gateway --config rolter.toml` (or `rolter easy-up` for gateway + control + UI in one process) after exporting your provider API key. From a source checkout that's `cargo run -p rolter -- gateway --config rolter.toml`. See the [Installation page](/installation) for details.
     </Tip>
   </Step>
   <Step title="Send a chat completions request">

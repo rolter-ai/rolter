@@ -66,22 +66,42 @@ To route to a real provider, edit `rolter.toml` and export the key its
 model you configured. `GET /healthz` and Prometheus `GET /metrics` are also
 exposed.
 
-### Gateway only
+`just dev` is the source-checkout dev loop (hot reload via `cargo`/`bun`). From
+an **installed binary or the docker image**, the equivalent one-command bring-up
+is `rolter easy-up` — it auto-creates `rolter.toml`, serves the built UI, and
+answers on `fake-llm` with zero keys and zero database (add `--database-url` to
+run migrations, seed a default org/team/project, and serve config from Postgres):
 
 ```bash
-cargo run -p rolter-gateway -- --config rolter.toml
+rolter easy-up                        # gateway + control + UI, one process
+rolter easy-up --database-url postgres://…   # database-backed
+```
+
+### Individual processes
+
+The unified `rolter` binary also exposes each plane as a subcommand:
+
+```bash
+rolter gateway --config rolter.toml   # data plane only
+rolter control --database-url …       # control plane + UI host only
+
+# from a source checkout, without installing:
+cargo run -p rolter -- gateway --config rolter.toml
 ```
 
 ## Install
 
 ```bash
-# rust
-cargo install --path crates/rolter-gateway
+# rust — installs the unified `rolter` binary
+cargo install --path crates/rolter
 
 # uv (PyPI wheel built with maturin) — see docs/development/packaging.md
 uv tool install rolter
 
-# docker
+# docker image (gateway is the default entrypoint; multi-arch amd64/arm64)
+docker run -p 4000:4000 ghcr.io/ormeilu/rolter:latest
+
+# or the full local stack (Postgres/Redis/ClickHouse) via compose
 docker compose -f docker/docker-compose.yml up -d
 ```
 
@@ -94,6 +114,7 @@ docker compose -f docker/docker-compose.yml up -d
 - `crates/rolter-auth` — virtual keys, roles, access checks
 - `crates/rolter-gateway` — data-plane binary
 - `crates/rolter-control` — control-plane binary + static UI host
+- `crates/rolter` — unified `rolter` launcher (`gateway`/`control`/`easy-up` subcommands)
 - `ui/` — Vite + React + shadcn/ui dashboard
 - `docs/` — architecture, ADRs, API, development and deployment guides
 - `migrations/`, `clickhouse/` — database schemas

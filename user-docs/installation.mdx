@@ -71,34 +71,50 @@ Docker Compose brings up the complete Rolter stack — gateway, control plane, P
 <CodeGroup>
 
 ```bash Cargo
-# from a cloned copy of the repository
-cargo install --path crates/rolter-gateway
+# from a cloned copy of the repository — installs the unified `rolter` binary
+cargo install --path crates/rolter
 
-# then run it with your config
+# one-command bring-up (gateway + control + UI), zero config needed
+rolter easy-up
+
+# or run just the gateway with your config
 export OPENAI_API_KEY=sk-...
-rolter-gateway --config rolter.toml
+rolter gateway --config rolter.toml
 ```
 
 ```bash uv
 uv tool install rolter
 
-# then run it with your config
+# one-command bring-up (gateway + control + UI), zero config needed
+rolter easy-up
+
+# or run just the gateway with your config
 export OPENAI_API_KEY=sk-...
-rolter-gateway --config rolter.toml
+rolter gateway --config rolter.toml
 ```
 
 ```bash pip
 pip install rolter
 
-# then run it with your config
+# one-command bring-up (gateway + control + UI), zero config needed
+rolter easy-up
+
+# or run just the gateway with your config
 export OPENAI_API_KEY=sk-...
-rolter-gateway --config rolter.toml
+rolter gateway --config rolter.toml
 ```
 
 </CodeGroup>
 
+The unified `rolter` binary exposes three subcommands: `rolter gateway` (data
+plane), `rolter control` (control plane + UI), and `rolter easy-up` (both, plus
+the UI, in one supervised process). `easy-up` creates `rolter.toml` from a
+bundled example on first run and answers on the built-in `fake-llm` model with
+no keys and no database; pass `--database-url` to run migrations, seed a default
+org/team/project, and serve config from Postgres.
+
 <Note>
-  The `cargo install` and `uv`/`pip` methods install the gateway binary only — they do not start Postgres, Redis, or ClickHouse. Budget enforcement and request logging require those services. For a local-only setup without persistence, the gateway works fine without them; budgets will fail open and request logs will be skipped.
+  The `cargo install` and `uv`/`pip` methods install the `rolter` binary only — they do not start Postgres, Redis, or ClickHouse. Budget enforcement and request logging require those services. For a local-only setup without persistence, the gateway works fine without them; budgets will fail open and request logs will be skipped.
 </Note>
 
 ## Default ports

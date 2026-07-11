@@ -12,6 +12,8 @@ mod analytics;
 #[cfg(feature = "postgres")]
 mod crud;
 mod health;
+#[cfg(feature = "postgres")]
+pub mod seed;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
