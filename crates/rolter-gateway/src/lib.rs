@@ -21,6 +21,7 @@ mod metrics;
 mod rate_limits;
 mod state;
 mod status_page;
+mod trace;
 mod upstream_metrics;
 mod watcher;
 
@@ -156,6 +157,9 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
         .route("/v1/messages", post(handlers::messages))
+        // ensure every request carries an x-request-id (generated when absent)
+        // and echo it on the response, for end-to-end correlation
+        .layer(axum::middleware::from_fn(trace::ensure_request_id))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
