@@ -73,7 +73,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] `x-rolter-cache` + decision headers
 
 ## Phase 7 — Observability
-- [ ] OpenTelemetry OTLP export for traces + metrics (`OTEL_*` env)
+- [x] OpenTelemetry OTLP export for traces (`OTEL_*` env); metrics remain on the Prometheus `/metrics` scrape path
 - [ ] Inbound W3C `traceparent`/`b3` continuation; `request_id` end-to-end
 - [ ] Outbound trace-context propagation to vLLM/SGLang/TGI
 - [x] Prometheus exporter: per-model latency histograms (TTFT/total), counters, config-version gauge

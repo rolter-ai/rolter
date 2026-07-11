@@ -54,9 +54,10 @@ These variables apply to both the gateway and the control plane.
 | --- | --- |
 | `REDIS_URL` | Redis/Valkey connection string. Used by the gateway for rate limits and budget tracking, and by the control plane for config-version pub/sub. |
 | `RUST_LOG` | Log filter string passed to the `tracing` subscriber, e.g. `info` or `rolter_gateway=debug,rolter_control=info`. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint for traces and metrics, e.g. `http://otel-collector:4317`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint for span export, e.g. `http://otel-collector:4317`. Setting it turns on trace export; leaving it unset keeps tracing stdout-only. (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces.) Metrics stay on the Prometheus `/metrics` scrape path. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP transport: `grpc` (default) or `http/protobuf`. Match your collector's receiver port (gRPC `4317`, HTTP `4318`). |
 | `OTEL_EXPORTER_OTLP_HEADERS` | OTLP authentication headers as a comma-separated `key=value` list, e.g. `Authorization=Bearer <token>`. |
-| `OTEL_SERVICE_NAME` | The service name reported in OTel spans, e.g. `rolter-gateway` or `rolter-control`. |
+| `OTEL_SERVICE_NAME` | The service name reported in OTel spans (default `rolter`), e.g. `rolter-gateway` or `rolter-control`. |
 
 ---
 

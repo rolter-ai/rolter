@@ -42,7 +42,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    rolter_core::telemetry::init();
+    let _telemetry = rolter_core::telemetry::init();
     match Cli::parse().command {
         Command::Gateway(args) => rolter_gateway::run(args).await,
         Command::Control(args) => rolter_control::run(args).await,

@@ -35,7 +35,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    rolter_core::telemetry::init();
+    let _telemetry = rolter_core::telemetry::init();
     let args = Args::parse();
 
     let pool = connect(&args.database_url).await?;
