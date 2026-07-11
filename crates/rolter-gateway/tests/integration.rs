@@ -234,6 +234,28 @@ async fn builtin_fake_llm_serves_rerank() {
 }
 
 #[tokio::test]
+async fn builtin_fake_llm_serves_images() {
+    // no routes configured: the built-in fake-llm answers image generations locally
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{gw}/v1/images/generations"))
+        .json(&json!({"model": "fake-llm", "prompt": "a red circle", "n": 2}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert!(data[0]["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+}
+
+#[tokio::test]
 async fn variant_routing_fails_over_to_next_variant() {
     use rolter_core::Variant;
     // primary variant's target always 500 (retryable); the fallback variant is

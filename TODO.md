@@ -85,7 +85,8 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [ ] Providers: Azure OpenAI, Bedrock, Vertex, Gemini, Mistral, Groq, OpenRouter
 - [ ] OpenAI⇄Anthropic request/response translation (+ streaming)
 - [x] `/v1/embeddings` (OpenAI-compatible passthrough; built-in `fake-llm` serves deterministic vectors)
-- [ ] `/v1/images/generations`, `/v1/audio/*` (transcriptions/speech)
+- [x] `/v1/images/generations` (OpenAI-compatible passthrough; built-in `fake-llm` returns a deterministic 1x1 png)
+- [ ] `/v1/audio/*` (transcriptions/speech)
 - [x] `/v1/rerank` (Cohere/Jina-compatible passthrough; built-in `fake-llm` ranks deterministically)
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing)
 - [ ] Served OpenAPI document

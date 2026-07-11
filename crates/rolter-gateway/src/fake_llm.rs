@@ -400,6 +400,49 @@ pub fn rerank(body: &Value) -> Response {
     Json(payload).into_response()
 }
 
+/// a 1x1 transparent PNG, base64-encoded — the deterministic pixel the fake
+/// image model returns for every request
+const FAKE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/// Handle a `/v1/images/generations` request for `fake-llm` (OpenAI-compatible).
+pub fn images(body: &Value) -> Response {
+    if body
+        .get("prompt")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+        .is_none()
+    {
+        return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing 'prompt' field")
+            .with_code("missing_required_parameter")
+            .with_param("prompt")
+            .into_response();
+    }
+    // number of images to return (OpenAI defaults to 1, caps at 10)
+    let n = body
+        .get("n")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 10);
+    // "url" (default) returns a self-contained data URI; "b64_json" the raw base64
+    let as_url = body
+        .get("response_format")
+        .and_then(Value::as_str)
+        .map(|f| f != "b64_json")
+        .unwrap_or(true);
+
+    let data: Vec<Value> = (0..n)
+        .map(|_| {
+            if as_url {
+                json!({"url": format!("data:image/png;base64,{FAKE_PNG_B64}")})
+            } else {
+                json!({"b64_json": FAKE_PNG_B64})
+            }
+        })
+        .collect();
+
+    Json(json!({"created": unix_now(), "data": data})).into_response()
+}
+
 fn sse_event(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
@@ -541,6 +584,36 @@ mod tests {
         assert_eq!(no_query.status(), StatusCode::BAD_REQUEST);
         let no_docs = rerank(&json!({"model": MODEL_NAME, "query": "q"}));
         assert_eq!(no_docs.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn images_default_url_and_count() {
+        let resp = images(&json!({"model": MODEL_NAME, "prompt": "a cat", "n": 3}));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let data = value["data"].as_array().unwrap();
+        assert_eq!(data.len(), 3);
+        assert!(data[0]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+    }
+
+    #[tokio::test]
+    async fn images_b64_json_format() {
+        let resp =
+            images(&json!({"model": MODEL_NAME, "prompt": "a cat", "response_format": "b64_json"}));
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["data"].as_array().unwrap().len(), 1);
+        assert!(value["data"][0]["b64_json"].is_string());
+    }
+
+    #[tokio::test]
+    async fn images_missing_prompt_is_400() {
+        let resp = images(&json!({"model": MODEL_NAME}));
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
