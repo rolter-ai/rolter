@@ -28,25 +28,45 @@ flowchart LR
 
 See [`docs/architecture/overview.md`](docs/architecture/overview.md) for the full design.
 
-## Quick start (gateway MVP)
+## Quick start
+
+The whole stack — gateway, control plane, and UI — comes up with one command
+([`just`](https://github.com/casey/just) required):
 
 ```bash
-cp rolter.example.toml rolter.toml          # edit providers/routes
-export OPENAI_API_KEY=sk-...                 # referenced by api_key_env
-cargo run -p rolter-gateway -- --config rolter.toml
+just dev
 ```
 
-```bash
-curl -s http://localhost:4000/v1/models \
-  -H "Authorization: Bearer sk-rolter-dev"
+This creates `rolter.toml` from the example on first run, installs UI deps
+(Bun if present, else npm), and runs all three processes with labeled output.
+**No provider API keys are needed to boot** — the built-in `fake-llm` model
+answers locally, so you can try the gateway before configuring any upstream.
 
+| Service | URL                     | Notes                              |
+| ------- | ----------------------- | ---------------------------------- |
+| UI      | http://localhost:3000   | Vite dev server, proxies `/api` → control |
+| Gateway | http://localhost:4000   | OpenAI/Anthropic-compatible data plane    |
+| Control | http://localhost:4001   | management API + built UI host            |
+
+Send a request to the built-in model (works with no upstream configured):
+
+```bash
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer sk-rolter-dev" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-`GET /healthz` and Prometheus `GET /metrics` are also exposed.
+To route to a real provider, edit `rolter.toml` and export the key its
+`api_key_env` references (e.g. `export OPENAI_API_KEY=sk-...`), then call the
+model you configured. `GET /healthz` and Prometheus `GET /metrics` are also
+exposed.
+
+### Gateway only
+
+```bash
+cargo run -p rolter-gateway -- --config rolter.toml
+```
 
 ## Install
 
