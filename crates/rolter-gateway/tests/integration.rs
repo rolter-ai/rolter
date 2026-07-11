@@ -299,6 +299,20 @@ async fn serves_openapi_document() {
 }
 
 #[tokio::test]
+async fn root_serves_service_info() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let resp = reqwest::Client::new()
+        .get(format!("http://{gw}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["service"], "rolter-gateway");
+    assert_eq!(body["docs"], "/docs");
+}
+
+#[tokio::test]
 async fn serves_scalar_docs_air_gapped() {
     let gw = serve_gateway(&GatewayConfig::default()).await;
     let client = reqwest::Client::new();
