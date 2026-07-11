@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="rolter" width="120" height="120">
+</p>
+
 # rolter
 
 A high-performance, open-source **LiteLLM-proxy alternative** built in Rust with a TypeScript + [shadcn/ui](https://ui.shadcn.com) dashboard.
