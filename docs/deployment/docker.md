@@ -34,6 +34,22 @@ Override the entrypoint to run the control plane:
 docker run --rm -p 4001:4001 rolter:dev rolter-control
 ```
 
+## Published images
+
+Release tags publish an image to **GHCR** (and, when configured, **Docker Hub**) under the same repo name and tags. Each release is tagged with its version and `latest`:
+
+```bash
+docker pull ghcr.io/<owner>/rolter:latest
+docker pull ghcr.io/<owner>/rolter:0.0.4
+```
+
+Publishing is fail-closed and opt-in, mirroring the PyPI flow. The `publish-docker` job in `.github/workflows/release.yml` runs only when:
+
+- repo variable `DOCKER_PUBLISH_ENABLED` = `true`, and
+- the verify + external-check gates pass for the tagged commit.
+
+GHCR always publishes via the built-in `GITHUB_TOKEN`. To also push to Docker Hub, set repo variable `DOCKERHUB_IMAGE` (e.g. `docker.io/acme/rolter`) and secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`; the same tag set is applied to both registries. (Multi-arch images are a separate roadmap item — releases currently ship `linux/amd64`.)
+
 ## Production notes
 
 - Put the gateway behind TLS (ingress/load balancer); keep the control plane private.
