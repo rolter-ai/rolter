@@ -64,7 +64,10 @@ impl Forwarder {
     ///
     /// `api_key` is injected per provider kind (Bearer for OpenAI-style,
     /// `x-api-key` for Anthropic). When `upstream_model` is set the top-level
-    /// `model` field of the body is rewritten to it.
+    /// `model` field of the body is rewritten to it. `passthrough_headers` are
+    /// forwarded verbatim (used to propagate the caller's inbound trace context
+    /// — `traceparent`/`b3` — so the upstream continues the same trace); an empty
+    /// slice adds nothing, keeping the wire clean for untraced requests.
     pub async fn forward_json(
         &self,
         provider: &ProviderConfig,
@@ -72,6 +75,7 @@ impl Forwarder {
         body: Bytes,
         api_key: Option<&str>,
         upstream_model: Option<&str>,
+        passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
         let base = provider.api_base.trim_end_matches('/');
         let url = format!("{base}{path}");
@@ -92,6 +96,10 @@ impl Forwarder {
                     req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
                 }
             }
+        }
+        // propagate the caller's trace context verbatim (nothing when empty)
+        for (name, value) in passthrough_headers {
+            req = req.header(*name, *value);
         }
         let send = req.body(body).send();
         // bound time-to-response-headers only; the body stream is untouched so
@@ -220,6 +228,7 @@ mod tests {
             Bytes::from_static(b"{}"),
             Some("sk-test"),
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -254,6 +263,7 @@ mod tests {
             Bytes::from_static(b"{}"),
             Some("sk-ant"),
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -269,6 +279,35 @@ mod tests {
             );
         }
         assert!(head.contains("anthropic-version: 2023-06-01"));
+    }
+
+    #[tokio::test]
+    async fn forwards_trace_context_when_provided() {
+        // the caller's inbound trace context is propagated verbatim so the
+        // upstream continues the same distributed trace (ROL-61)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::OpenaiCompatible, format!("http://{addr}"));
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0da902b7-01";
+        fwd.forward_json(
+            &p,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("sk-test"),
+            None,
+            &[("traceparent", tp)],
+        )
+        .await
+        .unwrap();
+        let head = capture.await.unwrap();
+
+        assert!(
+            head.contains(&format!("traceparent: {tp}")),
+            "traceparent not propagated to upstream:\n{head}"
+        );
     }
 
     #[tokio::test]
@@ -309,6 +348,7 @@ mod tests {
                 Bytes::from_static(b"{}"),
                 None,
                 None,
+                &[],
             )
             .await
             .unwrap_err();
