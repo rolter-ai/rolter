@@ -86,6 +86,10 @@ pub async fn embeddings(
     proxy(state, headers, body, "/v1/embeddings").await
 }
 
+pub async fn rerank(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    proxy(state, headers, body, "/v1/rerank").await
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -236,6 +240,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
             "/v1/messages" => fake_llm::messages(&parsed),
             "/v1/embeddings" => fake_llm::embeddings(&parsed),
+            "/v1/rerank" => fake_llm::rerank(&parsed),
             _ => error_json(
                 StatusCode::NOT_FOUND,
                 &format!("'{model}' is not served on {path}"),
