@@ -227,6 +227,84 @@ pub fn messages(body: &Value) -> Response {
     sse_response(chunks)
 }
 
+/// dimensionality of the deterministic fake embedding vectors
+const EMBED_DIM: usize = 8;
+
+/// collect the `input` field into the list of strings to embed. openai accepts
+/// a bare string or an array of strings (token-id arrays are not supported by
+/// the fake model and fall back to their debug form)
+fn embedding_inputs(body: &Value) -> Vec<String> {
+    match body.get("input") {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// deterministic unit-norm-ish vector derived from the input bytes so repeated
+/// calls with the same text return identical embeddings (stable smoke tests)
+fn fake_vector(text: &str) -> Vec<f64> {
+    let mut seed: u64 = 1469598103934665603; // fnv offset basis
+    for b in text.bytes() {
+        seed ^= b as u64;
+        seed = seed.wrapping_mul(1099511628211); // fnv prime
+    }
+    (0..EMBED_DIM)
+        .map(|i| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // map to a stable [-1, 1) value; index perturbs the stream per dim
+            let v = ((seed >> 11) ^ (i as u64)) as f64 / (1u64 << 53) as f64;
+            (v * 2.0) - 1.0
+        })
+        .collect()
+}
+
+/// Handle a `/v1/embeddings` request for `fake-llm` (OpenAI-compatible).
+pub fn embeddings(body: &Value) -> Response {
+    let inputs = embedding_inputs(body);
+    if inputs.is_empty() {
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing or empty 'input' field",
+        )
+        .with_code("missing_required_parameter")
+        .with_param("input")
+        .into_response();
+    }
+
+    let prompt_tokens: u64 = inputs.iter().map(|s| approx_tokens(s)).sum();
+    let data: Vec<Value> = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            json!({
+                "object": "embedding",
+                "index": index,
+                "embedding": fake_vector(text),
+            })
+        })
+        .collect();
+
+    let payload = json!({
+        "object": "list",
+        "data": data,
+        "model": MODEL_NAME,
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+        },
+    });
+    Json(payload).into_response()
+}
+
 fn sse_event(event: &str, data: &Value) -> String {
     format!("event: {event}\ndata: {data}\n\n")
 }
@@ -287,6 +365,43 @@ mod tests {
         ] {
             assert!(text.contains(&format!("event: {event}")), "missing {event}");
         }
+    }
+
+    #[tokio::test]
+    async fn embeddings_string_input_shape() {
+        let resp = embeddings(&json!({"model": MODEL_NAME, "input": "hello world"}));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["object"], "list");
+        assert_eq!(value["model"], MODEL_NAME);
+        assert_eq!(value["data"].as_array().unwrap().len(), 1);
+        assert_eq!(value["data"][0]["object"], "embedding");
+        assert_eq!(value["data"][0]["index"], 0);
+        assert_eq!(
+            value["data"][0]["embedding"].as_array().unwrap().len(),
+            EMBED_DIM
+        );
+        assert!(value["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn embeddings_array_input_and_determinism() {
+        let req = json!({"model": MODEL_NAME, "input": ["alpha", "beta", "alpha"]});
+        let resp = embeddings(&req);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let data = value["data"].as_array().unwrap();
+        assert_eq!(data.len(), 3);
+        // same input text yields the same vector (deterministic)
+        assert_eq!(data[0]["embedding"], data[2]["embedding"]);
+        assert_ne!(data[0]["embedding"], data[1]["embedding"]);
+    }
+
+    #[tokio::test]
+    async fn embeddings_missing_input_is_400() {
+        let resp = embeddings(&json!({"model": MODEL_NAME}));
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

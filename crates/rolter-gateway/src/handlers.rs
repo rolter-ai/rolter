@@ -78,6 +78,14 @@ pub async fn messages(State(state): State<AppState>, headers: HeaderMap, body: B
     proxy(state, headers, body, "/v1/messages").await
 }
 
+pub async fn embeddings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, body, "/v1/embeddings").await
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {
@@ -227,6 +235,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         return match path {
             "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
             "/v1/messages" => fake_llm::messages(&parsed),
+            "/v1/embeddings" => fake_llm::embeddings(&parsed),
             _ => error_json(
                 StatusCode::NOT_FOUND,
                 &format!("'{model}' is not served on {path}"),

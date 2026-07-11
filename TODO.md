@@ -84,7 +84,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 ## Phase 8 — Providers & modalities
 - [ ] Providers: Azure OpenAI, Bedrock, Vertex, Gemini, Mistral, Groq, OpenRouter
 - [ ] OpenAI⇄Anthropic request/response translation (+ streaming)
-- [ ] `/v1/embeddings`
+- [x] `/v1/embeddings` (OpenAI-compatible passthrough; built-in `fake-llm` serves deterministic vectors)
 - [ ] `/v1/images/generations`, `/v1/audio/*` (transcriptions/speech)
 - [ ] `/v1/rerank`
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing)
