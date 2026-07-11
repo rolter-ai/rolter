@@ -373,3 +373,150 @@ async fn revoked_key_fails_over_to_sibling_key_in_request() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["choices"][0]["message"]["content"], "pong");
 }
+
+// ── built-in fake-llm: end-to-end with zero providers/secrets ────────────────
+
+#[tokio::test]
+async fn fake_llm_chat_completions_without_any_config() {
+    // an empty config still serves the built-in fake-llm model locally
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "fake-llm", "messages": [{"role": "user", "content": "ping"}]}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], "fake-llm");
+    assert!(
+        body["choices"][0]["message"]["content"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "fake-llm returned no content: {body}"
+    );
+}
+
+#[tokio::test]
+async fn fake_llm_chat_completions_streams_sse() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "fake-llm", "stream": true, "messages": []}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.contains("event-stream"), "expected SSE, got {ct}");
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("data:"), "missing SSE data frames");
+    assert!(text.contains("[DONE]"), "missing SSE terminator");
+}
+
+#[tokio::test]
+async fn fake_llm_anthropic_messages_without_any_config() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({
+            "model": "fake-llm",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // anthropic messages shape: top-level content array of blocks
+    assert!(
+        body["content"][0]["text"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "fake-llm messages returned no content: {body}"
+    );
+}
+
+#[tokio::test]
+async fn fake_llm_anthropic_messages_streams_sse() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({
+            "model": "fake-llm",
+            "max_tokens": 16,
+            "stream": true,
+            "messages": []
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.contains("event-stream"), "expected SSE, got {ct}");
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("data:"), "missing SSE data frames");
+}
+
+// ── config hot-reload: arc-swap snapshot swap serves new routing live ────────
+
+#[tokio::test]
+async fn config_hot_reload_swaps_routing_without_restart() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+
+    // start serving with a route for `model-a` only
+    let state = rolter_gateway::AppState::with_logging(
+        &config_for("model-a", vec![("up", upstream)]),
+        None,
+    );
+    let app = rolter_gateway::build_router(state.clone(), "/metrics");
+    let gw = serve(app).await;
+    let client = reqwest::Client::new();
+
+    let a = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "model-a", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(a.status(), 200, "model-a should route before reload");
+
+    // hot-swap the snapshot to a config that only knows `model-b`
+    state.reload(&config_for("model-b", vec![("up", upstream)]), 1);
+
+    let b = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "model-b", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(b.status(), 200, "model-b should route after reload");
+
+    // the old model is gone from the live snapshot
+    let stale = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "model-a", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 404, "model-a should 404 after reload");
+}
