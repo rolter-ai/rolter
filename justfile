@@ -20,6 +20,32 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# create rolter.toml from the example if it does not exist yet
+_config:
+    #!/usr/bin/env bash
+    if [ ! -f rolter.toml ]; then
+        cp rolter.example.toml rolter.toml
+        echo "[dev] created rolter.toml from rolter.example.toml"
+    fi
+
+# one-command dev stack: gateway (:4000) + control (:4001) + UI (:3000)
+# creates rolter.toml on first run; no provider API keys needed to boot (the
+# built-in fake-llm model works with the bundled `sk-rolter-dev` virtual key).
+# uses bun when available (incl. ~/.bun/bin), else npm. ctrl-c stops all three.
+dev: _config
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$HOME/.bun/bin:$PATH"
+    if command -v bun >/dev/null 2>&1; then ui=bun; else ui=npm; fi
+    if [ ! -d ui/node_modules ]; then ( cd ui && "$ui" install ); fi
+    echo "[dev] UI http://localhost:3000  ·  gateway http://localhost:4000  ·  control http://localhost:4001"
+    # kill the whole process group (all three children) on exit / ctrl-c
+    trap 'kill 0' EXIT
+    ( cargo run -p rolter-gateway -- --config rolter.toml 2>&1 | sed 's/^/[gateway] /' ) &
+    ( cargo run -p rolter-control -- --config rolter.toml 2>&1 | sed 's/^/[control] /' ) &
+    ( cd ui && "$ui" run dev 2>&1 | sed 's/^/[ui]      /' ) &
+    wait
+
 # run the data-plane gateway against rolter.toml
 gateway config="rolter.toml":
     cargo run -p rolter-gateway -- --config {{config}}
