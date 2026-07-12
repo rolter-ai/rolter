@@ -107,6 +107,80 @@ fn extract_prompt_len(body: &Value) -> u64 {
     total.max(1) as u64
 }
 
+fn extract_response_prompt_len(body: &Value) -> u64 {
+    let Some(input) = body.get("input") else {
+        return extract_prompt_len(body);
+    };
+    match input {
+        Value::String(text) => approx_tokens(text),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_str))
+            .map(approx_tokens)
+            .sum::<u64>()
+            .max(1),
+        _ => 1,
+    }
+}
+
+/// Handle a `/v1/responses` request for `fake-llm` using the OpenAI Responses
+/// object and event names. It accepts arbitrary supported Responses input/tool
+/// fields, which are deliberately ignored by the deterministic local model.
+pub fn responses(body: &Value) -> Response {
+    let input_tokens = extract_response_prompt_len(body);
+    let text = lorem_text();
+    let output_tokens = approx_tokens(&text);
+    let id = next_id("resp-fake");
+    let response = json!({
+        "id": id,
+        "object": "response",
+        "created_at": unix_now(),
+        "status": "completed",
+        "model": MODEL_NAME,
+        "output": [{
+            "id": format!("msg_{id}"),
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        }],
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    });
+    if !is_streaming(body) {
+        return Json(response).into_response();
+    }
+
+    let item = response["output"][0].clone();
+    let mut chunks = vec![
+        sse_event(
+            "response.created",
+            &json!({"type": "response.created", "response": {"id": id, "object": "response", "status": "in_progress", "model": MODEL_NAME}}),
+        ),
+        sse_event(
+            "response.output_item.added",
+            &json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": item["id"], "type": "message", "status": "in_progress", "role": "assistant", "content": []}}),
+        ),
+        sse_event(
+            "response.content_part.added",
+            &json!({"type": "response.content_part.added", "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}}),
+        ),
+    ];
+    for word in LOREM {
+        chunks.push(sse_event("response.output_text.delta", &json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": format!("{word} ")})));
+    }
+    chunks.extend([
+        sse_event("response.output_text.done", &json!({"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": text})),
+        sse_event("response.content_part.done", &json!({"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": item["content"][0]})),
+        sse_event("response.output_item.done", &json!({"type": "response.output_item.done", "output_index": 0, "item": item})),
+        sse_event("response.completed", &json!({"type": "response.completed", "response": response})),
+    ]);
+    sse_response(chunks)
+}
+
 /// Handle a `/v1/chat/completions` request for `fake-llm` (OpenAI-compatible).
 pub fn chat_completions(body: &Value) -> Response {
     let prompt_tokens = extract_prompt_len(body);
@@ -536,6 +610,34 @@ mod tests {
         assert!(text.trim_end().ends_with("data: [DONE]"));
         assert!(text.contains("\"role\":\"assistant\""));
         assert!(text.contains("\"finish_reason\":\"stop\""));
+    }
+
+    #[tokio::test]
+    async fn responses_non_streaming_shape() {
+        let resp = responses(&json!({"model": MODEL_NAME, "input": "hello"}));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["object"], "response");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["output"][0]["content"][0]["type"], "output_text");
+        assert!(value["usage"]["input_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn responses_streaming_has_responses_events() {
+        let resp = responses(&json!({"model": MODEL_NAME, "input": "hello", "stream": true}));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        for event in [
+            "response.created",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.completed",
+        ] {
+            assert!(text.contains(&format!("event: {event}")), "missing {event}");
+        }
     }
 
     #[tokio::test]

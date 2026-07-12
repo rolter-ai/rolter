@@ -174,6 +174,20 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
         .route(openapi::DOCS_BUNDLE_PATH, get(openapi::docs_bundle))
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
+        .route("/v1/responses", post(handlers::responses))
+        .route(
+            "/v1/responses/{response_id}",
+            get(handlers::unsupported_response_lifecycle)
+                .delete(handlers::unsupported_response_lifecycle),
+        )
+        .route(
+            "/v1/responses/{response_id}/cancel",
+            post(handlers::unsupported_response_lifecycle),
+        )
+        .route(
+            "/v1/responses/{response_id}/input_items",
+            get(handlers::unsupported_response_lifecycle),
+        )
         .route("/v1/messages", post(handlers::messages))
         .route("/v1/embeddings", post(handlers::embeddings))
         .route("/v1/rerank", post(handlers::rerank))
