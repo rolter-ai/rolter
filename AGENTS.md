@@ -9,7 +9,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 ## Commands
 
 - `cargo build --workspace` — build everything
-- `cargo test --workspace` — run unit tests
+- `cargo nextest run --workspace` — run tests (as CI does; install with `cargo install cargo-nextest`). Add `cargo test --doc --workspace` for doc tests, or run both via `just test`. Plain `cargo test --workspace` also works.
 - `cargo fmt --all` — format (run before committing)
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint (must be clean)
 - `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane (add `--snapshot-url http://control:4001/internal/snapshot` to hot-reload config from the control plane without a restart)
@@ -62,5 +62,5 @@ Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre
 ## Testing & quality
 
 - Add unit tests next to the code (`#[cfg(test)] mod tests`).
-- Run `cargo test` and `cargo clippy` before committing.
+- Run the tests (`just test`, or `cargo nextest run --workspace`) and `cargo clippy` before committing.
 - Never commit secrets; provider keys come from env vars or the encrypted store.

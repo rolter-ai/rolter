@@ -13,7 +13,7 @@
 git clone https://github.com/ormeilu/rolter.git
 cd rolter
 cargo build --workspace
-cargo test --workspace
+cargo nextest run --workspace   # or `cargo test --workspace`; install: cargo install cargo-nextest
 ```
 
 ## Run the gateway (no external services needed)
@@ -52,6 +52,6 @@ just gateway | just control | just ui-dev | just up
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace && cargo test --doc --workspace   # or `just test`
 # optional hooks: prek install   (conventional commit msg + fmt/clippy)
 ```

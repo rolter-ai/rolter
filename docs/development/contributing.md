@@ -6,7 +6,7 @@ Thanks for helping build rolter.
 
 1. Branch from `master`: `feat/<scope>-<short>` or `fix/<scope>-<short>`.
 2. Make focused changes; add unit tests next to the code.
-3. Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+3. Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and the tests (`just test`, or `cargo nextest run --workspace` + `cargo test --doc --workspace`).
 4. Use [Conventional Commits](commit-conventions.md) for messages and the PR title.
 5. Link issues with `Closes #N` / `Refs #N`.
 6. Open a PR; fill in the template; CI must be green.

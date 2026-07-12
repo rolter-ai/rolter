@@ -8,9 +8,12 @@ default:
 build:
     cargo build --workspace
 
-# run all unit tests
+# run all tests the way CI does: nextest for unit/integration tests plus a
+# separate doc-test pass (nextest does not run doc tests). needs cargo-nextest
+# (`cargo install cargo-nextest` or see https://nexte.st/docs/installation/).
 test:
-    cargo test --workspace
+    cargo nextest run --workspace
+    cargo test --doc --workspace
 
 # format rust sources
 fmt:
