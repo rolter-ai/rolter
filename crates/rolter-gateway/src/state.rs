@@ -6,12 +6,13 @@ use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build_with_stats, LoadBalancer, TargetStats};
 use rolter_core::{
-    BudgetConfig, CooldownConfig, GatewayConfig, HealthConfig, ModelPriceConfig, ModelRoute,
-    ProviderConfig, RateLimitConfig, RetryConfig, Target,
+    BudgetConfig, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, ModelPriceConfig,
+    ModelRoute, ProviderConfig, RateLimitConfig, RetryConfig, Target,
 };
 use rolter_proxy::Forwarder;
 
 use crate::budgets::BudgetEnforcer;
+use crate::cache::ResponseCache;
 use crate::health_events::HealthEventSink;
 use crate::logging::LogSink;
 use crate::metrics::Metrics;
@@ -71,6 +72,9 @@ pub struct Snapshot {
     /// active health-probing tuning, read live by the background prober so a
     /// hot-reload can enable/disable probing and re-tune interval/timeout/path
     pub health: HealthConfig,
+    /// global response-cache policy (master switch + default TTL + namespace);
+    /// per-route opt-in lives on each route's `cache` field
+    pub cache: CacheConfig,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -179,6 +183,7 @@ impl Snapshot {
             retry: config.retry.clone(),
             cooldown: config.cooldown.clone(),
             health: config.health.clone(),
+            cache: config.cache.clone(),
         }
     }
 }
@@ -220,6 +225,9 @@ pub struct AppState {
     pub budgets: BudgetEnforcer,
     /// enforces throughput caps against Redis; disabled when no redis url is set
     pub rate_limiter: RateLimiter,
+    /// exact-match response cache against Redis; disabled when no redis url is
+    /// set. The global master switch lives on the live snapshot's `cache` field
+    pub response_cache: ResponseCache,
     /// per-target cooldown registry, shared across requests and config reloads
     pub cooldowns: crate::cooldowns::Cooldowns,
     /// per-target in-flight load counters feeding the balancer
@@ -247,6 +255,7 @@ impl AppState {
             health_events,
             BudgetEnforcer::disabled(),
             RateLimiter::disabled(),
+            ResponseCache::disabled(),
         )
     }
 
@@ -282,7 +291,22 @@ impl AppState {
             Some(url) => (BudgetEnforcer::new(url), RateLimiter::new(url)),
             None => (BudgetEnforcer::disabled(), RateLimiter::disabled()),
         };
-        Self::assemble(config, metrics, log, health_events, budgets, rate_limiter)
+        // the cache shares the same Redis; keep the client even when the global
+        // switch is currently off so a hot-reload can flip `[cache] enabled`
+        // without rebuilding state (the snapshot's `cache.enabled` gates use)
+        let response_cache = match redis_url {
+            Some(url) => ResponseCache::new(url),
+            None => ResponseCache::disabled(),
+        };
+        Self::assemble(
+            config,
+            metrics,
+            log,
+            health_events,
+            budgets,
+            rate_limiter,
+            response_cache,
+        )
     }
 
     fn assemble(
@@ -292,6 +316,7 @@ impl AppState {
         health_events: HealthEventSink,
         budgets: BudgetEnforcer,
         rate_limiter: RateLimiter,
+        response_cache: ResponseCache,
     ) -> Self {
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
@@ -304,6 +329,7 @@ impl AppState {
             health_events,
             budgets,
             rate_limiter,
+            response_cache,
             cooldowns: crate::cooldowns::Cooldowns::new(),
             loads,
             // an enabled registry only when probing is on, else an inert one that

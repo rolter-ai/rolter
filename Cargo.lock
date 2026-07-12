@@ -2023,6 +2023,7 @@ dependencies = [
  "scalar_api_reference",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tower-http 0.7.0",
  "tracing",

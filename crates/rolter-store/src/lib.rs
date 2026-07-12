@@ -139,6 +139,7 @@ mod tests {
             targets: vec![],
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
         }
     }

@@ -115,6 +115,12 @@ pub struct Metrics {
     pub breaker_closed_total: AtomicU64,
     /// upstream `/metrics` scrape sweeps completed
     pub metrics_scrapes_total: AtomicU64,
+    /// requests served from the response cache without contacting an upstream
+    pub cache_hits_total: AtomicU64,
+    /// cache-eligible requests that were not found in the cache
+    pub cache_misses_total: AtomicU64,
+    /// successful responses written into the response cache
+    pub cache_stores_total: AtomicU64,
     /// per-model latency + TTFT histograms, keyed by public model name
     by_model: DashMap<String, ModelHist>,
     /// passive per-target success/error tally, keyed by (provider, target)
@@ -314,6 +320,27 @@ impl Metrics {
             "rolter_metrics_scrapes_total",
             "upstream /metrics scrape sweeps completed",
             self.metrics_scrapes_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_cache_hits_total",
+            "requests served from the response cache",
+            self.cache_hits_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_cache_misses_total",
+            "cache-eligible requests not found in the response cache",
+            self.cache_misses_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_cache_stores_total",
+            "successful responses written into the response cache",
+            self.cache_stores_total.load(Relaxed),
         );
         self.render_histogram(
             &mut out,

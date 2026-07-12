@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use rolter_balancer::RouteContext;
 
 use crate::budgets::{ScopeIds, SpendRecorder};
+use crate::cache::{CachedResponse, ResponseCache};
 use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::rate_limits::TokenRecorder;
@@ -353,6 +354,51 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let trace_headers: Vec<(&str, &str)> =
         trace_ctx.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
+    // exact-match response cache (ROL-56): eligible only for non-streaming
+    // requests on routes that opted in, when the global switch is on and Redis
+    // is wired. the key hashes the post-injection forward body so admin param
+    // defaults are part of the identity; per-key routes also mix in the vk id.
+    let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
+    let cache_key = if snap.cache.enabled
+        && !stream
+        && state.response_cache.is_enabled()
+        && entry.route.cache_enabled()
+    {
+        let scope_seg = if entry.route.cache_per_key() {
+            vk_id.as_str()
+        } else {
+            ""
+        };
+        Some(ResponseCache::make_key(
+            &snap.cache.namespace,
+            path,
+            scope_seg,
+            &forward_body,
+        ))
+    } else {
+        None
+    };
+    if let Some(key) = &cache_key {
+        if let Some(hit) = state.response_cache.get(key).await {
+            state.metrics.cache_hits_total.fetch_add(1, Relaxed);
+            return cached_response(
+                hit,
+                &state.log,
+                CacheHitLog {
+                    request_id: request_id.clone(),
+                    trace_id: trace_id.clone(),
+                    vk_id: vk_id.clone(),
+                    org_id: org_id.clone(),
+                    team_id: team_id.clone(),
+                    project_id: project_id.clone(),
+                    model: model.clone(),
+                    started,
+                },
+            );
+        }
+        state.metrics.cache_misses_total.fetch_add(1, Relaxed);
+    }
+
     // pick a target and forward, retrying transient failures on a fresh target
     // (exponential backoff + jitter). retries happen before any body bytes reach
     // the client, so a partial response is never duplicated. a route with
@@ -578,6 +624,53 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 stream: stream as u8,
                 ..Default::default()
             };
+            // on a cache-eligible route, buffer a successful non-streaming
+            // response so it can be stored in Redis, then replay the buffered
+            // bytes through the same accounting stream (byte-for-byte identical
+            // token/cost/log handling to the uncached path)
+            if let Some(key) = cache_key {
+                if !is_sse && status < 400 {
+                    let content_type = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("application/json")
+                        .to_string();
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            state
+                                .response_cache
+                                .put(
+                                    &key,
+                                    &CachedResponse {
+                                        status,
+                                        content_type: content_type.clone(),
+                                        body: bytes.to_vec(),
+                                    },
+                                    cache_ttl,
+                                )
+                                .await;
+                            state.metrics.cache_stores_total.fetch_add(1, Relaxed);
+                            return buffered_response(
+                                bytes,
+                                status,
+                                content_type,
+                                started,
+                                state.log.clone(),
+                                price,
+                                log,
+                                recorder,
+                                token_recorder,
+                                inflight_guard,
+                            );
+                        }
+                        Err(err) => {
+                            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+                            return error_json(StatusCode::BAD_GATEWAY, &err.to_string());
+                        }
+                    }
+                }
+            }
             stream_response(
                 response,
                 is_sse,
@@ -1325,9 +1418,8 @@ fn stream_response(
         .to_string();
     // surface the routing decision to the client before `log` is moved into the
     // stream wrapper: which provider/target/model/variant served the request and
-    // whether it was a cache hit (ROL-58). cache is always a miss until the
-    // response cache lands (ROL-56); the header flips automatically once
-    // `log.cache_hit` is set upstream
+    // whether it was a cache hit (ROL-58). this streamed path is always a live
+    // upstream response (a miss); cache hits are served by `cached_response`
     let decision = DecisionHeaders::from_log(&log);
     let body = crate::logging::UsageLoggingStream::new(
         Box::pin(response.bytes_stream()),
@@ -1345,6 +1437,100 @@ fn stream_response(
         .header(header::CONTENT_TYPE, content_type);
     decision.apply(builder.headers_mut());
     builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to build response",
+        )
+    })
+}
+
+/// Replay a buffered (already fully received) response body through the same
+/// [`UsageLoggingStream`] accounting the streamed path uses. Used by the
+/// response cache's store path: the body was buffered to write it to Redis, so
+/// it's handed on as a single-chunk stream rather than re-fetched.
+#[allow(clippy::too_many_arguments)]
+fn buffered_response(
+    bytes: Bytes,
+    status: u16,
+    content_type: String,
+    started: Instant,
+    sink: crate::logging::LogSink,
+    price: Option<rolter_core::ModelPriceConfig>,
+    log: RequestLog,
+    recorder: SpendRecorder,
+    token_recorder: TokenRecorder,
+    inflight_guard: Option<crate::load::LoadGuard>,
+) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let decision = DecisionHeaders::from_log(&log);
+    let stream = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(bytes)]);
+    let body = crate::logging::UsageLoggingStream::new(
+        Box::pin(stream),
+        false,
+        started,
+        sink,
+        price,
+        log,
+        Some(recorder),
+        Some(token_recorder),
+        inflight_guard,
+    );
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type);
+    decision.apply(builder.headers_mut());
+    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to build response",
+        )
+    })
+}
+
+/// Log context captured on the request path for a response served from cache.
+struct CacheHitLog {
+    request_id: String,
+    trace_id: String,
+    vk_id: String,
+    org_id: String,
+    team_id: String,
+    project_id: String,
+    model: String,
+    started: Instant,
+}
+
+/// Build the client reply for a cache hit: the stored body verbatim, decision
+/// headers with `x-rolter-cache: HIT`, and a log row marked `cache_hit` with
+/// zero cost/tokens (a hit spends nothing upstream, so it is not billed and
+/// records no upstream target).
+fn cached_response(
+    hit: CachedResponse,
+    sink: &crate::logging::LogSink,
+    ctx: CacheHitLog,
+) -> Response {
+    let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
+    let latency_ms = ctx.started.elapsed().as_millis() as u32;
+    let log = RequestLog {
+        request_id: ctx.request_id,
+        trace_id: ctx.trace_id,
+        virtual_key_id: ctx.vk_id,
+        org_id: ctx.org_id,
+        team_id: ctx.team_id,
+        project_id: ctx.project_id,
+        model: ctx.model,
+        status: hit.status,
+        cache_hit: 1,
+        latency_ms,
+        ttft_ms: latency_ms,
+        ..Default::default()
+    };
+    let decision = DecisionHeaders::from_log(&log);
+    sink.log(log);
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, hit.content_type);
+    decision.apply(builder.headers_mut());
+    builder.body(Body::from(hit.body)).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
@@ -1421,6 +1607,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![Target {
                 provider: "openai".to_string(),
@@ -1433,6 +1620,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![Target {
                 provider: "anthropic".to_string(),
@@ -1670,6 +1858,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             targets: Vec::new(),
             variants: vec![rolter_core::Variant {
                 name: "v".to_string(),
@@ -1721,6 +1910,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             targets: Vec::new(),
             variants: vec![
                 rolter_core::Variant {
@@ -1756,6 +1946,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![
                 Target {
@@ -1807,6 +1998,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![
                 Target {
@@ -1848,6 +2040,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![
                 Target {
@@ -1889,6 +2082,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            cache: None,
             variants: Default::default(),
             targets: vec![
                 Target {
