@@ -38,7 +38,7 @@ x-sglang-cpu: &sglang-cpu
   environment:
     SGLANG_USE_CPU_ENGINE: "1"
   command: &sglang-command
-    - python3
+    - /opt/.venv/bin/python
     - -m
     - sglang.launch_server
     - --model-path

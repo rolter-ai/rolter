@@ -25,7 +25,7 @@ def wait_for_models(base_url: str) -> None:
             with request(f"{base_url}/v1/models", timeout=5) as response:
                 if response.status == 200:
                     return
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, OSError):
             pass
         time.sleep(2)
     raise RuntimeError(f"timed out waiting for {base_url}/v1/models")

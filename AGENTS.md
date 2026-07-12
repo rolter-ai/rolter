@@ -55,7 +55,9 @@ docs(architecture): document reload-free config propagation
 - Branch names follow `<type>/<ISSUE-KEY>-<short-description>` with the same Conventional Commit types, e.g. `fix/ROL-94-models-auth`. Never use a person or agent name as the prefix.
 - Prefer stacked branches/PRs (GitButler) for dependent work; keep each PR one logical change.
 - Keep PRs focused; update `docs/` and `TODO.md` when behavior changes.
-- Include the co-author trailer on agent commits: `Co-Authored-By: Oz <oz-agent@warp.dev>`.
+- Include a co-author trailer identifying the agent that made the commit, using
+  that agent's own name and email (for example,
+  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
 
 Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre-commit` hook in `.pre-commit-config.yaml`.
 
