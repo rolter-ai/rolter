@@ -102,6 +102,11 @@ impl Forwarder {
                 }
                 req = req.header("anthropic-version", "2023-06-01");
             }
+            ProviderKind::AzureOpenai => {
+                if let Some(key) = api_key {
+                    req = req.header("api-key", key);
+                }
+            }
             _ => {
                 if let Some(key) = api_key {
                     req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
@@ -148,8 +153,7 @@ impl Forwarder {
                 provider.name
             )));
         }
-        let base = provider.api_base.trim_end_matches('/');
-        let url = format!("{base}{path}");
+        let url = provider_url(provider, path);
         let client = self.client_for(provider);
         let mut req = client
             .request(Method::POST, &url)
@@ -160,6 +164,11 @@ impl Forwarder {
                     req = req.header("x-api-key", key);
                 }
                 req = req.header("anthropic-version", "2023-06-01");
+            }
+            ProviderKind::AzureOpenai => {
+                if let Some(key) = api_key {
+                    req = req.header("api-key", key);
+                }
             }
             _ => {
                 if let Some(key) = api_key {
@@ -195,7 +204,13 @@ impl Forwarder {
 
 fn provider_url(provider: &ProviderConfig, path: &str) -> String {
     let base = provider.api_base.trim_end_matches('/');
-    if provider.kind == ProviderKind::Openrouter {
+    if matches!(
+        provider.kind,
+        ProviderKind::Openrouter
+            | ProviderKind::AzureOpenai
+            | ProviderKind::Bedrock
+            | ProviderKind::Vertex
+    ) {
         let suffix = path.strip_prefix("/v1").unwrap_or(path);
         format!("{base}{suffix}")
     } else {
@@ -256,6 +271,18 @@ mod tests {
         let body = Bytes::from(r#"{"model":"public"}"#);
         let out = maybe_rewrite_model(body.clone(), None);
         assert_eq!(out, body);
+    }
+
+    #[test]
+    fn cloud_openai_compatible_bases_do_not_duplicate_v1() {
+        let bedrock = provider(
+            ProviderKind::Bedrock,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+        );
+        assert_eq!(
+            provider_url(&bedrock, "/v1/chat/completions"),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/v1/chat/completions"
+        );
     }
 
     /// Accept one connection, capture the raw request head, answer a minimal
@@ -502,5 +529,62 @@ mod tests {
             .await
             .unwrap()
             .contains("authorization: bearer cloud-secret"));
+    }
+
+    #[tokio::test]
+    async fn azure_openai_strips_v1_and_uses_api_key_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let azure = provider(
+            ProviderKind::AzureOpenai,
+            format!("http://{addr}/openai/v1"),
+        );
+        fwd.forward_json(
+            &azure,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("azure-secret"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let head = capture.await.unwrap();
+        assert!(head.starts_with("post /openai/v1/chat/completions"));
+        assert!(head.contains("api-key: azure-secret"));
+        assert!(!head.contains("authorization:"));
+    }
+
+    #[tokio::test]
+    async fn vertex_strips_v1_from_gateway_path() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let vertex = provider(
+            ProviderKind::Vertex,
+            format!("http://{addr}/v1/projects/p/locations/global/endpoints/openapi"),
+        );
+        fwd.forward_json(
+            &vertex,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("oauth-token"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let head = capture.await.unwrap();
+        assert!(head.starts_with(
+            "post /v1/projects/p/locations/global/endpoints/openapi/chat/completions"
+        ));
+        assert!(head.contains("authorization: bearer oauth-token"));
     }
 }

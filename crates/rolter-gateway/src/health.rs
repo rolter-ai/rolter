@@ -43,6 +43,9 @@ fn probe_request(
         | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
         ProviderKind::Openrouter => (format!("{base}/models"), Vec::new()),
         ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
+        ProviderKind::AzureOpenai => (format!("{base}/models"), Vec::new()),
+        ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
+        ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
             vec![(
@@ -51,6 +54,23 @@ fn probe_request(
             )],
         ),
     }
+}
+
+fn bedrock_models_url(api_base: &str) -> String {
+    let base = api_base.trim_end_matches('/');
+    if let Some(control) = base.strip_prefix("https://bedrock-runtime.") {
+        let host = control.split('/').next().unwrap_or(control);
+        return format!("https://bedrock.{host}/foundation-models");
+    }
+    format!("{}/foundation-models", base.trim_end_matches("/v1"))
+}
+
+fn vertex_models_url(api_base: &str) -> String {
+    let base = api_base.trim_end_matches('/');
+    if let Some(prefix) = base.strip_suffix("/endpoints/openapi") {
+        return format!("{prefix}/publishers/google/models");
+    }
+    format!("{base}/models")
 }
 
 /// A fully-resolved probe request for one provider: either a free liveness GET
@@ -125,6 +145,18 @@ fn build_probe_plan(
                             .unwrap_or_default();
                         ("/chat/completions", headers)
                     }
+                    ProviderKind::AzureOpenai => {
+                        let headers = key
+                            .map(|key| vec![("api-key".to_string(), key)])
+                            .unwrap_or_default();
+                        ("/chat/completions", headers)
+                    }
+                    ProviderKind::Bedrock | ProviderKind::Vertex => {
+                        let headers = key
+                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
+                            .unwrap_or_default();
+                        ("/chat/completions", headers)
+                    }
                     _ => {
                         let headers = key
                             .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
@@ -153,12 +185,16 @@ fn build_probe_plan(
         );
     }
     let (url, mut headers) = probe_request(provider.kind, &provider.api_base, configured_path);
-    if matches!(
-        provider.kind,
-        ProviderKind::OllamaCloud | ProviderKind::Openrouter
-    ) {
-        if let Some(key) = provider.resolve_api_key() {
-            headers.push(("authorization".to_string(), format!("Bearer {key}")));
+    if let Some(key) = provider.resolve_api_key() {
+        match provider.kind {
+            ProviderKind::AzureOpenai => headers.push(("api-key".to_string(), key)),
+            ProviderKind::OllamaCloud
+            | ProviderKind::Openrouter
+            | ProviderKind::Bedrock
+            | ProviderKind::Vertex => {
+                headers.push(("authorization".to_string(), format!("Bearer {key}")));
+            }
+            _ => {}
         }
     }
     (ProbePlan::Free { url, headers }, HealthSource::Probe)
@@ -651,6 +687,26 @@ mod tests {
                 ANTHROPIC_VERSION.to_string()
             )]
         );
+
+        let (url, _) = probe_request(
+            ProviderKind::Bedrock,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "/",
+        );
+        assert_eq!(
+            url,
+            "https://bedrock.us-east-1.amazonaws.com/foundation-models"
+        );
+
+        let (url, _) = probe_request(
+            ProviderKind::Vertex,
+            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi",
+            "/",
+        );
+        assert_eq!(
+            url,
+            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models"
+        );
     }
 
     #[test]
@@ -784,5 +840,23 @@ mod tests {
         let (url, headers) = probe_request(ProviderKind::Tei, "http://tei:80/", "/");
         assert_eq!(url, "http://tei:80/health");
         assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn azure_probe_uses_models_endpoint_and_api_key_auth() {
+        let mut p = provider(ProviderKind::AzureOpenai);
+        p.api_base = "https://example.openai.azure.com/openai/v1".to_string();
+        p.api_key = Some("azure-secret".to_string());
+        let (plan, _) = build_probe_plan(&p, "/");
+        match plan {
+            ProbePlan::Free { url, headers } => {
+                assert_eq!(url, "https://example.openai.azure.com/openai/v1/models");
+                assert_eq!(
+                    headers,
+                    vec![("api-key".to_string(), "azure-secret".to_string())]
+                );
+            }
+            _ => panic!("expected a free probe"),
+        }
     }
 }

@@ -63,6 +63,9 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             "llama_cpp" => ProviderKind::LlamaCpp,
             "openrouter" => ProviderKind::Openrouter,
             "tei" => ProviderKind::Tei,
+            "azure_openai" => ProviderKind::AzureOpenai,
+            "bedrock" => ProviderKind::Bedrock,
+            "vertex" => ProviderKind::Vertex,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
         Ok(ProviderConfig {
