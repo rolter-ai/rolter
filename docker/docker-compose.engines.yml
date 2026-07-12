@@ -4,7 +4,10 @@ name: rolter-engines
 
 x-vllm-cpu: &vllm-cpu
   profiles: [vllm]
-  image: vllm/vllm-openai-cpu:v0.24.0-x86_64
+  build:
+    context: ..
+    dockerfile: integration/engines/docker/vllm-cpu.Dockerfile
+  image: rolter-vllm-cpu:v0.24.0
   shm_size: 2gb
   cap_add: [SYS_NICE]
   security_opt: [seccomp=unconfined]
