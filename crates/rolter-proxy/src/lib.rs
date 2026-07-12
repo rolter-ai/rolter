@@ -301,6 +301,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ollama_wire_is_keyless() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::Ollama, format!("http://{addr}"));
+        fwd.forward_json(
+            &p,
+            "/v1/chat/completions",
+            Bytes::from_static(br#"{"model":"llama"}"#),
+            None,
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+        let head = capture.await.unwrap();
+
+        assert!(!head.contains("authorization:"));
+        assert!(head.starts_with("post /v1/chat/completions"));
+    }
+
+    #[tokio::test]
     async fn anthropic_wire_carries_only_required_headers() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

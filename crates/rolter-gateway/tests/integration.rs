@@ -118,6 +118,45 @@ async fn non_streaming_request_proxies_upstream_body() {
 }
 
 #[tokio::test]
+async fn ollama_preserves_openai_compatible_fields_and_rewrites_model() {
+    async fn inspect(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["model"], "qwen2.5:0.5b");
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        Json(json!({"choices": [], "usage": {"total_tokens": 0}}))
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(inspect))).await;
+    let mut config = config_for("local-qwen", vec![("ollama", upstream)]);
+    config.providers[0].kind = ProviderKind::Ollama;
+    config.routes[0].targets[0].model = Some("qwen2.5:0.5b".to_string());
+    let gw = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model": "local-qwen",
+            "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]}],
+            "seed": 42,
+            "response_format": {"type": "json_object"},
+            "tools": [{"type": "function", "function": {"name": "ping", "parameters": {"type": "object"}}}],
+            "stream_options": {"include_usage": true}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["usage"]["total_tokens"],
+        0
+    );
+}
+
+#[tokio::test]
 async fn response_carries_routing_decision_headers() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;

@@ -43,6 +43,13 @@ name = "vllm-2"
 kind = "openai_compatible"
 api_base = "http://localhost:8002"
 
+# self-hosted ollama needs no api key. use http://ollama:11434 from the
+# docker compose network; rolter appends the /v1 endpoint paths itself.
+[[providers]]
+name = "ollama"
+kind = "ollama"
+api_base = "http://localhost:11434"
+
 # --- routes: public model name -> upstream targets + strategy ---
 
 [[routes]]
