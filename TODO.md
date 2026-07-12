@@ -17,7 +17,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] UI scaffold (Vite + React + shadcn/ui + Bun): Models/Keys/Logs
 - [x] README, AGENTS, docs tree, ROADMAP, TODO
 - [x] Conventional Commits: commitlint, pre-commit, PR/issue templates, CI
-- [ ] `cargo build`/`test`/`clippy` green in CI (verified locally; confirm on first push)
+- [x] [`cargo build`/`test`/`clippy` green in CI](https://linear.app/rolter/issue/ROL-19/cargo-buildtestclippy-green-in-ci-confirm-on-first-push)
 
 ## Phase 1 — Persistence & control plane
 - [x] `rolter-store` Postgres backend (`sqlx`) behind a `postgres` feature
@@ -63,6 +63,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] In-flight load counters feeding `loads` to balancers
 - [x] Weighted selection honoring `Target.weight`
 - [x] Request timeouts + graceful shutdown/drain
+- [ ] [vLLM/SGLang compatibility contracts and direct-vs-gateway baselines](https://linear.app/rolter/issue/ROL-238/testgateway-add-local-and-ci-vllmsglang-compatibility-tests-and)
 
 ## Phase 6 — Caching v2
 - [x] Composable filter → weighted-score → argmax `Scorer` pipeline (foundation)
@@ -94,13 +95,13 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Served OpenAPI document (`GET /openapi.json`, hand-authored 3.1) + interactive Scalar reference (`GET /docs`, bundle embedded in the binary — air-gapped safe)
 
 ## Phase 9 — Packaging & release
-- [ ] Unified `rolter` CLI with `gateway`/`control` subcommands (one wheel ships both)
+- [x] [Unified `rolter` CLI with `gateway`/`control` subcommands (one wheel ships both)](https://linear.app/rolter/issue/ROL-73/unified-rolter-cli-with-gatewaycontrol-subcommands-one-wheel-ships)
 - [ ] cibuildwheel/maturin-action wheels → PyPI (`uv tool install rolter`)
-- [ ] Publish crates to crates.io
+- [x] [Publish crates to crates.io](https://linear.app/rolter/issue/ROL-75/publish-crates-to-cratesio)
 - [ ] Multi-arch images → GHCR
 - [ ] Helm chart / K8s manifests
 - [ ] Release automation (release-please/semantic-release) from Conventional Commits
-- [ ] `cargo deny` + dependency/advisory scanning in CI
+- [x] [`cargo deny` + dependency/advisory scanning in CI](https://linear.app/rolter/issue/ROL-79/cargo-deny-dependencyadvisory-scanning-in-ci)
 
 ## Phase 10 — Control panel
 Full-featured hostable web control panel, not a read-only dashboard.
@@ -112,12 +113,16 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [ ] In-UI config editing with reload-free apply + validation feedback
 - [ ] Logs explorer + cost/usage dashboards (ClickHouse), latency percentiles, error rates
 - [ ] Org/team/project switcher; role-aware UI
-- [ ] `bun run lint`/build wired into CI
+- [x] [`bun run lint`/build wired into CI](https://linear.app/rolter/issue/ROL-85/bun-run-lintbuild-wired-into-ci)
 
 ## Cross-cutting / tech debt
+- [ ] [Full-stack Docker Compose smoke test in CI](https://linear.app/rolter/issue/ROL-245/ci-add-full-stack-docker-compose-smoke-test)
+- [ ] [Publish Rust coverage and establish a ratcheting threshold](https://linear.app/rolter/issue/ROL-246/ci-publish-rust-coverage-and-establish-a-ratcheting-threshold)
+- [ ] [Document and enforce the `ci-ok` branch-protection policy](https://linear.app/rolter/issue/ROL-244/ci-document-and-enforce-the-ci-ok-branch-protection-policy)
 - [ ] Publish `rolter` to PyPI (no wheel there yet). crates.io is done (all 8 crates @0.0.2). PyPI trusted publisher (OIDC) is configured as a *pending* publisher (repo `ormeilu/rolter`, workflow `release.yml`, env `pypi`); `PYPI_PUBLISH_ENABLED=true` is set. Blocker: the `v0.0.2` tag predates `crates/rolter`, so its wheel would ship the gateway-only binary. Fix: cut a fresh tag off master (v0.0.3 via release-plz) so `release.yml` builds the unified-launcher wheel and the pending publisher activates on first upload.
 - [x] Integration tests for the gateway (mock upstream) + streaming assertions
-- [ ] `criterion` benches for `pick`/trie; `oha`/`k6` load tests
+- [x] [`criterion` benches for `pick`/trie](https://linear.app/rolter/issue/ROL-232/adopt-criterionrs-for-benchmarks)
+- [ ] [`oha`/`k6` load-test harness](https://linear.app/rolter/issue/ROL-87/load-test-harness-ohak6-for-gateway-added-latency-max-rps)
 - [ ] Structured error type surfaced as OpenAI-style JSON everywhere
 - [ ] Config schema validation + helpful startup errors
 - [ ] Secret backends (Vault/cloud KMS) behind the encryption trait
