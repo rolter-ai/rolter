@@ -150,6 +150,8 @@ pub enum ProviderKind {
     OpenaiCompatible,
     /// a self-hosted ollama daemon using its openai-compatible api
     Ollama,
+    /// a self-hosted llama.cpp llama-server using its openai-compatible api
+    LlamaCpp,
 }
 
 /// An upstream provider rolter can forward to.
