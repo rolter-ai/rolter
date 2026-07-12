@@ -77,8 +77,19 @@ impl Forwarder {
         upstream_model: Option<&str>,
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
-        let base = provider.api_base.trim_end_matches('/');
-        let url = format!("{base}{path}");
+        if provider.kind == ProviderKind::Openrouter && api_key.is_none() {
+            return Err(Error::Config(format!(
+                "openrouter provider '{}' requires a resolved api key",
+                provider.name
+            )));
+        }
+        if provider.kind == ProviderKind::OllamaCloud && api_key.is_none() {
+            return Err(Error::Config(format!(
+                "ollama_cloud provider '{}' requires a resolved api key",
+                provider.name
+            )));
+        }
+        let url = provider_url(provider, path);
         let body = maybe_rewrite_model(body, upstream_model);
         let client = self.client_for(provider);
         let mut req = client
@@ -95,6 +106,14 @@ impl Forwarder {
                 if let Some(key) = api_key {
                     req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
                 }
+            }
+        }
+        if provider.kind == ProviderKind::Openrouter {
+            if let Ok(referer) = std::env::var("OPENROUTER_HTTP_REFERER") {
+                req = req.header("HTTP-Referer", referer);
+            }
+            if let Ok(title) = std::env::var("OPENROUTER_X_TITLE") {
+                req = req.header("X-Title", title);
             }
         }
         // propagate the caller's trace context verbatim (nothing when empty)
@@ -123,6 +142,12 @@ impl Forwarder {
         api_key: Option<&str>,
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
+        if provider.kind == ProviderKind::OllamaCloud && api_key.is_none() {
+            return Err(Error::Config(format!(
+                "ollama_cloud provider '{}' requires a resolved api key",
+                provider.name
+            )));
+        }
         let base = provider.api_base.trim_end_matches('/');
         let url = format!("{base}{path}");
         let client = self.client_for(provider);
@@ -165,6 +190,16 @@ impl Forwarder {
             },
             None => send.await.map_err(|e| Error::Upstream(e.to_string())),
         }
+    }
+}
+
+fn provider_url(provider: &ProviderConfig, path: &str) -> String {
+    let base = provider.api_base.trim_end_matches('/');
+    if provider.kind == ProviderKind::Openrouter {
+        let suffix = path.strip_prefix("/v1").unwrap_or(path);
+        format!("{base}{suffix}")
+    } else {
+        format!("{base}{path}")
     }
 }
 
@@ -431,5 +466,41 @@ mod tests {
             err.to_string().contains("timed out"),
             "expected a timeout error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_requires_and_sends_bearer_auth() {
+        let fwd = Forwarder::new();
+        let missing = provider(ProviderKind::OllamaCloud, "http://127.0.0.1:1".to_string());
+        let err = fwd
+            .forward_json(
+                &missing,
+                "/v1/chat/completions",
+                Bytes::from_static(b"{}"),
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("requires a resolved api key"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+        let cloud = provider(ProviderKind::OllamaCloud, format!("http://{addr}"));
+        fwd.forward_json(
+            &cloud,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("cloud-secret"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(capture
+            .await
+            .unwrap()
+            .contains("authorization: bearer cloud-secret"));
     }
 }

@@ -34,5 +34,8 @@
 
 - [Configuration reference](deployment/configuration.md)
 - [Self-hosted Ollama](deployment/ollama.md)
+- [OpenRouter](deployment/openrouter.md)
 - [Docker](deployment/docker.md)
+- [llama.cpp](deployment/llama-cpp.md)
+- [Hugging Face TEI](deployment/tei.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)
