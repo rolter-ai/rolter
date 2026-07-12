@@ -39,6 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: build cached vLLM CPU image
@@ -51,11 +52,9 @@ jobs:
           tags: rolter-vllm-cpu:v0.24.0
           cache-from: type=gha,scope=rolter-vllm-cpu
           cache-to: type=gha,mode=max,scope=rolter-vllm-cpu
+      # --bench runs the smoke assertions first, so one invocation covers both
       - name: smoke through rolter
-        run: integration/engines/run.sh ${{ matrix.engine }}
-      - name: optional benchmark
-        if: github.event_name == 'workflow_dispatch' && inputs.benchmark
-        run: just bench-${{ matrix.engine }}
+        run: integration/engines/run.sh ${{ matrix.engine }} ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark && '--bench' || '' }}
       - name: upload logs and benchmark artifacts
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0

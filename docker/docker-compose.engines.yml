@@ -77,15 +77,16 @@ x-sglang-cpu: &sglang-cpu
 
 services:
   # Two independent servers make the gateway exercise an actual target pool.
+  # Ports bind to loopback only; the suite is host-local by design.
   vllm-1:
     <<: *vllm-cpu
-    ports: ["${VLLM_1_PORT:-8000}:8000"]
+    ports: ["127.0.0.1:${VLLM_1_PORT:-8000}:8000"]
   vllm-2:
     <<: *vllm-cpu
-    ports: ["${VLLM_2_PORT:-8001}:8000"]
+    ports: ["127.0.0.1:${VLLM_2_PORT:-8001}:8000"]
   sglang-1:
     <<: *sglang-cpu
-    ports: ["${SGLANG_1_PORT:-30000}:30000"]
+    ports: ["127.0.0.1:${SGLANG_1_PORT:-30000}:30000"]
   sglang-2:
     <<: *sglang-cpu
-    ports: ["${SGLANG_2_PORT:-30001}:30000"]
+    ports: ["127.0.0.1:${SGLANG_2_PORT:-30001}:30000"]
