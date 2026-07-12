@@ -360,23 +360,29 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // streaming miss is buffered in full, stored, and replayed instantly on a
     // later hit. the key hashes the post-injection forward body so admin param
     // defaults are part of the identity; per-key routes also mix in the vk id.
+    // a virtual key may override its route's cache decision (ROL-235 part 2):
+    // Some(false) opts the key out, Some(true) opts it in even on a route that
+    // didn't; None inherits the route flag. the global switch still gates all
     let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
-    let cache_key =
-        if snap.cache.enabled && state.response_cache.is_enabled() && entry.route.cache_enabled() {
-            let scope_seg = if entry.route.cache_per_key() {
-                vk_id.as_str()
-            } else {
-                ""
-            };
-            Some(ResponseCache::make_key(
-                &snap.cache.namespace,
-                path,
-                scope_seg,
-                &forward_body,
-            ))
+    let cache_eligible = vk
+        .as_ref()
+        .and_then(|k| k.cache_override)
+        .unwrap_or_else(|| entry.route.cache_enabled());
+    let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
+        let scope_seg = if entry.route.cache_per_key() {
+            vk_id.as_str()
         } else {
-            None
+            ""
         };
+        Some(ResponseCache::make_key(
+            &snap.cache.namespace,
+            path,
+            scope_seg,
+            &forward_body,
+        ))
+    } else {
+        None
+    };
     if let Some(key) = &cache_key {
         if let Some(hit) = state.response_cache.get(key).await {
             state.metrics.cache_hits_total.fetch_add(1, Relaxed);
@@ -1646,6 +1652,7 @@ mod tests {
             models: vec!["gpt-4o".to_string()],
             disabled: false,
             expires_at: None,
+            cache: None,
         });
         config
     }
@@ -1768,6 +1775,7 @@ mod tests {
             models: vec![],
             disabled: false,
             expires_at: None,
+            cache: None,
         });
         let state = AppState::new(&config);
 
@@ -1798,6 +1806,7 @@ mod tests {
             models: vec![],
             disabled: false,
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            cache: None,
         };
         let state = AppState::new(&config_with_one_key(vk));
         let resp = list_models(State(state), bearer("sk-expired")).await;
@@ -1812,6 +1821,7 @@ mod tests {
             models: vec![],
             disabled: true,
             expires_at: None,
+            cache: None,
         };
         let state = AppState::new(&config_with_one_key(vk));
         let resp = list_models(State(state), bearer("sk-disabled")).await;
@@ -1826,6 +1836,7 @@ mod tests {
             models: vec![],
             disabled: false,
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+            cache: None,
         };
         let state = AppState::new(&config_with_one_key(vk));
         let resp = list_models(State(state), bearer("sk-live")).await;

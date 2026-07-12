@@ -529,6 +529,12 @@ pub struct VirtualKeyConfig {
     /// optional expiry; the key stops authenticating at/after this instant
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// per-key response-cache override, independent of a route's own opt-in.
+    /// `None` inherits the route decision; `Some(false)` forces this key's
+    /// responses to bypass the cache; `Some(true)` caches them even on a route
+    /// that didn't opt in. the global `[cache]` switch is still required either way
+    #[serde(default)]
+    pub cache: Option<bool>,
 }
 
 impl VirtualKeyConfig {
@@ -558,6 +564,9 @@ pub struct VirtualKeyRecord {
     pub disabled: bool,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// per-key response-cache override; see [`VirtualKeyConfig::cache`]
+    #[serde(default)]
+    pub cache: Option<bool>,
 }
 
 impl VirtualKeyRecord {
@@ -1507,6 +1516,30 @@ mod tests {
         let bare: ModelRoute = toml::from_str(r#"model = "gpt-4o""#).unwrap();
         assert!(bare.cache.is_none());
         assert!(!bare.cache_enabled());
+    }
+
+    #[test]
+    fn virtual_key_cache_override_parses_tri_state() {
+        // absent => None (inherit the route decision)
+        let inherit: VirtualKeyConfig = toml::from_str(r#"key = "sk-a""#).unwrap();
+        assert_eq!(inherit.cache, None);
+        // explicit opt-out and opt-in survive as Some(false)/Some(true)
+        let off: VirtualKeyConfig = toml::from_str(
+            r#"
+            key = "sk-b"
+            cache = false
+            "#,
+        )
+        .unwrap();
+        assert_eq!(off.cache, Some(false));
+        let on: VirtualKeyConfig = toml::from_str(
+            r#"
+            key = "sk-c"
+            cache = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(on.cache, Some(true));
     }
 
     #[test]

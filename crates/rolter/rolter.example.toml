@@ -137,6 +137,9 @@ name = "local-dev"
 models = []           # empty = all models allowed
 disabled = false      # revoke without deleting
 # expires_at = "2027-01-01T00:00:00Z"   # rfc3339; key stops working at/after this
+# cache = false   # per-key response-cache override, independent of a route's opt-in:
+#                 # omit to inherit the route, false to bypass, true to cache even on
+#                 # a non-opted-in route (the global [cache] switch is still required)
 
 # --- per-model token pricing (usd per million tokens) ---
 # drives cost_usd on each request log; models without a price log cost 0

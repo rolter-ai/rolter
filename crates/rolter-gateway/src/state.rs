@@ -40,6 +40,10 @@ pub struct KeyMeta {
     pub models: Vec<String>,
     pub disabled: bool,
     pub expires_at: Option<DateTime<Utc>>,
+    /// per-key response-cache override; `None` inherits the route decision,
+    /// `Some(false)` bypasses the cache for this key, `Some(true)` caches even
+    /// on a non-opted-in route (the global switch is still required)
+    pub cache_override: Option<bool>,
 }
 
 impl KeyMeta {
@@ -153,6 +157,7 @@ impl Snapshot {
                     models: k.models.clone(),
                     disabled: k.disabled,
                     expires_at: k.expires_at,
+                    cache_override: k.cache,
                     ..Default::default()
                 },
             );
@@ -169,6 +174,7 @@ impl Snapshot {
                     models: k.models.clone(),
                     disabled: k.disabled,
                     expires_at: k.expires_at,
+                    cache_override: k.cache,
                 },
             );
         }
