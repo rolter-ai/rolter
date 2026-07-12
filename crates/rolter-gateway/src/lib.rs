@@ -99,16 +99,21 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     let state = AppState::with_logging(&config, args.redis_url.as_deref());
 
-    // start active upstream health probing when enabled; skips unhealthy targets
+    // the health prober is always spawned; it self-gates on the live snapshot so a
+    // hot-reload can enable/disable and re-tune probing without a restart (ROL-125)
     if config.health.enabled {
         tracing::info!(
             interval_secs = config.health.interval_secs,
             path = %config.health.path,
             "active upstream health probing enabled"
         );
-        health::spawn_prober(&config, state.clone());
-        upstream_metrics::spawn_scraper(&config, state.clone());
+    } else {
+        tracing::info!("active upstream health probing disabled (enable via config hot-reload)");
     }
+    health::spawn_prober(state.clone());
+    // the metrics scraper self-gates on config.metrics_scrape.enabled (its
+    // reload-awareness is tracked separately from the prober's)
+    upstream_metrics::spawn_scraper(&config, state.clone());
 
     // the status-page poller is an independent secondary signal: it runs whenever
     // any provider sets status_page_url, regardless of active probing
