@@ -7,6 +7,7 @@
 //! The binary is a thin wrapper over [`run`]; the unified `rolter` launcher
 //! reuses the same entrypoint as its `gateway` subcommand.
 
+mod admin_proxy;
 mod breaker;
 mod budgets;
 mod cache;
@@ -66,6 +67,16 @@ pub struct Args {
     /// instead of waiting for the poll interval
     #[arg(long, env = "ROLTER_REDIS_URL")]
     pub redis_url: Option<String>,
+    /// control-plane base url (e.g. `http://control:4001`); when set, the
+    /// gateway serves `/admin/*` by proxying to the control plane's
+    /// `/api/v1/*` management API, so providers/models/keys can be managed
+    /// through the gateway port
+    #[arg(long, env = "ROLTER_ADMIN_URL")]
+    pub admin_url: Option<String>,
+    /// bearer token sent on snapshot polls (and required by the control
+    /// plane's management API when it sets the same `ROLTER_ADMIN_TOKEN`)
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    pub admin_token: Option<String>,
 }
 
 /// Run the data-plane gateway to completion. The caller owns argument parsing
@@ -126,16 +137,29 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(snapshot_url) = args.snapshot_url {
         let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
         tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
-        watcher::spawn(state.clone(), snapshot_url, period, args.redis_url);
+        watcher::spawn(
+            state.clone(),
+            snapshot_url,
+            period,
+            args.redis_url,
+            args.admin_token.clone(),
+        );
     } else {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }
 
-    let app = build_router(
+    let mut app = build_router(
         state,
         &config.server.metrics_path,
         config.server.max_body_bytes,
     );
+
+    // opt-in management surface on the gateway port, proxied to the control
+    // plane (which owns persistence and authentication)
+    if let Some(admin_url) = &args.admin_url {
+        tracing::info!(%admin_url, "admin api enabled: /admin/* proxies to the control plane");
+        app = app.merge(admin_proxy::router(admin_url));
+    }
 
     tracing::info!(%addr, metrics_path = %config.server.metrics_path, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;

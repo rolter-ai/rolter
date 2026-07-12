@@ -38,7 +38,13 @@ struct SnapshotResponse {
 /// is the poll interval; `redis_url`, when set, adds an instant pub/sub
 /// wake-up on top of the interval. Returns immediately; the tasks run until
 /// the process exits.
-pub fn spawn(state: AppState, snapshot_url: String, period: Duration, redis_url: Option<String>) {
+pub fn spawn(
+    state: AppState,
+    snapshot_url: String,
+    period: Duration,
+    redis_url: Option<String>,
+    admin_token: Option<String>,
+) {
     let wakeup = Arc::new(Notify::new());
     if let Some(url) = redis_url {
         tokio::spawn(subscribe(url, Arc::clone(&wakeup)));
@@ -50,7 +56,15 @@ pub fn spawn(state: AppState, snapshot_url: String, period: Duration, redis_url:
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_else(|_| Client::new());
-        run(&client, &state, &snapshot_url, period, &wakeup).await;
+        run(
+            &client,
+            &state,
+            &snapshot_url,
+            admin_token.as_deref(),
+            period,
+            &wakeup,
+        )
+        .await;
     });
 }
 
@@ -60,6 +74,7 @@ async fn run(
     client: &Client,
     state: &AppState,
     snapshot_url: &str,
+    admin_token: Option<&str>,
     period: Duration,
     wakeup: &Notify,
 ) {
@@ -71,7 +86,7 @@ async fn run(
             _ = ticker.tick() => {}
             _ = wakeup.notified() => {}
         }
-        if let Err(err) = poll_once(client, state, snapshot_url).await {
+        if let Err(err) = poll_once(client, state, snapshot_url, admin_token).await {
             state
                 .metrics
                 .config_reload_failures_total
@@ -115,13 +130,16 @@ async fn poll_once(
     client: &Client,
     state: &AppState,
     snapshot_url: &str,
+    admin_token: Option<&str>,
 ) -> anyhow::Result<Option<u64>> {
     let current = state.metrics.config_version.load(Relaxed);
-    let resp = client
+    let mut request = client
         .get(snapshot_url)
-        .query(&[("version", current.to_string())])
-        .send()
-        .await?;
+        .query(&[("version", current.to_string())]);
+    if let Some(token) = admin_token {
+        request = request.bearer_auth(token);
+    }
+    let resp = request.send().await?;
 
     if resp.status() == StatusCode::NOT_MODIFIED {
         return Ok(None);
@@ -182,13 +200,13 @@ mod tests {
         let url = format!("http://{addr}/internal/snapshot");
 
         // first poll applies version 5
-        let applied = poll_once(&client, &state, &url).await.unwrap();
+        let applied = poll_once(&client, &state, &url, None).await.unwrap();
         assert_eq!(applied, Some(5));
         assert_eq!(state.metrics.config_version.load(Relaxed), 5);
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
 
         // second poll is a no-op (control replies 304)
-        let applied = poll_once(&client, &state, &url).await.unwrap();
+        let applied = poll_once(&client, &state, &url, None).await.unwrap();
         assert_eq!(applied, None);
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
     }
@@ -219,7 +237,7 @@ mod tests {
         let client = Client::new();
         let url = format!("http://{addr}/internal/snapshot");
 
-        let res = poll_once(&client, &state, &url).await;
+        let res = poll_once(&client, &state, &url, None).await;
         assert!(res.is_err(), "invalid snapshot must be an error");
         // old config stays: no reload recorded, version unchanged
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 0);
@@ -234,7 +252,13 @@ mod tests {
             .build()
             .unwrap();
         // nothing is listening here
-        let err = poll_once(&client, &state, "http://127.0.0.1:1/internal/snapshot").await;
+        let err = poll_once(
+            &client,
+            &state,
+            "http://127.0.0.1:1/internal/snapshot",
+            None,
+        )
+        .await;
         assert!(err.is_err());
     }
 }
