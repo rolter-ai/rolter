@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.6](https://github.com/ormeilu/rolter/compare/rolter-proxy-v0.0.5...rolter-proxy-v0.0.6) - 2026-07-12
+
+### Features
+- *(gateway)* add /v1/audio/transcriptions + /v1/audio/translations ([#110](https://github.com/ormeilu/rolter/pull/110)) by [@ormeilu](https://github.com/ormeilu)
 
 ## [0.0.5](https://github.com/ormeilu/rolter/compare/rolter-proxy-v0.0.4...rolter-proxy-v0.0.5) - 2026-07-11
 
