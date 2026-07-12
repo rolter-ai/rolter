@@ -212,6 +212,38 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Partially update a provider. `None` leaves a field unchanged; the
+    /// nullable fields take `Some(None)` to clear.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        kind: Option<&str>,
+        api_base: Option<&str>,
+        api_key_env: Option<Option<&str>>,
+        egress_proxy: Option<Option<&str>>,
+    ) -> Result<Provider> {
+        sqlx::query_as(
+            "update providers set
+                 kind = coalesce($2, kind),
+                 api_base = coalesce($3, api_base),
+                 api_key_env = case when $4 then $5 else api_key_env end,
+                 egress_proxy = case when $6 then $7 else egress_proxy end
+             where id = $1
+             returning id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(api_base)
+        .bind(api_key_env.is_some())
+        .bind(api_key_env.flatten())
+        .bind(egress_proxy.is_some())
+        .bind(egress_proxy.flatten())
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("provider {id}")))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from providers where id = $1")
             .bind(id)
@@ -222,6 +254,50 @@ impl ProviderRepo<'_> {
             return Err(Error::NotFound(format!("provider {id}")));
         }
         Ok(())
+    }
+}
+
+/// Runtime provider credentials, sealed with AES-256-GCM (see
+/// [`super::crypto`]). One active key per provider; setting a new one
+/// replaces the old in place.
+pub struct ProviderKeyRepo<'a>(pub &'a PgPool);
+
+impl ProviderKeyRepo<'_> {
+    /// Store (or rotate) the sealed credential for `provider_id`.
+    pub async fn set(&self, provider_id: Uuid, ciphertext: &[u8], nonce: &[u8]) -> Result<()> {
+        sqlx::query(
+            "insert into provider_keys (provider_id, ciphertext, nonce)
+             values ($1, $2, $3)
+             on conflict (provider_id)
+             do update set ciphertext = excluded.ciphertext, nonce = excluded.nonce,
+                           created_at = now()",
+        )
+        .bind(provider_id)
+        .bind(ciphertext)
+        .bind(nonce)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Remove the stored credential for `provider_id` (no-op when absent).
+    pub async fn clear(&self, provider_id: Uuid) -> Result<()> {
+        sqlx::query("delete from provider_keys where provider_id = $1")
+            .bind(provider_id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Whether a credential is stored for `provider_id`.
+    pub async fn exists(&self, provider_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar("select exists(select 1 from provider_keys where provider_id = $1)")
+            .bind(provider_id)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
     }
 }
 

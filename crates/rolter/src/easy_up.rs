@@ -50,6 +50,10 @@ pub struct EasyUpArgs {
     /// refetches immediately instead of waiting for its poll interval
     #[arg(long, env = "ROLTER_REDIS_URL")]
     pub redis_url: Option<String>,
+    /// bearer token protecting the management API and snapshot endpoint;
+    /// shared by the control plane (enforces) and gateway (sends)
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    pub admin_token: Option<String>,
     /// clickhouse http url; enables the dashboard usage/cost analytics
     #[arg(long, env = "CLICKHOUSE_URL")]
     pub clickhouse_url: Option<String>,
@@ -98,6 +102,10 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
             .then(|| format!("http://127.0.0.1:{}/internal/snapshot", args.control_port)),
         snapshot_poll_secs: 5,
         redis_url: args.redis_url.clone(),
+        // in db mode the gateway port doubles as the management surface:
+        // /admin/* proxies to the co-hosted control plane
+        admin_url: db_mode.then(|| format!("http://127.0.0.1:{}", args.control_port)),
+        admin_token: args.admin_token.clone(),
     }
 }
 
@@ -115,6 +123,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         database_url,
         redis_url: args.redis_url.clone(),
         clickhouse_url: args.clickhouse_url.clone(),
+        admin_token: args.admin_token.clone(),
     }
 }
 
@@ -238,6 +247,7 @@ mod tests {
             control_port: 4001,
             ui_dir: PathBuf::from("ui/dist"),
             redis_url: None,
+            admin_token: None,
             clickhouse_url: None,
             #[cfg(feature = "postgres")]
             database_url: None,

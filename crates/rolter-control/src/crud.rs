@@ -21,8 +21,8 @@ use rolter_store::postgres::models::{
     Budget, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team, VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    BudgetRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderRepo, RateLimitRepo, RouteRepo,
-    RouteTargetRepo, TeamRepo, VirtualKeyRepo,
+    BudgetRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo,
+    RouteRepo, RouteTargetRepo, TeamRepo, VirtualKeyRepo,
 };
 
 use crate::ControlState;
@@ -45,7 +45,10 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/orgs/{org_id}/providers",
             get(list_providers).post(create_provider),
         )
-        .route("/api/v1/providers/{id}", delete(delete_provider))
+        .route(
+            "/api/v1/providers/{id}",
+            put(update_provider).delete(delete_provider),
+        )
         .route(
             "/api/v1/projects/{project_id}/routes",
             get(list_routes).post(create_route),
@@ -295,6 +298,9 @@ struct CreateProvider {
     name: String,
     kind: String,
     api_base: String,
+    /// upstream credential, sealed with AES-256-GCM (`ROLTER_KEK`) before it
+    /// reaches the database; never returned by the API
+    api_key: Option<String>,
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
 }
@@ -313,6 +319,30 @@ const PROVIDER_KINDS: [&str; 11] = [
     "vertex",
 ];
 
+/// Seal `api_key` with the deployment KEK for at-rest storage. An empty or
+/// whitespace-only key is rejected; a missing `ROLTER_KEK` is a client-visible
+/// configuration error rather than a silent plaintext fallback.
+fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
+    use rolter_store::postgres::crypto::{Kek, KEK_ENV};
+    require_non_empty(api_key, "api_key")?;
+    let Some(kek) = Kek::from_env() else {
+        return Err(ApiError::Core(Error::Config(format!(
+            "storing provider keys requires the {KEK_ENV} environment variable on the \
+             control plane (and the gateway, to decrypt snapshots)"
+        ))));
+    };
+    Ok(kek.encrypt(api_key)?)
+}
+
+fn validate_kind(kind: &str) -> ApiResult<()> {
+    if !PROVIDER_KINDS.contains(&kind) {
+        return Err(ApiError::Core(Error::Config(format!(
+            "kind must be one of {PROVIDER_KINDS:?}"
+        ))));
+    }
+    Ok(())
+}
+
 async fn create_provider(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
@@ -321,11 +351,9 @@ async fn create_provider(
     require_non_empty(&body.name, "name")?;
     require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
-    if !PROVIDER_KINDS.contains(&body.kind.as_str()) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "kind must be one of {PROVIDER_KINDS:?}"
-        ))));
-    }
+    validate_kind(&body.kind)?;
+    // seal before touching the database so a missing KEK leaves no row behind
+    let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
         .create(
             org_id,
@@ -336,6 +364,75 @@ async fn create_provider(
             body.egress_proxy.as_deref(),
         )
         .await?;
+    if let Some((ciphertext, nonce)) = sealed {
+        ProviderKeyRepo(pool(&state))
+            .set(row.id, &ciphertext, &nonce)
+            .await?;
+    }
+    publish_config_change(&state).await?;
+    Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+struct UpdateProvider {
+    /// omit to leave unchanged
+    kind: Option<String>,
+    /// omit to leave unchanged
+    api_base: Option<String>,
+    /// omit to leave the stored credential unchanged; empty string deletes
+    /// it; anything else rotates it
+    api_key: Option<String>,
+    /// omit to leave unchanged; empty string clears
+    api_key_env: Option<String>,
+    /// omit to leave unchanged; empty string clears
+    egress_proxy: Option<String>,
+}
+
+/// Map an optional string field to the repo's tri-state: omitted = unchanged,
+/// empty = clear, otherwise = set.
+fn tri_state(field: &Option<String>) -> Option<Option<&str>> {
+    field
+        .as_deref()
+        .map(|v| Some(v.trim()).filter(|v| !v.is_empty()))
+}
+
+async fn update_provider(
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateProvider>,
+) -> ApiResult<Json<Provider>> {
+    let existing = ProviderRepo(pool(&state)).get(id).await?;
+    require_not_config_owned(&state.config_owned.providers, &existing.name, "provider")?;
+    if let Some(kind) = &body.kind {
+        validate_kind(kind)?;
+    }
+    if let Some(api_base) = &body.api_base {
+        require_non_empty(api_base, "api_base")?;
+    }
+    // seal before writing anything so a missing KEK changes nothing
+    let sealed = match body.api_key.as_deref().map(str::trim) {
+        None => None,
+        Some("") => Some(None),
+        Some(key) => Some(Some(seal_api_key(key)?)),
+    };
+    let row = ProviderRepo(pool(&state))
+        .update(
+            id,
+            body.kind.as_deref(),
+            body.api_base.as_deref(),
+            tri_state(&body.api_key_env),
+            tri_state(&body.egress_proxy),
+        )
+        .await?;
+    match sealed {
+        None => {}
+        Some(None) => ProviderKeyRepo(pool(&state)).clear(id).await?,
+        Some(Some((ciphertext, nonce))) => {
+            ProviderKeyRepo(pool(&state))
+                .set(id, &ciphertext, &nonce)
+                .await?
+        }
+    }
     publish_config_change(&state).await?;
     Ok(Json(row))
 }

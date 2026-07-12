@@ -15,11 +15,24 @@ uuid = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 # postgres / redis / clickhouse backends land behind feature flags; see ROADMAP
 [features]
 default = []
-postgres = ["sqlx", "sqlx/json", "uuid", "chrono", "serde", "serde_json"]
+postgres = [
+  "sqlx",
+  "sqlx/json",
+  "uuid",
+  "chrono",
+  "serde",
+  "serde_json",
+  "aes-gcm",
+  "sha2",
+  "tracing",
+]
 
 [dev-dependencies]
 tokio = { workspace = true }
