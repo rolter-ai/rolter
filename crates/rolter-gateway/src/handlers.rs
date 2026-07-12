@@ -169,7 +169,7 @@ fn error_json(status: StatusCode, message: &str) -> Response {
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
 /// matched key (or `None` when no keys are configured, i.e. auth disabled).
 #[allow(clippy::result_large_err)]
-fn authenticate(
+pub(crate) fn authenticate(
     state: &AppState,
     snap: &Snapshot,
     headers: &HeaderMap,
@@ -1113,7 +1113,7 @@ pub(crate) fn variant_key(model: &str, variant: &str) -> String {
 
 /// Namespaces the per-key cooldown registry: keys are parked per provider,
 /// shared across every route and variant that uses that provider.
-fn key_pool_key(provider: &str) -> String {
+pub(crate) fn key_pool_key(provider: &str) -> String {
     format!("key::{provider}")
 }
 
@@ -1359,7 +1359,7 @@ async fn forward_variants(
 /// target is parked it fails open to the first untried one so requests still
 /// flow rather than 503-ing on a transient wobble.
 #[allow(clippy::too_many_arguments)]
-fn pick_untried(
+pub(crate) fn pick_untried(
     entry: &crate::state::RouteEntry,
     ctx: &RouteContext,
     tried: &[usize],

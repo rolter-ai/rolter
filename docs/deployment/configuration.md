@@ -63,6 +63,14 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `status_page_interval_secs` (u64, default `60`) — seconds between provider status-page polls; only providers with a `status_page_url` are polled, and the poller runs even when `enabled = false`
 - probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
 
+### `[realtime]`
+
+Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per gateway process; set a value to `0` to disable that limit.
+
+- `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
+- `max_session_secs` (u64, default `3600`) — hard session-duration limit
+- `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame
+
 ## Environment variables
 
 - `ROLTER_CONFIG`, `ROLTER_HOST`, `ROLTER_PORT` — gateway

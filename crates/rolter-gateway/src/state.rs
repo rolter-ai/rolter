@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rolter_balancer::{build_with_stats, LoadBalancer, TargetStats};
 use rolter_core::{
     BudgetConfig, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, ModelPriceConfig,
-    ModelRoute, ProviderConfig, RateLimitConfig, RetryConfig, Target,
+    ModelRoute, ProviderConfig, RateLimitConfig, RealtimeConfig, RetryConfig, Target,
 };
 use rolter_proxy::Forwarder;
 
@@ -79,6 +79,8 @@ pub struct Snapshot {
     /// global response-cache policy (master switch + default TTL + namespace);
     /// per-route opt-in lives on each route's `cache` field
     pub cache: CacheConfig,
+    /// guardrails for long-lived WebSocket Realtime sessions
+    pub realtime: RealtimeConfig,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -190,6 +192,7 @@ impl Snapshot {
             cooldown: config.cooldown.clone(),
             health: config.health.clone(),
             cache: config.cache.clone(),
+            realtime: config.realtime.clone(),
         }
     }
 }
@@ -244,6 +247,8 @@ pub struct AppState {
     pub breaker: crate::breaker::Breaker,
     /// upstream engine metrics snapshot populated by the background scraper
     pub upstream_metrics: crate::upstream_metrics::UpstreamMetrics,
+    /// process-local concurrency registry for persistent Realtime sessions
+    pub(crate) realtime_sessions: crate::realtime::Sessions,
 }
 
 impl AppState {
@@ -358,6 +363,7 @@ impl AppState {
             } else {
                 crate::upstream_metrics::UpstreamMetrics::default()
             },
+            realtime_sessions: crate::realtime::Sessions::default(),
         }
     }
 

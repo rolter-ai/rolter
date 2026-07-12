@@ -22,6 +22,7 @@ mod metrics;
 mod multipart;
 mod openapi;
 mod rate_limits;
+mod realtime;
 mod state;
 mod status_page;
 mod trace;
@@ -182,6 +183,7 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
             post(handlers::audio_transcriptions),
         )
         .route("/v1/audio/translations", post(handlers::audio_translations))
+        .route("/v1/realtime", get(realtime::realtime))
         // cap request bodies (raising axum's 2 MiB default) so large LLM
         // payloads pass but a pathological body is rejected. the mapper is added
         // next, so it wraps the limit layer and rewrites its 413 into json
