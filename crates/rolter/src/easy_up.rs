@@ -20,10 +20,14 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 
 /// bundled default config, written to disk on first run when none exists
-const EXAMPLE_CONFIG: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../rolter.example.toml"
-));
+///
+/// kept as a copy inside the crate (rather than `include_str!`-ing the
+/// workspace-root `rolter.example.toml`) because `cargo publish` packages and
+/// verifies each crate in isolation, so paths outside the crate root aren't
+/// available; a test (`bundled_example_config_matches_workspace_root`) guards
+/// against the two copies drifting apart.
+const EXAMPLE_CONFIG: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/rolter.example.toml"));
 
 #[derive(Args, Debug)]
 pub struct EasyUpArgs {
@@ -195,6 +199,17 @@ fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_example_config_matches_workspace_root() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rolter.example.toml");
+        let root_contents = std::fs::read_to_string(root).unwrap();
+        assert_eq!(
+            EXAMPLE_CONFIG, root_contents,
+            "crates/rolter/rolter.example.toml is out of sync with the workspace-root copy; \
+             re-run `cp rolter.example.toml crates/rolter/rolter.example.toml`"
+        );
+    }
 
     #[test]
     fn ensure_config_writes_when_missing_and_is_idempotent() {
