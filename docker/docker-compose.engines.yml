@@ -1,0 +1,77 @@
+# Optional CPU-backed upstreams for real-engine compatibility tests (ROL-238).
+# They are separate from docker-compose.yml so normal development stays light.
+name: rolter-engines
+
+x-vllm-cpu: &vllm-cpu
+  profiles: [vllm]
+  image: vllm/vllm-openai-cpu:v0.24.0-x86_64
+  shm_size: 2gb
+  cap_add: [SYS_NICE]
+  security_opt: [seccomp=unconfined]
+  environment:
+    VLLM_CPU_KVCACHE_SPACE: "1"
+  command: &vllm-command
+    - --model
+    - Qwen/Qwen2.5-0.5B-Instruct
+    - --served-model-name
+    - rolter-dummy
+    - --load-format
+    - dummy
+    - --dtype
+    - bfloat16
+    - --max-model-len
+    - "128"
+    - --max-num-seqs
+    - "2"
+  volumes:
+    # Dummy mode skips weights; the public config and tokenizer remain cached.
+    - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
+
+x-sglang-cpu: &sglang-cpu
+  profiles: [sglang]
+  # This is SGLang's documented CPU build rather than its CUDA runtime image.
+  build:
+    context: https://github.com/sgl-project/sglang.git#v0.5.12:docker
+    dockerfile: xeon.Dockerfile
+  image: rolter-sglang-cpu:v0.5.12
+  shm_size: 2gb
+  environment:
+    SGLANG_USE_CPU_ENGINE: "1"
+  command: &sglang-command
+    - python3
+    - -m
+    - sglang.launch_server
+    - --model-path
+    - Qwen/Qwen2.5-0.5B-Instruct
+    - --served-model-name
+    - rolter-dummy
+    - --load-format
+    - dummy
+    - --device
+    - cpu
+    - --tp-size
+    - "1"
+    - --context-length
+    - "128"
+    - --disable-overlap-schedule
+    - --host
+    - 0.0.0.0
+    - --port
+    - "30000"
+  volumes:
+    - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
+
+services:
+  # Two independent servers make the gateway exercise an actual target pool.
+  vllm-1:
+    <<: *vllm-cpu
+    ports: ["${VLLM_1_PORT:-8000}:8000"]
+  vllm-2:
+    <<: *vllm-cpu
+    ports: ["${VLLM_2_PORT:-8001}:8000"]
+  sglang-1:
+    <<: *sglang-cpu
+    ports: ["${SGLANG_1_PORT:-30000}:30000"]
+  sglang-2:
+    <<: *sglang-cpu
+    ports: ["${SGLANG_2_PORT:-30001}:30000"]

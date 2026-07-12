@@ -85,6 +85,21 @@ bench:
 bench-check:
     cargo bench --workspace --no-run
 
+# CPU real-engine smoke tests. They use dummy weights (no model weights or
+# provider secrets) but still download/cache the public model config+tokenizer.
+integration-vllm:
+    integration/engines/run.sh vllm
+
+integration-sglang:
+    integration/engines/run.sh sglang
+
+# Manual/CI-dispatch performance samples; artifacts land under artifacts/.
+bench-vllm:
+    integration/engines/run.sh vllm --bench
+
+bench-sglang:
+    integration/engines/run.sh sglang --bench
+
 # supply-chain audit (advisories, bans, licenses, sources)
 deny:
     cargo deny check --config .config/deny.toml
