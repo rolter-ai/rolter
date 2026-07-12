@@ -118,9 +118,11 @@ streaming first-byte time in JSON. Results only compare runs on the same host,
 CPU image, engine versions, and host configuration; throughput thresholds are
 deliberately not merge gates.
 
-The `engine integration` workflow runs the CPU vLLM smoke suite on demand via
-`workflow_dispatch` (Actions tab, or `gh workflow run "engine integration"`);
-it does not gate pull requests. SGLang remains available through the local
+The `engine integration` workflow covers the CPU vLLM smoke suite. Its job
+runs in the `engine-integration` environment, whose required-reviewer rule
+holds every run (pull request or `workflow_dispatch`) behind an approve
+button, so it only spends runner time when a maintainer releases it. SGLang
+remains available through the local
 `just integration-sglang` command, but its source-built CPU image is currently
 too heavy for the shared CI gate. This suite is for compatibility, not a
 performance gate.

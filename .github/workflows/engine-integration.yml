@@ -1,8 +1,15 @@
 name: engine integration
 
-# manual-only: the CPU engine smoke is slow on hosted runners, so it runs
-# on demand from the Actions tab instead of gating every PR
+# the smoke job runs in the engine-integration environment, whose required
+# reviewer rule pauses every run behind an approve button on the PR; approve
+# it only when the engine paths are worth the slow CPU smoke
 on:
+  pull_request:
+    paths:
+      - "docker/docker-compose.engines.yml"
+      - "integration/engines/**"
+      - "justfile"
+      - ".github/workflows/engine-integration.yml"
   workflow_dispatch:
     inputs:
       benchmark:
@@ -20,6 +27,7 @@ jobs:
     # CPU-only on GitHub-hosted runners: this is an API/SSE compatibility test,
     # not an inference-engine performance benchmark.
     runs-on: ubuntu-latest
+    environment: engine-integration
     strategy:
       fail-fast: false
       matrix:
