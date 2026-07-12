@@ -85,7 +85,7 @@ flowchart LR
 
 ```bash
 cargo build --workspace
-cargo test --workspace
+cargo nextest run --workspace   # tests via nextest (as CI does); + `cargo test --doc --workspace`
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```

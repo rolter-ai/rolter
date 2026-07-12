@@ -2,10 +2,24 @@
 
 ## Run
 
+Tests run under [nextest](https://nexte.st/) (the same runner CI uses), plus a
+separate doc-test pass since nextest does not run doc tests:
+
 ```bash
-cargo test --workspace        # unit tests
-cd ui && bun run lint         # ui typecheck
+cargo nextest run --workspace   # unit + integration tests
+cargo test --doc --workspace    # doc tests
+cd ui && bun run lint           # ui typecheck
 ```
+
+Install the runner once with `cargo install cargo-nextest` (or see the
+[nextest install docs](https://nexte.st/docs/installation/)). `just test` runs
+both Rust passes for you. Plain `cargo test --workspace` still works if you
+haven't installed nextest, but CI runs nextest so prefer it locally.
+
+Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
+the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
+reset the schema per test, so they run in a single-threaded group to avoid
+clobbering each other.
 
 ## Layout
 
@@ -22,4 +36,4 @@ cd ui && bun run lint         # ui typecheck
 
 ## CI
 
-`.github/workflows/ci.yml` runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test --workspace` on every push/PR, plus a Conventional Commit PR-title check.
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
