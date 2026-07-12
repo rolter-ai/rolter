@@ -16,6 +16,7 @@ use crate::cache::ResponseCache;
 use crate::health_events::HealthEventSink;
 use crate::logging::LogSink;
 use crate::metrics::Metrics;
+use crate::queue::ProviderQueues;
 use crate::rate_limits::RateLimiter;
 
 /// A resolved route plus its constructed balancer.
@@ -71,6 +72,8 @@ pub struct Snapshot {
     pub rate_limits: Arc<Vec<RateLimitConfig>>,
     /// upstream retry policy applied on transient failures
     pub retry: RetryConfig,
+    /// bounded per-provider queue configuration, swapped atomically with routes
+    pub queue: rolter_core::QueueConfig,
     /// per-target cooldown policy applied on transient failures
     pub cooldown: CooldownConfig,
     /// active health-probing tuning, read live by the background prober so a
@@ -189,6 +192,7 @@ impl Snapshot {
             budgets: Arc::new(config.budgets.clone()),
             rate_limits: Arc::new(config.rate_limits.clone()),
             retry: config.retry.clone(),
+            queue: config.queue.clone(),
             cooldown: config.cooldown.clone(),
             health: config.health.clone(),
             cache: config.cache.clone(),
@@ -226,6 +230,9 @@ fn target_costs(
 pub struct AppState {
     pub snapshot: Arc<ArcSwap<Snapshot>>,
     pub forwarder: Arc<Forwarder>,
+    /// bounded worker queues keyed by provider; queue settings come from the
+    /// live snapshot so a hot reload takes effect for subsequent requests
+    pub provider_queues: ProviderQueues,
     pub metrics: Arc<Metrics>,
     pub log: LogSink,
     /// batched writer for provider health events; disabled when no clickhouse url
@@ -332,9 +339,12 @@ impl AppState {
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
         let loads = crate::load::LoadTracker::new();
+        let forwarder = Arc::new(Forwarder::with_timeouts(&config.timeouts));
+        let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config, &loads))),
-            forwarder: Arc::new(Forwarder::with_timeouts(&config.timeouts)),
+            forwarder,
+            provider_queues,
             metrics,
             log,
             health_events,

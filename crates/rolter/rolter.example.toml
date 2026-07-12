@@ -225,6 +225,18 @@ disabled = false      # revoke without deleting
 # connect_secs = 10
 # request_secs = 60
 
+# --- per-provider queues and backpressure ---
+# each provider gets an independent bounded request queue and worker set, so a
+# slow or unavailable upstream cannot exhaust gateway admission capacity for
+# healthy providers. workers limit concurrent waits for response headers; SSE
+# bodies still stream directly to the client after headers arrive. defaults:
+# [queue]
+# enabled = true
+# capacity = 256             # waiting requests per provider
+# workers = 8                # concurrent header requests per provider
+# backpressure = "error"      # drop | block | error
+# block_timeout_ms = 1000     # only used by backpressure = "block"
+
 # --- active upstream health checks ---
 # when enabled, a background task periodically issues a lightweight GET
 # {api_base}{path} to each provider; a provider that times out, fails to connect,

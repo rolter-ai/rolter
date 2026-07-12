@@ -15,12 +15,47 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use crossbeam_queue::ArrayQueue;
 use futures_util::Stream;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::metrics::Metrics;
+
+/// Bounded, lock-free reuse for the response bytes retained only long enough
+/// to extract token usage. Oversized buffers are deliberately not retained so
+/// one unusually large completion cannot inflate the steady-state footprint.
+#[derive(Clone)]
+struct UsageBufferPool {
+    buffers: Arc<ArrayQueue<Vec<u8>>>,
+}
+
+impl Default for UsageBufferPool {
+    fn default() -> Self {
+        Self {
+            buffers: Arc::new(ArrayQueue::new(128)),
+        }
+    }
+}
+
+impl UsageBufferPool {
+    const MAX_RETAINED_BYTES: usize = 1024 * 1024;
+
+    fn take(&self) -> Vec<u8> {
+        self.buffers
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(4096))
+    }
+
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        if buffer.capacity() > Self::MAX_RETAINED_BYTES {
+            return;
+        }
+        buffer.clear();
+        let _ = self.buffers.push(buffer);
+    }
+}
 
 /// One row of the ClickHouse `request_logs` table. Field names match the column
 /// names so the struct serializes directly as a `JSONEachRow` line. `ts` is
@@ -172,6 +207,7 @@ fn u32_field(value: &Value, key: &str) -> Option<u32> {
 pub struct UsageLoggingStream {
     inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
     buf: Vec<u8>,
+    buffer_pool: UsageBufferPool,
     is_sse: bool,
     started: Instant,
     ttft_ms: Option<u32>,
@@ -201,9 +237,11 @@ impl UsageLoggingStream {
         token_recorder: Option<crate::rate_limits::TokenRecorder>,
         inflight_guard: Option<crate::load::LoadGuard>,
     ) -> Self {
+        let buffer_pool = sink.usage_buffers.clone();
         Self {
             inner,
-            buf: Vec::new(),
+            buf: buffer_pool.take(),
+            buffer_pool,
             is_sse,
             started,
             ttft_ms: None,
@@ -221,6 +259,7 @@ impl UsageLoggingStream {
             return;
         };
         let usage = parse_usage(self.is_sse, &self.buf);
+        self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
         log.completion_tokens = usage.completion;
         log.total_tokens = usage.total;
@@ -327,6 +366,8 @@ fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEven
 pub struct LogSink {
     tx: Option<mpsc::Sender<RequestLog>>,
     metrics: Arc<Metrics>,
+    /// reusable response-accounting buffers shared by all request streams
+    usage_buffers: UsageBufferPool,
     // the passive funnel also feeds provider health events (ROL-197); disabled
     // when no clickhouse url is set
     health_events: crate::health_events::HealthEventSink,
@@ -339,6 +380,7 @@ impl LogSink {
             tx: None,
             health_events: crate::health_events::HealthEventSink::disabled(metrics.clone()),
             metrics,
+            usage_buffers: UsageBufferPool::default(),
         }
     }
 
@@ -375,6 +417,7 @@ impl LogSink {
             tx: Some(tx),
             health_events: crate::health_events::HealthEventSink::disabled(metrics.clone()),
             metrics,
+            usage_buffers: UsageBufferPool::default(),
         }
     }
 
@@ -483,6 +526,17 @@ impl BatchWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_buffer_pool_reuses_small_buffers() {
+        let pool = UsageBufferPool::default();
+        let mut buffer = pool.take();
+        buffer.extend_from_slice(b"usage");
+        let ptr = buffer.as_ptr();
+        pool.recycle(buffer);
+        let reused = pool.take();
+        assert_eq!(reused.as_ptr(), ptr);
+    }
 
     #[test]
     fn request_log_serializes_without_ts() {

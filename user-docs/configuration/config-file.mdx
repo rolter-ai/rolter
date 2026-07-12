@@ -436,6 +436,48 @@ request_secs = 60
 
 ---
 
+### \[queue\]
+
+Rolter keeps a bounded dispatch queue and a worker set for each provider. A
+provider that stalls before sending response headers therefore backs up only its
+own queue; requests selected for other providers continue independently. Once
+headers arrive, response bodies (including SSE) stream directly to the caller.
+The settings are applied to subsequent requests immediately after a config
+snapshot reload.
+
+<ParamField path="enabled" default="true" type="boolean">
+  Set to `false` to bypass queues and forward directly.
+</ParamField>
+
+<ParamField path="capacity" default="256" type="usize">
+  Maximum waiting requests per provider. Active workers do not count against this limit.
+</ParamField>
+
+<ParamField path="workers" default="8" type="usize">
+  Concurrent upstream requests waiting for response headers for each provider.
+</ParamField>
+
+<ParamField path="backpressure" default="error" type="drop | block | error">
+  `drop` sheds a full queue with a 503; `error` returns a 429 `queue_full` response. `block` waits for capacity up to `block_timeout_ms` and then returns 429 `queue_timeout`.
+</ParamField>
+
+<ParamField path="block_timeout_ms" default="1000" type="u64">
+  Maximum capacity wait when `backpressure = "block"`. It must be greater than zero for that policy.
+</ParamField>
+
+```toml
+[queue]
+enabled = true
+capacity = 256
+workers = 8
+backpressure = "error"
+block_timeout_ms = 1000
+```
+
+Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`.
+
+---
+
 ### \[health\]
 
 When enabled, a background task periodically probes each provider with a lightweight `GET` request. A provider that times out, fails to connect, or returns `5xx` is marked unhealthy and its targets are skipped. Any non-5xx response (including `401` or `404`) counts as healthy. Disabled by default.
