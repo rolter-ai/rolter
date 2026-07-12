@@ -1,0 +1,246 @@
+# rolter bootstrap config
+#
+# copy to rolter.toml and adjust. secrets should come from environment variables
+# referenced by `api_key_env`, not be written inline.
+
+[server]
+host = "0.0.0.0"
+port = 4000
+# path the prometheus metrics endpoint is served on. change it when an upstream
+# app or sidecar already owns /metrics behind the same reverse proxy. defaults
+# to "/metrics"; must be rooted and must not collide with a built-in route.
+# metrics_path = "/internal/metrics"
+# secret mixed into virtual-key digests (keeps plaintext keys out of gateway
+# memory). prefer the ROLTER_KEY_PEPPER env var over writing it inline.
+# key_pepper = "change-me"
+
+# --- providers: where rolter can forward to ---
+
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+# egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+api_base = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[[providers]]
+name = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://localhost:8001"
+
+[[providers]]
+name = "vllm-2"
+kind = "openai_compatible"
+api_base = "http://localhost:8002"
+
+# --- routes: public model name -> upstream targets + strategy ---
+
+[[routes]]
+model = "gpt-4o"
+strategy = "round_robin"
+# admin-set default inference params injected into the request body. an unset
+# param passes through untouched. param_policy governs whether callers may
+# override a default: mode "allow" (default) lets callers override anything not
+# in `deny`; mode "deny" pins every default except those in `allow`. when an
+# override is denied the admin default silently wins.
+# [routes.params]
+# temperature = 0.0        # force deterministic output for this model
+# max_tokens = 1024        # cap output length
+# [routes.param_policy]
+# mode = "deny"
+# allow = ["max_tokens"]   # callers may still lower max_tokens
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+
+[[routes]]
+model = "claude"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+# a self-hosted pool of vllm instances balanced with cache-aware routing
+[[routes]]
+model = "llama"
+strategy = "cache_aware"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+
+# weighted routing: send 3x as much traffic to the first target as the second
+# (smooth weighted round-robin — proportional but evenly interleaved)
+[[routes]]
+model = "llama-weighted"
+strategy = "weighted"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 3
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+
+# composable pipeline: filter → weighted-score → argmax. blends the target
+# weight, in-flight load, and prefix-cache affinity scorers into one decision —
+# the foundation future cost/latency/kv-cache scorers plug into
+[[routes]]
+model = "llama-pipeline"
+strategy = "pipeline"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 2
+[[routes.targets]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+
+# weighted variants: A/B, canary, and key-split traffic under one schema. a
+# request samples one variant by weight (the primary) and, on failure, falls
+# back to the remaining variants in declared order; within a variant the
+# targets are tried in order. variant-level params (below) layer over the
+# route-level params. the chosen variant name is attributed in request logs
+# (the `variant` column) for A/B analysis. a route uses variants instead of the
+# top-level targets/strategy pool.
+# [[routes]]
+# model = "chat"
+# [[routes.variants]]
+# name = "control"
+# weight = 9
+# [[routes.variants.targets]]
+# provider = "openai"
+# model = "gpt-4o"
+# [[routes.variants]]
+# name = "canary"
+# weight = 1
+# [[routes.variants.targets]]
+# provider = "anthropic"
+# model = "claude-sonnet-4-20250514"
+
+# --- virtual keys clients present to the gateway ---
+# remove this section to run open (no auth) in local development
+
+[[virtual_keys]]
+key = "sk-rolter-dev"
+name = "local-dev"
+models = []           # empty = all models allowed
+disabled = false      # revoke without deleting
+# expires_at = "2027-01-01T00:00:00Z"   # rfc3339; key stops working at/after this
+
+# --- per-model token pricing (usd per million tokens) ---
+# drives cost_usd on each request log; models without a price log cost 0
+# [[model_prices]]
+# model = "gpt-4o"
+# input_per_mtok = 2.5
+# output_per_mtok = 10.0
+# cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok
+
+# --- spend caps (enforced against redis-tracked cost) ---
+# a request is blocked with 402 when any matching budget's spend has reached its
+# limit (most-restrictive-wins across the scope chain). requires --redis-url;
+# without redis, budgets fail open. `id` matches the request's virtual-key scope
+# ids (org/team/project/virtual-key id); config keys carry no scope, so these
+# target database-defined keys.
+# [[budgets]]
+# scope = "org"        # org | team | project | key
+# id = "org-uuid"
+# limit_usd = 500.0
+# period = "monthly"   # monthly (default) | daily | total
+
+# --- throughput caps (redis sliding window, per-minute) ---
+# a request is rejected with 429 (+ retry-after) when a matching limit's
+# trailing-minute request or token count has reached its cap (most-restrictive-
+# wins across the scope chain). requires --redis-url; without redis, limits fail
+# open. `id` matches the request's virtual-key scope ids, like budgets above.
+# [[rate_limits]]
+# scope = "key"        # org | team | project | key
+# id = "vk-uuid"
+# rpm = 600            # requests per minute; omit to leave requests uncapped
+# tpm = 150000         # tokens per minute; omit to leave tokens uncapped
+
+# --- upstream retry policy ---
+# on a transient upstream failure (http 408/429/5xx or a connection error) the
+# gateway re-picks a target (excluding ones already tried, so retries fail over
+# to sibling targets) and forwards again. backoff is exponential with jitter; a
+# 429 retry-after header (whole seconds) overrides the computed delay. retries
+# only happen before any body bytes reach the client. defaults shown below.
+# [retry]
+# max_retries = 2         # extra attempts after the first; 0 disables retries
+# base_backoff_ms = 100   # base delay for the first retry
+# max_backoff_ms = 2000   # ceiling for the backoff delay
+
+# --- per-target cooldowns ---
+# after a target returns a transient failure (http 429/5xx or a connection
+# error) it is parked for base_secs (or the 429 retry-after, capped at max_secs)
+# and the balancer skips it so healthy siblings absorb the load. when every
+# sibling is parked the gateway fails open and still forwards. defaults shown.
+# [cooldown]
+# base_secs = 5     # how long a failing target is parked; 0 disables cooldowns
+# max_secs = 300    # ceiling for a cooldown derived from a 429 retry-after
+
+# --- upstream timeouts ---
+# connect_secs bounds establishing the connection; request_secs bounds time to
+# response headers (not the body, so long SSE streams are never cut short). a
+# timeout surfaces as a transient error and feeds the retry/cooldown paths. set
+# a field to 0 to disable it. defaults shown below.
+# [timeouts]
+# connect_secs = 10
+# request_secs = 60
+
+# --- active upstream health checks ---
+# when enabled, a background task periodically issues a lightweight GET
+# {api_base}{path} to each provider; a provider that times out, fails to connect,
+# or answers 5xx is marked unhealthy and the balancer skips its targets until a
+# later probe recovers it (any non-5xx status, incl. 401/404, counts as healthy).
+# when every target of a route is unhealthy the gateway fails open. disabled by
+# default. defaults shown below.
+# [health]
+# enabled = false
+# interval_secs = 10   # seconds between probe sweeps
+# timeout_secs = 2     # per-probe timeout
+# path = "/"           # appended to each provider's api_base when probing
+
+# --- per-target circuit breaker ---
+# complements the short per-failure cooldown with a longer-lived state machine.
+# after failure_threshold consecutive transient failures a target trips OPEN and
+# is skipped for open_secs; the first request after that window probes it
+# (half-open), a success closes the breaker and a failure re-opens it. where a
+# cooldown shrugs off one wobble, the breaker sheds load off a target that is down
+# hard. when every target of a route is open the gateway fails open. disabled by
+# default. defaults shown below.
+# [breaker]
+# enabled = false
+# failure_threshold = 5   # consecutive failures that trip a target open; 0 disables
+# open_secs = 30          # how long a tripped target stays open before a probe
+
+# --- upstream engine metrics scrape ---
+# when enabled, a background task periodically pulls each provider's prometheus
+# {api_base}{path} and parses the scheduler queue depth (vLLM
+# num_requests_waiting, SGLang/TGI fallbacks). the depth is folded into the
+# balancer's in-flight load view so load-aware strategies (power_of_two,
+# pipeline) steer away from backed-up engines. disabled by default; a scrape
+# failure or missing metric contributes zero depth. defaults shown below.
+# [metrics_scrape]
+# enabled = false
+# interval_secs = 5    # seconds between scrape sweeps
+# timeout_secs = 2     # per-scrape timeout
+# path = "/metrics"    # appended to each provider's api_base when scraping
+
+[logging]
+# request logs are written asynchronously in batches, off the request hot path;
+# logging is disabled entirely when clickhouse_url is unset
+# clickhouse_url = "http://localhost:8123"
+# batch_max = 1000        # flush once a batch reaches this many rows
+# flush_ms = 1000         # also flush a partial batch at least this often
+# queue_capacity = 10000  # rows are dropped (and counted) when this queue is full
