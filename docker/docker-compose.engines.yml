@@ -20,6 +20,10 @@ x-vllm-cpu: &vllm-cpu
     - rolter-dummy
     - --load-format
     - dummy
+    # the tiny model's head_dim=4 is below what vllm's cpu attention kernel
+    # supports; dummy weights make the shape override safe
+    - --hf-overrides
+    - '{"head_dim": 64}'
     - --chat-template
     - /templates/chat-template.jinja
     - --dtype
@@ -54,6 +58,9 @@ x-sglang-cpu: &sglang-cpu
     - rolter-dummy
     - --load-format
     - dummy
+    # same head_dim override as vllm; the cpu kernels need a supported size
+    - --json-model-override-args
+    - '{"head_dim": 64}'
     - --device
     - cpu
     - --tp-size
