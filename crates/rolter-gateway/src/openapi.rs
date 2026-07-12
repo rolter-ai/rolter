@@ -51,6 +51,14 @@ pub fn document() -> Value {
                     "responses": {"200": {"description": "completion", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
                 }
             },
+            "/v1/responses": {
+                "post": {
+                    "summary": "OpenAI Responses (provider-native passthrough; streaming supported)",
+                    "operationId": "createResponse",
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model"], "properties": {"model": {"type": "string"}, "input": {} , "stream": {"type": "boolean"}}}}}},
+                    "responses": {"200": {"description": "response or an SSE event stream", "content": {"application/json": {"schema": {"type": "object"}}, "text/event-stream": {"schema": {"type": "string"}}}}, "400": error_response, "401": error_response, "501": error_response}
+                }
+            },
             "/v1/messages": {
                 "post": {
                     "summary": "Anthropic Messages (streaming supported)",
@@ -222,6 +230,7 @@ mod tests {
         for path in [
             "/v1/chat/completions",
             "/v1/completions",
+            "/v1/responses",
             "/v1/messages",
             "/v1/embeddings",
             "/v1/rerank",

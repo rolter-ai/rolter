@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -73,6 +73,33 @@ pub async fn completions(
     body: Bytes,
 ) -> Response {
     proxy(state, headers, body, "/v1/completions").await
+}
+
+/// OpenAI Responses API. This intentionally shares the JSON proxy pipeline so
+/// provider-native fields and SSE events remain byte-for-byte passthrough.
+pub async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    proxy(state, headers, body, "/v1/responses").await
+}
+
+/// Response resources do not carry a model, so they cannot be safely routed
+/// from an identifier alone. Do not forward them until a tenant-scoped response
+/// registry exists; returning one uniform error avoids cross-key existence leaks.
+pub async fn unsupported_response_lifecycle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(_response_id): Path<String>,
+) -> Response {
+    state.metrics.requests_total.fetch_add(1, Relaxed);
+    let snap = state.snapshot.load();
+    if let Err(resp) = authenticate(&state, &snap, &headers) {
+        return resp;
+    }
+    crate::error::ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "response lifecycle operations are not supported; Rolter does not route model-less response identifiers",
+    )
+    .with_code("response_lifecycle_unsupported")
+    .into_response()
 }
 
 pub async fn messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -314,6 +341,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
         return match path {
             "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
+            "/v1/responses" => fake_llm::responses(&parsed),
             "/v1/messages" => fake_llm::messages(&parsed),
             "/v1/embeddings" => fake_llm::embeddings(&parsed),
             "/v1/rerank" => fake_llm::rerank(&parsed),
@@ -1842,6 +1870,32 @@ mod tests {
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["type"], "message");
         assert_eq!(value["stop_reason"], "end_turn");
+    }
+
+    #[tokio::test]
+    async fn fake_llm_serves_responses_without_config() {
+        let state = AppState::new(&GatewayConfig::default());
+        let body = Bytes::from(r#"{"model": "fake-llm", "input": "hello"}"#);
+        let resp = responses(State(state), HeaderMap::new(), body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["object"], "response");
+    }
+
+    #[tokio::test]
+    async fn response_lifecycle_is_not_forwarded() {
+        let state = AppState::new(&GatewayConfig::default());
+        let resp = unsupported_response_lifecycle(
+            State(state),
+            HeaderMap::new(),
+            Path("resp_other_tenant".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "response_lifecycle_unsupported");
     }
 
     #[tokio::test]

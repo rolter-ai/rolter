@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     OpenAiChat,
+    OpenAiResponses,
     AnthropicMessages,
     Passthrough,
 }
@@ -25,6 +26,8 @@ pub enum Protocol {
 enum StreamTranslation {
     OpenAiToAnthropic,
     AnthropicToOpenAi,
+    OpenAiToResponses,
+    AnthropicToResponses,
 }
 
 struct TranslationPair {
@@ -42,6 +45,20 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
         request: openai_request,
         response: anthropic_response,
         stream: StreamTranslation::AnthropicToOpenAi,
+    },
+    TranslationPair {
+        source: Protocol::OpenAiResponses,
+        target: Protocol::OpenAiChat,
+        request: responses_request,
+        response: responses_from_openai,
+        stream: StreamTranslation::OpenAiToResponses,
+    },
+    TranslationPair {
+        source: Protocol::OpenAiResponses,
+        target: Protocol::AnthropicMessages,
+        request: responses_to_anthropic_request,
+        response: responses_from_anthropic,
+        stream: StreamTranslation::AnthropicToResponses,
     },
     TranslationPair {
         source: Protocol::AnthropicMessages,
@@ -78,6 +95,7 @@ impl TranslationPlan {
     pub fn resolve(path: &str, provider: ProviderKind) -> Self {
         let client = match path {
             "/v1/chat/completions" => Protocol::OpenAiChat,
+            "/v1/responses" => Protocol::OpenAiResponses,
             "/v1/messages" => Protocol::AnthropicMessages,
             _ => Protocol::Passthrough,
         };
@@ -85,6 +103,9 @@ impl TranslationPlan {
             (Protocol::OpenAiChat, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::AnthropicMessages, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::AnthropicMessages, _) => Protocol::OpenAiChat,
+            (Protocol::OpenAiResponses, ProviderKind::Openai) => Protocol::OpenAiResponses,
+            (Protocol::OpenAiResponses, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
+            (Protocol::OpenAiResponses, _) => Protocol::OpenAiChat,
             (other, _) => other,
         };
         Self { client, upstream }
@@ -97,6 +118,7 @@ impl TranslationPlan {
     pub fn upstream_path(self, original: &str) -> &str {
         match self.upstream {
             Protocol::OpenAiChat => "/v1/chat/completions",
+            Protocol::OpenAiResponses => "/v1/responses",
             Protocol::AnthropicMessages => "/v1/messages",
             Protocol::Passthrough => original,
         }
@@ -123,6 +145,105 @@ impl TranslationPlan {
         }
         translate_json(body, self.client, self.upstream, false)
     }
+}
+
+/// Lower a Responses request to Chat Completions without dropping text, image,
+/// file, function-tool, or tool-result content that has a Chat equivalent.
+fn responses_request(mut v: Value) -> Value {
+    let Some(obj) = v.as_object_mut() else {
+        return v;
+    };
+    let mut messages = Vec::new();
+    if let Some(instructions) = obj.remove("instructions") {
+        messages.push(json!({"role":"system","content":instructions}));
+    }
+    match obj.remove("input") {
+        Some(Value::String(text)) => messages.push(json!({"role":"user","content":text})),
+        Some(Value::Array(items)) => {
+            for item in items {
+                match item.get("type").and_then(Value::as_str) {
+                    Some("function_call_output") => messages.push(json!({"role":"tool","tool_call_id":item["call_id"],"content":item.get("output").cloned().unwrap_or(Value::Null)})),
+                    _ => {
+                        let role = item
+                            .get("role")
+                            .and_then(Value::as_str)
+                            .unwrap_or("user")
+                            .to_string();
+                        let content = item.get("content").cloned().unwrap_or(item);
+                        messages.push(json!({"role":role,"content":responses_content_to_chat(content)}));
+                    }
+                }
+            }
+        }
+        Some(input) => messages.push(json!({"role":"user","content":input})),
+        None => {}
+    }
+    obj.insert("messages".into(), Value::Array(messages));
+    if let Some(max) = obj.remove("max_output_tokens") {
+        obj.insert("max_completion_tokens".into(), max);
+    }
+    if let Some(tools) = obj.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            if tool.get("type") == Some(&json!("function")) && tool.get("function").is_none() {
+                let function = json!({"name":tool["name"],"description":tool["description"],"parameters":tool["parameters"]});
+                *tool = json!({"type":"function","function":function});
+            }
+        }
+    }
+    remove_keys(
+        obj,
+        &[
+            "background",
+            "store",
+            "previous_response_id",
+            "reasoning",
+            "text",
+        ],
+    );
+    v
+}
+
+fn responses_content_to_chat(content: Value) -> Value {
+    match content {
+        Value::Array(parts) => Value::Array(parts.into_iter().map(|part| match part.get("type").and_then(Value::as_str) {
+            Some("input_text") => json!({"type":"text","text":part["text"]}),
+            Some("input_image") => json!({"type":"image_url","image_url":{"url":part.get("image_url").cloned().unwrap_or(Value::Null)}}),
+            Some("input_file") => json!({"type":"input_file","input_file":part}),
+            _ => part,
+        }).collect()),
+        other => other,
+    }
+}
+
+fn responses_to_anthropic_request(v: Value) -> Value {
+    openai_request(responses_request(v))
+}
+
+fn responses_from_openai(v: Value) -> Value {
+    let choice = v.pointer("/choices/0").unwrap_or(&Value::Null);
+    let message = choice.get("message").unwrap_or(&Value::Null);
+    let mut content = Vec::new();
+    if let Some(text) = message.get("content").and_then(Value::as_str) {
+        content.push(json!({"type":"output_text","text":text}));
+    }
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+        for call in calls {
+            content.push(json!({"type":"function_call","id":call["id"],"call_id":call["id"],"name":call["function"]["name"],"arguments":call["function"]["arguments"]}));
+        }
+    }
+    let input = v
+        .pointer("/usage/prompt_tokens")
+        .cloned()
+        .unwrap_or(json!(0));
+    let output = v
+        .pointer("/usage/completion_tokens")
+        .cloned()
+        .unwrap_or(json!(0));
+    json!({"id":v.get("id").cloned().unwrap_or_else(|| json!("resp_rolter")),"object":"response","status":"completed","model":v.get("model").cloned().unwrap_or(Value::Null),"output":[{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":content}],"usage":{"input_tokens":input,"output_tokens":output,"total_tokens":input.as_u64().unwrap_or(0) + output.as_u64().unwrap_or(0)}})
+}
+
+fn responses_from_anthropic(v: Value) -> Value {
+    responses_from_openai(anthropic_response(v))
 }
 
 fn translate_json(body: Bytes, from: Protocol, to: Protocol, request: bool) -> Bytes {
@@ -566,6 +687,9 @@ struct StreamState {
     started: bool,
     message_start_sent: bool,
     stopped: bool,
+    response_started: bool,
+    response_completed: bool,
+    response_usage: Value,
 }
 
 impl SseConverter {
@@ -615,6 +739,14 @@ impl SseConverter {
         match registered_pair(self.plan.client, self.plan.upstream).map(|pair| pair.stream) {
             Some(StreamTranslation::AnthropicToOpenAi) => self.anthropic_to_openai(event, &data),
             Some(StreamTranslation::OpenAiToAnthropic) => self.openai_to_anthropic(&data),
+            Some(StreamTranslation::OpenAiToResponses) => self.openai_to_responses(&data),
+            Some(StreamTranslation::AnthropicToResponses) => {
+                let chunks = self.anthropic_to_openai(event, &data);
+                chunks
+                    .into_iter()
+                    .flat_map(|chunk| self.openai_to_responses_frame(&chunk))
+                    .collect()
+            }
             None => vec![Bytes::from(format!("{text}\n\n"))],
         }
     }
@@ -728,6 +860,106 @@ impl SseConverter {
             // stream instead of losing it after the finish-reason event.
             out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or(json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or(json!(0))}})));
         }
+        out
+    }
+
+    fn openai_to_responses_frame(&mut self, frame: &Bytes) -> Vec<Bytes> {
+        let text = String::from_utf8_lossy(frame);
+        let data = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.openai_to_responses(&data)
+    }
+
+    fn openai_to_responses(&mut self, data: &str) -> Vec<Bytes> {
+        if data == "[DONE]" {
+            return self.complete_responses_stream();
+        }
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return Vec::new();
+        };
+        if !self.state.response_started {
+            self.state.response_started = true;
+            self.state.id = v
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("resp_rolter")
+                .to_string();
+            self.state.model = v
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+        }
+        if let Some(usage) = v.get("usage") {
+            self.state.response_usage = json!({
+                "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or_else(|| usage.get("input_tokens").cloned().unwrap_or(json!(0))),
+                "output_tokens": usage.get("completion_tokens").cloned().unwrap_or_else(|| usage.get("output_tokens").cloned().unwrap_or(json!(0))),
+                "total_tokens": usage.get("total_tokens").cloned().unwrap_or(json!(0)),
+            });
+        }
+        let mut out = Vec::new();
+        if !self.state.started {
+            self.state.started = true;
+            out.push(sse(Some("response.created"), &json!({"type":"response.created","response":{"id":self.state.id,"object":"response","status":"in_progress","model":self.state.model}})));
+            out.push(sse(Some("response.output_item.added"), &json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_rolter","type":"message","status":"in_progress","role":"assistant","content":[]}})));
+        }
+        let delta = v.pointer("/choices/0/delta").unwrap_or(&Value::Null);
+        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+            if !self.state.open_text {
+                self.state.open_text = true;
+                out.push(sse(Some("response.content_part.added"), &json!({"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}})));
+            }
+            out.push(sse(Some("response.output_text.delta"), &json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})));
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let call_index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let output_index = call_index + usize::from(self.state.open_text);
+                let is_new = !self.state.tool_indexes.contains_key(&call_index);
+                self.state.tool_indexes.insert(call_index, output_index);
+                if is_new {
+                    out.push(sse(Some("response.output_item.added"), &json!({
+                        "type":"response.output_item.added", "output_index":output_index,
+                        "item":{"id":call.get("id").cloned().unwrap_or(Value::Null),"type":"function_call","status":"in_progress","call_id":call.get("id").cloned().unwrap_or(Value::Null),"name":call.pointer("/function/name").cloned().unwrap_or(Value::Null),"arguments":""}
+                    })));
+                }
+                if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str)
+                {
+                    out.push(sse(Some("response.function_call_arguments.delta"), &json!({
+                        "type":"response.function_call_arguments.delta", "output_index":output_index,
+                        "item_id":call.get("id").cloned().unwrap_or(Value::Null), "delta":arguments
+                    })));
+                }
+            }
+        }
+        out
+    }
+
+    fn complete_responses_stream(&mut self) -> Vec<Bytes> {
+        if self.state.response_completed {
+            return Vec::new();
+        }
+        self.state.response_completed = true;
+        let mut out = Vec::new();
+        if self.state.open_text {
+            out.push(sse(Some("response.output_text.done"), &json!({"type":"response.output_text.done","output_index":0,"content_index":0,"text":""})));
+            out.push(sse(Some("response.content_part.done"), &json!({"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}})));
+        }
+        for output_index in self.state.tool_indexes.values() {
+            out.push(sse(Some("response.function_call_arguments.done"), &json!({
+                "type":"response.function_call_arguments.done", "output_index":output_index, "arguments":""
+            })));
+            out.push(sse(Some("response.output_item.done"), &json!({
+                "type":"response.output_item.done", "output_index":output_index,
+                "item":{"id":Value::Null,"type":"function_call","status":"completed","arguments":""}
+            })));
+        }
+        out.push(sse(Some("response.output_item.done"), &json!({"type":"response.output_item.done","output_index":0,"item":{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":[]}})));
+        out.push(sse(Some("response.completed"), &json!({"type":"response.completed","response":{"id":self.state.id,"object":"response","status":"completed","model":self.state.model,"usage":self.state.response_usage}})));
         out
     }
 }
@@ -867,6 +1099,56 @@ mod tests {
             "ping"
         );
         assert_eq!(v["usage"]["total_tokens"], 7);
+    }
+
+    #[test]
+    fn responses_request_becomes_chat_with_tools_and_multimodal_input() {
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "model":"route",
+            "instructions":"be concise",
+            "input":[{"role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"https://example.com/a.png"}]}],
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+            "max_output_tokens":32,
+            "reasoning":{"effort":"high"}
+        })).unwrap());
+        let out = plan(Protocol::OpenAiResponses, Protocol::OpenAiChat).translate_request(body);
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][1]["content"][0]["type"], "text");
+        assert_eq!(value["messages"][1]["content"][1]["type"], "image_url");
+        assert_eq!(value["tools"][0]["function"]["name"], "lookup");
+        assert_eq!(value["max_completion_tokens"], 32);
+        assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn chat_response_becomes_responses_object() {
+        let body = Bytes::from_static(br#"{"id":"chat_1","model":"gpt","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#);
+        let out =
+            plan(Protocol::OpenAiResponses, Protocol::OpenAiChat).translate_response(body, false);
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["object"], "response");
+        assert_eq!(value["output"][0]["content"][0]["text"], "hi");
+        assert_eq!(value["usage"]["input_tokens"], 3);
+    }
+
+    #[test]
+    fn chat_sse_becomes_responses_sse() {
+        let plan = plan(Protocol::OpenAiResponses, Protocol::OpenAiChat);
+        let input = Bytes::from_static(b"data: {\"id\":\"chat_1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n");
+        let text = String::from_utf8(plan.translate_response(input, true).to_vec()).unwrap();
+        assert!(text.contains("event: response.created"));
+        assert!(text.contains("event: response.output_text.delta"));
+        assert!(text.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn chat_tool_sse_becomes_responses_function_call_events() {
+        let plan = plan(Protocol::OpenAiResponses, Protocol::OpenAiChat);
+        let input = Bytes::from_static(b"data: {\"id\":\"chat_1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":1}\"}}]},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n");
+        let text = String::from_utf8(plan.translate_response(input, true).to_vec()).unwrap();
+        assert!(text.contains("event: response.function_call_arguments.delta"));
+        assert!(text.contains("event: response.function_call_arguments.done"));
     }
 
     #[test]
