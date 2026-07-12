@@ -11,3 +11,16 @@ rolter-core.workspace = true
 parking_lot.workspace = true
 ahash.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+# criterion benches use their own harness; `cargo bench -p rolter-balancer`
+# runs them, `cargo bench --no-run` just compiles them (CI guards this)
+[[bench]]
+name = "pick"
+harness = false
+
+[[bench]]
+name = "trie"
+harness = false

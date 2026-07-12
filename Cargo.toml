@@ -100,6 +100,9 @@ chrono = { version = "0.4", default-features = false, features = [
   "clock",
 ] }
 
+# benchmarks (criterion, dev-dependency only)
+criterion = { version = "0.7", features = ["html_reports"] }
+
 # internal crates
 # internal deps carry an explicit version (kept in sync with workspace.package
 # by release-plz) so they are not wildcard deps and can publish to crates.io

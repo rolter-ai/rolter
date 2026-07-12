@@ -32,7 +32,23 @@ clobbering each other.
 - **Property tests** (`proptest`) for the balancer: distribution fairness, affinity invariants.
 - **DB tests** for `rolter-store` Postgres backend behind a feature, using a disposable container.
 - **Load tests** (`oha`/`k6`) against a mock upstream to track added latency and max RPS (see [performance.md](../architecture/performance.md)).
-- **Benches** (`criterion`) for `pick`/trie hot paths.
+
+## Benchmarks
+
+Hot-path micro-benchmarks run under [criterion](https://github.com/criterion-rs/criterion.rs). They live in `crates/<crate>/benches/` with a `[[bench]] harness = false` entry per file, and cover the per-request cost that shows up as pure gateway overhead:
+
+```bash
+just bench                       # cargo bench --workspace
+cargo bench -p rolter-balancer   # just the balancer benches
+cargo bench -p rolter-balancer --bench pick   # one bench target
+```
+
+Current coverage (`rolter-balancer`):
+
+- `pick` — `LoadBalancer::pick` for every built-in strategy over a ~24-target pool with a populated `RouteContext`.
+- `trie` — prefix-trie `insert` (bounded/unbounded, so LRU eviction is measured) and `longest_prefix` on a warm trie.
+
+criterion writes HTML reports to `target/criterion/`. Benches are **not** run in CI (timings are noisy on shared runners), but `cargo clippy --workspace --all-targets -- -D warnings` compiles them on every PR, so they cannot silently bit-rot. Use `just bench-check` (`cargo bench --workspace --no-run`) to compile them locally without running.
 
 ## CI
 
