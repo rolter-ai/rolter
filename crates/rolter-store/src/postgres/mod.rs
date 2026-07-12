@@ -1,5 +1,6 @@
 //! Postgres-backed [`ConfigStore`], gated behind the `postgres` feature.
 
+pub mod crypto;
 pub mod models;
 pub mod repo;
 
@@ -48,12 +49,18 @@ struct ProviderRow {
     api_base: String,
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
+    /// sealed runtime credential from `provider_keys`, when one is stored
+    ciphertext: Option<Vec<u8>>,
+    nonce: Option<Vec<u8>>,
 }
 
-impl TryFrom<ProviderRow> for ProviderConfig {
-    type Error = Error;
-
-    fn try_from(row: ProviderRow) -> Result<Self> {
+impl ProviderRow {
+    /// Convert a row into config, opening the sealed credential with `kek`
+    /// when both are present. A missing KEK or an undecryptable credential
+    /// degrades to `api_key: None` with a warning rather than failing the
+    /// whole config load, so one bad key cannot take down snapshot serving.
+    fn into_config(self, kek: Option<&crypto::Kek>) -> Result<ProviderConfig> {
+        let row = self;
         let kind = match row.kind.as_str() {
             "openai" => ProviderKind::Openai,
             "anthropic" => ProviderKind::Anthropic,
@@ -68,11 +75,28 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             "vertex" => ProviderKind::Vertex,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
+        let api_key = match (row.ciphertext.as_deref(), row.nonce.as_deref(), kek) {
+            (Some(ciphertext), Some(nonce), Some(kek)) => match kek.decrypt(ciphertext, nonce) {
+                Ok(plaintext) => Some(plaintext),
+                Err(err) => {
+                    tracing::warn!(provider = %row.name, error = %err,
+                        "stored provider key could not be decrypted; serving provider without it");
+                    None
+                }
+            },
+            (Some(_), _, None) => {
+                tracing::warn!(provider = %row.name,
+                    "provider has a stored key but {} is unset; serving provider without it",
+                    crypto::KEK_ENV);
+                None
+            }
+            _ => None,
+        };
         Ok(ProviderConfig {
             name: row.name,
             kind,
             api_base: row.api_base,
-            api_key: None,
+            api_key,
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
             api_keys: Vec::new(),
@@ -142,21 +166,40 @@ fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
 /// verify presented keys (the control plane must hash with the same pepper).
 pub struct PostgresConfigStore {
     pool: PgPool,
+    /// key-encryption key for opening sealed provider credentials; read from
+    /// [`crypto::KEK_ENV`] at construction. `None` serves providers without
+    /// their stored keys (with a warning)
+    kek: Option<crypto::Kek>,
 }
 
 impl PostgresConfigStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            kek: crypto::Kek::from_env(),
+        }
+    }
+
+    /// Construct with an explicit KEK instead of reading the environment;
+    /// mainly for tests, where mutating process-wide env vars races.
+    pub fn with_kek(pool: PgPool, kek: Option<crypto::Kek>) -> Self {
+        Self { pool, kek }
     }
 
     async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
-            "select name, kind, api_base, api_key_env, egress_proxy from providers order by name",
+            "select p.name, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
+                    pk.ciphertext, pk.nonce
+             from providers p
+             left join provider_keys pk on pk.provider_id = p.id
+             order by p.name",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        rows.into_iter().map(ProviderConfig::try_from).collect()
+        rows.into_iter()
+            .map(|row| row.into_config(self.kek.as_ref()))
+            .collect()
     }
 
     async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
