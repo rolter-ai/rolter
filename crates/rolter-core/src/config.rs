@@ -795,6 +795,11 @@ pub struct CacheConfig {
     /// Redis key prefix for cache entries, so they're easy to scope/flush
     #[serde(default = "default_cache_namespace")]
     pub namespace: String,
+    /// largest response body (bytes) that may be stored; larger responses are
+    /// served normally but not cached. guards against a single huge streamed
+    /// completion evicting or bloating the cache. `0` means no limit
+    #[serde(default = "default_cache_max_entry_bytes")]
+    pub max_entry_bytes: u64,
 }
 
 impl Default for CacheConfig {
@@ -803,12 +808,19 @@ impl Default for CacheConfig {
             enabled: false,
             default_ttl_secs: default_cache_ttl_secs(),
             namespace: default_cache_namespace(),
+            max_entry_bytes: default_cache_max_entry_bytes(),
         }
     }
 }
 
 fn default_cache_ttl_secs() -> u64 {
     60
+}
+
+fn default_cache_max_entry_bytes() -> u64 {
+    // 1 MiB: comfortably fits typical chat/JSON and buffered SSE completions
+    // without letting a pathological response dominate the cache
+    1024 * 1024
 }
 
 fn default_cache_namespace() -> String {
@@ -1444,6 +1456,7 @@ mod tests {
         assert!(!c.enabled);
         assert_eq!(c.default_ttl_secs, 60);
         assert_eq!(c.namespace, "rolter:cache");
+        assert_eq!(c.max_entry_bytes, 1024 * 1024);
     }
 
     #[test]
