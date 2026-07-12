@@ -85,8 +85,8 @@ bench:
 bench-check:
     cargo bench --workspace --no-run
 
-# CPU real-engine smoke tests. They use dummy weights (no model weights or
-# provider secrets) but still download/cache the public model config+tokenizer.
+# GPU real-engine smoke tests. Docker containers launch pinned engines through
+# uv/uvx; dummy weights avoid model weights and provider secrets.
 integration-vllm:
     integration/engines/run.sh vllm
 

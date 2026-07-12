@@ -32,9 +32,10 @@ public model only for its configuration/tokenizer and initialize random weights
 with `--load-format dummy`. Output is intentionally meaningless; this validates
 the HTTP, OpenAI JSON, and SSE contracts rather than model quality.
 
-It runs on CPU in Docker and therefore works on GitHub-hosted runners. Each
-engine profile starts two independent dummy upstreams so the gateway exercises
-a real target pool. Run one engine locally:
+It runs on an NVIDIA GPU in Docker. Each container launches its pinned engine
+through `uv`/`uvx`, and each profile starts two independent dummy upstreams so
+the gateway exercises a real target pool. Install Docker with the NVIDIA
+container runtime, then run:
 
 ```sh
 just integration-vllm
@@ -47,91 +48,78 @@ fastest). It verifies `/v1/models`, non-streaming chat, and SSE both directly
 and through rolter, and explicitly confirms round-robin reaches both targets.
 Logs are kept in `artifacts/engines/<engine>/`.
 
-### Manual end-to-end runbook
+### Local end-to-end run
 
-Use this when inspecting the actual request and response rather than relying on
-the automated smoke command. Substitute `sglang` for `vllm` in step 1 and use
-ports `30000`/`30001` for the SGLang profile.
+`just integration-vllm` and `just integration-sglang` build the lightweight
+CUDA/uv container, resolve the pinned engine package inside it, start two
+dummy-weight servers, render the gateway configuration, and run the OpenAI JSON
+and SSE assertions. The runner cleans up all containers and child processes on
+exit and preserves the combined engine log plus the gateway log under
+`artifacts/engines/<engine>/`.
 
-1. Start two CPU dummy vLLM upstreams. They use random weights, so no model
-   weights or provider keys are needed; the first run downloads only the public
-   model configuration and tokenizer.
+For manual inspection, start the selected two-server pool and leave it running:
 
-   ```sh
-   docker compose -f docker/docker-compose.engines.yml --profile vllm up -d
-   ```
+```sh
+docker compose -f docker/docker-compose.engines.yml --profile vllm up -d --build
+# use profile sglang for ports 30000 and 30001
+```
 
-2. Render the two-target gateway configuration and start rolter. Keep this
-   terminal running.
+Render the gateway configuration in another terminal and start rolter:
 
-   ```sh
-   config=$(mktemp)
-   sed \
-     -e 's/__ROLTER_PORT__/4010/g' \
-     -e 's/__ENGINE_1_PORT__/8000/g' \
-     -e 's/__ENGINE_2_PORT__/8001/g' \
-     integration/engines/rolter-dummy.toml.in >"$config"
-   cargo run -p rolter-gateway -- --config "$config"
-   ```
+```sh
+config=$(mktemp)
+sed \
+  -e 's/__ROLTER_PORT__/4010/g' \
+  -e 's/__ENGINE_1_PORT__/8000/g' \
+  -e 's/__ENGINE_2_PORT__/8001/g' \
+  integration/engines/rolter-dummy.toml.in >"$config"
+cargo run -p rolter-gateway -- --config "$config"
+```
 
-3. In another terminal, send a non-streaming OpenAI request through rolter.
-   A successful response is JSON with `choices`; the `x-rolter-provider`
-   header identifies the selected dummy upstream.
+Verify non-streaming JSON and streaming SSE through the gateway:
 
-   ```sh
-   curl -i http://127.0.0.1:4010/v1/chat/completions \
-     -H 'content-type: application/json' \
-     -d '{"model":"dummy-round-robin","messages":[{"role":"user","content":"Reply with one token."}],"max_tokens":1,"temperature":0}'
+```sh
+curl -i http://127.0.0.1:4010/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"dummy-round-robin","messages":[{"role":"user","content":"Reply with one token."}],"max_tokens":1,"temperature":0}'
 
-   # HTTP/1.1 200 OK
-   # x-rolter-provider: engine-1   # then engine-2 on the next identical request
-   # {"choices":[...]}
-   ```
+curl -N http://127.0.0.1:4010/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"dummy-round-robin","stream":true,"messages":[{"role":"user","content":"Reply with one token."}],"max_tokens":1,"temperature":0}'
+```
 
-4. Send the streaming equivalent and verify the SSE frames propagate unchanged.
+Exercise all configured strategies; each request must return a non-empty
+OpenAI `choices` array:
 
-   ```sh
-   curl -N http://127.0.0.1:4010/v1/chat/completions \
-     -H 'content-type: application/json' \
-     -d '{"model":"dummy-round-robin","stream":true,"messages":[{"role":"user","content":"Reply with one token."}],"max_tokens":1,"temperature":0}'
+```sh
+for model in dummy-round-robin dummy-random dummy-power-of-two \
+  dummy-consistent-hash dummy-cache-aware dummy-weighted dummy-pipeline \
+  dummy-cheapest dummy-fastest; do
+  curl -fsS http://127.0.0.1:4010/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+    | jq -e '.choices | length > 0' >/dev/null
+done
+```
 
-   # data: {"choices":[...]}
-   # data: [DONE]
-   ```
+Clean up the pool and temporary gateway configuration:
 
-5. Exercise every strategy. Each request must be `200`; only round-robin has a
-   deterministic two-target distribution assertion.
-
-   ```sh
-   for model in dummy-round-robin dummy-random dummy-power-of-two \
-     dummy-consistent-hash dummy-cache-aware dummy-weighted dummy-pipeline \
-     dummy-cheapest dummy-fastest; do
-     curl -fsS http://127.0.0.1:4010/v1/chat/completions \
-       -H 'content-type: application/json' \
-       -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
-       | jq -e '.choices | length > 0' >/dev/null
-   done
-   ```
-
-6. Shut down the local pool and remove the rendered temporary configuration.
-
-   ```sh
-   docker compose -f docker/docker-compose.engines.yml --profile vllm down --volumes
-   rm -f "$config"
-   ```
-
-For the one-command version of the same setup, use `just integration-vllm` or
-`just integration-sglang`; it starts the pool, executes the smoke client, saves
-logs, and cleans up automatically.
+```sh
+docker compose -f docker/docker-compose.engines.yml --profile vllm down --volumes
+rm -f "$config"
+```
 
 For non-gating direct-versus-gateway samples, run `just bench-vllm` or `just
 bench-sglang`. They record non-streaming and streaming p50/p95/p99 latency and
 streaming first-byte time in JSON. Results only compare runs on the same host,
-CPU image, and host configuration; throughput thresholds are deliberately not
+GPU, engine versions, and host configuration; throughput thresholds are deliberately not
 merge gates.
 
-The `engine integration` workflow runs the CPU smoke suite for relevant pull
-requests, weekly, or manually. SGLang uses its upstream-documented CPU build;
-vLLM uses its official CPU image. This suite is for compatibility, not a
-performance gate. When [ROL-67](https://linear.app/rolter/issue/ROL-67/openaianthropic-requestresponse-translation-streaming)
+The `engine integration` workflow is dispatch-only and targets a self-hosted
+GPU runner. It never runs for pull requests or on a schedule because building
+and running both engine environments is intentionally heavyweight. Docker
+builds copy pinned `uv`/`uvx` binaries into a CUDA runtime, and engine packages
+are pinned in their Docker entrypoints. This suite is for compatibility, not a
+performance gate.
+When [ROL-67](https://linear.app/rolter/issue/ROL-67/openaianthropic-requestresponse-translation-streaming)
 lands, add the equivalent `/v1/messages` assertion through the gateway.
