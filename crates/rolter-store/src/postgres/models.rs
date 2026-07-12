@@ -80,6 +80,8 @@ pub struct VirtualKey {
     pub models: Vec<String>,
     pub disabled: bool,
     pub expires_at: Option<DateTime<Utc>>,
+    /// per-key response-cache override; `NULL` inherits the route decision
+    pub cache_enabled: Option<bool>,
     pub created_at: DateTime<Utc>,
 }
 

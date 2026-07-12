@@ -383,7 +383,7 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
              from virtual_keys where project_id = $1 order by created_at",
         )
         .bind(project_id)
@@ -394,7 +394,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
              from virtual_keys where key_hash = $1",
         )
         .bind(key_hash)
@@ -415,7 +415,7 @@ impl VirtualKeyRepo<'_> {
         sqlx::query_as(
             "insert into virtual_keys (project_id, key_hash, key_prefix, name, models)
              values ($1, $2, $3, $4, $5)
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
         )
         .bind(project_id)
         .bind(key_hash)
@@ -430,7 +430,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
         )
         .bind(id)
         .bind(disabled)
