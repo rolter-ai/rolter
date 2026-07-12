@@ -421,7 +421,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 tried.push(idx);
                 // count this attempt as in-flight; the guard falls out of scope (and
                 // decrements) on retry, or is moved into the stream wrapper on success
-                let guard = state.loads.begin(&model, idx);
+                let mut guard = state.loads.begin(&model, idx);
 
                 let target = &entry.route.targets[idx];
                 let provider = match snap.providers.get(&target.provider) {
@@ -515,6 +515,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             .and_then(|v| v.to_str().ok())
                             .map(|ct| ct.contains("event-stream"))
                             .unwrap_or(false);
+                        if status < 400 {
+                            // successful attempt: fold its duration into the
+                            // target's latency EWMA once streaming finishes
+                            guard.mark_ok();
+                        }
                         inflight_guard = Some(guard);
                         outcome = Some((response, status, is_sse));
                         break;
@@ -793,7 +798,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         };
         entry.balancer.observe(idx, &ctx);
         tried.push(idx);
-        let guard = state.loads.begin(&model, idx);
+        let mut guard = state.loads.begin(&model, idx);
 
         let target = &entry.route.targets[idx];
         let provider = match snap.providers.get(&target.provider) {
@@ -870,6 +875,9 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     }
                 } else if state.breaker.on_success(&model, idx) {
                     state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                }
+                if status < 400 {
+                    guard.mark_ok();
                 }
                 inflight_guard = Some(guard);
                 // transcription responses are JSON (or text), never SSE
@@ -971,7 +979,7 @@ struct ForwardOutcome {
 
 /// Namespaces the per-target reliability registries (cooldown/breaker/load) by
 /// variant so a target's health under one variant never leaks into another.
-fn variant_key(model: &str, variant: &str) -> String {
+pub(crate) fn variant_key(model: &str, variant: &str) -> String {
     format!("{model}::{variant}")
 }
 
@@ -1108,7 +1116,7 @@ async fn forward_variants(
             .unwrap_or_else(|_| body.clone());
 
         // count this attempt as in-flight under the variant's key
-        let guard = state.loads.begin(&key, ti);
+        let mut guard = state.loads.begin(&key, ti);
         // weighted pick across the provider's key pool, skipping keys parked
         // on a cooldown — same policy as the classic path
         let multi_key = provider.api_keys.len() > 1;
@@ -1186,6 +1194,9 @@ async fn forward_variants(
                     .and_then(|v| v.to_str().ok())
                     .map(|ct| ct.contains("event-stream"))
                     .unwrap_or(false);
+                if status < 400 {
+                    guard.mark_ok();
+                }
                 out.inflight_guard = Some(guard);
                 out.outcome = Some((response, status, is_sse));
                 break;
@@ -1678,7 +1689,7 @@ mod tests {
                 },
             ],
         });
-        let snap = crate::state::Snapshot::build(&config);
+        let snap = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
         assert_eq!(snap.routes["ab"].variant_balancers.len(), 2);
     }
 
