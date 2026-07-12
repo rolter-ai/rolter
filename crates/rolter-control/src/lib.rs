@@ -65,6 +65,10 @@ pub struct Args {
     /// endpoints (`/api/v1/analytics/*`) query the `request_logs` table
     #[arg(long, env = "CLICKHOUSE_URL")]
     pub clickhouse_url: Option<String>,
+    /// bearer token required on the CRUD API and `/internal/snapshot`; when
+    /// unset those endpoints are open (a warning is logged at startup)
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    pub admin_token: Option<String>,
 }
 
 /// Names owned by the bootstrap config file: immutable at runtime,
@@ -100,6 +104,9 @@ struct ControlState {
     /// set when `--clickhouse-url` is configured; backs the usage/cost
     /// analytics endpoints
     clickhouse: Option<analytics::ClickHouseClient>,
+    /// when set, the CRUD API and `/internal/snapshot` require
+    /// `Authorization: Bearer <token>`
+    admin_token: Option<Arc<String>>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -139,6 +146,19 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         analytics::ClickHouseClient::new(url)
     });
 
+    let admin_token = args
+        .admin_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| Arc::new(t.to_string()));
+    if admin_token.is_none() {
+        tracing::warn!(
+            "ROLTER_ADMIN_TOKEN is unset: the management API and /internal/snapshot are \
+             unauthenticated; set it before exposing the control plane beyond localhost"
+        );
+    }
+
     #[allow(unused_variables)]
     let (store, pool) = build_store(&args, bootstrap).await?;
     #[cfg(feature = "postgres")]
@@ -147,6 +167,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         config_owned,
         redis,
         clickhouse,
+        admin_token,
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -155,6 +176,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         config_owned,
         redis,
         clickhouse,
+        admin_token,
     };
 
     let app = build_app(state)
@@ -171,8 +193,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// Assemble the control-plane API router (no SPA fallback) with `state` applied.
 /// The CRUD routes are only mounted when a postgres pool is present.
 fn build_app(state: ControlState) -> Router {
-    #[allow(unused_mut)]
-    let mut api = Router::new()
+    let api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/ping",
@@ -180,16 +201,53 @@ fn build_app(state: ControlState) -> Router {
         )
         .route("/api/v1/roles", get(list_roles))
         .route("/api/v1/config", get(get_config))
-        .route("/internal/snapshot", get(get_snapshot))
         .merge(analytics::router())
         .merge(health::router());
 
+    // the snapshot endpoint carries decrypted provider credentials and the
+    // CRUD API mutates the effective config, so both sit behind the admin
+    // token whenever one is configured
+    #[allow(unused_mut)]
+    let mut guarded = Router::new().route("/internal/snapshot", get(get_snapshot));
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
-        api = api.merge(crud::router());
+        guarded = guarded.merge(crud::router());
     }
+    let guarded = guarded.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        require_admin_token,
+    ));
 
-    api.with_state(state)
+    api.merge(guarded).with_state(state)
+}
+
+/// Reject requests lacking `Authorization: Bearer <admin token>` when a token
+/// is configured; pass-through (open) when none is set.
+async fn require_admin_token(
+    State(state): State<ControlState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(expected) = state.admin_token.as_deref() else {
+        return next.run(request).await;
+    };
+    let presented = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    // constant-time comparison so the token can't be recovered byte by byte
+    let matches: bool =
+        subtle::ConstantTimeEq::ct_eq(presented.as_bytes(), expected.as_bytes()).into();
+    if !matches {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "missing or invalid admin token"}})),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// Build a postgres-backed control-plane API router for integration tests.
@@ -198,6 +256,16 @@ fn build_app(state: ControlState) -> Router {
 /// ephemeral port by the test harness.
 #[cfg(feature = "postgres")]
 pub async fn test_app(pool: sqlx::PgPool) -> anyhow::Result<Router> {
+    test_app_with_admin_token(pool, None).await
+}
+
+/// [`test_app`] with an admin token, for exercising the auth guard on the
+/// CRUD API and `/internal/snapshot`.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_admin_token(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+) -> anyhow::Result<Router> {
     rolter_store::postgres::run_migrations(&pool).await?;
     let store: Arc<dyn ConfigStore> =
         Arc::new(rolter_store::PostgresConfigStore::new(pool.clone()));
@@ -206,6 +274,7 @@ pub async fn test_app(pool: sqlx::PgPool) -> anyhow::Result<Router> {
         config_owned: Arc::new(ConfigOwned::default()),
         redis: None,
         clickhouse: None,
+        admin_token: admin_token.map(Arc::new),
         pool: Some(pool),
     };
     Ok(build_app(state))
@@ -253,7 +322,15 @@ async fn list_roles() -> Json<Value> {
 }
 
 async fn get_config(State(state): State<ControlState>) -> Json<GatewayConfig> {
-    let config = state.store.load().await.unwrap_or_default();
+    let mut config = state.store.load().await.unwrap_or_default();
+    // this endpoint feeds the dashboard; upstream credentials stay between the
+    // store and the gateway (via the token-guarded snapshot endpoint)
+    for provider in &mut config.providers {
+        provider.api_key = None;
+        for key in &mut provider.api_keys {
+            key.key = None;
+        }
+    }
     Json(config)
 }
 
@@ -306,5 +383,105 @@ async fn get_snapshot(
             Json(json!({"error": {"message": err.to_string()}})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_token(token: Option<&str>) -> ControlState {
+        ControlState {
+            store: Arc::new(InMemoryConfigStore::new(GatewayConfig::default())),
+            config_owned: Arc::new(ConfigOwned::default()),
+            redis: None,
+            clickhouse: None,
+            admin_token: token.map(|t| Arc::new(t.to_string())),
+            #[cfg(feature = "postgres")]
+            pool: None,
+        }
+    }
+
+    async fn serve(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn snapshot_requires_admin_token_when_configured() {
+        let addr = serve(build_app(state_with_token(Some("sekrit")))).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/internal/snapshot");
+
+        let unauthenticated = client.get(&url).send().await.unwrap();
+        assert_eq!(unauthenticated.status(), 401);
+
+        let wrong = client.get(&url).bearer_auth("nope").send().await.unwrap();
+        assert_eq!(wrong.status(), 401);
+
+        let ok = client.get(&url).bearer_auth("sekrit").send().await.unwrap();
+        assert_eq!(ok.status(), 200);
+
+        // the rest of the api stays open (dashboard reads, health)
+        let ping = client
+            .get(format!("http://{addr}/api/v1/ping"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ping.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn snapshot_open_when_no_token_configured() {
+        let addr = serve(build_app(state_with_token(None))).await;
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn config_endpoint_redacts_provider_keys() {
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "openai".to_string(),
+            kind: rolter_core::ProviderKind::Openai,
+            api_base: "https://api.openai.com".to_string(),
+            api_key: Some("sk-super-secret".to_string()),
+            api_key_env: None,
+            egress_proxy: None,
+            api_keys: vec![rolter_core::ApiKeyConfig {
+                key: Some("sk-also-secret".to_string()),
+                env: None,
+                weight: 1,
+            }],
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
+            status_page_url: None,
+        });
+        let state = ControlState {
+            store: Arc::new(InMemoryConfigStore::new(config)),
+            ..state_with_token(None)
+        };
+        let addr = serve(build_app(state)).await;
+
+        let body = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            !body.contains("sk-super-secret") && !body.contains("sk-also-secret"),
+            "config endpoint must not leak provider keys: {body}"
+        );
     }
 }

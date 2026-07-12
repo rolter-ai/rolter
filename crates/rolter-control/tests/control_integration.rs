@@ -188,3 +188,186 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
         "route missing from snapshot: {snap}"
     );
 }
+
+/// Provider credentials posted to the API must be sealed at rest, decrypted
+/// into the gateway snapshot, and never leak through the dashboard config
+/// endpoint. Runs in its own process (nextest), so setting the KEK env var
+/// here cannot race other tests.
+#[tokio::test]
+async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+
+    let url = database_url().unwrap();
+    let pool = rolter_store::postgres::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("create schema public")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .json(&json!({
+            "name": "openai",
+            "kind": "openai",
+            "api_base": "https://api.openai.com",
+            "api_key": "sk-live-secret",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().expect("provider id");
+
+    // at rest: sealed, not plaintext
+    let ciphertext: Vec<u8> =
+        sqlx::query_scalar("select ciphertext from provider_keys where provider_id = $1::uuid")
+            .bind(provider_id)
+            .fetch_one(&pool)
+            .await
+            .expect("provider_keys row must exist");
+    assert!(
+        !String::from_utf8_lossy(&ciphertext).contains("sk-live-secret"),
+        "credential must not be stored in plaintext"
+    );
+
+    // gateway snapshot: decrypted and usable
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        snap["config"]["providers"][0]["api_key"], "sk-live-secret",
+        "snapshot must carry the decrypted key: {snap}"
+    );
+
+    // dashboard config: redacted
+    let config_body = client
+        .get(format!("{base}/api/v1/config"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config_body.contains("sk-live-secret"),
+        "config endpoint must redact provider keys"
+    );
+
+    // rotate via PUT, then clear with an empty string
+    let updated = client
+        .put(format!("{base}/api/v1/providers/{provider_id}"))
+        .json(&json!({"api_key": "sk-rotated", "api_base": "https://eu.api.openai.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(updated.status().is_success(), "{}", updated.status());
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(snap["config"]["providers"][0]["api_key"], "sk-rotated");
+    assert_eq!(
+        snap["config"]["providers"][0]["api_base"],
+        "https://eu.api.openai.com"
+    );
+
+    let cleared = client
+        .put(format!("{base}/api/v1/providers/{provider_id}"))
+        .json(&json!({"api_key": ""}))
+        .send()
+        .await
+        .unwrap();
+    assert!(cleared.status().is_success());
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        snap["config"]["providers"][0]["api_key"].is_null(),
+        "cleared key must drop from the snapshot: {snap}"
+    );
+}
+
+/// With an admin token configured, the CRUD API and snapshot endpoint reject
+/// unauthenticated calls and accept the bearer token.
+#[tokio::test]
+async fn admin_token_guards_crud_and_snapshot() {
+    skip_without_db!();
+    let url = database_url().unwrap();
+    let pool = rolter_store::postgres::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("create schema public")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let denied = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+
+    let denied_snapshot = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_snapshot.status(), 401);
+
+    let allowed = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("sekrit")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(allowed.status().is_success(), "{}", allowed.status());
+}
