@@ -299,11 +299,12 @@ struct CreateProvider {
     egress_proxy: Option<String>,
 }
 
-const PROVIDER_KINDS: [&str; 5] = [
+const PROVIDER_KINDS: [&str; 6] = [
     "openai",
     "anthropic",
     "openai_compatible",
     "ollama",
+    "ollama_cloud",
     "llama_cpp",
 ];
 

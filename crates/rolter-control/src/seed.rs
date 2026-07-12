@@ -158,6 +158,7 @@ async fn import_bootstrap_toml(
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiCompatible => "openai_compatible",
             ProviderKind::Ollama => "ollama",
+            ProviderKind::OllamaCloud => "ollama_cloud",
             ProviderKind::LlamaCpp => "llama_cpp",
         };
         let existing = providers

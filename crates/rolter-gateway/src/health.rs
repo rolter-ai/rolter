@@ -30,19 +30,23 @@ fn probe_request(
     kind: ProviderKind,
     api_base: &str,
     configured_path: &str,
-) -> (String, Option<(&'static str, &'static str)>) {
+) -> (String, Vec<(String, String)>) {
     let base = api_base.trim_end_matches('/');
     if configured_path != "/" {
-        return (format!("{base}{configured_path}"), None);
+        return (format!("{base}{configured_path}"), Vec::new());
     }
     match kind {
         ProviderKind::Openai
         | ProviderKind::OpenaiCompatible
         | ProviderKind::Ollama
-        | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), None),
+        | ProviderKind::OllamaCloud
+        | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
-            Some(("anthropic-version", ANTHROPIC_VERSION)),
+            vec![(
+                "anthropic-version".to_string(),
+                ANTHROPIC_VERSION.to_string(),
+            )],
         ),
     }
 }
@@ -54,7 +58,7 @@ enum ProbePlan {
     /// free, non-inference liveness GET
     Free {
         url: String,
-        header: Option<(&'static str, &'static str)>,
+        headers: Vec<(String, String)>,
     },
     /// a real `max_tokens = 1` completion that proves inference works end to end
     LlmCall {
@@ -67,9 +71,9 @@ enum ProbePlan {
 impl ProbePlan {
     fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
         match self {
-            ProbePlan::Free { url, header } => {
+            ProbePlan::Free { url, headers } => {
                 let mut req = client.get(&url);
-                if let Some((k, v)) = header {
+                for (k, v) in headers {
                     req = req.header(k, v);
                 }
                 req
@@ -140,8 +144,13 @@ fn build_probe_plan(
              falling back to the free liveness probe"
         );
     }
-    let (url, header) = probe_request(provider.kind, &provider.api_base, configured_path);
-    (ProbePlan::Free { url, header }, HealthSource::Probe)
+    let (url, mut headers) = probe_request(provider.kind, &provider.api_base, configured_path);
+    if provider.kind == ProviderKind::OllamaCloud {
+        if let Some(key) = provider.resolve_api_key() {
+            headers.push(("authorization".to_string(), format!("Bearer {key}")));
+        }
+    }
+    (ProbePlan::Free { url, headers }, HealthSource::Probe)
 }
 
 /// What a single probe observed.
@@ -618,13 +627,19 @@ mod tests {
         // openai + compatible: /v1/models, no header
         let (url, hdr) = probe_request(ProviderKind::Openai, "https://api.openai.com/", "/");
         assert_eq!(url, "https://api.openai.com/v1/models");
-        assert!(hdr.is_none());
+        assert!(hdr.is_empty());
         let (url, _) = probe_request(ProviderKind::OpenaiCompatible, "http://vllm:8000", "/");
         assert_eq!(url, "http://vllm:8000/v1/models");
         // anthropic: /v1/models plus the required version header
         let (url, hdr) = probe_request(ProviderKind::Anthropic, "https://api.anthropic.com", "/");
         assert_eq!(url, "https://api.anthropic.com/v1/models");
-        assert_eq!(hdr, Some(("anthropic-version", ANTHROPIC_VERSION)));
+        assert_eq!(
+            hdr,
+            vec![(
+                "anthropic-version".to_string(),
+                ANTHROPIC_VERSION.to_string()
+            )]
+        );
     }
 
     #[test]
@@ -632,7 +647,7 @@ mod tests {
         // a non-default path is honoured verbatim, with no injected header
         let (url, hdr) = probe_request(ProviderKind::Anthropic, "https://x.test", "/healthz");
         assert_eq!(url, "https://x.test/healthz");
-        assert!(hdr.is_none());
+        assert!(hdr.is_empty());
     }
 
     fn provider(kind: ProviderKind) -> rolter_core::ProviderConfig {
@@ -707,5 +722,27 @@ mod tests {
         let (plan, source) = build_probe_plan(&p, "/");
         assert!(matches!(plan, ProbePlan::Free { .. }));
         assert_eq!(source, crate::health_events::HealthSource::Probe);
+    }
+
+    #[test]
+    fn ollama_cloud_probe_uses_models_endpoint_and_bearer_auth() {
+        let mut p = provider(ProviderKind::OllamaCloud);
+        p.api_base = "https://ollama.com".to_string();
+        p.api_key = Some("test-cloud-key".to_string());
+        let (plan, source) = build_probe_plan(&p, "/");
+        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        match plan {
+            ProbePlan::Free { url, headers } => {
+                assert_eq!(url, "https://ollama.com/v1/models");
+                assert_eq!(
+                    headers,
+                    vec![(
+                        "authorization".to_string(),
+                        "Bearer test-cloud-key".to_string()
+                    )]
+                );
+            }
+            _ => panic!("expected a free probe"),
+        }
     }
 }

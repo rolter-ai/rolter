@@ -33,6 +33,13 @@ kind = "anthropic"
 api_base = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 
+# direct Cloud access requires an environment-sourced bearer key
+[[providers]]
+name = "ollama-cloud"
+kind = "ollama_cloud"
+api_base = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+
 [[providers]]
 name = "vllm-1"
 kind = "openai_compatible"

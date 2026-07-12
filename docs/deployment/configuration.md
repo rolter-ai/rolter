@@ -11,10 +11,22 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `llama_cpp`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
+
+#### Ollama: local daemon vs Cloud
+
+Use `ollama` for a local/self-hosted daemon such as `http://localhost:11434` (no authentication). Use `ollama_cloud` for direct programmatic Cloud access. Cloud requires `api_key_env` (normally `OLLAMA_API_KEY`); inline keys and key pools are rejected. Configure `api_base = "https://ollama.com"`; rolter uses the OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints with bearer authentication. Ollama's native `/api/*` endpoints are distinct.
+
+```toml
+[[providers]]
+name = "ollama-cloud"
+kind = "ollama_cloud"
+api_base = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+```
 
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
   - `key` (string, optional) — inline key value; prefer `env`

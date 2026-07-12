@@ -190,6 +190,8 @@ pub enum ProviderKind {
     OpenaiCompatible,
     /// a self-hosted ollama daemon using its openai-compatible api
     Ollama,
+    /// direct ollama cloud access using an environment-sourced bearer key
+    OllamaCloud,
     /// a self-hosted llama.cpp llama-server using its openai-compatible api
     LlamaCpp,
 }
@@ -1218,6 +1220,20 @@ impl GatewayConfig {
                     provider.name
                 ));
             }
+            if provider.kind == ProviderKind::OllamaCloud {
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "ollama_cloud provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "ollama_cloud provider '{}' must source its key from api_key_env",
+                        provider.name
+                    ));
+                }
+            }
             if let Some(proxy) = &provider.egress_proxy {
                 if !is_proxy_url(proxy) {
                     problems.push(format!(
@@ -1384,6 +1400,25 @@ mod tests {
         let p = provider_with_keys(Vec::new());
         assert_eq!(p.resolve_api_key().as_deref(), Some("legacy"));
         assert_eq!(p.resolve_api_keys(), vec![("legacy".to_string(), 1)]);
+    }
+
+    #[test]
+    fn ollama_cloud_requires_only_an_environment_key_reference() {
+        let mut cfg = GatewayConfig::default();
+        let mut cloud = provider_with_keys(Vec::new());
+        cloud.kind = ProviderKind::OllamaCloud;
+        cloud.api_key = None;
+        cfg.providers.push(cloud.clone());
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("requires api_key_env")));
+        cloud.api_key_env = Some("OLLAMA_API_KEY".to_string());
+        cfg.providers[0] = cloud;
+        assert!(cfg.validate().is_ok());
+        cfg.providers[0].api_key = Some("inline-secret".to_string());
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("must source its key from api_key_env")));
     }
 
     #[test]
