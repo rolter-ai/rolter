@@ -1,12 +1,8 @@
 name: engine integration
 
+# manual-only: the CPU engine smoke is slow on hosted runners, so it runs
+# on demand from the Actions tab instead of gating every PR
 on:
-  pull_request:
-    paths:
-      - "docker/docker-compose.engines.yml"
-      - "integration/engines/**"
-      - "justfile"
-      - ".github/workflows/engine-integration.yml"
   workflow_dispatch:
     inputs:
       benchmark:
@@ -14,8 +10,6 @@ on:
         required: false
         type: boolean
         default: false
-  schedule:
-    - cron: "23 3 * * 1"
 
 permissions:
   contents: read
