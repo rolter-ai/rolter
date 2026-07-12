@@ -176,6 +176,38 @@ async fn streaming_request_passes_through_sse() {
 }
 
 #[tokio::test]
+async fn oversized_body_is_rejected_with_json_413() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    // tiny limit so a normal-looking request trips it without shipping megabytes
+    config.server.max_body_bytes = 256;
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    // a body over the limit: axum's DefaultBodyLimit rejects it before routing,
+    // and our mapper rewrites the plain-text 413 into openai-style json
+    let big = "x".repeat(4096);
+    let resp = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": [{"role": "user", "content": big}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 413);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "request_too_large");
+
+    // a request under the limit still flows through to the upstream
+    let ok = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+}
+
+#[tokio::test]
 async fn missing_model_field_is_rejected() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
@@ -845,7 +877,7 @@ async fn config_hot_reload_swaps_routing_without_restart() {
         &config_for("model-a", vec![("up", upstream)]),
         None,
     );
-    let app = rolter_gateway::build_router(state.clone(), "/metrics");
+    let app = rolter_gateway::build_router(state.clone(), "/metrics", 32 * 1024 * 1024);
     let gw = serve(app).await;
     let client = reqwest::Client::new();
 
