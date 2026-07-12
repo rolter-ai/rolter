@@ -193,6 +193,9 @@ impl PostgresConfigStore {
                     param_policy,
                     // db-backed variants land with their own store follow-up
                     variants: Default::default(),
+                    // response-cache opt-in is config-only for now; a db-backed
+                    // cache policy lands with its own store follow-up
+                    cache: None,
                 })
             })
             .collect()

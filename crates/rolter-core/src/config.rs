@@ -34,6 +34,9 @@ pub struct GatewayConfig {
     /// per-target cooldown applied after a transient upstream failure
     #[serde(default)]
     pub cooldown: CooldownConfig,
+    /// exact-match response cache (Redis) shared across replicas; off by default
+    #[serde(default)]
+    pub cache: CacheConfig,
     /// upstream connect/response timeouts
     #[serde(default)]
     pub timeouts: TimeoutConfig,
@@ -332,6 +335,10 @@ pub struct ModelRoute {
     /// above drive the classic single-pool path when this is empty.
     #[serde(default)]
     pub variants: Vec<Variant>,
+    /// opt-in exact-match response caching for this route. Caching applies only
+    /// when both the global `[cache]` switch and this route opt-in are enabled.
+    #[serde(default)]
+    pub cache: Option<RouteCache>,
 }
 
 impl ModelRoute {
@@ -386,6 +393,26 @@ impl ModelRoute {
     /// target pool.
     pub fn has_variants(&self) -> bool {
         !self.variants.is_empty()
+    }
+
+    /// Whether this route opts into response caching (the global `[cache]`
+    /// switch still has to be on for caching to actually happen).
+    pub fn cache_enabled(&self) -> bool {
+        self.cache.as_ref().is_some_and(|c| c.enabled)
+    }
+
+    /// TTL in seconds for this route's cached responses: the route override when
+    /// set, else the global `default_ttl_secs`.
+    pub fn cache_ttl_secs(&self, default_ttl_secs: u64) -> u64 {
+        self.cache
+            .as_ref()
+            .and_then(|c| c.ttl_secs)
+            .unwrap_or(default_ttl_secs)
+    }
+
+    /// Whether cached entries for this route are isolated per virtual key.
+    pub fn cache_per_key(&self) -> bool {
+        self.cache.as_ref().is_some_and(|c| c.per_key)
     }
 
     /// Sample the primary variant index by weight, given a random draw `r` in
@@ -751,6 +778,60 @@ impl CooldownConfig {
             None => self.base_secs,
         }
     }
+}
+
+/// Global exact-match response-cache policy. Off by default; caching a route
+/// also requires that route to opt in via [`RouteCache`]. Backed by the same
+/// Redis the budget/rate-limit enforcers use; with no Redis it stays disabled
+/// and every request is a miss (fail open).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CacheConfig {
+    /// master switch; when false no route caches regardless of its opt-in
+    #[serde(default)]
+    pub enabled: bool,
+    /// default entry TTL in seconds, overridable per route
+    #[serde(default = "default_cache_ttl_secs")]
+    pub default_ttl_secs: u64,
+    /// Redis key prefix for cache entries, so they're easy to scope/flush
+    #[serde(default = "default_cache_namespace")]
+    pub namespace: String,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_ttl_secs: default_cache_ttl_secs(),
+            namespace: default_cache_namespace(),
+        }
+    }
+}
+
+fn default_cache_ttl_secs() -> u64 {
+    60
+}
+
+fn default_cache_namespace() -> String {
+    "rolter:cache".to_string()
+}
+
+/// Per-route response-cache opt-in.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RouteCache {
+    /// whether this route caches (the global `[cache]` switch must also be on)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// entry TTL override in seconds; falls back to the global default when unset
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    /// isolate cached entries by virtual key so responses aren't shared across
+    /// keys; when false all callers of the route share the cache
+    #[serde(default)]
+    pub per_key: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Upstream timeout policy. `connect_secs` bounds establishing the TCP/TLS
@@ -1184,6 +1265,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
             param_policy: policy,
+            cache: None,
             variants: vec![],
         }
     }
@@ -1354,6 +1436,64 @@ mod tests {
         assert_eq!(weighted_index(std::iter::empty::<u32>(), 0.5), None);
         // zero-weight entries are clamped to 1 so they remain selectable
         assert_eq!(weighted_index([0u32, 0].into_iter(), 0.0), Some(0));
+    }
+
+    #[test]
+    fn cache_config_defaults_are_off_with_sane_ttl() {
+        let c = CacheConfig::default();
+        assert!(!c.enabled);
+        assert_eq!(c.default_ttl_secs, 60);
+        assert_eq!(c.namespace, "rolter:cache");
+    }
+
+    #[test]
+    fn route_cache_helpers_gate_and_resolve_ttl() {
+        let mut route = route_with(&[], ParamPolicy::default());
+        // no cache block => caching off, ttl falls back to the global default
+        assert!(!route.cache_enabled());
+        assert!(!route.cache_per_key());
+        assert_eq!(route.cache_ttl_secs(300), 300);
+
+        // an explicitly-disabled block still reads as off
+        route.cache = Some(RouteCache {
+            enabled: false,
+            ttl_secs: Some(10),
+            per_key: true,
+        });
+        assert!(!route.cache_enabled());
+        // ttl override applies regardless of the enabled flag
+        assert_eq!(route.cache_ttl_secs(300), 10);
+
+        // enabled with per-key isolation and no ttl override
+        route.cache = Some(RouteCache {
+            enabled: true,
+            ttl_secs: None,
+            per_key: true,
+        });
+        assert!(route.cache_enabled());
+        assert!(route.cache_per_key());
+        assert_eq!(route.cache_ttl_secs(300), 300);
+    }
+
+    #[test]
+    fn route_cache_parses_from_toml() {
+        let route: ModelRoute = toml::from_str(
+            r#"
+            model = "gpt-4o"
+            [cache]
+            enabled = true
+            ttl_secs = 600
+            per_key = true
+            "#,
+        )
+        .unwrap();
+        assert!(route.cache_enabled());
+        assert!(route.cache_per_key());
+        assert_eq!(route.cache_ttl_secs(60), 600);
+        // an absent [cache] table leaves caching off and enabled defaults true
+        let bare: ModelRoute = toml::from_str(r#"model = "gpt-4o""#).unwrap();
+        assert!(bare.cache.is_none());
+        assert!(!bare.cache_enabled());
     }
 
     #[test]

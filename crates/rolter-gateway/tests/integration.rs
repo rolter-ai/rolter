@@ -88,6 +88,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         targets,
         params: Default::default(),
         param_policy: Default::default(),
+        cache: None,
         variants: Default::default(),
     });
     config
@@ -460,6 +461,7 @@ async fn variant_routing_fails_over_to_next_variant() {
         targets: Default::default(),
         params: Default::default(),
         param_policy: Default::default(),
+        cache: None,
         // heavily weight the failing variant as primary so failover is exercised
         variants: vec![
             mk_variant("control", "down", 100),
