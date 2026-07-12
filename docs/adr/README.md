@@ -40,3 +40,6 @@ Accepted. Commit messages and PR titles follow Conventional Commits; enforced by
 
 ## ADR-0013 — OpenTelemetry-based observability with engine propagation
 Accepted. Export traces/metrics via OTLP to any compatible backend (SigNoz, Datadog, Grafana, Langfuse, …); propagate W3C trace context to vLLM/SGLang so engine spans join the same trace; federate upstream engine metrics. Consequence: vendor-neutral observability; an OTel Collector is the recommended hub.
+
+## ADR-0014 — Extensible API protocol translation
+Accepted. Resolve translation by client/upstream protocol pair in `rolter-proxy`, including incremental SSE, while the gateway retains transport, caching and accounting ownership. Consequence: new provider dialects extend one translation boundary; non-equivalent modalities remain explicit and are never silently dropped.

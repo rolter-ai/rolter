@@ -3,8 +3,13 @@
 //! [`Forwarder`] owns pooled HTTP clients (one default, plus one per egress
 //! proxy URL) and forwards a request body to a provider, returning the raw
 //! [`reqwest::Response`] so the caller can stream it straight back to the client
-//! with minimal copying. Native request/response translation between OpenAI and
-//! Anthropic schemas is a follow-up; today matching schemas pass through.
+//! with minimal copying. Cross-protocol requests are normalized by the
+//! extensible translation registry before dispatch; responses are translated by
+//! the gateway while they stream back to the caller.
+
+mod translation;
+
+pub use translation::{Protocol, TranslatedStream, TranslationPlan};
 
 use std::time::Duration;
 
@@ -89,7 +94,9 @@ impl Forwarder {
                 provider.name
             )));
         }
-        let url = provider_url(provider, path);
+        let translation = TranslationPlan::resolve(path, provider.kind);
+        let url = provider_url(provider, translation.upstream_path(path));
+        let body = translation.translate_request(body);
         let body = maybe_rewrite_model(body, upstream_model);
         let client = self.client_for(provider);
         let mut req = client

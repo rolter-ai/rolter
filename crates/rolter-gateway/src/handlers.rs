@@ -663,6 +663,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         // token counts, latency and ttft are filled by the stream wrapper once
         // the body has been fully forwarded to the client
         Some((response, status, is_sse)) => {
+            let translation = if status < 400 {
+                snap.providers
+                    .get(&last_provider)
+                    .map(|provider| rolter_proxy::TranslationPlan::resolve(path, provider.kind))
+                    .unwrap_or_else(rolter_proxy::TranslationPlan::passthrough)
+            } else {
+                rolter_proxy::TranslationPlan::passthrough()
+            };
             let log = RequestLog {
                 request_id,
                 trace_id,
@@ -694,6 +702,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         .to_string();
                     match response.bytes().await {
                         Ok(bytes) => {
+                            let bytes = translation.translate_response(bytes, is_sse);
                             // skip storing bodies over the configured ceiling
                             // (0 = no limit); they're still served normally
                             let limit = snap.cache.max_entry_bytes;
@@ -738,6 +747,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             stream_response(
                 response,
                 is_sse,
+                translation,
                 started,
                 state.log.clone(),
                 price,
@@ -746,6 +756,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 token_recorder,
                 inflight_guard,
             )
+            .await
         }
         None => {
             // no attempt ever reached an upstream: the balancer had no target
@@ -1091,6 +1102,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
             stream_response(
                 response,
                 is_sse,
+                rolter_proxy::TranslationPlan::passthrough(),
                 started,
                 state.log.clone(),
                 price,
@@ -1099,6 +1111,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 token_recorder,
                 inflight_guard,
             )
+            .await
         }
         None => {
             if last_error.is_none() {
@@ -1473,9 +1486,10 @@ fn retry_delay_ms(
 /// through [`UsageLoggingStream`] so token usage and latency are logged once the
 /// response has been fully forwarded.
 #[allow(clippy::too_many_arguments)]
-fn stream_response(
+async fn stream_response(
     response: reqwest::Response,
     is_sse: bool,
+    translation: rolter_proxy::TranslationPlan,
     started: Instant,
     sink: crate::logging::LogSink,
     price: Option<rolter_core::ModelPriceConfig>,
@@ -1497,8 +1511,36 @@ fn stream_response(
     // whether it was a cache hit (ROL-58). this streamed path is always a live
     // upstream response (a miss); cache hits are served by `cached_response`
     let decision = DecisionHeaders::from_log(&log);
+    if translation.is_translation() && !is_sse {
+        return match response.bytes().await {
+            Ok(bytes) => buffered_response(
+                translation.translate_response(bytes, false),
+                status.as_u16(),
+                content_type,
+                false,
+                started,
+                sink,
+                price,
+                log,
+                recorder,
+                token_recorder,
+                inflight_guard,
+            ),
+            Err(err) => error_json(StatusCode::BAD_GATEWAY, &err.to_string()),
+        };
+    }
+    let upstream: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>,
+    > = Box::pin(response.bytes_stream());
+    let translated: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>,
+    > = if translation.is_translation() && is_sse {
+        Box::pin(rolter_proxy::TranslatedStream::new(upstream, translation))
+    } else {
+        upstream
+    };
     let body = crate::logging::UsageLoggingStream::new(
-        Box::pin(response.bytes_stream()),
+        translated,
         is_sse,
         started,
         sink,
