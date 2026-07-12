@@ -68,6 +68,10 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/virtual-keys/{id}",
             put(set_virtual_key_disabled).delete(delete_virtual_key),
         )
+        .route(
+            "/api/v1/virtual-keys/{id}/cache",
+            put(set_virtual_key_cache),
+        )
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
         .route("/api/v1/budgets/{id}", delete(delete_budget))
         .route(
@@ -508,6 +512,10 @@ struct CreateVirtualKey {
     name: Option<String>,
     #[serde(default)]
     models: Vec<String>,
+    /// per-key response-cache override; omit/null to inherit the route decision,
+    /// false to bypass, true to cache even on a route that didn't opt in
+    #[serde(default)]
+    cache: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -551,6 +559,7 @@ async fn create_virtual_key(
             &key_prefix,
             body.name.as_deref(),
             &body.models,
+            body.cache,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -569,6 +578,25 @@ async fn set_virtual_key_disabled(
 ) -> ApiResult<Json<VirtualKey>> {
     let row = VirtualKeyRepo(pool(&state))
         .set_disabled(id, body.disabled)
+        .await?;
+    publish_config_change(&state).await?;
+    Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+struct SetVirtualKeyCache {
+    /// null clears the override (inherit the route); false/true force it
+    #[serde(default)]
+    cache: Option<bool>,
+}
+
+async fn set_virtual_key_cache(
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetVirtualKeyCache>,
+) -> ApiResult<Json<VirtualKey>> {
+    let row = VirtualKeyRepo(pool(&state))
+        .set_cache(id, body.cache)
         .await?;
     publish_config_change(&state).await?;
     Ok(Json(row))
