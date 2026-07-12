@@ -1,4 +1,40 @@
 # https://release-plz.dev/docs/config
+[changelog]
+# surface the change type and the PR author on every entry (ROL-228). the
+# default parsers fold ci/docs/chore/refactor/perf/test into a single "Other"
+# bucket and the default body prints no author; here each conventional type gets
+# its own section (so the type is visible) and every line is attributed to the
+# PR author via the release-plz remote context (`commit.remote.username`).
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "CI/CD" },
+  { message = "^build", group = "Build" },
+  { message = "^chore\\(deps\\)", group = "Dependencies" },
+  { message = "^chore", group = "Miscellaneous" },
+  { message = "^revert", group = "Reverts" },
+  { message = "^.*", group = "Other" },
+]
+# based on the release-plz default body, with a ` by [@author]` segment added
+# after each subject (rendered only when the remote PR author is known)
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{ commit.scope }})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{% if commit.remote.username %} by [@{{ commit.remote.username }}](https://github.com/{{ commit.remote.username }}){% endif %}{%- if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor -%}){% endif %}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}{% if commit.remote.username %} by [@{{ commit.remote.username }}](https://github.com/{{ commit.remote.username }}){% endif %}{%- if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}) {% endfor -%}){% endif %}
+{% endif -%}
+{% endfor -%}
+{% endfor %}
+"""
+
 [workspace]
 # all crates share the workspace version, so exactly one package (the
 # gateway) creates the single v{version} tag and github release — per-package
