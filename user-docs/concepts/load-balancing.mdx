@@ -17,6 +17,7 @@ Every route in Rolter picks exactly one load-balancing strategy. The strategy ru
 | `cache_aware` | Approximate prefix-affinity routing to warm targets | Shared system prompts, few-shot examples, RAG |
 | `weighted` | Smooth weighted round-robin by target `weight` | A/B traffic splits, capacity-based routing |
 | `pipeline` | Composable filter → scored → argmax selection | Blending weight, load, and cache signals together |
+| `cheapest` | Lowest catalog price for the target's upstream model; load breaks ties | Cost-sensitive routing across mixed-price providers |
 
 ---
 
@@ -184,6 +185,7 @@ Use this table to match your workload to a starting strategy:
 | vLLM fleet with a shared system prompt or RAG context | `cache_aware` |
 | Canary deployment or capacity-weighted split | `weighted` |
 | Self-hosted fleet where you want all signals combined | `pipeline` |
+| Mixed-price providers, minimize spend | `cheapest` |
 
 <Info>
   You can enable `[metrics_scrape]` to let Rolter pull each engine's queue depth from its Prometheus metrics endpoint. Load-aware strategies (`power_of_two` and `pipeline`) automatically incorporate this data into their decisions.

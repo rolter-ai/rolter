@@ -39,10 +39,34 @@ pub trait LoadBalancer: Send + Sync {
     fn observe(&self, _target: usize, _ctx: &RouteContext) {}
 }
 
+/// Build-time, per-target signals for strategies that rank on more than
+/// weights. Slices are index-aligned with the route targets; a missing or
+/// non-positive entry means "unknown" and the strategy stays neutral for that
+/// target.
+#[derive(Debug, Default, Clone)]
+pub struct TargetStats {
+    /// catalog price per target in any consistent per-token rate (only the
+    /// relative order matters); `<= 0` = no known price
+    pub cost_per_mtok: Vec<f64>,
+}
+
 /// Build a boxed [`LoadBalancer`] from a configured strategy and the route's
 /// per-target `weights` (index-aligned with the route targets). Strategies that
-/// ignore weights only use `weights.len()` as the target count.
+/// ignore weights only use `weights.len()` as the target count. Strategies that
+/// need no build-time stats get empty [`TargetStats`]; use [`build_with_stats`]
+/// for cost-aware routing.
 pub fn build(strategy: BalancingStrategy, weights: &[u32]) -> Box<dyn LoadBalancer> {
+    build_with_stats(strategy, weights, &TargetStats::default())
+}
+
+/// [`build`] with per-target [`TargetStats`] for strategies that rank on
+/// build-time signals (`cheapest`). Stats slices shorter than the route are
+/// treated as unknown for the missing tail.
+pub fn build_with_stats(
+    strategy: BalancingStrategy,
+    weights: &[u32],
+    stats: &TargetStats,
+) -> Box<dyn LoadBalancer> {
     let n = weights.len();
     match strategy {
         BalancingStrategy::RoundRobin => Box::new(RoundRobin::new(n)),
@@ -52,6 +76,12 @@ pub fn build(strategy: BalancingStrategy, weights: &[u32]) -> Box<dyn LoadBalanc
         BalancingStrategy::CacheAware => Box::new(CacheAware::new(n, 0.5)),
         BalancingStrategy::Weighted => Box::new(WeightedRoundRobin::new(weights)),
         BalancingStrategy::Pipeline => Box::new(scorer::Pipeline::default_stack(weights)),
+        BalancingStrategy::Cheapest => {
+            // pad unknown costs so the scorer stays index-aligned with targets
+            let mut costs = stats.cost_per_mtok.clone();
+            costs.resize(n, 0.0);
+            Box::new(scorer::Pipeline::cheapest_stack(&costs))
+        }
     }
 }
 
@@ -359,6 +389,27 @@ mod tests {
         assert_eq!(lb.pick(&c, &[]), Some(1));
         assert_eq!(lb.pick(&c, &[]), Some(2));
         assert_eq!(lb.pick(&c, &[]), Some(0));
+    }
+
+    #[test]
+    fn build_cheapest_ranks_by_cost() {
+        let stats = TargetStats {
+            cost_per_mtok: vec![8.0, 1.5, 3.0],
+        };
+        let lb = build_with_stats(BalancingStrategy::Cheapest, &[1, 1, 1], &stats);
+        assert_eq!(lb.name(), "cheapest");
+        assert_eq!(lb.pick(&RouteContext::default(), &[]), Some(1));
+    }
+
+    #[test]
+    fn build_cheapest_pads_missing_stats() {
+        // stats shorter than the route: the tail is unknown (scored neutral),
+        // no panic, and the known-cheapest target still wins
+        let stats = TargetStats {
+            cost_per_mtok: vec![5.0, 0.5],
+        };
+        let lb = build_with_stats(BalancingStrategy::Cheapest, &[1, 1, 1], &stats);
+        assert_eq!(lb.pick(&RouteContext::default(), &[]), Some(1));
     }
 
     #[test]
