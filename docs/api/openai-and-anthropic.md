@@ -46,6 +46,15 @@ The WebSocket-first implementation supports the OpenAI Realtime event stream, in
 
 The `model` field in the body selects a **route**. The route's strategy picks a target; rolter rewrites `model` to the target's upstream model id and forwards with the provider's credentials. Session affinity uses `x-session-id` when present.
 
+When the selected upstream speaks the other chat protocol, rolter translates
+OpenAI Chat Completions and Anthropic Messages in both directions. Translation
+includes system/developer instructions, sampling and stop parameters, function
+tools and tool results, token usage, finish reasons, and live SSE events. Image
+and document inputs retain URL, base64 media type/data, and file references.
+Blocks with no equivalent in the target protocol (for example OpenAI input
+audio sent to an Anthropic Messages upstream) are preserved as opaque content
+blocks; the target may reject them rather than rolter silently dropping data.
+
 ## Examples
 
 ```bash
@@ -74,9 +83,5 @@ curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"llama","messages":[{"role":"user","content":"hi"}]}'
 ```
-
-## Roadmap
-
-OpenAI<->Anthropic request/response translation (call Anthropic models through the OpenAI schema and vice versa), and an OpenAPI document served by the gateway.
 
 > Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and variant routing / per-model param defaults (JSON-only) do not apply.
