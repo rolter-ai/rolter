@@ -13,6 +13,10 @@ port = 4000
 # secret mixed into virtual-key digests (keeps plaintext keys out of gateway
 # memory). prefer the ROLTER_KEY_PEPPER env var over writing it inline.
 # key_pepper = "change-me"
+# max accepted request body size in bytes. raises axum's restrictive 2 MiB
+# default so large prompts / base64 images / audio uploads aren't rejected; an
+# oversized body gets an openai-style 413. defaults to 33554432 (32 MiB).
+# max_body_bytes = 33554432
 
 # --- providers: where rolter can forward to ---
 

@@ -123,6 +123,26 @@ pub async fn audio_translations(
     proxy_multipart(state, headers, body, "/v1/audio/translations").await
 }
 
+/// Rewrite the plain-text `413` that axum's `DefaultBodyLimit` returns into the
+/// OpenAI-style json error the rest of the gateway emits. Runs on every request
+/// but only rewrites responses that are actually `413 Payload Too Large`, so the
+/// steady-state cost is a single status comparison.
+pub async fn map_payload_too_large(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let resp = next.run(req).await;
+    if resp.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return crate::error::ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds the configured max_body_bytes limit",
+        )
+        .with_code("request_too_large")
+        .into_response();
+    }
+    resp
+}
+
 fn extract_key(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(header::AUTHORIZATION) {
         if let Ok(s) = value.to_str() {

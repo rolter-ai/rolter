@@ -71,6 +71,12 @@ pub struct ServerConfig {
     /// `/metrics` behind the same reverse proxy. defaults to `/metrics`.
     #[serde(default = "default_metrics_path")]
     pub metrics_path: String,
+    /// maximum accepted request body size in bytes. raises axum's restrictive
+    /// 2 MiB default so large LLM payloads (long context, base64 images/audio)
+    /// aren't silently rejected; an oversized body gets an OpenAI-style 413.
+    /// defaults to 32 MiB
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
 }
 
 impl ServerConfig {
@@ -91,12 +97,17 @@ impl Default for ServerConfig {
             port: default_port(),
             key_pepper: None,
             metrics_path: default_metrics_path(),
+            max_body_bytes: default_max_body_bytes(),
         }
     }
 }
 
 fn default_host() -> String {
     "0.0.0.0".to_string()
+}
+
+fn default_max_body_bytes() -> usize {
+    32 * 1024 * 1024
 }
 
 fn default_port() -> u16 {

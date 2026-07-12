@@ -129,7 +129,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }
 
-    let app = build_router(state, &config.server.metrics_path);
+    let app = build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    );
 
     tracing::info!(%addr, metrics_path = %config.server.metrics_path, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -147,7 +151,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// `metrics_path` that is empty, unrooted, or collides with a built-in route is
 /// rejected in favour of the default `/metrics` so router construction never
 /// panics on a bad config.
-pub fn build_router(state: AppState, metrics_path: &str) -> Router {
+pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) -> Router {
     let metrics_path =
         if metrics_path.starts_with('/') && !rolter_core::RESERVED_PATHS.contains(&metrics_path) {
             metrics_path
@@ -178,6 +182,11 @@ pub fn build_router(state: AppState, metrics_path: &str) -> Router {
             post(handlers::audio_transcriptions),
         )
         .route("/v1/audio/translations", post(handlers::audio_translations))
+        // cap request bodies (raising axum's 2 MiB default) so large LLM
+        // payloads pass but a pathological body is rejected. the mapper is added
+        // next, so it wraps the limit layer and rewrites its 413 into json
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
+        .layer(axum::middleware::from_fn(handlers::map_payload_too_large))
         // ensure every request carries an x-request-id (generated when absent)
         // and echo it on the response, for end-to-end correlation
         .layer(axum::middleware::from_fn(trace::ensure_request_id))
@@ -200,6 +209,7 @@ pub fn build_router_from_config(config: &GatewayConfig) -> Router {
     build_router(
         AppState::with_logging(config, None),
         &config.server.metrics_path,
+        config.server.max_body_bytes,
     )
 }
 
