@@ -15,7 +15,7 @@ x-vllm-cpu: &vllm-cpu
     VLLM_CPU_KVCACHE_SPACE: "1"
   command: &vllm-command
     - --model
-    - Qwen/Qwen2.5-0.5B-Instruct
+    - trl-internal-testing/tiny-random-LlamaForCausalLM
     - --served-model-name
     - rolter-dummy
     - --load-format
@@ -45,7 +45,7 @@ x-sglang-cpu: &sglang-cpu
     - -m
     - sglang.launch_server
     - --model-path
-    - Qwen/Qwen2.5-0.5B-Instruct
+    - trl-internal-testing/tiny-random-LlamaForCausalLM
     - --served-model-name
     - rolter-dummy
     - --load-format
