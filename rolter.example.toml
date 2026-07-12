@@ -237,18 +237,21 @@ disabled = false      # revoke without deleting
 # timeout_secs = 2     # per-scrape timeout
 # path = "/metrics"    # appended to each provider's api_base when scraping
 
-# --- exact-match response cache (ROL-56) ---
-# when enabled (and a redis url is configured), a non-streaming successful
-# response is stored in redis keyed by the exact request (path + post-injection
-# body); an identical later request is served from the cache with no upstream
-# call and an `x-rolter-cache: HIT` header. this is a global master switch — a
-# route only caches when it ALSO opts in via its own [routes.cache] table below.
+# --- exact-match response cache (ROL-56, streaming: ROL-235) ---
+# when enabled (and a redis url is configured), a successful response is stored
+# in redis keyed by the exact request (path + post-injection body); an identical
+# later request is served from the cache with no upstream call and an
+# `x-rolter-cache: HIT` header. both non-streaming JSON and streaming SSE
+# responses are cached: a streaming miss is buffered in full, stored, and
+# replayed instantly on a later hit. this is a global master switch — a route
+# only caches when it ALSO opts in via its own [routes.cache] table below.
 # with no redis, or redis unreachable, every request is a miss (fail open).
 # disabled by default. defaults shown below.
 # [cache]
 # enabled = false
 # default_ttl_secs = 60        # entry TTL; overridable per route
 # namespace = "rolter:cache"   # redis key prefix for cache entries
+# max_entry_bytes = 1048576    # skip caching bodies larger than this (0 = no limit)
 #
 # per-route opt-in (nested under a [[routes]] entry):
 # [routes.cache]

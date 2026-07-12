@@ -121,6 +121,8 @@ pub struct Metrics {
     pub cache_misses_total: AtomicU64,
     /// successful responses written into the response cache
     pub cache_stores_total: AtomicU64,
+    /// cacheable responses skipped for exceeding `cache.max_entry_bytes`
+    pub cache_too_large_total: AtomicU64,
     /// per-model latency + TTFT histograms, keyed by public model name
     by_model: DashMap<String, ModelHist>,
     /// passive per-target success/error tally, keyed by (provider, target)
@@ -341,6 +343,13 @@ impl Metrics {
             "rolter_cache_stores_total",
             "successful responses written into the response cache",
             self.cache_stores_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_cache_too_large_total",
+            "cacheable responses skipped for exceeding cache.max_entry_bytes",
+            self.cache_too_large_total.load(Relaxed),
         );
         self.render_histogram(
             &mut out,

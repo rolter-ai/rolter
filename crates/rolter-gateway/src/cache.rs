@@ -177,6 +177,34 @@ mod tests {
         assert_ne!(shared_a, key_1);
     }
 
+    #[test]
+    fn sse_body_round_trips_through_stored_encoding() {
+        // a buffered streaming response is stored and served via the same
+        // serde_json encode/decode put/get use; the SSE frames (incl. the
+        // terminal [DONE] and the final usage chunk) must survive verbatim so
+        // replay still parses token usage. this is the storage contract ROL-235
+        // relies on for streaming cache hits.
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ng\"}}]}\n\n",
+            "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let original = CachedResponse {
+            status: 200,
+            content_type: "text/event-stream".to_string(),
+            body: sse.as_bytes().to_vec(),
+        };
+        let blob = serde_json::to_vec(&original).unwrap();
+        let decoded: CachedResponse = serde_json::from_slice(&blob).unwrap();
+        assert_eq!(decoded.status, 200);
+        assert_eq!(decoded.content_type, "text/event-stream");
+        // byte-for-byte identical framing so UsageLoggingStream sees the same
+        // events it would on a live miss
+        assert_eq!(decoded.body, original.body);
+        assert_eq!(String::from_utf8(decoded.body).unwrap(), sse);
+    }
+
     #[tokio::test]
     async fn disabled_cache_always_misses() {
         let cache = ResponseCache::disabled();

@@ -354,30 +354,29 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let trace_headers: Vec<(&str, &str)> =
         trace_ctx.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    // exact-match response cache (ROL-56): eligible only for non-streaming
-    // requests on routes that opted in, when the global switch is on and Redis
-    // is wired. the key hashes the post-injection forward body so admin param
+    // exact-match response cache (ROL-56, streaming added in ROL-235): eligible
+    // for routes that opted in, when the global switch is on and Redis is wired.
+    // both non-streaming JSON and streaming SSE responses are cacheable — a
+    // streaming miss is buffered in full, stored, and replayed instantly on a
+    // later hit. the key hashes the post-injection forward body so admin param
     // defaults are part of the identity; per-key routes also mix in the vk id.
     let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
-    let cache_key = if snap.cache.enabled
-        && !stream
-        && state.response_cache.is_enabled()
-        && entry.route.cache_enabled()
-    {
-        let scope_seg = if entry.route.cache_per_key() {
-            vk_id.as_str()
+    let cache_key =
+        if snap.cache.enabled && state.response_cache.is_enabled() && entry.route.cache_enabled() {
+            let scope_seg = if entry.route.cache_per_key() {
+                vk_id.as_str()
+            } else {
+                ""
+            };
+            Some(ResponseCache::make_key(
+                &snap.cache.namespace,
+                path,
+                scope_seg,
+                &forward_body,
+            ))
         } else {
-            ""
+            None
         };
-        Some(ResponseCache::make_key(
-            &snap.cache.namespace,
-            path,
-            scope_seg,
-            &forward_body,
-        ))
-    } else {
-        None
-    };
     if let Some(key) = &cache_key {
         if let Some(hit) = state.response_cache.get(key).await {
             state.metrics.cache_hits_total.fetch_add(1, Relaxed);
@@ -624,12 +623,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 stream: stream as u8,
                 ..Default::default()
             };
-            // on a cache-eligible route, buffer a successful non-streaming
-            // response so it can be stored in Redis, then replay the buffered
-            // bytes through the same accounting stream (byte-for-byte identical
-            // token/cost/log handling to the uncached path)
+            // on a cache-eligible route, buffer a successful response (JSON or a
+            // full SSE stream) so it can be stored in Redis, then replay the
+            // buffered bytes through the same accounting stream (byte-for-byte
+            // identical token/cost/log handling to the uncached path). streaming
+            // hits later replay these frames instantly; the final-chunk usage is
+            // still parsed because the frames are handed on with is_sse preserved
             if let Some(key) = cache_key {
-                if !is_sse && status < 400 {
+                if status < 400 {
                     let content_type = response
                         .headers()
                         .get(reqwest::header::CONTENT_TYPE)
@@ -638,23 +639,31 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         .to_string();
                     match response.bytes().await {
                         Ok(bytes) => {
-                            state
-                                .response_cache
-                                .put(
-                                    &key,
-                                    &CachedResponse {
-                                        status,
-                                        content_type: content_type.clone(),
-                                        body: bytes.to_vec(),
-                                    },
-                                    cache_ttl,
-                                )
-                                .await;
-                            state.metrics.cache_stores_total.fetch_add(1, Relaxed);
+                            // skip storing bodies over the configured ceiling
+                            // (0 = no limit); they're still served normally
+                            let limit = snap.cache.max_entry_bytes;
+                            if limit == 0 || bytes.len() as u64 <= limit {
+                                state
+                                    .response_cache
+                                    .put(
+                                        &key,
+                                        &CachedResponse {
+                                            status,
+                                            content_type: content_type.clone(),
+                                            body: bytes.to_vec(),
+                                        },
+                                        cache_ttl,
+                                    )
+                                    .await;
+                                state.metrics.cache_stores_total.fetch_add(1, Relaxed);
+                            } else {
+                                state.metrics.cache_too_large_total.fetch_add(1, Relaxed);
+                            }
                             return buffered_response(
                                 bytes,
                                 status,
                                 content_type,
+                                is_sse,
                                 started,
                                 state.log.clone(),
                                 price,
@@ -1447,12 +1456,15 @@ fn stream_response(
 /// Replay a buffered (already fully received) response body through the same
 /// [`UsageLoggingStream`] accounting the streamed path uses. Used by the
 /// response cache's store path: the body was buffered to write it to Redis, so
-/// it's handed on as a single-chunk stream rather than re-fetched.
+/// it's handed on as a single-chunk stream rather than re-fetched. `is_sse`
+/// carries the upstream content type through so a buffered SSE completion is
+/// still parsed frame-by-frame for its final usage chunk.
 #[allow(clippy::too_many_arguments)]
 fn buffered_response(
     bytes: Bytes,
     status: u16,
     content_type: String,
+    is_sse: bool,
     started: Instant,
     sink: crate::logging::LogSink,
     price: Option<rolter_core::ModelPriceConfig>,
@@ -1466,7 +1478,7 @@ fn buffered_response(
     let stream = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(bytes)]);
     let body = crate::logging::UsageLoggingStream::new(
         Box::pin(stream),
-        false,
+        is_sse,
         started,
         sink,
         price,
