@@ -157,6 +157,105 @@ async fn ollama_preserves_openai_compatible_fields_and_rewrites_model() {
 }
 
 #[tokio::test]
+async fn openai_multimodal_content_is_forwarded_byte_for_byte() {
+    let payload = serde_json::to_vec(&json!({
+        "model": "multimodal-model",
+        "modalities": ["text", "audio"],
+        "audio": {"voice": "alloy", "format": "wav"},
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe these inputs"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                {"type": "input_audio", "input_audio": {"data": "UklGRiQAAABXQVZF", "format": "wav"}},
+                {"type": "input_file", "input_file": {"filename": "notes.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjQ="}}
+            ]
+        }]
+    }))
+    .unwrap();
+    let expected = payload.clone();
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: bytes::Bytes| {
+            let expected = expected.clone();
+            async move {
+                assert_eq!(body, expected, "multimodal payload must not be re-encoded");
+                Json(json!({
+                    "choices": [{"message": {"role": "assistant", "content": "done", "audio": {"id": "audio_1", "data": "UklGRg==", "expires_at": 0, "transcript": "done"}}}]
+                }))
+            }
+        }),
+    ))
+    .await;
+    let gw = serve_gateway(&config_for("multimodal-model", vec![("up", upstream)])).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["choices"][0]["message"]["audio"]["data"],
+        "UklGRg=="
+    );
+}
+
+#[tokio::test]
+async fn anthropic_multimodal_content_is_forwarded_byte_for_byte() {
+    let payload = serde_json::to_vec(&json!({
+        "model": "claude-multimodal",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}},
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQ="}},
+                {"type": "document", "source": {"type": "url", "url": "https://example.test/report.pdf"}}
+            ]
+        }]
+    }))
+    .unwrap();
+    let expected = payload.clone();
+    let upstream = serve(Router::new().route(
+        "/v1/messages",
+        post(move |headers: axum::http::HeaderMap, body: bytes::Bytes| {
+            let expected = expected.clone();
+            async move {
+                assert_eq!(body, expected, "multimodal payload must not be re-encoded");
+                assert_eq!(headers["anthropic-version"], "2023-06-01");
+                Json(json!({
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                    "stop_reason": "end_turn"
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut config = config_for("claude-multimodal", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .header("content-type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["type"], "message");
+}
+
+#[tokio::test]
 async fn response_carries_routing_decision_headers() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
