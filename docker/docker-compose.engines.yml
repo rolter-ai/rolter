@@ -1,0 +1,111 @@
+# Optional CPU-backed upstreams for engine compatibility tests (ROL-238).
+# They are separate from docker-compose.yml so normal development stays light.
+name: rolter-engines
+
+# lightweight vLLM API simulator: the default suite engine. Multi-arch,
+# ~30MB, no model/tokenizer downloads, boots in milliseconds.
+x-sim: &sim
+  profiles: [sim]
+  image: ghcr.io/llm-d/llm-d-inference-sim:v0.10.0
+  command: &sim-command
+    - --model
+    - rolter-dummy
+    - --port
+    - "8000"
+    - --mode
+    - random
+
+x-vllm-cpu: &vllm-cpu
+  profiles: [vllm]
+  build:
+    context: ..
+    dockerfile: integration/engines/docker/vllm-cpu.Dockerfile
+  image: rolter-vllm-cpu:v0.24.0
+  shm_size: 2gb
+  cap_add: [SYS_NICE]
+  security_opt: [seccomp=unconfined]
+  environment:
+    VLLM_CPU_KVCACHE_SPACE: "1"
+  command: &vllm-command
+    - --model
+    - trl-internal-testing/tiny-random-LlamaForCausalLM
+    - --served-model-name
+    - rolter-dummy
+    - --load-format
+    - dummy
+    # the tiny model's head_dim=4 is below what vllm's cpu attention kernel
+    # supports; dummy weights make the shape override safe
+    - --hf-overrides
+    - '{"head_dim": 64}'
+    - --chat-template
+    - /templates/chat-template.jinja
+    - --dtype
+    - bfloat16
+    - --max-model-len
+    - "128"
+    - --max-num-seqs
+    - "2"
+    - --enforce-eager
+  volumes:
+    # Dummy mode skips weights; the public config and tokenizer remain cached.
+    - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
+    - ../integration/engines/chat-template.jinja:/templates/chat-template.jinja:ro
+
+x-sglang-cpu: &sglang-cpu
+  profiles: [sglang]
+  # This is SGLang's documented CPU build rather than its CUDA runtime image.
+  build:
+    context: https://github.com/sgl-project/sglang.git#v0.5.12:docker
+    dockerfile: xeon.Dockerfile
+  image: rolter-sglang-cpu:v0.5.12
+  shm_size: 2gb
+  environment:
+    SGLANG_USE_CPU_ENGINE: "1"
+  command: &sglang-command
+    - /opt/.venv/bin/python
+    - -m
+    - sglang.launch_server
+    - --model-path
+    - trl-internal-testing/tiny-random-LlamaForCausalLM
+    - --served-model-name
+    - rolter-dummy
+    - --load-format
+    - dummy
+    # same head_dim override as vllm; the cpu kernels need a supported size
+    - --json-model-override-args
+    - '{"head_dim": 64}'
+    - --device
+    - cpu
+    - --tp-size
+    - "1"
+    - --context-length
+    - "128"
+    - --disable-overlap-schedule
+    - --host
+    - 0.0.0.0
+    - --port
+    - "30000"
+  volumes:
+    - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
+
+services:
+  # Two independent servers make the gateway exercise an actual target pool.
+  # Ports bind to loopback only; the suite is host-local by design.
+  sim-1:
+    <<: *sim
+    ports: ["127.0.0.1:${SIM_1_PORT:-8000}:8000"]
+  sim-2:
+    <<: *sim
+    ports: ["127.0.0.1:${SIM_2_PORT:-8001}:8000"]
+  vllm-1:
+    <<: *vllm-cpu
+    ports: ["127.0.0.1:${VLLM_1_PORT:-8000}:8000"]
+  vllm-2:
+    <<: *vllm-cpu
+    ports: ["127.0.0.1:${VLLM_2_PORT:-8001}:8000"]
+  sglang-1:
+    <<: *sglang-cpu
+    ports: ["127.0.0.1:${SGLANG_1_PORT:-30000}:30000"]
+  sglang-2:
+    <<: *sglang-cpu
+    ports: ["127.0.0.1:${SGLANG_2_PORT:-30001}:30000"]
