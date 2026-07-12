@@ -256,6 +256,162 @@ async fn anthropic_multimodal_content_is_forwarded_byte_for_byte() {
 }
 
 #[tokio::test]
+async fn openai_client_translates_multimodal_tools_through_anthropic() {
+    async fn anthropic_upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["model"], "claude-native");
+        assert_eq!(body["system"][0]["text"], "be precise");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(body["messages"][0]["content"][2]["type"], "document");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        Json(json!({
+            "id":"msg_native","type":"message","role":"assistant","model":"claude-native",
+            "content":[{"type":"text","text":"done"},{"type":"tool_use","id":"tool_1","name":"lookup","input":{"q":"x"}}],
+            "stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":3}
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/v1/messages", post(anthropic_upstream))).await;
+    let mut config = config_for("public-model", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    config.routes[0].targets[0].model = Some("claude-native".to_string());
+    let gw = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model":"public-model","max_tokens":64,
+            "messages":[
+                {"role":"system","content":"be precise"},
+                {"role":"user","content":[
+                    {"type":"text","text":"inspect"},
+                    {"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}},
+                    {"type":"input_file","input_file":{"filename":"report.pdf","file_data":"data:application/pdf;base64,BB=="}}
+                ]}
+            ],
+            "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]
+        }))
+        .send().await.unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["choices"][0]["message"]["content"], "done");
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+    assert_eq!(body["usage"]["total_tokens"], 11);
+}
+
+#[tokio::test]
+async fn anthropic_client_translates_multimodal_tools_through_openai() {
+    async fn openai_upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["model"], "gpt-native");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "image_url");
+        assert_eq!(body["messages"][1]["content"][1]["type"], "input_file");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+        Json(json!({
+            "id":"chatcmpl-native","object":"chat.completion","model":"gpt-native",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"done","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(openai_upstream))).await;
+    let mut config = config_for("public-model", vec![("openai", upstream)]);
+    config.routes[0].targets[0].model = Some("gpt-native".to_string());
+    let gw = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({
+            "model":"public-model","max_tokens":64,"system":"be precise",
+            "messages":[{"role":"user","content":[
+                {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},
+                {"type":"document","source":{"type":"url","url":"https://example.test/report.pdf"},"title":"report"}
+            ]}],
+            "tools":[{"name":"lookup","input_schema":{"type":"object"}}]
+        }))
+        .send().await.unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["type"], "message");
+    assert_eq!(body["content"][0]["text"], "done");
+    assert_eq!(body["content"][1]["type"], "tool_use");
+    assert_eq!(body["stop_reason"], "tool_use");
+    assert_eq!(body["usage"]["input_tokens"], 5);
+}
+
+#[tokio::test]
+async fn cross_protocol_sse_is_translated_incrementally_both_ways() {
+    async fn anthropic_stream() -> impl IntoResponse {
+        let sse = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":2}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            sse,
+        )
+    }
+    let anthropic = serve(Router::new().route("/v1/messages", post(anthropic_stream))).await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", anthropic)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let openai_text = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model":"to-anthropic","stream":true,"messages":[]}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(openai_text.contains("chat.completion.chunk"));
+    assert!(openai_text.contains("\"content\":\"pong\""));
+    assert!(openai_text.ends_with("data: [DONE]\n\n"));
+
+    async fn openai_stream() -> impl IntoResponse {
+        let sse = concat!(
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            sse,
+        )
+    }
+    let openai = serve(Router::new().route("/v1/chat/completions", post(openai_stream))).await;
+    let config = config_for("to-openai", vec![("openai", openai)]);
+    let gw = serve_gateway(&config).await;
+    let anthropic_text = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({"model":"to-openai","max_tokens":16,"stream":true,"messages":[]}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(anthropic_text.matches("event: message_start").count(), 1);
+    assert!(anthropic_text.contains("event: content_block_delta"));
+    assert!(anthropic_text.contains("\"text\":\"pong\""));
+    assert!(anthropic_text.contains("\"input_tokens\":2"));
+    assert!(anthropic_text.contains("\"output_tokens\":1"));
+    assert!(anthropic_text.ends_with("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"));
+}
+
+#[tokio::test]
 async fn response_carries_routing_decision_headers() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
