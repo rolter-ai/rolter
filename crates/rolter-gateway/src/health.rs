@@ -42,6 +42,7 @@ fn probe_request(
         | ProviderKind::OllamaCloud
         | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
         ProviderKind::Openrouter => (format!("{base}/models"), Vec::new()),
+        ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
             vec![(
@@ -776,5 +777,12 @@ mod tests {
             }
             _ => panic!("expected a free probe"),
         }
+    }
+
+    #[test]
+    fn tei_uses_native_health_endpoint_without_auth_by_default() {
+        let (url, headers) = probe_request(ProviderKind::Tei, "http://tei:80/", "/");
+        assert_eq!(url, "http://tei:80/health");
+        assert!(headers.is_empty());
     }
 }

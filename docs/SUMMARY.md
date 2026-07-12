@@ -37,4 +37,5 @@
 - [OpenRouter](deployment/openrouter.md)
 - [Docker](deployment/docker.md)
 - [llama.cpp](deployment/llama-cpp.md)
+- [Hugging Face TEI](deployment/tei.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)

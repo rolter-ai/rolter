@@ -1,0 +1,24 @@
+name: rolter-tei-smoke
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    command: ["--model-id", "sentence-transformers/all-MiniLM-L6-v2"]
+    volumes:
+      - tei-data:/data
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: ["rolter-gateway", "--config", "/app/tei.toml"]
+    ports:
+      - "${ROLTER_TEI_PORT:-4013}:4000"
+    volumes:
+      - ./rolter.toml.in:/app/tei.toml:ro
+    depends_on:
+      - tei
+
+volumes:
+  tei-data:

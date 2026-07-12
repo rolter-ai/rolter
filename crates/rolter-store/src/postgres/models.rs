@@ -37,7 +37,7 @@ pub struct Provider {
     pub id: Uuid,
     pub org_id: Uuid,
     pub name: String,
-    /// a supported provider kind such as `openai`, `ollama`, or `openrouter`
+    /// a supported provider kind such as `openai`, `ollama`, `openrouter`, or `tei`
     pub kind: String,
     pub api_base: String,
     pub api_key_env: Option<String>,
