@@ -491,7 +491,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(current_version(&pool).await.unwrap(), v0 + 2);
+        // the provider delete cascades to provider_keys, whose statement trigger
+        // bumps the version even when no key rows exist
+        assert_eq!(current_version(&pool).await.unwrap(), v0 + 3);
     }
 
     #[tokio::test]
