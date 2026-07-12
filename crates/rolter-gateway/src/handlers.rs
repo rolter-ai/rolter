@@ -1323,6 +1323,12 @@ fn stream_response(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json")
         .to_string();
+    // surface the routing decision to the client before `log` is moved into the
+    // stream wrapper: which provider/target/model/variant served the request and
+    // whether it was a cache hit (ROL-58). cache is always a miss until the
+    // response cache lands (ROL-56); the header flips automatically once
+    // `log.cache_hit` is set upstream
+    let decision = DecisionHeaders::from_log(&log);
     let body = crate::logging::UsageLoggingStream::new(
         Box::pin(response.bytes_stream()),
         is_sse,
@@ -1334,16 +1340,66 @@ fn stream_response(
         Some(token_recorder),
         inflight_guard,
     );
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, content_type)
-        .body(Body::from_stream(body))
-        .unwrap_or_else(|_| {
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to build response",
-            )
-        })
+        .header(header::CONTENT_TYPE, content_type);
+    decision.apply(builder.headers_mut());
+    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to build response",
+        )
+    })
+}
+
+/// `x-rolter-*` response headers that expose the routing decision for a request:
+/// the provider, target, resolved model and A/B variant that served it, and
+/// whether the response came from the cache. Purely observational — clients can
+/// log or branch on them, and they make the gateway's target selection debuggable
+/// without turning on ClickHouse logging (ROL-58).
+struct DecisionHeaders {
+    provider: String,
+    target: String,
+    model: String,
+    variant: String,
+    cache_hit: bool,
+}
+
+impl DecisionHeaders {
+    fn from_log(log: &RequestLog) -> Self {
+        Self {
+            provider: log.provider.clone(),
+            target: log.target.clone(),
+            model: log.model.clone(),
+            variant: log.variant.clone(),
+            cache_hit: log.cache_hit != 0,
+        }
+    }
+
+    /// Insert the non-empty decision headers into `headers`. Values that are not
+    /// valid header content are skipped rather than failing the response.
+    fn apply(&self, headers: Option<&mut HeaderMap>) {
+        let Some(headers) = headers else {
+            return;
+        };
+        for (name, value) in [
+            ("x-rolter-provider", self.provider.as_str()),
+            ("x-rolter-target", self.target.as_str()),
+            ("x-rolter-model", self.model.as_str()),
+            ("x-rolter-variant", self.variant.as_str()),
+        ] {
+            if value.is_empty() {
+                continue;
+            }
+            if let Ok(v) = HeaderValue::from_str(value) {
+                headers.insert(name, v);
+            }
+        }
+        headers.insert(
+            "x-rolter-cache",
+            HeaderValue::from_static(if self.cache_hit { "HIT" } else { "MISS" }),
+        );
+    }
 }
 
 #[cfg(test)]

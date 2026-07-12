@@ -117,6 +117,38 @@ async fn non_streaming_request_proxies_upstream_body() {
 }
 
 #[tokio::test]
+async fn response_carries_routing_decision_headers() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": [{"role": "user", "content": "ping"}]}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    // the client can see which target served the request without ClickHouse
+    assert_eq!(header("x-rolter-provider"), "up");
+    assert_eq!(header("x-rolter-model"), "test-model");
+    // no per-target upstream model override, so the resolved target model is the
+    // requested model
+    assert_eq!(header("x-rolter-target"), "test-model");
+    // no cache yet (ROL-56), so every response is a miss for now
+    assert_eq!(header("x-rolter-cache"), "MISS");
+    // no A/B variant on the classic single-pool path: header omitted, not blank
+    assert!(!resp.headers().contains_key("x-rolter-variant"));
+}
+
+#[tokio::test]
 async fn streaming_request_passes_through_sse() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
