@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "rolter"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-auth"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -1955,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-balancer"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "ahash",
  "parking_lot",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-control"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-gateway"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-proxy"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "bytes",
  "dashmap",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "rolter-store"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "async-trait",
  "chrono",
