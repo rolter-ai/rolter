@@ -22,12 +22,25 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/audio/speech` | OpenAI text-to-speech; binary audio response |
 | POST | `/v1/audio/transcriptions` | OpenAI speech-to-text; `multipart/form-data` upload |
 | POST | `/v1/audio/translations` | OpenAI audio translation; `multipart/form-data` upload |
+| GET | `/v1/realtime?model=…` | OpenAI-compatible Realtime API; WebSocket relay |
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/openapi.json` | OpenAPI 3.1 description of this request surface (self-contained, no external assets) |
 | GET | `/docs` | interactive Scalar API reference (assets embedded in the binary — works air-gapped) |
 | GET | `/` | service-info landing (version + links to docs/openapi/health) |
 | GET | `/healthz` | liveness |
 | GET | `/metrics` | Prometheus exposition |
+
+## Realtime WebSocket
+
+Connect with the usual gateway bearer key and the public route model as a query parameter:
+
+```text
+wss://gateway.example.com/v1/realtime?model=gpt-realtime
+```
+
+rolter authenticates and selects an upstream before accepting the client upgrade, then pins that upstream and its selected provider key for the session. Text, binary audio and WebSocket control frames are relayed in both directions without application-level buffering. If the upstream drops, the client must reconnect; rolter does not fail a live session over to another target because replaying audio or tool events is unsafe.
+
+The WebSocket-first implementation supports the OpenAI Realtime event stream, including `session.update`, `input_audio_buffer.*`, `response.*`, and function-call events. WebRTC/browser ephemeral-token handoff is not exposed by the gateway yet.
 
 ## Routing
 

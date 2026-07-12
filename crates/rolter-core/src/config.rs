@@ -49,6 +49,9 @@ pub struct GatewayConfig {
     /// background scrape of upstream engine `/metrics` for load-aware routing
     #[serde(default)]
     pub metrics_scrape: MetricsScrapeConfig,
+    /// guardrails for persistent OpenAI Realtime WebSocket sessions
+    #[serde(default)]
+    pub realtime: RealtimeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -136,7 +139,44 @@ pub const RESERVED_PATHS: &[&str] = &[
     "/v1/audio/speech",
     "/v1/audio/transcriptions",
     "/v1/audio/translations",
+    "/v1/realtime",
 ];
+
+/// Limits applied to long-lived Realtime WebSocket sessions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RealtimeConfig {
+    /// maximum concurrent Realtime sessions across this gateway instance; 0 disables the cap
+    #[serde(default = "default_realtime_max_connections")]
+    pub max_connections: u64,
+    /// maximum session age in seconds; 0 disables the limit
+    #[serde(default = "default_realtime_max_session_secs")]
+    pub max_session_secs: u64,
+    /// close an inactive session after this many seconds; 0 disables the limit
+    #[serde(default = "default_realtime_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+}
+
+impl Default for RealtimeConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_realtime_max_connections(),
+            max_session_secs: default_realtime_max_session_secs(),
+            idle_timeout_secs: default_realtime_idle_timeout_secs(),
+        }
+    }
+}
+
+fn default_realtime_max_connections() -> u64 {
+    1_000
+}
+
+fn default_realtime_max_session_secs() -> u64 {
+    3_600
+}
+
+fn default_realtime_idle_timeout_secs() -> u64 {
+    300
+}
 
 /// The wire protocol a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
