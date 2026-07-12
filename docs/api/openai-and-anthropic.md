@@ -15,6 +15,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | --- | --- | --- |
 | POST | `/v1/chat/completions` | OpenAI chat; streaming via `"stream": true` (SSE) |
 | POST | `/v1/completions` | OpenAI legacy completions |
+| POST | `/v1/responses` | OpenAI Responses; provider-native passthrough, streaming supported |
 | POST | `/v1/messages` | Anthropic Messages; streaming supported |
 | POST | `/v1/embeddings` | OpenAI embeddings; non-streaming |
 | POST | `/v1/rerank` | Cohere/Jina rerank; non-streaming |
@@ -54,6 +55,24 @@ and document inputs retain URL, base64 media type/data, and file references.
 Blocks with no equivalent in the target protocol (for example OpenAI input
 audio sent to an Anthropic Messages upstream) are preserved as opaque content
 blocks; the target may reject them rather than rolter silently dropping data.
+
+## OpenAI Responses
+
+`POST /v1/responses` is routed by its required `model` field. Native OpenAI
+providers receive the request and SSE events unchanged. For Chat Completions or
+Anthropic Messages upstreams, rolter translates the common text, multimodal,
+function-tool, tool-result, sampling, and usage fields in both directions and
+emits Responses-shaped events to the caller. Responses-only features without a
+wire equivalent (for example `background`, `store`, `previous_response_id`,
+and provider-specific reasoning controls) are not forwarded to those older
+surfaces; use a native Responses provider when those features are required.
+
+Response lifecycle operations (`GET`/`DELETE /v1/responses/{id}`, cancellation,
+and background input-item retrieval) deliberately return `501` with code
+`response_lifecycle_unsupported`. Those calls have no model, and forwarding an
+opaque identifier could reveal or act on a response owned by another tenant or
+virtual key. They will require a tenant-scoped response registry before being
+proxied.
 
 ## Examples
 

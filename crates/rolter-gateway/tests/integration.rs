@@ -118,6 +118,128 @@ async fn non_streaming_request_proxies_upstream_body() {
 }
 
 #[tokio::test]
+async fn responses_passthrough_preserves_body_and_sse_events() {
+    async fn responses_upstream(Json(body): Json<Value>) -> axum::response::Response {
+        assert_eq!(body["tools"][0]["type"], "web_search_preview");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_image");
+        assert_eq!(body["reasoning"]["effort"], "high");
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+        )
+            .into_response()
+    }
+
+    let upstream = serve(Router::new().route("/v1/responses", post(responses_upstream))).await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    config.providers[0].kind = ProviderKind::Openai;
+    let gw = serve_gateway(&config).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/responses"))
+        .json(&json!({
+            "model": "test-model",
+            "stream": true,
+            "input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.com/a.png"}]}],
+            "tools": [{"type": "web_search_preview"}],
+            "reasoning": {"effort": "high"},
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert!(resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("text/event-stream"));
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("event: response.output_text.delta"));
+    assert!(body.contains("event: response.completed"));
+}
+
+#[tokio::test]
+async fn responses_translates_to_chat_completions() {
+    async fn chat_upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "hello");
+        assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+        Json(json!({
+            "id":"chat_1", "object":"chat.completion", "model":"upstream-model",
+            "choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(chat_upstream))).await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/responses"))
+        .json(&json!({
+            "model":"test-model", "instructions":"be concise", "input":"hello",
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "response");
+    assert_eq!(body["output"][0]["content"][0]["text"], "pong");
+    assert_eq!(body["usage"]["input_tokens"], 2);
+}
+
+#[tokio::test]
+async fn responses_translates_to_anthropic_messages() {
+    async fn messages_upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["system"][0]["text"], "be concise");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
+        Json(json!({
+            "id":"msg_1", "type":"message", "model":"claude", "role":"assistant",
+            "content":[{"type":"text","text":"pong"}], "stop_reason":"end_turn",
+            "usage":{"input_tokens":2,"output_tokens":1}
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/v1/messages", post(messages_upstream))).await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/responses"))
+        .json(&json!({"model":"test-model", "instructions":"be concise", "input":"hello"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "response");
+    assert_eq!(body["output"][0]["content"][0]["text"], "pong");
+    assert_eq!(body["usage"]["output_tokens"], 1);
+}
+
+#[tokio::test]
+async fn responses_lifecycle_operations_are_uniformly_unsupported() {
+    let gw = serve_gateway(&GatewayConfig::default()).await;
+    let client = reqwest::Client::new();
+    for request in [
+        client.get(format!("http://{gw}/v1/responses/resp_a")),
+        client.delete(format!("http://{gw}/v1/responses/resp_other_tenant")),
+        client.post(format!("http://{gw}/v1/responses/resp_a/cancel")),
+        client.get(format!("http://{gw}/v1/responses/resp_a/input_items")),
+    ] {
+        let resp = request.send().await.unwrap();
+        assert_eq!(resp.status(), 501);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "response_lifecycle_unsupported");
+    }
+}
+
+#[tokio::test]
 async fn ollama_preserves_openai_compatible_fields_and_rewrites_model() {
     async fn inspect(Json(body): Json<Value>) -> impl IntoResponse {
         assert_eq!(body["model"], "qwen2.5:0.5b");

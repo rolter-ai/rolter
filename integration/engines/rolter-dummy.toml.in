@@ -1,0 +1,108 @@
+# Rendered by run.sh with the selected engine's host ports.
+[server]
+host = "127.0.0.1"
+port = __ROLTER_PORT__
+
+[[providers]]
+name = "engine-1"
+kind = "openai_compatible"
+api_base = "http://127.0.0.1:__ENGINE_1_PORT__"
+
+[[providers]]
+name = "engine-2"
+kind = "openai_compatible"
+api_base = "http://127.0.0.1:__ENGINE_2_PORT__"
+
+# The same two-engine pool is exercised through every currently supported
+# strategy. Targets override the public route name with the dummy server model.
+[[routes]]
+model = "dummy-round-robin"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-random"
+strategy = "random"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-power-of-two"
+strategy = "power_of_two"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-consistent-hash"
+strategy = "consistent_hash"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-cache-aware"
+strategy = "cache_aware"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-weighted"
+strategy = "weighted"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+weight = 3
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+weight = 1
+
+[[routes]]
+model = "dummy-pipeline"
+strategy = "pipeline"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-cheapest"
+strategy = "cheapest"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
+
+[[routes]]
+model = "dummy-fastest"
+strategy = "fastest"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+[[routes.targets]]
+provider = "engine-2"
+model = "rolter-dummy"
