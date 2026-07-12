@@ -56,3 +56,8 @@ GHCR always publishes via the built-in `GITHUB_TOKEN`. To also push to Docker Hu
 - Set a strong `ROLTER_MASTER_KEY`; provide DB/Redis/ClickHouse URLs via env or a secrets manager.
 - Scale `gateway` horizontally; all replicas hot-reload config from Redis. ClickHouse and Postgres are shared.
 - Kubernetes manifests/Helm chart are a roadmap item.
+
+## Air-gapped
+
+Running fully offline behind an internal mirror (Nexus/Artifactory/Harbor)? See
+[Air-gapped install & operation](air-gapped.md).

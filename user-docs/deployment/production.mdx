@@ -139,3 +139,9 @@ Rotate your upstream provider API keys on a schedule (e.g. every 90 days) or imm
 2. Restart or re-deploy the gateway containers to pick up the new value.
 
 If you use the control plane to manage providers, you can update the encrypted secret through the dashboard without touching the TOML file or restarting containers.
+
+<Note>
+  Running without public internet? See the [air-gapped installation & operation
+  guide](/deployment/air-gapped) for mirror-based install paths and the runtime
+  egress guarantees.
+</Note>
