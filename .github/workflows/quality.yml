@@ -252,6 +252,28 @@ jobs:
             -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
             | grep -q 'data:'
 
+  # ── packaging: catch crate-publish breakage before a release ────────────────
+  # `cargo publish` builds each crate from its packaged tarball in isolation, so a
+  # file referenced outside the crate directory (e.g. include_str!("../../x")) or a
+  # path dependency not carried in the package compiles fine in-tree but 404s at
+  # publish time. `cargo package --workspace` reproduces that isolated verify build
+  # for every publishable crate, so packaging breakage fails here on the PR instead
+  # of mid-release after some crates have already published to crates.io (ROL-233).
+  package:
+    name: package (publish verify)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - uses: wild-linker/action@0bbbfa5df4380cab8e63cb8505a1ce65e1d10203 # 0.9.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: cargo package (verifies each crate in isolation)
+        run: cargo package --workspace --locked
+
   # ── spelling: docs / comments / identifiers ─────────────────────────────────
   # false positives are pinned in _typos.toml with an explaining comment each.
   typos:
