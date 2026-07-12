@@ -59,6 +59,7 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             "anthropic" => ProviderKind::Anthropic,
             "openai_compatible" => ProviderKind::OpenaiCompatible,
             "ollama" => ProviderKind::Ollama,
+            "llama_cpp" => ProviderKind::LlamaCpp,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
         Ok(ProviderConfig {

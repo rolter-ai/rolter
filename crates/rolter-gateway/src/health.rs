@@ -36,9 +36,10 @@ fn probe_request(
         return (format!("{base}{configured_path}"), None);
     }
     match kind {
-        ProviderKind::Openai | ProviderKind::OpenaiCompatible | ProviderKind::Ollama => {
-            (format!("{base}/v1/models"), None)
-        }
+        ProviderKind::Openai
+        | ProviderKind::OpenaiCompatible
+        | ProviderKind::Ollama
+        | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), None),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
             Some(("anthropic-version", ANTHROPIC_VERSION)),
