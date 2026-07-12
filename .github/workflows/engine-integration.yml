@@ -1,6 +1,12 @@
 name: engine integration
 
 on:
+  pull_request:
+    paths:
+      - "docker/docker-compose.engines.yml"
+      - "integration/engines/**"
+      - "justfile"
+      - ".github/workflows/engine-integration.yml"
   workflow_dispatch:
     inputs:
       benchmark:
@@ -8,6 +14,8 @@ on:
         required: false
         type: boolean
         default: false
+  schedule:
+    - cron: "23 3 * * 1"
 
 permissions:
   contents: read
@@ -15,9 +23,9 @@ permissions:
 jobs:
   smoke:
     name: ${{ matrix.engine }} dummy-weight smoke
-    # Engines are intentionally manual because their uv environments and GPU
-    # workloads are too heavy for the normal pull-request gate.
-    runs-on: [self-hosted, linux, x64, gpu]
+    # CPU-only on GitHub-hosted runners: this is an API/SSE compatibility test,
+    # not an inference-engine performance benchmark.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:

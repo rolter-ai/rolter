@@ -36,7 +36,7 @@ sed -e "s/__ROLTER_PORT__/$rolter_port/g" \
   -e "s/__ENGINE_2_PORT__/$engine_2_port/g" \
   "$root/integration/engines/rolter-dummy.toml.in" >"$config"
 
-"${compose[@]}" up -d --build
+"${compose[@]}" up -d
 (cd "$root" && cargo run -p rolter-gateway -- --config "$config") >"$artifacts/rolter.log" 2>&1 &
 gateway_pid=$!
 

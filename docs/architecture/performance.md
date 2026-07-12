@@ -32,10 +32,9 @@ public model only for its configuration/tokenizer and initialize random weights
 with `--load-format dummy`. Output is intentionally meaningless; this validates
 the HTTP, OpenAI JSON, and SSE contracts rather than model quality.
 
-It runs on an NVIDIA GPU in Docker. Each container launches its pinned engine
-through `uv`/`uvx`, and each profile starts two independent dummy upstreams so
-the gateway exercises a real target pool. Install Docker with the NVIDIA
-container runtime, then run:
+It runs on CPU in Docker and therefore works on GitHub-hosted runners. Each
+engine profile starts two independent dummy upstreams so the gateway exercises
+a real target pool. Run one engine locally:
 
 ```sh
 just integration-vllm
@@ -50,8 +49,7 @@ Logs are kept in `artifacts/engines/<engine>/`.
 
 ### Local end-to-end run
 
-`just integration-vllm` and `just integration-sglang` build the lightweight
-CUDA/uv container, resolve the pinned engine package inside it, start two
+`just integration-vllm` and `just integration-sglang` start two CPU
 dummy-weight servers, render the gateway configuration, and run the OpenAI JSON
 and SSE assertions. The runner cleans up all containers and child processes on
 exit and preserves the combined engine log plus the gateway log under
@@ -60,7 +58,7 @@ exit and preserves the combined engine log plus the gateway log under
 For manual inspection, start the selected two-server pool and leave it running:
 
 ```sh
-docker compose -f docker/docker-compose.engines.yml --profile vllm up -d --build
+docker compose -f docker/docker-compose.engines.yml --profile vllm up -d
 # use profile sglang for ports 30000 and 30001
 ```
 
@@ -112,14 +110,12 @@ rm -f "$config"
 For non-gating direct-versus-gateway samples, run `just bench-vllm` or `just
 bench-sglang`. They record non-streaming and streaming p50/p95/p99 latency and
 streaming first-byte time in JSON. Results only compare runs on the same host,
-GPU, engine versions, and host configuration; throughput thresholds are deliberately not
-merge gates.
+CPU image, engine versions, and host configuration; throughput thresholds are
+deliberately not merge gates.
 
-The `engine integration` workflow is dispatch-only and targets a self-hosted
-GPU runner. It never runs for pull requests or on a schedule because building
-and running both engine environments is intentionally heavyweight. Docker
-builds copy pinned `uv`/`uvx` binaries into a CUDA runtime, and engine packages
-are pinned in their Docker entrypoints. This suite is for compatibility, not a
+The `engine integration` workflow runs the CPU smoke suite for relevant pull
+requests, weekly, or manually. SGLang uses its upstream-documented CPU build;
+vLLM uses its official CPU image. This suite is for compatibility, not a
 performance gate.
 When [ROL-67](https://linear.app/rolter/issue/ROL-67/openaianthropic-requestresponse-translation-streaming)
 lands, add the equivalent `/v1/messages` assertion through the gateway.
