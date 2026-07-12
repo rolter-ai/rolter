@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.6](https://github.com/ormeilu/rolter/compare/rolter-balancer-v0.0.5...rolter-balancer-v0.0.6) - 2026-07-12
+
+### Dependencies
+- *(deps)* bump rand from 0.8.6 to 0.10.2 ([#125](https://github.com/ormeilu/rolter/pull/125)) by [@dependabot[bot]](https://github.com/dependabot[bot])
+
+### Features
+- *(balancer)* fastest latency-aware routing strategy ([#130](https://github.com/ormeilu/rolter/pull/130)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* cheapest cost-aware routing strategy ([#128](https://github.com/ormeilu/rolter/pull/128)) by [@ormeilu](https://github.com/ormeilu)
 
 ## [0.0.4](https://github.com/ormeilu/rolter/compare/rolter-balancer-v0.0.3...rolter-balancer-v0.0.4) - 2026-07-10
 
