@@ -34,3 +34,4 @@
 
 - [Configuration reference](deployment/configuration.md)
 - [Docker](deployment/docker.md)
+- [Air-gapped install & operation](deployment/air-gapped.md)

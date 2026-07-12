@@ -84,7 +84,8 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
-              "deployment/production"
+              "deployment/production",
+              "deployment/air-gapped"
             ]
           }
         ]

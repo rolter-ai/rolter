@@ -64,6 +64,7 @@ flowchart LR
 
 - [Quickstart](user-docs/quickstart.mdx) and [Installation](user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
 - [Configuration](user-docs/configuration), [Deployment](user-docs/deployment), and [Observability](user-docs/observability) guides
+- [Air-gapped install & operation](user-docs/deployment/air-gapped.mdx) — running fully offline behind an internal mirror
 - [Architecture overview](docs/architecture/overview.md) — the full design and ADRs
 
 ## Repository layout
