@@ -95,6 +95,10 @@ pub struct Metrics {
     pub budget_blocks_total: AtomicU64,
     /// requests rejected because a matching rpm/tpm rate limit was exhausted
     pub rate_limit_blocks_total: AtomicU64,
+    /// requests rejected because their selected provider's queue was full
+    pub provider_queue_rejections_total: AtomicU64,
+    /// requests that timed out waiting for a provider queue slot
+    pub provider_queue_timeouts_total: AtomicU64,
     /// upstream attempts retried after a transient failure (408/429/5xx/connect)
     pub retries_total: AtomicU64,
     /// times a target was parked on a cooldown after a transient failure
@@ -259,6 +263,20 @@ impl Metrics {
             "rolter_rate_limit_blocks_total",
             "requests rejected due to an exhausted rate limit",
             self.rate_limit_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_provider_queue_rejections_total",
+            "requests rejected because a provider queue was full or unavailable",
+            self.provider_queue_rejections_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_provider_queue_timeouts_total",
+            "requests that timed out waiting for a provider queue slot",
+            self.provider_queue_timeouts_total.load(Relaxed),
         );
         metric(
             &mut out,

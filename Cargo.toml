@@ -76,6 +76,7 @@ async-trait = "0.1"
 arc-swap = "1"
 dashmap = "6"
 parking_lot = "0.12"
+crossbeam-queue = "0.3"
 
 # misc
 rand = "0.10"

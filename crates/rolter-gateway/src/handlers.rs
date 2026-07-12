@@ -166,6 +166,29 @@ fn error_json(status: StatusCode, message: &str) -> Response {
     crate::error::ApiError::new(status, message).into_response()
 }
 
+/// Preserve a queue-admission failure as a client-actionable overload response
+/// instead of flattening it into a generic upstream 502 after failover is
+/// exhausted. Other forwarding failures keep their existing gateway-error form.
+fn upstream_error_response(message: &str) -> Response {
+    if message.starts_with("provider queue") {
+        let (status, code) = if message.contains("dropped") {
+            (StatusCode::SERVICE_UNAVAILABLE, "queue_dropped")
+        } else if message.contains("timed out") {
+            (StatusCode::TOO_MANY_REQUESTS, "queue_timeout")
+        } else {
+            (StatusCode::TOO_MANY_REQUESTS, "queue_full")
+        };
+        return crate::error::ApiError::new(status, message)
+            .with_code(code)
+            .into_response();
+    }
+    error_json(StatusCode::BAD_GATEWAY, message)
+}
+
+fn is_queue_admission_error(message: &str) -> bool {
+    message.starts_with("provider queue")
+}
+
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
 /// matched key (or `None` when no keys are configured, i.e. auth disabled).
 #[allow(clippy::result_large_err)]
@@ -515,8 +538,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 let upstream_model = target.model.as_deref();
 
                 match state
-                    .forwarder
+                    .provider_queues
                     .forward_json(
+                        &snap.queue,
                         provider,
                         path,
                         forward_body.clone(),
@@ -596,7 +620,12 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         break;
                     }
                     Err(err) => {
-                        last_error = Some(err.to_string());
+                        let message = err.to_string();
+                        if is_queue_admission_error(&message) {
+                            last_error = Some(message);
+                            break;
+                        }
+                        last_error = Some(message);
                         // a connection-level failure parks the target too
                         if cd_enabled {
                             state
@@ -742,7 +771,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 error: message.clone(),
                 ..Default::default()
             });
-            error_json(StatusCode::BAD_GATEWAY, &message)
+            upstream_error_response(&message)
         }
     }
 }
@@ -946,8 +975,9 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
 
         match state
-            .forwarder
+            .provider_queues
             .forward_raw(
+                &snap.queue,
                 provider,
                 path,
                 body.clone(),
@@ -1013,7 +1043,12 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 break;
             }
             Err(err) => {
-                last_error = Some(err.to_string());
+                let message = err.to_string();
+                if is_queue_admission_error(&message) {
+                    last_error = Some(message);
+                    break;
+                }
+                last_error = Some(message);
                 if cd_enabled {
                     state
                         .cooldowns
@@ -1088,7 +1123,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 error: message.clone(),
                 ..Default::default()
             });
-            error_json(StatusCode::BAD_GATEWAY, &message)
+            upstream_error_response(&message)
         }
     }
 }
@@ -1256,8 +1291,9 @@ async fn forward_variants(
         let upstream_model = target.model.as_deref();
 
         match state
-            .forwarder
+            .provider_queues
             .forward_json(
+                &snap.queue,
                 provider,
                 path,
                 forward_body,
@@ -1330,7 +1366,12 @@ async fn forward_variants(
                 break;
             }
             Err(err) => {
-                out.last_error = Some(err.to_string());
+                let message = err.to_string();
+                if is_queue_admission_error(&message) {
+                    out.last_error = Some(message);
+                    break;
+                }
+                out.last_error = Some(message);
                 if cd_enabled {
                     state.cooldowns.park(&key, ti, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
@@ -1637,6 +1678,18 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn queue_admission_errors_are_actionable() {
+        let full = upstream_error_response("provider queue full");
+        assert_eq!(full.status(), StatusCode::TOO_MANY_REQUESTS);
+        let timeout = upstream_error_response("provider queue wait timed out");
+        assert_eq!(timeout.status(), StatusCode::TOO_MANY_REQUESTS);
+        let dropped = upstream_error_response("provider queue request dropped");
+        assert_eq!(dropped.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let upstream = upstream_error_response("connection refused");
+        assert_eq!(upstream.status(), StatusCode::BAD_GATEWAY);
+    }
 
     fn config_with_keys() -> GatewayConfig {
         let mut config = GatewayConfig::default();

@@ -40,6 +40,9 @@ pub struct GatewayConfig {
     /// upstream connect/response timeouts
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+    /// bounded per-provider dispatch queues and overload behaviour
+    #[serde(default)]
+    pub queue: QueueConfig,
     /// active upstream health probing
     #[serde(default)]
     pub health: HealthConfig,
@@ -954,6 +957,71 @@ fn default_request_secs() -> u64 {
     60
 }
 
+/// Action taken when a provider's bounded dispatch queue cannot accept a
+/// request. `drop` and `error` are immediate; `block` waits up to
+/// [`QueueConfig::block_timeout_ms`] for a worker to become available.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackpressurePolicy {
+    /// immediately shed the request with an overload response
+    Drop,
+    /// wait for capacity until `block_timeout_ms` expires
+    Block,
+    /// immediately return a structured `queue_full` error
+    #[default]
+    Error,
+}
+
+/// Per-provider upstream dispatch controls. Rolter creates an independent
+/// bounded queue and worker set for each configured provider, so a slow
+/// provider cannot consume the admission capacity of healthy providers.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct QueueConfig {
+    /// master switch; disabling restores direct forwarding
+    #[serde(default = "default_queue_enabled")]
+    pub enabled: bool,
+    /// maximum requests waiting for one provider, excluding active workers
+    #[serde(default = "default_queue_capacity")]
+    pub capacity: usize,
+    /// concurrent upstream header requests allowed for each provider
+    #[serde(default = "default_queue_workers")]
+    pub workers: usize,
+    /// behaviour when a provider queue has no free slot
+    #[serde(default)]
+    pub backpressure: BackpressurePolicy,
+    /// maximum wait for `backpressure = "block"`; zero disables the wait
+    #[serde(default = "default_queue_block_timeout_ms")]
+    pub block_timeout_ms: u64,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_queue_enabled(),
+            capacity: default_queue_capacity(),
+            workers: default_queue_workers(),
+            backpressure: BackpressurePolicy::default(),
+            block_timeout_ms: default_queue_block_timeout_ms(),
+        }
+    }
+}
+
+fn default_queue_enabled() -> bool {
+    true
+}
+
+fn default_queue_capacity() -> usize {
+    256
+}
+
+fn default_queue_workers() -> usize {
+    8
+}
+
+fn default_queue_block_timeout_ms() -> u64 {
+    1_000
+}
+
 /// Active upstream health probing. When `enabled`, a background task periodically
 /// issues a lightweight `GET {api_base}{path}` to each provider; a provider that
 /// times out, fails to connect, or answers `5xx` is marked unhealthy and the
@@ -1352,6 +1420,24 @@ impl GatewayConfig {
             }
         }
 
+        if self.queue.enabled && self.queue.capacity == 0 {
+            problems.push(
+                "queue.capacity must be greater than zero when queueing is enabled".to_string(),
+            );
+        }
+        if self.queue.enabled && self.queue.workers == 0 {
+            problems.push(
+                "queue.workers must be greater than zero when queueing is enabled".to_string(),
+            );
+        }
+        if self.queue.backpressure == BackpressurePolicy::Block && self.queue.block_timeout_ms == 0
+        {
+            problems.push(
+                "queue.block_timeout_ms must be greater than zero when backpressure is block"
+                    .to_string(),
+            );
+        }
+
         if problems.is_empty() {
             Ok(())
         } else {
@@ -1430,6 +1516,30 @@ mod tests {
         let p = provider_with_keys(Vec::new());
         assert_eq!(p.resolve_api_key().as_deref(), Some("legacy"));
         assert_eq!(p.resolve_api_keys(), vec![("legacy".to_string(), 1)]);
+    }
+
+    #[test]
+    fn queue_defaults_are_safe_and_enabled() {
+        let queue = QueueConfig::default();
+        assert!(queue.enabled);
+        assert_eq!(queue.capacity, 256);
+        assert_eq!(queue.workers, 8);
+        assert_eq!(queue.backpressure, BackpressurePolicy::Error);
+    }
+
+    #[test]
+    fn validate_rejects_invalid_queue_settings() {
+        let mut cfg = GatewayConfig::default();
+        cfg.queue.capacity = 0;
+        cfg.queue.workers = 0;
+        cfg.queue.backpressure = BackpressurePolicy::Block;
+        cfg.queue.block_timeout_ms = 0;
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("queue.capacity")));
+        assert!(problems.iter().any(|p| p.contains("queue.workers")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("queue.block_timeout_ms")));
     }
 
     #[test]

@@ -2205,6 +2205,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "crossbeam-queue",
  "dashmap",
  "futures-util",
  "redis",
