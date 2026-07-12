@@ -20,6 +20,8 @@ x-vllm-cpu: &vllm-cpu
     - rolter-dummy
     - --load-format
     - dummy
+    - --chat-template
+    - /templates/chat-template.jinja
     - --dtype
     - bfloat16
     - --max-model-len
@@ -29,6 +31,7 @@ x-vllm-cpu: &vllm-cpu
   volumes:
     # Dummy mode skips weights; the public config and tokenizer remain cached.
     - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
+    - ../integration/engines/chat-template.jinja:/templates/chat-template.jinja:ro
 
 x-sglang-cpu: &sglang-cpu
   profiles: [sglang]
