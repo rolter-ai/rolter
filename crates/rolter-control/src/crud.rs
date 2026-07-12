@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -527,7 +527,7 @@ fn key_pepper() -> String {
 
 fn generate_virtual_key(pepper: &str) -> (String, String, String) {
     let mut bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let key = format!("sk-rolter-{}", hex_encode(&bytes));
     let hash = rolter_auth::hash_key(pepper, &key);
     let prefix = key.chars().take(12).collect::<String>();

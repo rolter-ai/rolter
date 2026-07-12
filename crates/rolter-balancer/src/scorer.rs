@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
+use rand::RngExt;
+
 use parking_lot::Mutex;
 
 use crate::trie::Trie;
@@ -177,7 +179,7 @@ fn argmax_tiebreak(scores: &[f32]) -> usize {
         } else if (s - best).abs() <= f32::EPSILON {
             // reservoir pick among equal-score candidates for uniform tiebreak
             ties += 1;
-            if rand::random::<usize>().is_multiple_of(ties) {
+            if rand::rng().random_range(0..ties) == 0 {
                 winner = i;
             }
         }

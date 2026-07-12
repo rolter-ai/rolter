@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use ahash::RandomState;
 use parking_lot::Mutex;
+use rand::RngExt;
 use rolter_core::BalancingStrategy;
 
 pub mod scorer;
@@ -202,7 +203,7 @@ impl LoadBalancer for Random {
         if self.n == 0 {
             return None;
         }
-        Some(rand::random::<usize>() % self.n)
+        Some(rand::rng().random_range(0..self.n))
     }
 }
 
@@ -228,8 +229,8 @@ impl LoadBalancer for PowerOfTwo {
         if self.n == 1 {
             return Some(0);
         }
-        let a = rand::random::<usize>() % self.n;
-        let mut b = rand::random::<usize>() % self.n;
+        let a = rand::rng().random_range(0..self.n);
+        let mut b = rand::rng().random_range(0..self.n);
         if b == a {
             b = (b + 1) % self.n;
         }
