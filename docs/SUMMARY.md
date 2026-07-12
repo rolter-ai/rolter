@@ -32,6 +32,7 @@
 
 # Deployment
 
+- [Zero-config quickstart](deployment/zero-config-quickstart.md)
 - [Configuration reference](deployment/configuration.md)
 - [Self-hosted Ollama](deployment/ollama.md)
 - [OpenRouter](deployment/openrouter.md)
