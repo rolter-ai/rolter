@@ -411,10 +411,11 @@ impl VirtualKeyRepo<'_> {
         key_prefix: &str,
         name: Option<&str>,
         models: &[String],
+        cache_enabled: Option<bool>,
     ) -> Result<VirtualKey> {
         sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models)
-             values ($1, $2, $3, $4, $5)
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled)
+             values ($1, $2, $3, $4, $5, $6)
              returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
         )
         .bind(project_id)
@@ -422,6 +423,7 @@ impl VirtualKeyRepo<'_> {
         .bind(key_prefix)
         .bind(name)
         .bind(models)
+        .bind(cache_enabled)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -434,6 +436,21 @@ impl VirtualKeyRepo<'_> {
         )
         .bind(id)
         .bind(disabled)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+    }
+
+    /// Set (or clear) the per-key response-cache override. `None` restores the
+    /// inherit-the-route default; `Some(bool)` forces caching off/on for the key.
+    pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
+        sqlx::query_as(
+            "update virtual_keys set cache_enabled = $2 where id = $1
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+        )
+        .bind(id)
+        .bind(cache_enabled)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -701,15 +718,23 @@ mod tests {
                 "sk-abc",
                 Some("ci key"),
                 &["gpt-4o".to_string()],
+                None,
             )
             .await
             .unwrap();
+        // defaults to inherit-the-route (NULL) on create
+        assert_eq!(vk.cache_enabled, None);
         assert_eq!(
             keys.find_by_hash("hash123").await.unwrap().map(|k| k.id),
             Some(vk.id)
         );
         let disabled_key = keys.set_disabled(vk.id, true).await.unwrap();
         assert!(disabled_key.disabled);
+        // the cache override round-trips: force off, then clear back to inherit
+        let off = keys.set_cache(vk.id, Some(false)).await.unwrap();
+        assert_eq!(off.cache_enabled, Some(false));
+        let cleared = keys.set_cache(vk.id, None).await.unwrap();
+        assert_eq!(cleared.cache_enabled, None);
 
         let budgets = BudgetRepo(&pool);
         let budget = budgets
