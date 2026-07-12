@@ -39,6 +39,26 @@ kind = "openrouter"
 api_base = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
+# OpenAI-compatible cloud-provider endpoints (uncomment the providers you use).
+# Azure uses `api-key`; Bedrock and Vertex use bearer tokens.
+# [[providers]]
+# name = "azure"
+# kind = "azure_openai"
+# api_base = "https://RESOURCE.openai.azure.com/openai/v1"
+# api_key_env = "AZURE_OPENAI_API_KEY"
+#
+# [[providers]]
+# name = "bedrock"
+# kind = "bedrock"
+# api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+# api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
+#
+# [[providers]]
+# name = "vertex"
+# kind = "vertex"
+# api_base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
+# api_key_env = "VERTEX_ACCESS_TOKEN"
+
 # direct Cloud access requires an environment-sourced bearer key
 [[providers]]
 name = "ollama-cloud"

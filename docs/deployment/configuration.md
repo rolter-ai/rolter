@@ -11,7 +11,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
@@ -27,6 +27,36 @@ kind = "ollama_cloud"
 api_base = "https://ollama.com"
 api_key_env = "OLLAMA_API_KEY"
 ```
+
+#### Azure OpenAI, Amazon Bedrock, and Vertex AI
+
+These providers use their current OpenAI-compatible APIs. Set `api_base` to the
+provider's OpenAI-compatible prefix and use an environment-sourced credential:
+
+```toml
+[[providers]]
+name = "azure"
+kind = "azure_openai"
+api_base = "https://RESOURCE.openai.azure.com/openai/v1"
+api_key_env = "AZURE_OPENAI_API_KEY"
+
+[[providers]]
+name = "bedrock"
+kind = "bedrock"
+api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
+
+[[providers]]
+name = "vertex"
+kind = "vertex"
+api_base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
+api_key_env = "VERTEX_ACCESS_TOKEN"
+```
+
+Azure credentials are sent in the `api-key` header. Bedrock and Vertex
+credentials are sent as bearer tokens. The default active-health probes use
+Azure's model list, Bedrock `ListFoundationModels`, and Vertex's publisher model
+list, respectively; none invokes a model.
 
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
   - `key` (string, optional) — inline key value; prefer `env`
@@ -69,7 +99,7 @@ api_key_env = "OLLAMA_API_KEY"
 - `enabled` (bool, default `false`) — master switch for active upstream probing
 - `interval_secs` (u64, default `10`) — seconds between probe sweeps
 - `timeout_secs` (u64, default `2`) — per-probe timeout
-- `path` (string, default `/`) — probe path; the default resolves to each provider kind's free liveness endpoint (`/v1/models`)
+- `path` (string, default `/`) — probe path; the default resolves to each provider kind's free liveness endpoint (normally `/v1/models`, or the provider-native Azure, Bedrock, or Vertex model-list endpoint)
 - `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
 - `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
 - `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers

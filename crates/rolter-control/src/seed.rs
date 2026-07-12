@@ -161,6 +161,10 @@ async fn import_bootstrap_toml(
             ProviderKind::OllamaCloud => "ollama_cloud",
             ProviderKind::LlamaCpp => "llama_cpp",
             ProviderKind::Openrouter => "openrouter",
+            ProviderKind::Tei => "tei",
+            ProviderKind::AzureOpenai => "azure_openai",
+            ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Vertex => "vertex",
         };
         let existing = providers
             .list(org_id)

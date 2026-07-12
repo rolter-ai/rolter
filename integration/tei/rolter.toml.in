@@ -1,0 +1,12 @@
+[[providers]]
+name = "tei-local"
+kind = "tei"
+api_base = "http://tei:80"
+
+[[routes]]
+model = "embed-local"
+strategy = "round_robin"
+
+[[routes.targets]]
+provider = "tei-local"
+model = "sentence-transformers/all-MiniLM-L6-v2"

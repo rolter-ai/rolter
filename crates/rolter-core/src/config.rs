@@ -199,6 +199,14 @@ pub enum ProviderKind {
     LlamaCpp,
     /// openrouter's hosted openai-compatible api
     Openrouter,
+    /// hugging face text embeddings inference openai-compatible api
+    Tei,
+    /// azure openai's openai-compatible v1 api
+    AzureOpenai,
+    /// amazon bedrock's openai-compatible chat completions api
+    Bedrock,
+    /// vertex ai's openai-compatible chat completions api
+    Vertex,
 }
 
 /// An upstream provider rolter can forward to.
