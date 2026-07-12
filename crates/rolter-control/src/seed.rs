@@ -157,6 +157,7 @@ async fn import_bootstrap_toml(
             ProviderKind::Openai => "openai",
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiCompatible => "openai_compatible",
+            ProviderKind::Ollama => "ollama",
         };
         let existing = providers
             .list(org_id)

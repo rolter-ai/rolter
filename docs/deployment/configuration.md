@@ -11,10 +11,11 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
+
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
   - `key` (string, optional) — inline key value; prefer `env`
   - `env` (string, optional) — environment variable to read the key from

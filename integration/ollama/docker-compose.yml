@@ -1,0 +1,23 @@
+name: rolter-ollama-smoke
+
+services:
+  ollama:
+    image: ollama/ollama:0.9.6
+    volumes:
+      - ollama-data:/root/.ollama
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: ["rolter-gateway", "--config", "/app/ollama.toml"]
+    ports:
+      - "${ROLTER_OLLAMA_PORT:-4010}:4000"
+    volumes:
+      - ./rolter-smoke.toml:/app/ollama.toml:ro
+    depends_on:
+      - ollama
+
+volumes:
+  ollama-data:

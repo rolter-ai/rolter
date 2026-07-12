@@ -36,7 +36,7 @@ fn probe_request(
         return (format!("{base}{configured_path}"), None);
     }
     match kind {
-        ProviderKind::Openai | ProviderKind::OpenaiCompatible => {
+        ProviderKind::Openai | ProviderKind::OpenaiCompatible | ProviderKind::Ollama => {
             (format!("{base}/v1/models"), None)
         }
         ProviderKind::Anthropic => (
@@ -98,23 +98,26 @@ fn build_probe_plan(
     use crate::health_events::HealthSource;
     let base = provider.api_base.trim_end_matches('/');
     if provider.also_track_via_llm_call {
-        match (&provider.llm_probe_model, provider.resolve_api_key()) {
-            (Some(model), Some(key)) => {
+        let key = provider.resolve_api_key();
+        if let Some(model) = &provider.llm_probe_model {
+            if key.is_some() || provider.kind == ProviderKind::Ollama {
                 let (path, headers) = match provider.kind {
                     ProviderKind::Anthropic => (
                         "/v1/messages",
                         vec![
-                            ("x-api-key".to_string(), key),
+                            ("x-api-key".to_string(), key.unwrap_or_default()),
                             (
                                 "anthropic-version".to_string(),
                                 ANTHROPIC_VERSION.to_string(),
                             ),
                         ],
                     ),
-                    _ => (
-                        "/v1/chat/completions",
-                        vec![("authorization".to_string(), format!("Bearer {key}"))],
-                    ),
+                    _ => {
+                        let headers = key
+                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
+                            .unwrap_or_default();
+                        ("/v1/chat/completions", headers)
+                    }
                 };
                 let body = format!(
                     "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1}}",
@@ -129,14 +132,12 @@ fn build_probe_plan(
                     HealthSource::LlmCall,
                 );
             }
-            _ => {
-                tracing::warn!(
-                    provider = %provider.name,
-                    "also_track_via_llm_call is set but llm_probe_model or api key is missing; \
-                     falling back to the free liveness probe"
-                );
-            }
         }
+        tracing::warn!(
+            provider = %provider.name,
+            "also_track_via_llm_call is set but llm_probe_model or required api key is missing; \
+             falling back to the free liveness probe"
+        );
     }
     let (url, header) = probe_request(provider.kind, &provider.api_base, configured_path);
     (ProbePlan::Free { url, header }, HealthSource::Probe)

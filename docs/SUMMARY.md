@@ -33,5 +33,6 @@
 # Deployment
 
 - [Configuration reference](deployment/configuration.md)
+- [Self-hosted Ollama](deployment/ollama.md)
 - [Docker](deployment/docker.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)

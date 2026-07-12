@@ -188,6 +188,8 @@ pub enum ProviderKind {
     Anthropic,
     /// any openai-compatible endpoint such as vllm, tgi or ollama
     OpenaiCompatible,
+    /// a self-hosted ollama daemon using its openai-compatible api
+    Ollama,
 }
 
 /// An upstream provider rolter can forward to.
@@ -1206,6 +1208,14 @@ impl GatewayConfig {
                     provider.name, provider.api_base
                 ));
             }
+            if provider.kind == ProviderKind::Ollama
+                && provider.api_base.trim_end_matches('/').ends_with("/v1")
+            {
+                problems.push(format!(
+                    "ollama provider '{}' api_base must be the daemon origin without /v1",
+                    provider.name
+                ));
+            }
             if let Some(proxy) = &provider.egress_proxy {
                 if !is_proxy_url(proxy) {
                     problems.push(format!(
@@ -1781,6 +1791,28 @@ mod tests {
         assert_eq!(cfg.routes[0].strategy, BalancingStrategy::RoundRobin);
         assert_eq!(cfg.routes[0].targets[0].weight, 1);
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_keyless_ollama_provider_and_rejects_v1_suffix() {
+        let raw = r#"
+            [[providers]]
+            name = "ollama"
+            kind = "ollama"
+            api_base = "http://localhost:11434"
+
+            [[routes]]
+            model = "local-model"
+            [[routes.targets]]
+            provider = "ollama"
+        "#;
+        let mut cfg = GatewayConfig::from_toml_str(raw).unwrap();
+        assert_eq!(cfg.providers[0].kind, ProviderKind::Ollama);
+        assert!(cfg.providers[0].resolve_api_key().is_none());
+        assert!(cfg.validate().is_ok());
+
+        cfg.providers[0].api_base = "http://localhost:11434/v1".to_string();
+        assert!(cfg.validate().unwrap_err()[0].contains("without /v1"));
     }
 
     #[test]
