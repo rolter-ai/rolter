@@ -132,6 +132,16 @@ impl Pipeline {
             .with(Box::new(CheapestScorer::new(costs)), 1.0)
             .with(Box::new(LeastLoadScorer::new(n)), 0.25)
     }
+
+    /// The latency-aware stack: observed per-target latency dominates, with
+    /// in-flight load as a light tiebreaker (and the only signal until latency
+    /// samples arrive — a cold route behaves like least-load).
+    pub fn fastest_stack(n: usize, source: std::sync::Arc<dyn LatencySource>) -> Self {
+        Self::new(n)
+            .named("fastest")
+            .with(Box::new(FastestScorer::new(n, source)), 1.0)
+            .with(Box::new(LeastLoadScorer::new(n)), 0.25)
+    }
 }
 
 impl LoadBalancer for Pipeline {
@@ -228,27 +238,70 @@ impl Scorer for CheapestScorer {
         "cheapest"
     }
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        // known costs among the candidates bound the normalization window
-        let known: Vec<f64> = candidates
-            .iter()
-            .filter_map(|&i| self.costs.get(i).copied())
-            .filter(|&c| c > 0.0)
-            .collect();
-        let (min, max) = known
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
-                (lo.min(c), hi.max(c))
-            });
-        if known.is_empty() || min >= max {
-            return vec![1.0; candidates.len()];
-        }
-        candidates
-            .iter()
-            .map(|&i| match self.costs.get(i).copied() {
-                Some(c) if c > 0.0 => (1.0 - (c - min) / (max - min)) as f32,
-                _ => 0.5,
-            })
-            .collect()
+        rank_lower_better(&self.costs, candidates)
+    }
+}
+
+/// Min-max normalize a lower-is-better signal over the candidate set: the
+/// lowest known value scores `1.0` down to `0.0` for the highest; `<= 0`
+/// (unknown) scores a neutral `0.5`, and an uninformative window (no or equal
+/// known values) scores a flat `1.0`.
+fn rank_lower_better(values: &[f64], candidates: &[usize]) -> Vec<f32> {
+    let known: Vec<f64> = candidates
+        .iter()
+        .filter_map(|&i| values.get(i).copied())
+        .filter(|&v| v > 0.0)
+        .collect();
+    let (min, max) = known
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+            (lo.min(v), hi.max(v))
+        });
+    if known.is_empty() || min >= max {
+        return vec![1.0; candidates.len()];
+    }
+    candidates
+        .iter()
+        .map(|&i| match values.get(i).copied() {
+            Some(v) if v > 0.0 => (1.0 - (v - min) / (max - min)) as f32,
+            _ => 0.5,
+        })
+        .collect()
+}
+
+/// A live, lock-cheap source of per-target latency the [`FastestScorer`] reads
+/// at pick time. Implemented by the gateway over its request-completion
+/// tracker; `latencies(n)` returns one entry per target (`<= 0` = no sample
+/// yet).
+pub trait LatencySource: Send + Sync {
+    /// Smoothed latency in milliseconds for targets `0..n`, route-order aligned.
+    fn latencies(&self, n: usize) -> Vec<f64>;
+}
+
+/// Prefer the target with the lowest observed latency. Reads a live
+/// [`LatencySource`] on every pick (latency moves with traffic, unlike catalog
+/// price), then ranks exactly like [`CheapestScorer`]: fastest candidate
+/// `1.0`, slowest `0.0`, unsampled targets a neutral `0.5`, and a flat `1.0`
+/// until at least two targets have distinct samples.
+pub struct FastestScorer {
+    source: std::sync::Arc<dyn LatencySource>,
+    /// route width handed to the source
+    n: usize,
+}
+
+impl FastestScorer {
+    pub fn new(n: usize, source: std::sync::Arc<dyn LatencySource>) -> Self {
+        Self { source, n }
+    }
+}
+
+impl Scorer for FastestScorer {
+    fn name(&self) -> &'static str {
+        "fastest"
+    }
+    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+        let latencies = self.source.latencies(self.n);
+        rank_lower_better(&latencies, candidates)
     }
 }
 
@@ -498,6 +551,42 @@ mod tests {
             p.select(&RouteContext::default(), &[9, 0], |_| true),
             Some(1)
         );
+    }
+
+    struct FixedLatency(Vec<f64>);
+    impl LatencySource for FixedLatency {
+        fn latencies(&self, _n: usize) -> Vec<f64> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn fastest_prefers_lowest_latency() {
+        let source = std::sync::Arc::new(FixedLatency(vec![300.0, 40.0, 900.0]));
+        let p = Pipeline::fastest_stack(3, source);
+        assert_eq!(p.name(), "fastest");
+        assert_eq!(p.select(&RouteContext::default(), &[], |_| true), Some(1));
+        // eligibility still filters: fastest surviving target wins
+        assert_eq!(p.select(&RouteContext::default(), &[], |i| i != 1), Some(0));
+    }
+
+    #[test]
+    fn fastest_cold_route_follows_load() {
+        // no latency samples yet: the load tiebreaker decides alone
+        let source = std::sync::Arc::new(FixedLatency(vec![0.0, 0.0]));
+        let p = Pipeline::fastest_stack(2, source);
+        assert_eq!(
+            p.select(&RouteContext::default(), &[7, 0], |_| true),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn fastest_unsampled_target_scores_neutral() {
+        let source = std::sync::Arc::new(FixedLatency(vec![100.0, 0.0, 500.0]));
+        let scorer = FastestScorer::new(3, source);
+        let scores = scorer.score(&RouteContext::default(), &[0, 1, 2], &[]);
+        assert_eq!(scores, vec![1.0, 0.5, 0.0]);
     }
 
     #[test]

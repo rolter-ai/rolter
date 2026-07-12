@@ -43,11 +43,23 @@ pub trait LoadBalancer: Send + Sync {
 /// weights. Slices are index-aligned with the route targets; a missing or
 /// non-positive entry means "unknown" and the strategy stays neutral for that
 /// target.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct TargetStats {
     /// catalog price per target in any consistent per-token rate (only the
     /// relative order matters); `<= 0` = no known price
     pub cost_per_mtok: Vec<f64>,
+    /// live per-target latency handle for the `fastest` strategy; read at pick
+    /// time, so the balancer follows shifting latency without a rebuild
+    pub latency: Option<std::sync::Arc<dyn scorer::LatencySource>>,
+}
+
+impl std::fmt::Debug for TargetStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TargetStats")
+            .field("cost_per_mtok", &self.cost_per_mtok)
+            .field("latency", &self.latency.as_ref().map(|_| "<live>"))
+            .finish()
+    }
 }
 
 /// Build a boxed [`LoadBalancer`] from a configured strategy and the route's
@@ -82,6 +94,16 @@ pub fn build_with_stats(
             costs.resize(n, 0.0);
             Box::new(scorer::Pipeline::cheapest_stack(&costs))
         }
+        BalancingStrategy::Fastest => match &stats.latency {
+            Some(source) => Box::new(scorer::Pipeline::fastest_stack(n, source.clone())),
+            // no latency handle wired (e.g. plain build()): degrade to a
+            // least-load pipeline, the closest latency proxy available
+            None => Box::new(
+                scorer::Pipeline::new(n)
+                    .named("fastest")
+                    .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
+            ),
+        },
     }
 }
 
@@ -395,6 +417,7 @@ mod tests {
     fn build_cheapest_ranks_by_cost() {
         let stats = TargetStats {
             cost_per_mtok: vec![8.0, 1.5, 3.0],
+            ..Default::default()
         };
         let lb = build_with_stats(BalancingStrategy::Cheapest, &[1, 1, 1], &stats);
         assert_eq!(lb.name(), "cheapest");
@@ -407,9 +430,18 @@ mod tests {
         // no panic, and the known-cheapest target still wins
         let stats = TargetStats {
             cost_per_mtok: vec![5.0, 0.5],
+            ..Default::default()
         };
         let lb = build_with_stats(BalancingStrategy::Cheapest, &[1, 1, 1], &stats);
         assert_eq!(lb.pick(&RouteContext::default(), &[]), Some(1));
+    }
+
+    #[test]
+    fn build_fastest_without_source_degrades_to_least_load() {
+        let lb = build(BalancingStrategy::Fastest, &[1, 1, 1]);
+        assert_eq!(lb.name(), "fastest");
+        // least-load fallback: the idle target wins
+        assert_eq!(lb.pick(&RouteContext::default(), &[5, 0, 9]), Some(1));
     }
 
     #[test]

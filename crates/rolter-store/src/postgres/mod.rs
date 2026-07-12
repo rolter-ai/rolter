@@ -114,6 +114,7 @@ fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
         "weighted" => BalancingStrategy::Weighted,
         "pipeline" => BalancingStrategy::Pipeline,
         "cheapest" => BalancingStrategy::Cheapest,
+        "fastest" => BalancingStrategy::Fastest,
         other => {
             return Err(Error::Store(format!(
                 "unknown balancing strategy '{other}'"

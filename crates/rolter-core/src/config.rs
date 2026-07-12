@@ -286,6 +286,9 @@ pub enum BalancingStrategy {
     /// cost-aware: prefer the target with the lowest catalog price for its
     /// upstream model (in-flight load breaks ties)
     Cheapest,
+    /// latency-aware: prefer the target with the lowest observed request
+    /// latency (in-flight load breaks ties, and carries a cold route alone)
+    Fastest,
 }
 
 /// A single upstream target within a route.

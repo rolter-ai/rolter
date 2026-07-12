@@ -70,9 +70,25 @@ pub struct Snapshot {
     pub cooldown: CooldownConfig,
 }
 
+/// Live per-target latency handle for the `fastest` strategy, backed by the
+/// shared in-flight tracker (which survives config reloads). `namespace` is
+/// the load-tracker key the route's guards record under: the public model for
+/// the classic pool, the variant key for a variant pool.
+struct RouteLatency {
+    loads: crate::load::LoadTracker,
+    namespace: String,
+}
+
+impl rolter_balancer::scorer::LatencySource for RouteLatency {
+    fn latencies(&self, n: usize) -> Vec<f64> {
+        self.loads.latency_snapshot(&self.namespace, n)
+    }
+}
+
 impl Snapshot {
-    /// Build a snapshot from a configuration.
-    pub fn build(config: &GatewayConfig) -> Self {
+    /// Build a snapshot from a configuration. `loads` is the shared in-flight/
+    /// latency tracker the `fastest` strategy reads live at pick time.
+    pub fn build(config: &GatewayConfig, loads: &crate::load::LoadTracker) -> Self {
         let providers = config
             .providers
             .iter()
@@ -90,6 +106,10 @@ impl Snapshot {
             let weights: Vec<u32> = route.targets.iter().map(|t| t.weight).collect();
             let stats = TargetStats {
                 cost_per_mtok: target_costs(&route.targets, &route.model, &prices),
+                latency: Some(Arc::new(RouteLatency {
+                    loads: loads.clone(),
+                    namespace: route.model.clone(),
+                })),
             };
             let balancer = build_with_stats(route.strategy, &weights, &stats);
             let variant_balancers = route
@@ -99,6 +119,10 @@ impl Snapshot {
                     let w: Vec<u32> = v.targets.iter().map(|t| t.weight).collect();
                     let s = TargetStats {
                         cost_per_mtok: target_costs(&v.targets, &route.model, &prices),
+                        latency: Some(Arc::new(RouteLatency {
+                            loads: loads.clone(),
+                            namespace: crate::handlers::variant_key(&route.model, &v.name),
+                        })),
                     };
                     build_with_stats(route.strategy, &w, &s)
                 })
@@ -265,8 +289,11 @@ impl AppState {
         budgets: BudgetEnforcer,
         rate_limiter: RateLimiter,
     ) -> Self {
+        // created before the snapshot so the fastest strategy's latency
+        // sources can hold a handle to the same tracker the guards record into
+        let loads = crate::load::LoadTracker::new();
         Self {
-            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config))),
+            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config, &loads))),
             forwarder: Arc::new(Forwarder::with_timeouts(&config.timeouts)),
             metrics,
             log,
@@ -274,7 +301,7 @@ impl AppState {
             budgets,
             rate_limiter,
             cooldowns: crate::cooldowns::Cooldowns::new(),
-            loads: crate::load::LoadTracker::new(),
+            loads,
             // an enabled registry only when probing is on, else an inert one that
             // reports every provider healthy so the balancer never skips
             health: if config.health.enabled {
@@ -305,7 +332,8 @@ impl AppState {
     /// Atomically replace the routing snapshot (used by the config watcher).
     /// Records `version` in metrics and bumps the reload counter.
     pub fn reload(&self, config: &GatewayConfig, version: u64) {
-        self.snapshot.store(Arc::new(Snapshot::build(config)));
+        self.snapshot
+            .store(Arc::new(Snapshot::build(config, &self.loads)));
         self.metrics
             .config_version
             .store(version, std::sync::atomic::Ordering::Relaxed);
