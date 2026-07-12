@@ -34,7 +34,8 @@ the HTTP, OpenAI JSON, and SSE contracts rather than model quality.
 
 The fixture is `trl-internal-testing/tiny-random-LlamaForCausalLM`, a small
 public Llama architecture supported by both vLLM and SGLang. It is served to
-the suite as `rolter-dummy`; no model checkpoint is loaded.
+the suite as `rolter-dummy`; no model checkpoint is loaded. The CPU vLLM profile
+uses eager execution to avoid expensive compilation warm-up during CI smoke runs.
 
 It runs on CPU in Docker and therefore works on GitHub-hosted runners. Each
 engine profile starts two independent dummy upstreams so the gateway exercises

@@ -28,6 +28,7 @@ x-vllm-cpu: &vllm-cpu
     - "128"
     - --max-num-seqs
     - "2"
+    - --enforce-eager
   volumes:
     # Dummy mode skips weights; the public config and tokenizer remain cached.
     - ${HF_HOME:-/tmp/rolter-huggingface}:/root/.cache/huggingface
