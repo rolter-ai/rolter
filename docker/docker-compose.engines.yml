@@ -1,6 +1,19 @@
-# Optional CPU-backed upstreams for real-engine compatibility tests (ROL-238).
+# Optional CPU-backed upstreams for engine compatibility tests (ROL-238).
 # They are separate from docker-compose.yml so normal development stays light.
 name: rolter-engines
+
+# lightweight vLLM API simulator: the default suite engine. Multi-arch,
+# ~30MB, no model/tokenizer downloads, boots in milliseconds.
+x-sim: &sim
+  profiles: [sim]
+  image: ghcr.io/llm-d/llm-d-inference-sim:v0.10.0
+  command: &sim-command
+    - --model
+    - rolter-dummy
+    - --port
+    - "8000"
+    - --mode
+    - random
 
 x-vllm-cpu: &vllm-cpu
   profiles: [vllm]
@@ -78,6 +91,12 @@ x-sglang-cpu: &sglang-cpu
 services:
   # Two independent servers make the gateway exercise an actual target pool.
   # Ports bind to loopback only; the suite is host-local by design.
+  sim-1:
+    <<: *sim
+    ports: ["127.0.0.1:${SIM_1_PORT:-8000}:8000"]
+  sim-2:
+    <<: *sim
+    ports: ["127.0.0.1:${SIM_2_PORT:-8001}:8000"]
   vllm-1:
     <<: *vllm-cpu
     ports: ["127.0.0.1:${VLLM_1_PORT:-8000}:8000"]

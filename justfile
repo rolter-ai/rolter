@@ -85,8 +85,12 @@ bench:
 bench-check:
     cargo bench --workspace --no-run
 
-# CPU real-engine smoke tests. They use dummy weights (no model weights or
-# provider secrets) but still download/cache the public model config+tokenizer.
+# Engine smoke tests. sim uses the lightweight vLLM API simulator (no
+# downloads); the real engines use dummy weights (no model weights or provider
+# secrets) but still download/cache the public model config+tokenizer.
+integration-sim:
+    integration/engines/run.sh sim
+
 integration-vllm:
     integration/engines/run.sh vllm
 
@@ -94,6 +98,9 @@ integration-sglang:
     integration/engines/run.sh sglang
 
 # Manual/CI-dispatch performance samples; artifacts land under artifacts/.
+bench-sim:
+    integration/engines/run.sh sim --bench
+
 bench-vllm:
     integration/engines/run.sh vllm --bench
 

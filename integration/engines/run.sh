@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Run a real vLLM or SGLang dummy-weight suite through the local rolter binary.
+# Run the engine suite (vLLM API simulator, or a real vLLM/SGLang dummy-weight
+# server) through the local rolter binary.
 set -euo pipefail
 
-engine=${1:?usage: integration/engines/run.sh <vllm|sglang> [--bench]}
+engine=${1:?usage: integration/engines/run.sh <sim|vllm|sglang> [--bench]}
 mode=${2:-smoke}
-case "$engine" in vllm|sglang) ;; *) echo "unknown engine: $engine" >&2; exit 2 ;; esac
+case "$engine" in sim|vllm|sglang) ;; *) echo "unknown engine: $engine" >&2; exit 2 ;; esac
 case "$mode" in smoke|--bench) ;; *) echo "unknown mode: $mode" >&2; exit 2 ;; esac
 
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }

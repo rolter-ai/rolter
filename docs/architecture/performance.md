@@ -24,24 +24,28 @@ Goal: beat the reference Python proxy (LiteLLM cites ~8ms P95 added latency at 1
 - Add an end-to-end load test (e.g. `oha`/`k6`) against a mock upstream to measure added latency and max RPS per core.
 - Track TTFT and total-latency histograms in Prometheus and watch them in CI perf runs.
 
-## Real inference engines
+## Inference engines
 
-The opt-in ROL-238 suite checks rolter against real OpenAI-compatible vLLM and
-SGLang servers without downloading model weights. Both servers use a small
-public model only for its configuration/tokenizer and initialize random weights
-with `--load-format dummy`. Output is intentionally meaningless; this validates
-the HTTP, OpenAI JSON, and SSE contracts rather than model quality.
+The ROL-238 suite checks rolter against OpenAI-compatible engine servers.
+Output is intentionally meaningless; this validates the HTTP, OpenAI JSON, and
+SSE contracts rather than model quality.
 
-The fixture is `trl-internal-testing/tiny-random-LlamaForCausalLM`, a small
-public Llama architecture supported by both vLLM and SGLang. It is served to
-the suite as `rolter-dummy`; no model checkpoint is loaded. The CPU vLLM profile
-uses eager execution to avoid expensive compilation warm-up during CI smoke runs.
+The default engine, `sim`, is [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim):
+a ~30MB multi-arch vLLM API simulator that needs no model downloads and boots
+in milliseconds, which makes the suite cheap enough to run as a regular PR
+check. The real CPU vLLM and SGLang profiles remain for on-demand runs; they
+use `trl-internal-testing/tiny-random-LlamaForCausalLM` only for its
+configuration/tokenizer and initialize random weights with
+`--load-format dummy` (with a `head_dim=64` override, since the CPU attention
+kernels reject the model's native `head_dim=4`). The CPU vLLM profile uses
+eager execution to avoid expensive compilation warm-up during CI smoke runs.
 
 It runs on CPU in Docker and therefore works on GitHub-hosted runners. Each
 engine profile starts two independent dummy upstreams so the gateway exercises
 a real target pool. Run one engine locally:
 
 ```sh
+just integration-sim
 just integration-vllm
 just integration-sglang
 ```
@@ -118,13 +122,12 @@ streaming first-byte time in JSON. Results only compare runs on the same host,
 CPU image, engine versions, and host configuration; throughput thresholds are
 deliberately not merge gates.
 
-The `engine integration` workflow covers the CPU vLLM smoke suite. Its job
-runs in the `engine-integration` environment, whose required-reviewer rule
-holds every run (pull request or `workflow_dispatch`) behind an approve
-button, so it only spends runner time when a maintainer releases it. SGLang
-remains available through the local
-`just integration-sglang` command, but its source-built CPU image is currently
-too heavy for the shared CI gate. This suite is for compatibility, not a
-performance gate.
+The `engine integration` workflow runs the `sim` smoke as a regular check on
+pull requests that touch engine paths. Dispatch it manually with
+`engine=vllm` to smoke the real CPU engine (Actions tab, or
+`gh workflow run "engine integration" -f engine=vllm`). SGLang remains
+available through the local `just integration-sglang` command, but its
+source-built CPU image is currently too heavy for the shared CI gate. This
+suite is for compatibility, not a performance gate.
 When [ROL-67](https://linear.app/rolter/issue/ROL-67/openaianthropic-requestresponse-translation-streaming)
 lands, add the equivalent `/v1/messages` assertion through the gateway.
