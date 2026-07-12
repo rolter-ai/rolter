@@ -9,10 +9,14 @@
 //! disconnected one; the id is stored on each [`RequestLog`](crate::logging::RequestLog)
 //! and surfaces in ClickHouse for cross-service correlation.
 
+use std::time::Duration;
+
 use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
+use tower_http::trace::OnResponse;
+use tracing::Span;
 
 /// header carrying the end-to-end request id
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -43,6 +47,73 @@ pub async fn ensure_request_id(mut req: Request, next: Next) -> Response {
 
 fn new_request_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// [`TraceLayer`](tower_http::trace::TraceLayer) response hook that surfaces
+/// failing requests on the terminal at the default `info` filter.
+///
+/// The stock `DefaultOnResponse` logs every response at `DEBUG`, so with the
+/// default `RUST_LOG=info` an operator running `rolter`/`uvx rolter` never sees
+/// 4xx/5xx responses (ROL-230): a 404 for an unknown model, a 401 for a bad key
+/// or a 502 from a dead upstream all vanish unless `RUST_LOG` is turned up. This
+/// hook picks the level from the status class instead — server errors at
+/// `error`, client errors at `warn`, everything else at `debug` — so errors are
+/// visible out of the box while successful traffic stays quiet. Pair it with
+/// `.on_failure(())` on the layer so classified 5xx responses are not also
+/// logged by the default failure hook.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StatusAwareOnResponse;
+
+/// Pick the log level (and its message) for a response status class: server
+/// errors are loud, client errors are warnings, success is quiet.
+fn level_for_status(status: axum::http::StatusCode) -> (tracing::Level, &'static str) {
+    if status.is_server_error() {
+        (tracing::Level::ERROR, "request failed")
+    } else if status.is_client_error() {
+        (tracing::Level::WARN, "request rejected")
+    } else {
+        (tracing::Level::DEBUG, "request completed")
+    }
+}
+
+impl<B> OnResponse<B> for StatusAwareOnResponse {
+    fn on_response(self, response: &axum::http::Response<B>, latency: Duration, _span: &Span) {
+        let status = response.status();
+        let latency_ms = latency.as_millis();
+        let request_id = response
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        // the message + level are fixed per status class; the macro must still be
+        // invoked per-branch because the level is a compile-time argument
+        match level_for_status(status).0 {
+            tracing::Level::ERROR => {
+                tracing::error!(
+                    status = status.as_u16(),
+                    latency_ms,
+                    request_id,
+                    "request failed"
+                )
+            }
+            tracing::Level::WARN => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    latency_ms,
+                    request_id,
+                    "request rejected"
+                )
+            }
+            _ => {
+                tracing::debug!(
+                    status = status.as_u16(),
+                    latency_ms,
+                    request_id,
+                    "request completed"
+                )
+            }
+        }
+    }
 }
 
 /// Extract an inbound trace id from a W3C `traceparent`, a B3 single header, or
@@ -146,6 +217,30 @@ mod tests {
             ""
         );
         assert_eq!(inbound_trace_id(&headers(&[("b3", "nothex-span")])), "");
+    }
+
+    #[test]
+    fn response_level_tracks_status_class() {
+        use axum::http::StatusCode;
+        use tracing::Level;
+
+        // success is quiet (debug), so it stays hidden at the default info filter
+        assert_eq!(level_for_status(StatusCode::OK).0, Level::DEBUG);
+        assert_eq!(level_for_status(StatusCode::NO_CONTENT).0, Level::DEBUG);
+        // client errors (bad key, unknown model) surface as warnings — the ROL-230
+        // case that was invisible before
+        assert_eq!(level_for_status(StatusCode::NOT_FOUND).0, Level::WARN);
+        assert_eq!(level_for_status(StatusCode::UNAUTHORIZED).0, Level::WARN);
+        assert_eq!(
+            level_for_status(StatusCode::TOO_MANY_REQUESTS).0,
+            Level::WARN
+        );
+        // server / upstream errors are loud
+        assert_eq!(level_for_status(StatusCode::BAD_GATEWAY).0, Level::ERROR);
+        assert_eq!(
+            level_for_status(StatusCode::INTERNAL_SERVER_ERROR).0,
+            Level::ERROR
+        );
     }
 
     #[test]
