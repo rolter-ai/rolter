@@ -117,9 +117,10 @@ streaming first-byte time in JSON. Results only compare runs on the same host,
 CPU image, engine versions, and host configuration; throughput thresholds are
 deliberately not merge gates.
 
-The `engine integration` workflow runs the CPU smoke suite for relevant pull
-requests, weekly, or manually. SGLang uses its upstream-documented CPU build;
-vLLM uses its official CPU image. This suite is for compatibility, not a
+The `engine integration` workflow runs the CPU vLLM smoke suite for relevant
+pull requests, weekly, or manually. SGLang remains available through the local
+`just integration-sglang` command, but its source-built CPU image is currently
+too heavy for the shared CI gate. This suite is for compatibility, not a
 performance gate.
 When [ROL-67](https://linear.app/rolter/issue/ROL-67/openaianthropic-requestresponse-translation-streaming)
 lands, add the equivalent `/v1/messages` assertion through the gateway.
