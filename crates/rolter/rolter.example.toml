@@ -34,6 +34,19 @@ api_base = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 
 [[providers]]
+name = "openrouter"
+kind = "openrouter"
+api_base = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+# direct Cloud access requires an environment-sourced bearer key
+[[providers]]
+name = "ollama-cloud"
+kind = "ollama_cloud"
+api_base = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+
+[[providers]]
 name = "vllm-1"
 kind = "openai_compatible"
 api_base = "http://localhost:8001"

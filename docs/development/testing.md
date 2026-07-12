@@ -16,6 +16,13 @@ Install the runner once with `cargo install cargo-nextest` (or see the
 both Rust passes for you. Plain `cargo test --workspace` still works if you
 haven't installed nextest, but CI runs nextest so prefer it locally.
 
+The Ollama Cloud live smoke sends a billed request and is ignored by default:
+
+```bash
+OLLAMA_API_KEY=... ROLTER_OLLAMA_LIVE_MODEL=gpt-oss:20b \
+  cargo test -p rolter-gateway --test ollama_cloud live_smoke -- --ignored
+```
+
 Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
 the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
 reset the schema per test, so they run in a single-threaded group to avoid

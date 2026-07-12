@@ -299,7 +299,15 @@ struct CreateProvider {
     egress_proxy: Option<String>,
 }
 
-const PROVIDER_KINDS: [&str; 4] = ["openai", "anthropic", "openai_compatible", "ollama"];
+const PROVIDER_KINDS: [&str; 7] = [
+    "openai",
+    "anthropic",
+    "openai_compatible",
+    "ollama",
+    "ollama_cloud",
+    "llama_cpp",
+    "openrouter",
+];
 
 async fn create_provider(
     State(state): State<ControlState>,

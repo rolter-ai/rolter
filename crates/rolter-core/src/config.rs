@@ -190,6 +190,12 @@ pub enum ProviderKind {
     OpenaiCompatible,
     /// a self-hosted ollama daemon using its openai-compatible api
     Ollama,
+    /// direct ollama cloud access using an environment-sourced bearer key
+    OllamaCloud,
+    /// a self-hosted llama.cpp llama-server using its openai-compatible api
+    LlamaCpp,
+    /// openrouter's hosted openai-compatible api
+    Openrouter,
 }
 
 /// An upstream provider rolter can forward to.
@@ -1216,6 +1222,40 @@ impl GatewayConfig {
                     provider.name
                 ));
             }
+            if provider.kind == ProviderKind::OllamaCloud {
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "ollama_cloud provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "ollama_cloud provider '{}' must source its key from api_key_env",
+                        provider.name
+                    ));
+                }
+            }
+            if provider.kind == ProviderKind::Openrouter {
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "openrouter provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "openrouter provider '{}' must source its key from api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_base.trim_end_matches('/') != "https://openrouter.ai/api/v1" {
+                    problems.push(format!(
+                        "openrouter provider '{}' api_base must be https://openrouter.ai/api/v1",
+                        provider.name
+                    ));
+                }
+            }
             if let Some(proxy) = &provider.egress_proxy {
                 if !is_proxy_url(proxy) {
                     problems.push(format!(
@@ -1382,6 +1422,25 @@ mod tests {
         let p = provider_with_keys(Vec::new());
         assert_eq!(p.resolve_api_key().as_deref(), Some("legacy"));
         assert_eq!(p.resolve_api_keys(), vec![("legacy".to_string(), 1)]);
+    }
+
+    #[test]
+    fn ollama_cloud_requires_only_an_environment_key_reference() {
+        let mut cfg = GatewayConfig::default();
+        let mut cloud = provider_with_keys(Vec::new());
+        cloud.kind = ProviderKind::OllamaCloud;
+        cloud.api_key = None;
+        cfg.providers.push(cloud.clone());
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems.iter().any(|p| p.contains("requires api_key_env")));
+        cloud.api_key_env = Some("OLLAMA_API_KEY".to_string());
+        cfg.providers[0] = cloud;
+        assert!(cfg.validate().is_ok());
+        cfg.providers[0].api_key = Some("inline-secret".to_string());
+        let problems = cfg.validate().unwrap_err();
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("must source its key from api_key_env")));
     }
 
     #[test]
@@ -1813,6 +1872,32 @@ mod tests {
 
         cfg.providers[0].api_base = "http://localhost:11434/v1".to_string();
         assert!(cfg.validate().unwrap_err()[0].contains("without /v1"));
+    }
+
+    #[test]
+    fn validates_openrouter_endpoint_and_environment_key_reference() {
+        let raw = r#"
+            [[providers]]
+            name = "openrouter"
+            kind = "openrouter"
+            api_base = "https://openrouter.ai/api/v1"
+            api_key_env = "OPENROUTER_API_KEY"
+
+            [[routes]]
+            model = "router-chat"
+            [[routes.targets]]
+            provider = "openrouter"
+            model = "anthropic/claude-sonnet-4"
+        "#;
+        let mut cfg = GatewayConfig::from_toml_str(raw).unwrap();
+        assert!(cfg.validate().is_ok());
+
+        cfg.providers[0].api_base = "https://openrouter.ai/api".to_string();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("api_base must be")));
     }
 
     #[test]
