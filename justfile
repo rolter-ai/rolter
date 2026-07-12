@@ -77,6 +77,14 @@ up:
 down:
     docker compose -f docker/docker-compose.yml down
 
+# run criterion benchmarks (hot-path: balancer pick + prefix trie)
+bench:
+    cargo bench --workspace
+
+# compile benches without running them (the CI bit-rot guard)
+bench-check:
+    cargo bench --workspace --no-run
+
 # supply-chain audit (advisories, bans, licenses, sources)
 deny:
     cargo deny check --config .config/deny.toml
