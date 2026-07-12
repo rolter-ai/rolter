@@ -61,6 +61,8 @@ def main() -> None:
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if args.requests < 1:
+        parser.error("--requests must be >= 1")
 
     # One warmup request per endpoint removes initialization noise from samples.
     sample(args.engine_url, args.stream)

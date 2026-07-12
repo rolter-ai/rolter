@@ -74,11 +74,13 @@ def main() -> None:
 
     # A successful request is sufficient for strategies whose choice is
     # intentionally stochastic or driven by runtime cache/latency signals.
-    providers = [chat(args.gateway_url, model, stream=False) for model in STRATEGY_MODELS]
-    providers.append(chat(args.gateway_url, "dummy-round-robin", stream=False))
+    providers = {model: chat(args.gateway_url, model, stream=False) for model in STRATEGY_MODELS}
+    # two consecutive round-robin calls must alternate across the pool;
+    # only that route's own picks count so other strategies cannot mask it
+    round_robin = {providers["dummy-round-robin"], chat(args.gateway_url, "dummy-round-robin", stream=False)}
     chat(args.gateway_url, "dummy-round-robin", stream=True)
-    if not {"engine-1", "engine-2"}.issubset(set(providers)):
-        raise RuntimeError(f"round-robin did not use both pool targets: {providers}")
+    if round_robin != {"engine-1", "engine-2"}:
+        raise RuntimeError(f"round-robin did not use both pool targets: {sorted(round_robin, key=str)}")
     print("real-engine smoke passed")
 
 

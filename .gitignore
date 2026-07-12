@@ -31,5 +31,5 @@ entities.json
 # mdbook build output (contributor docs); source is docs/*.md
 docs/book/
 
-# Local output from the optional GPU inference-engine smoke/benchmark suite.
+# Local output from the optional CPU inference-engine smoke/benchmark suite.
 artifacts/engines/
