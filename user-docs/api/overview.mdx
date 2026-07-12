@@ -74,6 +74,36 @@ If the requested model name does not match any configured route, Rolter returns 
   Alias for `x-request-id`. Both are accepted and echoed.
 </ParamField>
 
+## Response headers
+
+Every proxied response carries `x-rolter-*` headers describing the routing
+decision, so you can see which upstream served a request without enabling
+ClickHouse logging.
+
+<ResponseField name="x-request-id" type="string">
+  The end-to-end request id — the value you sent, or one Rolter generated.
+</ResponseField>
+
+<ResponseField name="x-rolter-provider" type="string">
+  The provider whose target served the request (e.g. `openai-prod`).
+</ResponseField>
+
+<ResponseField name="x-rolter-target" type="string">
+  The resolved upstream model the request was forwarded as.
+</ResponseField>
+
+<ResponseField name="x-rolter-model" type="string">
+  The requested model name that was routed.
+</ResponseField>
+
+<ResponseField name="x-rolter-variant" type="string">
+  The A/B variant that served the request. Omitted on the classic single-pool path.
+</ResponseField>
+
+<ResponseField name="x-rolter-cache" type="string">
+  `HIT` when the response came from the cache, otherwise `MISS`.
+</ResponseField>
+
 ## Error responses
 
 Rolter returns OpenAI-style JSON error bodies on every error path, so existing error-handling code works unchanged.
