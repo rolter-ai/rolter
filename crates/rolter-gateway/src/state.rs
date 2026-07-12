@@ -6,8 +6,8 @@ use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build_with_stats, LoadBalancer, TargetStats};
 use rolter_core::{
-    BudgetConfig, CooldownConfig, GatewayConfig, ModelPriceConfig, ModelRoute, ProviderConfig,
-    RateLimitConfig, RetryConfig, Target,
+    BudgetConfig, CooldownConfig, GatewayConfig, HealthConfig, ModelPriceConfig, ModelRoute,
+    ProviderConfig, RateLimitConfig, RetryConfig, Target,
 };
 use rolter_proxy::Forwarder;
 
@@ -68,6 +68,9 @@ pub struct Snapshot {
     pub retry: RetryConfig,
     /// per-target cooldown policy applied on transient failures
     pub cooldown: CooldownConfig,
+    /// active health-probing tuning, read live by the background prober so a
+    /// hot-reload can enable/disable probing and re-tune interval/timeout/path
+    pub health: HealthConfig,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -175,6 +178,7 @@ impl Snapshot {
             rate_limits: Arc::new(config.rate_limits.clone()),
             retry: config.retry.clone(),
             cooldown: config.cooldown.clone(),
+            health: config.health.clone(),
         }
     }
 }
@@ -303,22 +307,18 @@ impl AppState {
             cooldowns: crate::cooldowns::Cooldowns::new(),
             loads,
             // an enabled registry only when probing is on, else an inert one that
-            // reports every provider healthy so the balancer never skips
-            health: if config.health.enabled {
-                crate::health::Health::new()
-            } else {
-                crate::health::Health::default()
-            },
-            // an enabled breaker only when configured on, else an inert one that
-            // admits every target so the balancer never skips
-            breaker: if config.breaker.enabled() {
-                crate::breaker::Breaker::new(
-                    config.breaker.failure_threshold,
-                    config.breaker.open_secs,
-                )
-            } else {
-                crate::breaker::Breaker::default()
-            },
+            // always a live registry so a hot-reload that enables probing has a
+            // store to populate; while probing is disabled the prober leaves the
+            // map empty and every provider reads healthy (fail open)
+            health: crate::health::Health::new(),
+            // always a reconfigurable breaker (even when currently disabled) so a
+            // config hot-reload can enable/disable and re-tune it in place without
+            // discarding accumulated per-target state; see reload()
+            breaker: crate::breaker::Breaker::new(
+                config.breaker.enabled(),
+                config.breaker.failure_threshold,
+                config.breaker.open_secs,
+            ),
             // an enabled snapshot only when scraping is on, else an inert one
             // that reports zero depth so it never perturbs the load view
             upstream_metrics: if config.metrics_scrape.enabled {
@@ -334,6 +334,14 @@ impl AppState {
     pub fn reload(&self, config: &GatewayConfig, version: u64) {
         self.snapshot
             .store(Arc::new(Snapshot::build(config, &self.loads)));
+        // re-tune the circuit breaker in place (enable/disable + thresholds)
+        // without discarding accumulated per-target state; the health prober picks
+        // up its tuning from the new snapshot on its next sweep
+        self.breaker.reconfigure(
+            config.breaker.enabled(),
+            config.breaker.failure_threshold,
+            config.breaker.open_secs,
+        );
         self.metrics
             .config_version
             .store(version, std::sync::atomic::Ordering::Relaxed);
@@ -385,5 +393,43 @@ mod tests {
         let prices = HashMap::new();
         let targets = vec![target("a", None)];
         assert_eq!(target_costs(&targets, "gpt", &prices), vec![0.0]);
+    }
+
+    #[test]
+    fn reload_toggles_and_retunes_the_breaker() {
+        let mut config = GatewayConfig::default();
+        // breaker off by default: failures never trip, targets always admitted
+        let state = AppState::with_logging(&config, None);
+        assert!(!state.breaker.on_failure("m", 0));
+        assert!(state.breaker.allows("m", 0));
+
+        // a hot-reload enables the breaker with a threshold of 1
+        config.breaker.enabled = true;
+        config.breaker.failure_threshold = 1;
+        config.breaker.open_secs = 30;
+        state.reload(&config, 1);
+
+        // now a single failure trips the target open in place, no restart needed
+        assert!(state.breaker.on_failure("m", 0));
+        assert!(!state.breaker.allows("m", 0));
+
+        // a further reload that disables the breaker makes it admit again
+        config.breaker.enabled = false;
+        state.reload(&config, 2);
+        assert!(state.breaker.allows("m", 0));
+    }
+
+    #[test]
+    fn snapshot_carries_live_health_tuning() {
+        let mut config = GatewayConfig::default();
+        config.health.enabled = true;
+        config.health.interval_secs = 7;
+        config.health.path = "/ready".to_string();
+        let state = AppState::with_logging(&config, None);
+        let snap = state.snapshot.load();
+        // the prober reads these off the snapshot each sweep
+        assert!(snap.health.enabled);
+        assert_eq!(snap.health.interval_secs, 7);
+        assert_eq!(snap.health.path, "/ready");
     }
 }

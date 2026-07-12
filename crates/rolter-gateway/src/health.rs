@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rolter_core::{GatewayConfig, HealthConfig, ProviderKind};
+use rolter_core::{HealthConfig, ProviderKind};
 
 /// the anthropic messages api rejects requests without a version header, even on
 /// the free `GET /v1/models` list endpoint
@@ -280,6 +280,15 @@ impl Health {
         );
     }
 
+    /// Drop all per-provider probe state, so every provider reads healthy again.
+    /// Called when a hot-reload disables probing: a target parked unhealthy by a
+    /// now-disabled prober must not stay skipped forever.
+    pub fn clear(&self) {
+        if let Some(inner) = &self.inner {
+            inner.lock().unwrap().clear();
+        }
+    }
+
     /// Whether the prober should probe `provider` this sweep (false while its
     /// 429 backoff window is active).
     pub fn should_probe(&self, provider: &str) -> bool {
@@ -316,19 +325,45 @@ impl Health {
 /// Spawn the background prober. Sweeps every provider in the current snapshot
 /// once per `interval_secs`, issuing a lightweight `GET {api_base}{path}` with a
 /// per-probe timeout, and records each provider's health. Runs until the process
-/// exits. A no-op (returns without spawning) when probing is disabled.
-pub fn spawn_prober(config: &GatewayConfig, state: crate::state::AppState) {
-    if !config.health.enabled {
-        return;
-    }
-    let cfg = config.health.clone();
-    tokio::spawn(async move {
-        run_prober(cfg, state).await;
-    });
+/// exits.
+///
+/// The prober is always spawned; it reads its enable-state and tuning
+/// (interval/timeout/path/concurrency/thresholds) off the live snapshot each
+/// sweep, so a config hot-reload can turn probing on or off and re-tune it without
+/// a restart (ROL-125). While disabled it idles and leaves every provider healthy.
+pub fn spawn_prober(state: crate::state::AppState) {
+    tokio::spawn(run_prober(state));
 }
 
-async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
-    // a dedicated client so probe timeouts never interfere with forward traffic
+async fn run_prober(state: crate::state::AppState) {
+    // tracks the last observed enable-state so a disable transition can clear any
+    // provider left parked unhealthy by the now-stopped prober
+    let mut was_enabled = false;
+    loop {
+        // re-read the health tuning off the current snapshot every iteration so a
+        // hot-reload of enabled/interval/timeout/path/concurrency takes effect on
+        // the next sweep without restarting the task
+        let cfg = state.snapshot.load().health.clone();
+        let idle = Duration::from_secs(cfg.interval_secs.max(1));
+        if !cfg.enabled {
+            if was_enabled {
+                state.health.clear();
+                was_enabled = false;
+            }
+            tokio::time::sleep(idle).await;
+            continue;
+        }
+        was_enabled = true;
+        run_sweep(&cfg, &state).await;
+        tokio::time::sleep(idle).await;
+    }
+}
+
+/// Run a single probe sweep across every provider in the current snapshot using
+/// the supplied (live) tuning.
+async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
+    // a dedicated client, rebuilt each sweep so a hot-reloaded timeout takes
+    // effect; probe timeouts never interfere with forward traffic
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
         .build()
@@ -336,19 +371,16 @@ async fn run_prober(cfg: HealthConfig, state: crate::state::AppState) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let mut ticker = tokio::time::interval(Duration::from_secs(cfg.interval_secs.max(1)));
     // probes run concurrently but bounded, so a sweep can never stampede
     // upstreams no matter how many providers are configured
     let limiter = Arc::new(tokio::sync::Semaphore::new(cfg.probe_concurrency.max(1)));
     // spread probes across the first quarter of the interval so sweeps for
     // different providers never align into a synchronized burst
     let jitter_window_ms = (cfg.interval_secs.max(1) * 1000 / 4).min(2000);
-    loop {
-        ticker.tick().await;
-        // read providers off the current snapshot each sweep so hot-reloads and
-        // newly-added providers are picked up without restarting the prober.
-        // resolve the whole probe plan here (while we hold the config) so the
-        // spawned tasks own everything they need
+    {
+        // read providers off the current snapshot so hot-reloads and newly-added
+        // providers are picked up. resolve the whole probe plan here (while we
+        // hold the config) so the spawned tasks own everything they need
         let plans: Vec<(String, ProbePlan, crate::health_events::HealthSource)> = {
             let snap = state.snapshot.load();
             snap.providers
@@ -494,6 +526,17 @@ mod tests {
         h.set("p", false);
         assert!(!h.is_healthy("p"));
         h.set("p", true);
+        assert!(h.is_healthy("p"));
+    }
+
+    #[test]
+    fn clear_resets_parked_providers_to_healthy() {
+        let h = Health::new();
+        h.set("p", false);
+        assert!(!h.is_healthy("p"));
+        // disabling the prober clears state so a parked provider is not stuck
+        // unhealthy forever
+        h.clear();
         assert!(h.is_healthy("p"));
     }
 

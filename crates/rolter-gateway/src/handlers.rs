@@ -1911,7 +1911,7 @@ mod tests {
         let ctx = RouteContext::default();
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::default();
-        let bb = crate::breaker::Breaker::new(1, 60);
+        let bb = crate::breaker::Breaker::new(true, 1, 60);
         // trip target 0 open: selection must avoid it and pick 1
         assert!(bb.on_failure("m", 0));
         assert_eq!(
