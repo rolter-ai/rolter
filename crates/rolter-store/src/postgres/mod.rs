@@ -61,6 +61,7 @@ impl TryFrom<ProviderRow> for ProviderConfig {
             "ollama" => ProviderKind::Ollama,
             "ollama_cloud" => ProviderKind::OllamaCloud,
             "llama_cpp" => ProviderKind::LlamaCpp,
+            "openrouter" => ProviderKind::Openrouter,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
         Ok(ProviderConfig {

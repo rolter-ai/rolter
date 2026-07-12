@@ -41,6 +41,7 @@ fn probe_request(
         | ProviderKind::Ollama
         | ProviderKind::OllamaCloud
         | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
+        ProviderKind::Openrouter => (format!("{base}/models"), Vec::new()),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
             vec![(
@@ -117,6 +118,12 @@ fn build_probe_plan(
                             ),
                         ],
                     ),
+                    ProviderKind::Openrouter => {
+                        let headers = key
+                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
+                            .unwrap_or_default();
+                        ("/chat/completions", headers)
+                    }
                     _ => {
                         let headers = key
                             .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
@@ -145,7 +152,10 @@ fn build_probe_plan(
         );
     }
     let (url, mut headers) = probe_request(provider.kind, &provider.api_base, configured_path);
-    if provider.kind == ProviderKind::OllamaCloud {
+    if matches!(
+        provider.kind,
+        ProviderKind::OllamaCloud | ProviderKind::Openrouter
+    ) {
         if let Some(key) = provider.resolve_api_key() {
             headers.push(("authorization".to_string(), format!("Bearer {key}")));
         }
@@ -739,6 +749,28 @@ mod tests {
                     vec![(
                         "authorization".to_string(),
                         "Bearer test-cloud-key".to_string()
+                    )]
+                );
+            }
+            _ => panic!("expected a free probe"),
+        }
+    }
+
+    #[test]
+    fn openrouter_probe_uses_api_v1_models_and_bearer_auth() {
+        let mut p = provider(ProviderKind::Openrouter);
+        p.api_base = "https://openrouter.ai/api/v1".to_string();
+        p.api_key = Some("test-openrouter-key".to_string());
+        let (plan, source) = build_probe_plan(&p, "/");
+        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        match plan {
+            ProbePlan::Free { url, headers } => {
+                assert_eq!(url, "https://openrouter.ai/api/v1/models");
+                assert_eq!(
+                    headers,
+                    vec![(
+                        "authorization".to_string(),
+                        "Bearer test-openrouter-key".to_string()
                     )]
                 );
             }

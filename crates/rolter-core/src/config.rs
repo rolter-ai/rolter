@@ -194,6 +194,8 @@ pub enum ProviderKind {
     OllamaCloud,
     /// a self-hosted llama.cpp llama-server using its openai-compatible api
     LlamaCpp,
+    /// openrouter's hosted openai-compatible api
+    Openrouter,
 }
 
 /// An upstream provider rolter can forward to.
@@ -1234,6 +1236,26 @@ impl GatewayConfig {
                     ));
                 }
             }
+            if provider.kind == ProviderKind::Openrouter {
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "openrouter provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "openrouter provider '{}' must source its key from api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_base.trim_end_matches('/') != "https://openrouter.ai/api/v1" {
+                    problems.push(format!(
+                        "openrouter provider '{}' api_base must be https://openrouter.ai/api/v1",
+                        provider.name
+                    ));
+                }
+            }
             if let Some(proxy) = &provider.egress_proxy {
                 if !is_proxy_url(proxy) {
                     problems.push(format!(
@@ -1850,6 +1872,32 @@ mod tests {
 
         cfg.providers[0].api_base = "http://localhost:11434/v1".to_string();
         assert!(cfg.validate().unwrap_err()[0].contains("without /v1"));
+    }
+
+    #[test]
+    fn validates_openrouter_endpoint_and_environment_key_reference() {
+        let raw = r#"
+            [[providers]]
+            name = "openrouter"
+            kind = "openrouter"
+            api_base = "https://openrouter.ai/api/v1"
+            api_key_env = "OPENROUTER_API_KEY"
+
+            [[routes]]
+            model = "router-chat"
+            [[routes.targets]]
+            provider = "openrouter"
+            model = "anthropic/claude-sonnet-4"
+        "#;
+        let mut cfg = GatewayConfig::from_toml_str(raw).unwrap();
+        assert!(cfg.validate().is_ok());
+
+        cfg.providers[0].api_base = "https://openrouter.ai/api".to_string();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|problem| problem.contains("api_base must be")));
     }
 
     #[test]

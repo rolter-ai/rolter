@@ -160,6 +160,7 @@ async fn import_bootstrap_toml(
             ProviderKind::Ollama => "ollama",
             ProviderKind::OllamaCloud => "ollama_cloud",
             ProviderKind::LlamaCpp => "llama_cpp",
+            ProviderKind::Openrouter => "openrouter",
         };
         let existing = providers
             .list(org_id)
