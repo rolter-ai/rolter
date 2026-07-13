@@ -13,6 +13,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use rolter_core::{
     BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, Target,
+    VirtualKeyConfig,
 };
 use serde_json::{json, Value};
 
@@ -164,11 +165,26 @@ async fn responses_passthrough_preserves_body_and_sse_events() {
 async fn responses_translates_to_chat_completions() {
     async fn chat_upstream(Json(body): Json<Value>) -> impl IntoResponse {
         assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][1]["content"], "hello");
+        assert_eq!(body["messages"][1]["content"][0]["text"], "inspect");
+        assert_eq!(
+            body["messages"][1]["content"][1]["image_url"]["url"],
+            "https://example.com/diagram.png"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][1]["image_url"]["detail"],
+            "high"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][2]["input_file"]["filename"],
+            "brief.pdf"
+        );
+        assert_eq!(body["messages"][2]["role"], "tool");
+        assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][2]["content"], "lookup result");
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
         Json(json!({
             "id":"chat_1", "object":"chat.completion", "model":"upstream-model",
-            "choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],
+            "choices":[{"message":{"role":"assistant","content":"pong","tool_calls":[{"id":"call_2","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],
             "usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
         }))
     }
@@ -178,7 +194,15 @@ async fn responses_translates_to_chat_completions() {
     let resp = reqwest::Client::new()
         .post(format!("http://{gw}/v1/responses"))
         .json(&json!({
-            "model":"test-model", "instructions":"be concise", "input":"hello",
+            "model":"test-model", "instructions":"be concise",
+            "input":[
+                {"role":"user","content":[
+                    {"type":"input_text","text":"inspect"},
+                    {"type":"input_image","image_url":"https://example.com/diagram.png","detail":"high"},
+                    {"type":"input_file","filename":"brief.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQ="}
+                ]},
+                {"type":"function_call_output","call_id":"call_1","output":"lookup result"}
+            ],
             "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]
         }))
         .send()
@@ -189,6 +213,8 @@ async fn responses_translates_to_chat_completions() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["object"], "response");
     assert_eq!(body["output"][0]["content"][0]["text"], "pong");
+    assert_eq!(body["output"][0]["content"][1]["type"], "function_call");
+    assert_eq!(body["output"][0]["content"][1]["name"], "lookup");
     assert_eq!(body["usage"]["input_tokens"], 2);
 }
 
@@ -196,10 +222,21 @@ async fn responses_translates_to_chat_completions() {
 async fn responses_translates_to_anthropic_messages() {
     async fn messages_upstream(Json(body): Json<Value>) -> impl IntoResponse {
         assert_eq!(body["system"][0]["text"], "be concise");
-        assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "inspect");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["url"],
+            "https://example.com/diagram.png"
+        );
+        assert_eq!(body["messages"][0]["content"][2]["type"], "document");
+        assert_eq!(body["messages"][0]["content"][2]["title"], "brief.pdf");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
+        assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "call_1");
+        assert_eq!(body["tools"][0]["name"], "lookup");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         Json(json!({
             "id":"msg_1", "type":"message", "model":"claude", "role":"assistant",
-            "content":[{"type":"text","text":"pong"}], "stop_reason":"end_turn",
+            "content":[{"type":"text","text":"pong"},{"type":"tool_use","id":"call_2","name":"lookup","input":{"q":"x"}}], "stop_reason":"tool_use",
             "usage":{"input_tokens":2,"output_tokens":1}
         }))
     }
@@ -210,7 +247,18 @@ async fn responses_translates_to_anthropic_messages() {
     let gw = serve_gateway(&config).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{gw}/v1/responses"))
-        .json(&json!({"model":"test-model", "instructions":"be concise", "input":"hello"}))
+        .json(&json!({
+            "model":"test-model", "instructions":"be concise",
+            "input":[
+                {"role":"user","content":[
+                    {"type":"input_text","text":"inspect"},
+                    {"type":"input_image","image_url":"https://example.com/diagram.png","detail":"high"},
+                    {"type":"input_file","filename":"brief.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQ="}
+                ]},
+                {"type":"function_call_output","call_id":"call_1","output":"lookup result"}
+            ],
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]
+        }))
         .send()
         .await
         .unwrap();
@@ -219,6 +267,8 @@ async fn responses_translates_to_anthropic_messages() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["object"], "response");
     assert_eq!(body["output"][0]["content"][0]["text"], "pong");
+    assert_eq!(body["output"][0]["content"][1]["type"], "function_call");
+    assert_eq!(body["output"][0]["content"][1]["name"], "lookup");
     assert_eq!(body["usage"]["output_tokens"], 1);
 }
 
@@ -231,12 +281,70 @@ async fn responses_lifecycle_operations_are_uniformly_unsupported() {
         client.delete(format!("http://{gw}/v1/responses/resp_other_tenant")),
         client.post(format!("http://{gw}/v1/responses/resp_a/cancel")),
         client.get(format!("http://{gw}/v1/responses/resp_a/input_items")),
+        client.post(format!("http://{gw}/v1/responses/resp_a/compact")),
+        client.get(format!("http://{gw}/v1/responses/resp_a/input_tokens")),
     ] {
         let resp = request.send().await.unwrap();
         assert_eq!(resp.status(), 501);
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["error"]["code"], "response_lifecycle_unsupported");
     }
+}
+
+#[tokio::test]
+async fn response_lifecycle_operations_require_auth_without_leaking_key_scope() {
+    let config = GatewayConfig {
+        virtual_keys: vec![
+            VirtualKeyConfig {
+                key: "sk-tenant-a".to_string(),
+                name: None,
+                models: vec![],
+                disabled: false,
+                expires_at: None,
+                cache: None,
+            },
+            VirtualKeyConfig {
+                key: "sk-tenant-b".to_string(),
+                name: None,
+                models: vec![],
+                disabled: false,
+                expires_at: None,
+                cache: None,
+            },
+        ],
+        ..Default::default()
+    };
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let unauthenticated = client
+        .get(format!("http://{gw}/v1/responses/resp_a/input_tokens"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), 401);
+
+    let tenant_a = client
+        .post(format!("http://{gw}/v1/responses/resp_a/compact"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tenant_a.status(), 501);
+    let tenant_a: Value = tenant_a.json().await.unwrap();
+    let tenant_b = client
+        .get(format!(
+            "http://{gw}/v1/responses/resp_other_tenant/input_tokens"
+        ))
+        .bearer_auth("sk-tenant-b")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tenant_b.status(), 501);
+    let tenant_b: Value = tenant_b.json().await.unwrap();
+
+    assert_eq!(tenant_a, tenant_b);
+    assert_eq!(tenant_a["error"]["code"], "response_lifecycle_unsupported");
 }
 
 #[tokio::test]

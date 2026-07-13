@@ -68,11 +68,11 @@ and provider-specific reasoning controls) are not forwarded to those older
 surfaces; use a native Responses provider when those features are required.
 
 Response lifecycle operations (`GET`/`DELETE /v1/responses/{id}`, cancellation,
-and background input-item retrieval) deliberately return `501` with code
-`response_lifecycle_unsupported`. Those calls have no model, and forwarding an
-opaque identifier could reveal or act on a response owned by another tenant or
-virtual key. They will require a tenant-scoped response registry before being
-proxied.
+compaction, input-item retrieval, and input-token counting) deliberately return
+`501` with code `response_lifecycle_unsupported`. Those calls have no model,
+and forwarding an opaque identifier could reveal or act on a response owned by
+another tenant or virtual key. They will require a tenant-scoped response
+registry before being proxied.
 
 ## Examples
 

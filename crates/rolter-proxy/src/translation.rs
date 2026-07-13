@@ -205,12 +205,27 @@ fn responses_request(mut v: Value) -> Value {
 
 fn responses_content_to_chat(content: Value) -> Value {
     match content {
-        Value::Array(parts) => Value::Array(parts.into_iter().map(|part| match part.get("type").and_then(Value::as_str) {
-            Some("input_text") => json!({"type":"text","text":part["text"]}),
-            Some("input_image") => json!({"type":"image_url","image_url":{"url":part.get("image_url").cloned().unwrap_or(Value::Null)}}),
-            Some("input_file") => json!({"type":"input_file","input_file":part}),
-            _ => part,
-        }).collect()),
+        Value::Array(parts) => Value::Array(
+            parts
+                .into_iter()
+                .map(|part| match part.get("type").and_then(Value::as_str) {
+                    Some("input_text") => json!({"type":"text","text":part["text"]}),
+                    Some("input_image") => {
+                        let mut image_url = Map::new();
+                        image_url.insert(
+                            "url".into(),
+                            part.get("image_url").cloned().unwrap_or(Value::Null),
+                        );
+                        if let Some(detail) = part.get("detail") {
+                            image_url.insert("detail".into(), detail.clone());
+                        }
+                        json!({"type":"image_url","image_url":image_url})
+                    }
+                    Some("input_file") => json!({"type":"input_file","input_file":part}),
+                    _ => part,
+                })
+                .collect(),
+        ),
         other => other,
     }
 }
