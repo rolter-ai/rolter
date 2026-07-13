@@ -381,36 +381,59 @@ async fn responses_lifecycle_operations_are_uniformly_unsupported() {
 
 #[tokio::test]
 async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
-    async fn create() -> impl IntoResponse {
-        Json(json!({"id":"resp_native","object":"response","status":"completed"}))
+    async fn create(State(provider): State<String>) -> impl IntoResponse {
+        Json(json!({
+            "id":format!("resp_{provider}"),
+            "object":"response",
+            "status":"completed"
+        }))
     }
-    async fn retrieve(Path(id): Path<String>) -> impl IntoResponse {
-        Json(json!({"id":id,"object":"response","provider":"pinned"}))
+    async fn retrieve(State(provider): State<String>, Path(id): Path<String>) -> impl IntoResponse {
+        assert_eq!(id, format!("resp_{provider}"));
+        Json(json!({"id":id,"object":"response","provider":provider}))
     }
-    async fn cancel(Path(id): Path<String>) -> impl IntoResponse {
-        Json(json!({"id":id,"object":"response","status":"cancelled"}))
+    async fn cancel(State(provider): State<String>, Path(id): Path<String>) -> impl IntoResponse {
+        assert_eq!(id, format!("resp_{provider}"));
+        Json(json!({"id":id,"object":"response","status":"cancelled","provider":provider}))
     }
     async fn input_items(
+        State(provider): State<String>,
         Path(id): Path<String>,
         OriginalUri(uri): OriginalUri,
     ) -> impl IntoResponse {
+        assert_eq!(id, format!("resp_{provider}"));
         assert_eq!(uri.query(), Some("limit=1"));
-        Json(json!({"object":"list","response_id":id,"data":[{"id":"item_1"}]}))
+        Json(json!({"object":"list","response_id":id,"provider":provider,"data":[{"id":"item_1"}]}))
     }
-    async fn delete_response(Path(id): Path<String>) -> impl IntoResponse {
-        Json(json!({"id":id,"object":"response.deleted","deleted":true}))
+    async fn delete_response(
+        State(provider): State<String>,
+        Path(id): Path<String>,
+    ) -> impl IntoResponse {
+        assert_eq!(id, format!("resp_{provider}"));
+        Json(json!({"id":id,"object":"response.deleted","deleted":true,"provider":provider}))
     }
 
-    let upstream = serve(
-        Router::new()
-            .route("/v1/responses", post(create))
-            .route("/v1/responses/{id}", get(retrieve).delete(delete_response))
-            .route("/v1/responses/{id}/cancel", post(cancel))
-            .route("/v1/responses/{id}/input_items", get(input_items)),
-    )
-    .await;
-    let mut config = config_for("native-model", vec![("native", upstream)]);
-    config.providers[0].kind = ProviderKind::Openai;
+    async fn lifecycle_upstream(provider: &str) -> SocketAddr {
+        serve(
+            Router::new()
+                .route("/v1/responses", post(create))
+                .route("/v1/responses/{id}", get(retrieve).delete(delete_response))
+                .route("/v1/responses/{id}/cancel", post(cancel))
+                .route("/v1/responses/{id}/input_items", get(input_items))
+                .with_state(provider.to_string()),
+        )
+        .await
+    }
+
+    let upstream_a = lifecycle_upstream("a").await;
+    let upstream_b = lifecycle_upstream("b").await;
+    let mut config = config_for(
+        "native-model",
+        vec![("native-a", upstream_a), ("native-b", upstream_b)],
+    );
+    for provider in &mut config.providers {
+        provider.kind = ProviderKind::Openai;
+    }
     config.virtual_keys = vec![
         VirtualKeyConfig {
             key: "sk-tenant-a".to_string(),
@@ -432,20 +455,43 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
     let gw = serve_gateway(&config).await;
     let client = reqwest::Client::new();
 
-    let created: Value = client
-        .post(format!("http://{gw}/v1/responses"))
-        .bearer_auth("sk-tenant-a")
-        .json(&json!({"model":"native-model","input":"hello"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(created["id"], "resp_native");
+    let mut response_ids = Vec::new();
+    for _ in 0..2 {
+        let created: Value = client
+            .post(format!("http://{gw}/v1/responses"))
+            .bearer_auth("sk-tenant-a")
+            .json(&json!({"model":"native-model","input":"hello"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        response_ids.push(created["id"].as_str().unwrap().to_string());
+    }
+    response_ids.sort();
+    assert_eq!(response_ids, ["resp_a", "resp_b"]);
+
+    for response_id in &response_ids {
+        let retrieved: Value = client
+            .get(format!("http://{gw}/v1/responses/{response_id}"))
+            .bearer_auth("sk-tenant-a")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            retrieved["provider"],
+            response_id.trim_start_matches("resp_")
+        );
+    }
+
+    let response_id = &response_ids[0];
 
     let cross_tenant = client
-        .get(format!("http://{gw}/v1/responses/resp_native"))
+        .get(format!("http://{gw}/v1/responses/{response_id}"))
         .bearer_auth("sk-tenant-b")
         .send()
         .await
@@ -459,18 +505,8 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
         .unwrap();
     assert_eq!(unknown.status(), 404);
 
-    let retrieved: Value = client
-        .get(format!("http://{gw}/v1/responses/resp_native"))
-        .bearer_auth("sk-tenant-a")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(retrieved["provider"], "pinned");
     let cancelled: Value = client
-        .post(format!("http://{gw}/v1/responses/resp_native/cancel"))
+        .post(format!("http://{gw}/v1/responses/{response_id}/cancel"))
         .bearer_auth("sk-tenant-a")
         .send()
         .await
@@ -479,9 +515,10 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
         .await
         .unwrap();
     assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["provider"], "a");
     let items: Value = client
         .get(format!(
-            "http://{gw}/v1/responses/resp_native/input_items?limit=1"
+            "http://{gw}/v1/responses/{response_id}/input_items?limit=1"
         ))
         .bearer_auth("sk-tenant-a")
         .send()
@@ -491,15 +528,16 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
         .await
         .unwrap();
     assert_eq!(items["data"][0]["id"], "item_1");
+    assert_eq!(items["provider"], "a");
     let deleted = client
-        .delete(format!("http://{gw}/v1/responses/resp_native"))
+        .delete(format!("http://{gw}/v1/responses/{response_id}"))
         .bearer_auth("sk-tenant-a")
         .send()
         .await
         .unwrap();
     assert_eq!(deleted.status(), 200);
     let after_delete = client
-        .get(format!("http://{gw}/v1/responses/resp_native"))
+        .get(format!("http://{gw}/v1/responses/{response_id}"))
         .bearer_auth("sk-tenant-a")
         .send()
         .await
