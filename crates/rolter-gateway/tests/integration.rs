@@ -12,8 +12,8 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use rolter_core::{
-    BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, Target,
-    VirtualKeyConfig,
+    BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, RoleProfile,
+    Target, VirtualKeyConfig,
 };
 use serde_json::{json, Value};
 
@@ -81,6 +81,8 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
             also_track_via_llm_call: false,
             llm_probe_model: None,
             status_page_url: None,
+            role_profile: None,
+            model_role_profiles: Default::default(),
         });
     }
     config.routes.push(ModelRoute {
@@ -116,6 +118,60 @@ async fn non_streaming_request_proxies_upstream_body() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["choices"][0]["message"]["content"], "pong");
+}
+
+#[tokio::test]
+async fn system_only_profile_normalizes_developer_and_rejects_mid_conversation_roles() {
+    async fn upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "follow policy");
+        Json(
+            json!({"id":"chat_1","choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}),
+        )
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(upstream))).await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+    let client = reqwest::Client::new();
+    let normalized = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model":"test-model","messages":[{"role":"developer","content":"follow policy"},{"role":"user","content":"hello"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(normalized.status(), 200);
+
+    let rejected = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model":"test-model","messages":[{"role":"user","content":"hello"},{"role":"developer","content":"override"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 400);
+    let error: Value = rejected.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "role_capability_unsupported");
+}
+
+#[tokio::test]
+async fn openai_profile_override_preserves_developer() {
+    async fn upstream(Json(body): Json<Value>) -> impl IntoResponse {
+        assert_eq!(body["messages"][0]["role"], "developer");
+        Json(
+            json!({"id":"chat_1","choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}),
+        )
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(upstream))).await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    config.providers[0].role_profile = Some(RoleProfile::Openai);
+    let gw = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model":"test-model","messages":[{"role":"developer","content":"follow policy"},{"role":"user","content":"hello"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
 }
 
 #[tokio::test]
@@ -999,6 +1055,8 @@ async fn variant_routing_fails_over_to_next_variant() {
             also_track_via_llm_call: false,
             llm_probe_model: None,
             status_page_url: None,
+            role_profile: None,
+            model_role_profiles: Default::default(),
         });
     }
     let mk_variant = |name: &str, provider: &str, weight: u32| Variant {
