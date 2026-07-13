@@ -1,4 +1,4 @@
-# https://release-plz.dev/docs/config
+# release automation config; see https://release-plz.dev/docs/config
 [changelog]
 # surface the change type and the PR author on every entry (ROL-228). the
 # default parsers fold ci/docs/chore/refactor/perf/test into a single "Other"

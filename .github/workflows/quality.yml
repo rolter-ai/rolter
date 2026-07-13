@@ -154,6 +154,7 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_CONFIG: .github/config/gitleaks.toml
 
   # ── workflow lint: validate the CI yaml itself ──────────────────────────────
   # agents edit workflows too; catch syntax and shell smells early.
@@ -274,7 +275,7 @@ jobs:
         run: cargo package --workspace --locked
 
   # ── spelling: docs / comments / identifiers ─────────────────────────────────
-  # false positives are pinned in _typos.toml with an explaining comment each.
+  # false positives are pinned in .github/config/typos.toml with an explaining comment each.
   typos:
     name: typos
     runs-on: ubuntu-latest
@@ -283,6 +284,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14 # v1.48.0
+        with:
+          config: .github/config/typos.toml
 
   # ── unused dependencies ─────────────────────────────────────────────────────
   machete:

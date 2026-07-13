@@ -35,12 +35,13 @@ jobs:
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release-pr
+          config: .github/config/release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # on merge of the release PR: publishes every workspace member to crates.io
-  # in dependency order (`publish = true` in release-plz.toml, using
+  # in dependency order (`publish = true` in .github/config/release-plz.toml, using
   # CARGO_REGISTRY_TOKEN), tags `v{version}` and creates the github release.
   # the pushed tag triggers release.yml, whose pypi publish step is gated
   # behind the PYPI_PUBLISH_ENABLED repo variable.
@@ -70,6 +71,7 @@ jobs:
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         with:
           command: release
+          config: .github/config/release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
