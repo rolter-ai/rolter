@@ -59,6 +59,36 @@ pub fn document() -> Value {
                     "responses": {"200": {"description": "response or an SSE event stream", "content": {"application/json": {"schema": {"type": "object"}}, "text/event-stream": {"schema": {"type": "string"}}}}, "400": error_response, "401": error_response, "501": error_response}
                 }
             },
+            "/v1/responses/{response_id}": {
+                "get": {
+                    "summary": "Retrieve a tenant-scoped OpenAI response",
+                    "operationId": "retrieveResponse",
+                    "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": {"200":{"description":"response","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                },
+                "delete": {
+                    "summary": "Delete a tenant-scoped OpenAI response",
+                    "operationId": "deleteResponse",
+                    "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": {"200":{"description":"deletion result","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                }
+            },
+            "/v1/responses/{response_id}/cancel": {
+                "post": {
+                    "summary": "Cancel a tenant-scoped OpenAI response",
+                    "operationId": "cancelResponse",
+                    "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": {"200":{"description":"cancelled response","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                }
+            },
+            "/v1/responses/{response_id}/input_items": {
+                "get": {
+                    "summary": "List input items for a tenant-scoped OpenAI response",
+                    "operationId": "listResponseInputItems",
+                    "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses": {"200":{"description":"input item list","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                }
+            },
             "/v1/messages": {
                 "post": {
                     "summary": "Anthropic Messages (streaming supported)",

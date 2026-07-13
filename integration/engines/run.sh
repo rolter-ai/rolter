@@ -38,7 +38,8 @@ sed -e "s/__ROLTER_PORT__/$rolter_port/g" \
   "$root/integration/engines/rolter-dummy.toml.in" >"$config"
 
 "${compose[@]}" up -d
-(cd "$root" && cargo run -p rolter-gateway -- --config "$config") >"$artifacts/rolter.log" 2>&1 &
+(cd "$root" && cargo build -p rolter-gateway)
+"$root/target/debug/rolter-gateway" --config "$config" >"$artifacts/rolter.log" 2>&1 &
 gateway_pid=$!
 
 if [[ "$mode" == "--bench" ]]; then

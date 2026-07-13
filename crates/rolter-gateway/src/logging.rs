@@ -201,6 +201,8 @@ fn u32_field(value: &Value, key: &str) -> Option<u32> {
     value.get(key).and_then(|v| v.as_u64()).map(|n| n as u32)
 }
 
+pub type CompletionObserver = Box<dyn FnOnce(&[u8]) + Send>;
+
 /// Response body stream that forwards each chunk to the client unchanged while
 /// buffering the whole body, then on end-of-stream parses token usage, stamps
 /// latency/ttft and emits the completed [`RequestLog`] exactly once.
@@ -222,6 +224,8 @@ pub struct UsageLoggingStream {
     _inflight_guard: Option<crate::load::LoadGuard>,
     // taken and emitted once the stream ends
     pending: Option<RequestLog>,
+    // optional response-body observer invoked once before the buffer is recycled
+    completion_observer: Option<CompletionObserver>,
 }
 
 impl UsageLoggingStream {
@@ -251,7 +255,13 @@ impl UsageLoggingStream {
             token_recorder,
             _inflight_guard: inflight_guard,
             pending: Some(log),
+            completion_observer: None,
         }
+    }
+
+    pub fn with_completion_observer(mut self, observer: Option<CompletionObserver>) -> Self {
+        self.completion_observer = observer;
+        self
     }
 
     fn finalize(&mut self) {
@@ -259,6 +269,9 @@ impl UsageLoggingStream {
             return;
         };
         let usage = parse_usage(self.is_sse, &self.buf);
+        if let Some(observer) = self.completion_observer.take() {
+            observer(&self.buf);
+        }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
         log.completion_tokens = usage.completion;

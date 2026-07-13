@@ -194,6 +194,44 @@ impl Forwarder {
         self.await_send(send).await
     }
 
+    /// Forward a model-less OpenAI Responses lifecycle operation. The caller
+    /// must resolve the tenant-scoped response route first; this method only
+    /// preserves the selected provider credential and native resource path.
+    pub async fn forward_resource(
+        &self,
+        provider: &ProviderConfig,
+        method: Method,
+        path: &str,
+        api_key: Option<&str>,
+        passthrough_headers: &[(&str, &str)],
+    ) -> Result<Response> {
+        let url = provider_url(provider, path);
+        let client = self.client_for(provider);
+        let mut req = client.request(method, &url);
+        match provider.kind {
+            ProviderKind::Anthropic => {
+                if let Some(key) = api_key {
+                    req = req.header("x-api-key", key);
+                }
+                req = req.header("anthropic-version", "2023-06-01");
+            }
+            ProviderKind::AzureOpenai => {
+                if let Some(key) = api_key {
+                    req = req.header("api-key", key);
+                }
+            }
+            _ => {
+                if let Some(key) = api_key {
+                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
+                }
+            }
+        }
+        for (name, value) in passthrough_headers {
+            req = req.header(*name, *value);
+        }
+        self.await_send(req.send()).await
+    }
+
     /// Await an upstream send under the configured time-to-headers budget. The
     /// body stream is left untouched so long/streamed responses aren't cut off.
     async fn await_send(

@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{OriginalUri, Path, State};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use rolter_core::{
     BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, RoleProfile,
@@ -182,12 +182,20 @@ async fn responses_passthrough_preserves_body_and_sse_events() {
         assert_eq!(body["reasoning"]["effort"], "high");
         (
             [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
-            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
         )
             .into_response()
     }
 
-    let upstream = serve(Router::new().route("/v1/responses", post(responses_upstream))).await;
+    async fn retrieve(Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id":id,"object":"response"}))
+    }
+    let upstream = serve(
+        Router::new()
+            .route("/v1/responses", post(responses_upstream))
+            .route("/v1/responses/{id}", get(retrieve)),
+    )
+    .await;
     let mut config = config_for("test-model", vec![("up", upstream)]);
     config.providers[0].kind = ProviderKind::Openai;
     let gw = serve_gateway(&config).await;
@@ -215,6 +223,12 @@ async fn responses_passthrough_preserves_body_and_sse_events() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("event: response.output_text.delta"));
     assert!(body.contains("event: response.completed"));
+    let lifecycle = reqwest::Client::new()
+        .get(format!("http://{gw}/v1/responses/resp_stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lifecycle.status(), 200);
 }
 
 #[tokio::test]
@@ -272,6 +286,17 @@ async fn responses_translates_to_chat_completions() {
     assert_eq!(body["output"][0]["content"][1]["type"], "function_call");
     assert_eq!(body["output"][0]["content"][1]["name"], "lookup");
     assert_eq!(body["usage"]["input_tokens"], 2);
+
+    let lifecycle = reqwest::Client::new()
+        .get(format!("http://{gw}/v1/responses/chat_1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lifecycle.status(), 501);
+    assert_eq!(
+        lifecycle.json::<Value>().await.unwrap()["error"]["code"],
+        "response_lifecycle_unsupported"
+    );
 }
 
 #[tokio::test]
@@ -337,6 +362,13 @@ async fn responses_lifecycle_operations_are_uniformly_unsupported() {
         client.delete(format!("http://{gw}/v1/responses/resp_other_tenant")),
         client.post(format!("http://{gw}/v1/responses/resp_a/cancel")),
         client.get(format!("http://{gw}/v1/responses/resp_a/input_items")),
+    ] {
+        let resp = request.send().await.unwrap();
+        assert_eq!(resp.status(), 404);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "response_not_found");
+    }
+    for request in [
         client.post(format!("http://{gw}/v1/responses/resp_a/compact")),
         client.get(format!("http://{gw}/v1/responses/resp_a/input_tokens")),
     ] {
@@ -345,6 +377,134 @@ async fn responses_lifecycle_operations_are_uniformly_unsupported() {
         let body: Value = resp.json().await.unwrap();
         assert_eq!(body["error"]["code"], "response_lifecycle_unsupported");
     }
+}
+
+#[tokio::test]
+async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
+    async fn create() -> impl IntoResponse {
+        Json(json!({"id":"resp_native","object":"response","status":"completed"}))
+    }
+    async fn retrieve(Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id":id,"object":"response","provider":"pinned"}))
+    }
+    async fn cancel(Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id":id,"object":"response","status":"cancelled"}))
+    }
+    async fn input_items(
+        Path(id): Path<String>,
+        OriginalUri(uri): OriginalUri,
+    ) -> impl IntoResponse {
+        assert_eq!(uri.query(), Some("limit=1"));
+        Json(json!({"object":"list","response_id":id,"data":[{"id":"item_1"}]}))
+    }
+    async fn delete_response(Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id":id,"object":"response.deleted","deleted":true}))
+    }
+
+    let upstream = serve(
+        Router::new()
+            .route("/v1/responses", post(create))
+            .route("/v1/responses/{id}", get(retrieve).delete(delete_response))
+            .route("/v1/responses/{id}/cancel", post(cancel))
+            .route("/v1/responses/{id}/input_items", get(input_items)),
+    )
+    .await;
+    let mut config = config_for("native-model", vec![("native", upstream)]);
+    config.providers[0].kind = ProviderKind::Openai;
+    config.virtual_keys = vec![
+        VirtualKeyConfig {
+            key: "sk-tenant-a".to_string(),
+            name: None,
+            models: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        },
+        VirtualKeyConfig {
+            key: "sk-tenant-b".to_string(),
+            name: None,
+            models: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        },
+    ];
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let created: Value = client
+        .post(format!("http://{gw}/v1/responses"))
+        .bearer_auth("sk-tenant-a")
+        .json(&json!({"model":"native-model","input":"hello"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["id"], "resp_native");
+
+    let cross_tenant = client
+        .get(format!("http://{gw}/v1/responses/resp_native"))
+        .bearer_auth("sk-tenant-b")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_tenant.status(), 404);
+    let unknown = client
+        .get(format!("http://{gw}/v1/responses/unknown"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+
+    let retrieved: Value = client
+        .get(format!("http://{gw}/v1/responses/resp_native"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retrieved["provider"], "pinned");
+    let cancelled: Value = client
+        .post(format!("http://{gw}/v1/responses/resp_native/cancel"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    let items: Value = client
+        .get(format!(
+            "http://{gw}/v1/responses/resp_native/input_items?limit=1"
+        ))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(items["data"][0]["id"], "item_1");
+    let deleted = client
+        .delete(format!("http://{gw}/v1/responses/resp_native"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 200);
+    let after_delete = client
+        .get(format!("http://{gw}/v1/responses/resp_native"))
+        .bearer_auth("sk-tenant-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after_delete.status(), 404);
 }
 
 #[tokio::test]

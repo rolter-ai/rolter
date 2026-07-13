@@ -25,6 +25,7 @@ mod openapi;
 mod queue;
 mod rate_limits;
 mod realtime;
+mod response_registry;
 mod state;
 mod status_page;
 mod trace;
@@ -201,16 +202,15 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
         .route("/v1/responses", post(handlers::responses))
         .route(
             "/v1/responses/{response_id}",
-            get(handlers::unsupported_response_lifecycle)
-                .delete(handlers::unsupported_response_lifecycle),
+            get(handlers::retrieve_response).delete(handlers::delete_response),
         )
         .route(
             "/v1/responses/{response_id}/cancel",
-            post(handlers::unsupported_response_lifecycle),
+            post(handlers::cancel_response),
         )
         .route(
             "/v1/responses/{response_id}/input_items",
-            get(handlers::unsupported_response_lifecycle),
+            get(handlers::response_input_items),
         )
         .route(
             "/v1/responses/{response_id}/compact",

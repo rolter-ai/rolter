@@ -46,3 +46,6 @@ Accepted. Resolve translation by client/upstream protocol pair in `rolter-proxy`
 
 ## ADR-0015 — [Трансляция OpenAI Responses API](2026-07-13-responses-api-protocol-translation.md)
 Development. Add OpenAI Responses as a protocol pair for native OpenAI, Chat Completions and Anthropic Messages, while model-less lifecycle operations remain uniformly unsupported until tenant-scoped storage exists.
+
+## ADR-0016 — [Маршрутизация ресурсов OpenAI Responses по tenant-scoped registry](2026-07-13-responses-lifecycle-routing-registry.md)
+Development. Pin Responses lifecycle operations to a bounded tenant-scoped process-local record, preserving the original provider credential while making unknown and cross-tenant IDs indistinguishable.

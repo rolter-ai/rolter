@@ -11,9 +11,9 @@ pub use config::{
     ApiKeyConfig, BackpressurePolicy, BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod,
     BudgetScope, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, LoggingConfig,
     MetricsScrapeConfig, ModelPriceConfig, ModelRoute, OverrideMode, ParamPolicy, ProviderConfig,
-    ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig, RetryConfig, RoleProfile,
-    RouteCache, ServerConfig, Target, TimeoutConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
-    RESERVED_PATHS,
+    ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig,
+    RoleProfile, RouteCache, ServerConfig, Target, TimeoutConfig, Variant, VirtualKeyConfig,
+    VirtualKeyRecord, RESERVED_PATHS,
 };
 pub use error::{Error, Result};
 
