@@ -212,6 +212,14 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
             "/v1/responses/{response_id}/input_items",
             get(handlers::unsupported_response_lifecycle),
         )
+        .route(
+            "/v1/responses/{response_id}/compact",
+            post(handlers::unsupported_response_lifecycle),
+        )
+        .route(
+            "/v1/responses/{response_id}/input_tokens",
+            get(handlers::unsupported_response_lifecycle),
+        )
         .route("/v1/messages", post(handlers::messages))
         .route("/v1/embeddings", post(handlers::embeddings))
         .route("/v1/rerank", post(handlers::rerank))
