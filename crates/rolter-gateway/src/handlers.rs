@@ -1,16 +1,18 @@
+use std::fmt::Write;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use tokio::time::sleep;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::extract::{OriginalUri, Path, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
 use chrono::Utc;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use rolter_balancer::RouteContext;
 
@@ -81,9 +83,205 @@ pub async fn responses(State(state): State<AppState>, headers: HeaderMap, body: 
     proxy(state, headers, body, "/v1/responses").await
 }
 
-/// Response resources do not carry a model, so they cannot be safely routed
-/// from an identifier alone. Do not forward them until a tenant-scoped response
-/// registry exists; returning one uniform error avoids cross-key existence leaks.
+pub async fn retrieve_response(
+    state: State<AppState>,
+    headers: HeaderMap,
+    path: Path<String>,
+    uri: OriginalUri,
+) -> Response {
+    response_lifecycle(state, headers, path, uri, LifecycleOperation::Retrieve).await
+}
+
+pub async fn delete_response(
+    state: State<AppState>,
+    headers: HeaderMap,
+    path: Path<String>,
+    uri: OriginalUri,
+) -> Response {
+    response_lifecycle(state, headers, path, uri, LifecycleOperation::Delete).await
+}
+
+pub async fn cancel_response(
+    state: State<AppState>,
+    headers: HeaderMap,
+    path: Path<String>,
+    uri: OriginalUri,
+) -> Response {
+    response_lifecycle(state, headers, path, uri, LifecycleOperation::Cancel).await
+}
+
+pub async fn response_input_items(
+    state: State<AppState>,
+    headers: HeaderMap,
+    path: Path<String>,
+    uri: OriginalUri,
+) -> Response {
+    response_lifecycle(state, headers, path, uri, LifecycleOperation::InputItems).await
+}
+
+#[derive(Clone, Copy)]
+enum LifecycleOperation {
+    Retrieve,
+    Delete,
+    Cancel,
+    InputItems,
+}
+
+impl LifecycleOperation {
+    fn supported(self, caps: crate::response_registry::LifecycleCapabilities) -> bool {
+        match self {
+            Self::Retrieve => caps.retrieve,
+            Self::Delete => caps.delete,
+            Self::Cancel => caps.cancel,
+            Self::InputItems => caps.input_items,
+        }
+    }
+
+    fn method(self) -> Method {
+        match self {
+            Self::Retrieve | Self::InputItems => Method::GET,
+            Self::Delete => Method::DELETE,
+            Self::Cancel => Method::POST,
+        }
+    }
+
+    fn path(self, response_id: &str) -> String {
+        match self {
+            Self::Retrieve | Self::Delete => format!("/v1/responses/{response_id}"),
+            Self::Cancel => format!("/v1/responses/{response_id}/cancel"),
+            Self::InputItems => format!("/v1/responses/{response_id}/input_items"),
+        }
+    }
+}
+
+async fn response_lifecycle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+    OriginalUri(uri): OriginalUri,
+    operation: LifecycleOperation,
+) -> Response {
+    state.metrics.requests_total.fetch_add(1, Relaxed);
+    let snap = state.snapshot.load();
+    let vk = match authenticate(&state, &snap, &headers) {
+        Ok(vk) => vk,
+        Err(resp) => return resp,
+    };
+    let tenant = tenant_scope(vk.as_ref());
+    let Some(route) = state.response_registry.get(&tenant, &response_id) else {
+        return response_not_found();
+    };
+    if !operation.supported(route.capabilities) {
+        return crate::error::ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "response lifecycle operation is not supported by the originating provider contract",
+        )
+        .with_code("response_lifecycle_unsupported")
+        .into_response();
+    }
+    let Some(provider) = snap.providers.get(&route.provider) else {
+        return response_not_found();
+    };
+    if provider.kind != rolter_core::ProviderKind::Openai {
+        return response_not_found();
+    }
+    let resolved_keys = provider.resolve_api_keys();
+    let api_key = match &route.provider_key_fingerprint {
+        Some(expected) => resolved_keys
+            .into_iter()
+            .map(|(key, _)| key)
+            .find(|key| provider_key_fingerprint(key) == *expected),
+        None if resolved_keys.is_empty() => None,
+        None => return response_not_found(),
+    };
+    if route.provider_key_fingerprint.is_some() && api_key.is_none() {
+        return response_not_found();
+    }
+    let mut upstream_path = operation.path(&route.provider_native_id);
+    if let Some(query) = uri.query() {
+        upstream_path.push('?');
+        upstream_path.push_str(query);
+    }
+    let trace_ctx = crate::trace::outbound_trace_headers(&headers);
+    let trace_headers: Vec<(&str, &str)> =
+        trace_ctx.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    match state
+        .forwarder
+        .forward_resource(
+            provider,
+            operation.method(),
+            &upstream_path,
+            api_key.as_deref(),
+            &trace_headers,
+        )
+        .await
+    {
+        Ok(response) => {
+            if matches!(operation, LifecycleOperation::Delete) && response.status().is_success() {
+                state.response_registry.remove(&tenant, &response_id);
+            }
+            lifecycle_response(response, &route)
+        }
+        Err(err) => upstream_error_response(&err.to_string()),
+    }
+}
+
+fn lifecycle_response(
+    response: reqwest::Response,
+    route: &crate::response_registry::ResponseRoute,
+) -> Response {
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut upstream_headers = response.headers().clone();
+    for name in [
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    ] {
+        upstream_headers.remove(name);
+    }
+    if !upstream_headers.contains_key(header::CONTENT_TYPE) {
+        upstream_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    let body = Body::from_stream(response.bytes_stream());
+    let mut builder = Response::builder().status(status);
+    if let Some(headers) = builder.headers_mut() {
+        *headers = upstream_headers;
+        for (name, value) in [
+            ("x-rolter-provider", route.provider.as_str()),
+            ("x-rolter-target", route.target.as_str()),
+            ("x-rolter-model", route.model.as_str()),
+        ] {
+            if let Ok(value) = HeaderValue::from_str(value) {
+                headers.insert(name, value);
+            }
+        }
+    }
+    builder.body(body).unwrap_or_else(|_| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to build response",
+        )
+    })
+}
+
+fn response_not_found() -> Response {
+    crate::error::ApiError::new(StatusCode::NOT_FOUND, "response not found")
+        .with_code("response_not_found")
+        .with_param("response_id")
+        .into_response()
+}
+
+/// Lifecycle extensions not covered by ROL-264 remain uniformly unsupported.
 pub async fn unsupported_response_lifecycle(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -100,6 +298,19 @@ pub async fn unsupported_response_lifecycle(
     )
     .with_code("response_lifecycle_unsupported")
     .into_response()
+}
+
+fn tenant_scope(vk: Option<&KeyMeta>) -> String {
+    vk.map(|key| key.tenant_key.clone())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+fn provider_key_fingerprint(key: &str) -> String {
+    let mut fingerprint = String::with_capacity(64);
+    for byte in Sha256::digest(key.as_bytes()) {
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    fingerprint
 }
 
 pub async fn messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -441,10 +652,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // Some(false) opts the key out, Some(true) opts it in even on a route that
     // didn't; None inherits the route flag. the global switch still gates all
     let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
-    let cache_eligible = vk
-        .as_ref()
-        .and_then(|k| k.cache_override)
-        .unwrap_or_else(|| entry.route.cache_enabled());
+    let cache_eligible = path != "/v1/responses"
+        && vk
+            .as_ref()
+            .and_then(|k| k.cache_override)
+            .unwrap_or_else(|| entry.route.cache_enabled());
     let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
         let scope_seg = if entry.route.cache_per_key() {
             vk_id.as_str()
@@ -486,212 +698,223 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // the client, so a partial response is never duplicated. a route with
     // variants routes through the weighted-variant fallback chain instead of the
     // classic single-pool balancer.
-    let (outcome, last_provider, last_target, last_error, inflight_guard, chosen_variant) =
-        if entry.route.has_variants() {
-            let fwd = forward_variants(
-                &state,
-                entry,
-                &snap,
-                &model,
-                &ctx,
-                &parsed,
-                &body,
-                path,
-                started,
-                &trace_headers,
-            )
-            .await;
-            (
-                fwd.outcome,
-                fwd.last_provider,
-                fwd.last_target,
-                fwd.last_error,
-                fwd.inflight_guard,
-                fwd.variant,
-            )
-        } else {
-            let retry = &snap.retry;
-            let cooldown = &snap.cooldown;
-            let cd_enabled = cooldown.enabled();
-            // live per-target in-flight counts steer load-aware strategies away from busy
-            // targets; the count for the chosen target is held for the whole request.
-            // scraped upstream queue depth (when enabled) is folded in so the balancer
-            // also sees pressure that hasn't reached this gateway's own counters
-            let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
-            for (i, target) in entry.route.targets.iter().enumerate() {
-                if let Some(l) = loads.get_mut(i) {
-                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-                }
+    let (
+        outcome,
+        last_provider,
+        last_target,
+        last_error,
+        inflight_guard,
+        chosen_variant,
+        last_key_fingerprint,
+    ) = if entry.route.has_variants() {
+        let fwd = forward_variants(
+            &state,
+            entry,
+            &snap,
+            &model,
+            &ctx,
+            &parsed,
+            &body,
+            path,
+            started,
+            &trace_headers,
+        )
+        .await;
+        (
+            fwd.outcome,
+            fwd.last_provider,
+            fwd.last_target,
+            fwd.last_error,
+            fwd.inflight_guard,
+            fwd.variant,
+            fwd.provider_key_fingerprint,
+        )
+    } else {
+        let retry = &snap.retry;
+        let cooldown = &snap.cooldown;
+        let cd_enabled = cooldown.enabled();
+        // live per-target in-flight counts steer load-aware strategies away from busy
+        // targets; the count for the chosen target is held for the whole request.
+        // scraped upstream queue depth (when enabled) is folded in so the balancer
+        // also sees pressure that hasn't reached this gateway's own counters
+        let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+        for (i, target) in entry.route.targets.iter().enumerate() {
+            if let Some(l) = loads.get_mut(i) {
+                *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
             }
-            let mut tried: Vec<usize> = Vec::new();
-            let mut last_provider = String::new();
-            let mut last_target = model.clone();
-            let mut last_error: Option<String> = None;
-            let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
-            let mut inflight_guard: Option<crate::load::LoadGuard> = None;
+        }
+        let mut tried: Vec<usize> = Vec::new();
+        let mut last_provider = String::new();
+        let mut last_target = model.clone();
+        let mut last_error: Option<String> = None;
+        let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+        let mut inflight_guard: Option<crate::load::LoadGuard> = None;
+        let mut last_key_fingerprint: Option<String> = None;
 
-            for attempt in 0..=retry.max_retries {
-                let idx = match pick_untried(
-                    entry,
-                    &ctx,
-                    &tried,
-                    &loads,
-                    &state.cooldowns,
-                    &state.health,
-                    &state.breaker,
-                    &model,
-                    cd_enabled,
-                ) {
-                    Some(i) => i,
-                    None => break, // no untried target left to fail over to
-                };
-                entry.balancer.observe(idx, &ctx);
-                tried.push(idx);
-                // count this attempt as in-flight; the guard falls out of scope (and
-                // decrements) on retry, or is moved into the stream wrapper on success
-                let mut guard = state.loads.begin(&model, idx);
+        for attempt in 0..=retry.max_retries {
+            let idx = match pick_untried(
+                entry,
+                &ctx,
+                &tried,
+                &loads,
+                &state.cooldowns,
+                &state.health,
+                &state.breaker,
+                &model,
+                cd_enabled,
+            ) {
+                Some(i) => i,
+                None => break, // no untried target left to fail over to
+            };
+            entry.balancer.observe(idx, &ctx);
+            tried.push(idx);
+            // count this attempt as in-flight; the guard falls out of scope (and
+            // decrements) on retry, or is moved into the stream wrapper on success
+            let mut guard = state.loads.begin(&model, idx);
 
-                let target = &entry.route.targets[idx];
-                let provider = match snap.providers.get(&target.provider) {
-                    Some(provider) => provider,
-                    None => {
-                        last_error = Some("configured target provider not found".to_string());
-                        break;
-                    }
-                };
-                last_provider = target.provider.clone();
-                last_target = target.model.clone().unwrap_or_else(|| model.clone());
-                // weighted pick across the provider's key pool, skipping keys
-                // parked on a cooldown (single-key providers yield their one key)
-                let multi_key = provider.api_keys.len() > 1;
-                let key_ns = key_pool_key(&target.provider);
-                let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-                    multi_key && state.cooldowns.is_parked(&key_ns, i)
-                });
-                let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
-                let upstream_model = target.model.as_deref();
+            let target = &entry.route.targets[idx];
+            let provider = match snap.providers.get(&target.provider) {
+                Some(provider) => provider,
+                None => {
+                    last_error = Some("configured target provider not found".to_string());
+                    break;
+                }
+            };
+            last_provider = target.provider.clone();
+            last_target = target.model.clone().unwrap_or_else(|| model.clone());
+            // weighted pick across the provider's key pool, skipping keys
+            // parked on a cooldown (single-key providers yield their one key)
+            let multi_key = provider.api_keys.len() > 1;
+            let key_ns = key_pool_key(&target.provider);
+            let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
+                multi_key && state.cooldowns.is_parked(&key_ns, i)
+            });
+            let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
+            last_key_fingerprint = api_key.map(provider_key_fingerprint);
+            let upstream_model = target.model.as_deref();
 
-                match state
-                    .provider_queues
-                    .forward_json(
-                        &snap.queue,
-                        provider,
-                        path,
-                        forward_body.clone(),
-                        api_key,
-                        upstream_model,
-                        &trace_headers,
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        // a 429/401 on a multi-key provider is a key-level
-                        // failure: park the key, keep the target in rotation
-                        // and retry — a sibling key usually succeeds
-                        let key_failure = multi_key && (status == 429 || status == 401);
-                        if key_failure {
-                            if let Some((ki, _)) = &picked_key {
-                                let secs = cooldown.duration_secs(retry_after_secs(&response));
-                                state.cooldowns.park(&key_ns, *ki, secs.max(1));
-                                state
-                                    .metrics
-                                    .key_cooldowns_tripped_total
-                                    .fetch_add(1, Relaxed);
-                            }
-                            // let the same target be re-picked with a fresh key
-                            tried.pop();
-                            if attempt < retry.max_retries {
-                                state.metrics.retries_total.fetch_add(1, Relaxed);
-                                sleep(Duration::from_millis(retry_delay_ms(
-                                    retry,
-                                    &response,
-                                    attempt + 1,
-                                    started,
-                                )))
-                                .await;
-                                continue;
-                            }
-                        } else if is_retryable_status(status) {
-                            // park the failing target so siblings absorb the load
-                            if cd_enabled {
-                                let secs = cooldown.duration_secs(retry_after_secs(&response));
-                                state.cooldowns.park(&model, idx, secs);
-                                state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                            }
-                            // feed the circuit breaker; a sustained run trips the target open
-                            if state.breaker.on_failure(&model, idx) {
-                                state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                            }
-                            if attempt < retry.max_retries {
-                                state.metrics.retries_total.fetch_add(1, Relaxed);
-                                sleep(Duration::from_millis(retry_delay_ms(
-                                    retry,
-                                    &response,
-                                    attempt + 1,
-                                    started,
-                                )))
-                                .await;
-                                continue;
-                            }
-                        } else if state.breaker.on_success(&model, idx) {
-                            // a good response closes a breaker that was probing (half-open)
-                            state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
-                        }
-                        let is_sse = response
-                            .headers()
-                            .get(reqwest::header::CONTENT_TYPE)
-                            .and_then(|v| v.to_str().ok())
-                            .map(|ct| ct.contains("event-stream"))
-                            .unwrap_or(false);
-                        if status < 400 {
-                            // successful attempt: fold its duration into the
-                            // target's latency EWMA once streaming finishes
-                            guard.mark_ok();
-                        }
-                        inflight_guard = Some(guard);
-                        outcome = Some((response, status, is_sse));
-                        break;
-                    }
-                    Err(err) => {
-                        let message = err.to_string();
-                        if is_queue_admission_error(&message) {
-                            last_error = Some(message);
-                            break;
-                        }
-                        last_error = Some(message);
-                        // a connection-level failure parks the target too
-                        if cd_enabled {
+            match state
+                .provider_queues
+                .forward_json(
+                    &snap.queue,
+                    provider,
+                    path,
+                    forward_body.clone(),
+                    api_key,
+                    upstream_model,
+                    &trace_headers,
+                )
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    // a 429/401 on a multi-key provider is a key-level
+                    // failure: park the key, keep the target in rotation
+                    // and retry — a sibling key usually succeeds
+                    let key_failure = multi_key && (status == 429 || status == 401);
+                    if key_failure {
+                        if let Some((ki, _)) = &picked_key {
+                            let secs = cooldown.duration_secs(retry_after_secs(&response));
+                            state.cooldowns.park(&key_ns, *ki, secs.max(1));
                             state
-                                .cooldowns
-                                .park(&model, idx, cooldown.duration_secs(None));
+                                .metrics
+                                .key_cooldowns_tripped_total
+                                .fetch_add(1, Relaxed);
+                        }
+                        // let the same target be re-picked with a fresh key
+                        tried.pop();
+                        if attempt < retry.max_retries {
+                            state.metrics.retries_total.fetch_add(1, Relaxed);
+                            sleep(Duration::from_millis(retry_delay_ms(
+                                retry,
+                                &response,
+                                attempt + 1,
+                                started,
+                            )))
+                            .await;
+                            continue;
+                        }
+                    } else if is_retryable_status(status) {
+                        // park the failing target so siblings absorb the load
+                        if cd_enabled {
+                            let secs = cooldown.duration_secs(retry_after_secs(&response));
+                            state.cooldowns.park(&model, idx, secs);
                             state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                         }
-                        // and counts against the circuit breaker
+                        // feed the circuit breaker; a sustained run trips the target open
                         if state.breaker.on_failure(&model, idx) {
                             state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                         }
                         if attempt < retry.max_retries {
                             state.metrics.retries_total.fetch_add(1, Relaxed);
-                            sleep(Duration::from_millis(
-                                retry.backoff_ms(attempt + 1, jitter(started)),
-                            ))
+                            sleep(Duration::from_millis(retry_delay_ms(
+                                retry,
+                                &response,
+                                attempt + 1,
+                                started,
+                            )))
                             .await;
                             continue;
                         }
+                    } else if state.breaker.on_success(&model, idx) {
+                        // a good response closes a breaker that was probing (half-open)
+                        state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                    }
+                    let is_sse = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|ct| ct.contains("event-stream"))
+                        .unwrap_or(false);
+                    if status < 400 {
+                        // successful attempt: fold its duration into the
+                        // target's latency EWMA once streaming finishes
+                        guard.mark_ok();
+                    }
+                    inflight_guard = Some(guard);
+                    outcome = Some((response, status, is_sse));
+                    break;
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if is_queue_admission_error(&message) {
+                        last_error = Some(message);
                         break;
                     }
+                    last_error = Some(message);
+                    // a connection-level failure parks the target too
+                    if cd_enabled {
+                        state
+                            .cooldowns
+                            .park(&model, idx, cooldown.duration_secs(None));
+                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                    }
+                    // and counts against the circuit breaker
+                    if state.breaker.on_failure(&model, idx) {
+                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                    }
+                    if attempt < retry.max_retries {
+                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        sleep(Duration::from_millis(
+                            retry.backoff_ms(attempt + 1, jitter(started)),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    break;
                 }
             }
-            (
-                outcome,
-                last_provider,
-                last_target,
-                last_error,
-                inflight_guard,
-                String::new(),
-            )
-        };
+        }
+        (
+            outcome,
+            last_provider,
+            last_target,
+            last_error,
+            inflight_guard,
+            String::new(),
+            last_key_fingerprint,
+        )
+    };
 
     match outcome {
         // token counts, latency and ttft are filled by the stream wrapper once
@@ -711,6 +934,36 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             } else {
                 rolter_proxy::TranslationPlan::passthrough()
             };
+            let response_observer: Option<crate::logging::CompletionObserver> =
+                if path == "/v1/responses" && status < 400 {
+                    let capabilities = snap
+                        .providers
+                        .get(&last_provider)
+                        .map(|provider| provider.kind == rolter_core::ProviderKind::Openai)
+                        .unwrap_or(false);
+                    state
+                        .response_registry
+                        .template(
+                            tenant_scope(vk.as_ref()),
+                            last_provider.clone(),
+                            last_target.clone(),
+                            model.clone(),
+                            last_key_fingerprint,
+                            if capabilities {
+                                crate::response_registry::LifecycleCapabilities::NATIVE_OPENAI
+                            } else {
+                                crate::response_registry::LifecycleCapabilities::UNSUPPORTED
+                            },
+                        )
+                        .map(|template| {
+                            let registry = state.response_registry.clone();
+                            Box::new(move |body: &[u8]| {
+                                registry.record_body(template, is_sse, body);
+                            }) as crate::logging::CompletionObserver
+                        })
+                } else {
+                    None
+                };
             let log = RequestLog {
                 request_id,
                 trace_id,
@@ -775,6 +1028,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                 recorder,
                                 token_recorder,
                                 inflight_guard,
+                                response_observer,
                             );
                         }
                         Err(err) => {
@@ -795,6 +1049,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 recorder,
                 token_recorder,
                 inflight_guard,
+                response_observer,
             )
             .await
         }
@@ -1150,6 +1405,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 recorder,
                 token_recorder,
                 inflight_guard,
+                None,
             )
             .await
         }
@@ -1191,6 +1447,7 @@ struct ForwardOutcome {
     inflight_guard: Option<crate::load::LoadGuard>,
     /// chosen variant name for attribution
     variant: String,
+    provider_key_fingerprint: Option<String>,
 }
 
 /// Namespaces the per-target reliability registries (cooldown/breaker/load) by
@@ -1283,6 +1540,7 @@ async fn forward_variants(
         last_error: None,
         inflight_guard: None,
         variant: String::new(),
+        provider_key_fingerprint: None,
     };
     let mut tried: Vec<usize> = Vec::new();
 
@@ -1341,6 +1599,7 @@ async fn forward_variants(
             multi_key && state.cooldowns.is_parked(&key_ns, i)
         });
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
+        out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
         let upstream_model = target.model.as_deref();
 
         match state
@@ -1537,6 +1796,7 @@ async fn stream_response(
     recorder: SpendRecorder,
     token_recorder: TokenRecorder,
     inflight_guard: Option<crate::load::LoadGuard>,
+    completion_observer: Option<crate::logging::CompletionObserver>,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1565,6 +1825,7 @@ async fn stream_response(
                 recorder,
                 token_recorder,
                 inflight_guard,
+                completion_observer,
             ),
             Err(err) => error_json(StatusCode::BAD_GATEWAY, &err.to_string()),
         };
@@ -1589,7 +1850,8 @@ async fn stream_response(
         Some(recorder),
         Some(token_recorder),
         inflight_guard,
-    );
+    )
+    .with_completion_observer(completion_observer);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
@@ -1621,6 +1883,7 @@ fn buffered_response(
     recorder: SpendRecorder,
     token_recorder: TokenRecorder,
     inflight_guard: Option<crate::load::LoadGuard>,
+    completion_observer: Option<crate::logging::CompletionObserver>,
 ) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let decision = DecisionHeaders::from_log(&log);
@@ -1635,7 +1898,8 @@ fn buffered_response(
         Some(recorder),
         Some(token_recorder),
         inflight_guard,
-    );
+    )
+    .with_completion_observer(completion_observer);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);

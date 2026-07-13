@@ -34,6 +34,8 @@ pub struct RouteEntry {
 /// snapshot; the plaintext key is never retained.
 #[derive(Debug, Clone, Default)]
 pub struct KeyMeta {
+    /// peppered virtual-key digest used only for tenant isolation
+    pub tenant_key: String,
     pub id: String,
     pub org_id: String,
     pub team_id: String,
@@ -156,9 +158,11 @@ impl Snapshot {
         let mut keys: HashMap<String, KeyMeta> = HashMap::new();
         // config-defined keys: digest derived from the plaintext, no scope ids
         for k in &config.virtual_keys {
+            let digest = rolter_auth::hash_key(&pepper, &k.key);
             keys.insert(
-                rolter_auth::hash_key(&pepper, &k.key),
+                digest.clone(),
                 KeyMeta {
+                    tenant_key: digest,
                     models: k.models.clone(),
                     disabled: k.disabled,
                     expires_at: k.expires_at,
@@ -172,6 +176,7 @@ impl Snapshot {
             keys.insert(
                 k.key_hash.clone(),
                 KeyMeta {
+                    tenant_key: k.key_hash.clone(),
                     id: k.id.clone(),
                     org_id: k.org_id.clone(),
                     team_id: k.team_id.clone(),
@@ -244,6 +249,8 @@ pub struct AppState {
     /// exact-match response cache against Redis; disabled when no redis url is
     /// set. The global master switch lives on the live snapshot's `cache` field
     pub response_cache: ResponseCache,
+    /// tenant-scoped routing records for model-less Responses lifecycle calls
+    pub response_registry: crate::response_registry::ResponseRegistry,
     /// per-target cooldown registry, shared across requests and config reloads
     pub cooldowns: crate::cooldowns::Cooldowns,
     /// per-target in-flight load counters feeding the balancer
@@ -351,6 +358,7 @@ impl AppState {
             budgets,
             rate_limiter,
             response_cache,
+            response_registry: crate::response_registry::ResponseRegistry::new(&config.responses),
             cooldowns: crate::cooldowns::Cooldowns::new(),
             loads,
             // an enabled registry only when probing is on, else an inert one that
@@ -380,6 +388,7 @@ impl AppState {
     /// Atomically replace the routing snapshot (used by the config watcher).
     /// Records `version` in metrics and bumps the reload counter.
     pub fn reload(&self, config: &GatewayConfig, version: u64) {
+        self.response_registry.reconfigure(&config.responses);
         self.snapshot
             .store(Arc::new(Snapshot::build(config, &self.loads)));
         // re-tune the circuit breaker in place (enable/disable + thresholds)

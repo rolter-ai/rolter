@@ -70,7 +70,7 @@ flowchart LR
 **Недостатки и риски:**
 
 - `background`, `store`, `previous_response_id` и provider-specific reasoning не имеют безопасного эквивалента Chat/Anthropic и не передаются туда;
-- lifecycle endpoints пока возвращают единый `501 response_lifecycle_unsupported`, пока нет tenant-scoped registry;
+- lifecycle для native OpenAI реализован отдельным tenant-scoped registry в ADR-0016; переведённые Chat/Anthropic ресурсы по-прежнему возвращают `501 response_lifecycle_unsupported`;
 - поддержка новых Responses event types требует расширения конвертера и тестов.
 
 **Влияние на систему:**
@@ -84,5 +84,5 @@ flowchart LR
 
 ## Открытые вопросы
 
-- Спроектировать tenant-scoped registry для retrieve/cancel/delete/background-results.
+- Рассмотреть распределённый backend registry для multi-replica deployment без sticky routing.
 - Расширить потоковую трансляцию function-call и reasoning event types по мере подтверждения поддерживаемых upstream контрактов.

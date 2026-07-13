@@ -37,6 +37,9 @@ pub struct GatewayConfig {
     /// exact-match response cache (Redis) shared across replicas; off by default
     #[serde(default)]
     pub cache: CacheConfig,
+    /// tenant-scoped routing records for OpenAI Responses lifecycle operations
+    #[serde(default)]
+    pub responses: ResponsesConfig,
     /// upstream connect/response timeouts
     #[serde(default)]
     pub timeouts: TimeoutConfig,
@@ -942,6 +945,37 @@ fn default_cache_max_entry_bytes() -> u64 {
 
 fn default_cache_namespace() -> String {
     "rolter:cache".to_string()
+}
+
+/// Process-local routing registry for OpenAI Responses lifecycle resources.
+/// Records are bounded and expire lazily; deployments with multiple gateway
+/// replicas must keep a response's lifecycle requests sticky to the replica
+/// that accepted its creation request.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResponsesConfig {
+    /// lifetime of a routing record after creation; 0 disables registration
+    #[serde(default = "default_response_registry_ttl_secs")]
+    pub registry_ttl_secs: u64,
+    /// maximum live records retained by one gateway process
+    #[serde(default = "default_response_registry_max_entries")]
+    pub registry_max_entries: usize,
+}
+
+impl Default for ResponsesConfig {
+    fn default() -> Self {
+        Self {
+            registry_ttl_secs: default_response_registry_ttl_secs(),
+            registry_max_entries: default_response_registry_max_entries(),
+        }
+    }
+}
+
+fn default_response_registry_ttl_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_response_registry_max_entries() -> usize {
+    100_000
 }
 
 /// Per-route response-cache opt-in.

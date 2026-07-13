@@ -16,6 +16,9 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/chat/completions` | OpenAI chat; streaming via `"stream": true` (SSE) |
 | POST | `/v1/completions` | OpenAI legacy completions |
 | POST | `/v1/responses` | OpenAI Responses; provider-native passthrough, streaming supported |
+| GET, DELETE | `/v1/responses/{id}` | retrieve or delete a tenant-scoped native Responses resource |
+| POST | `/v1/responses/{id}/cancel` | cancel a tenant-scoped native Responses resource |
+| GET | `/v1/responses/{id}/input_items` | list input items for a tenant-scoped native Responses resource |
 | POST | `/v1/messages` | Anthropic Messages; streaming supported |
 | POST | `/v1/embeddings` | OpenAI embeddings; non-streaming |
 | POST | `/v1/rerank` | Cohere/Jina rerank; non-streaming |
@@ -67,12 +70,28 @@ wire equivalent (for example `background`, `store`, `previous_response_id`,
 and provider-specific reasoning controls) are not forwarded to those older
 surfaces; use a native Responses provider when those features are required.
 
-Response lifecycle operations (`GET`/`DELETE /v1/responses/{id}`, cancellation,
-compaction, input-item retrieval, and input-token counting) deliberately return
-`501` with code `response_lifecycle_unsupported`. Those calls have no model,
-and forwarding an opaque identifier could reveal or act on a response owned by
-another tenant or virtual key. They will require a tenant-scoped response
-registry before being proxied.
+For native OpenAI providers, rolter records the selected provider, target,
+upstream model, provider credential fingerprint, and native response ID after a
+successful creation. `GET`/`DELETE /v1/responses/{id}`, cancellation, and
+input-item retrieval are then pinned to that record. Records are isolated by
+virtual key, retained for 24 hours by default, bounded to 100,000 entries per
+gateway process, and removed after a successful delete. Configure these limits
+with `[responses] registry_ttl_secs` and `registry_max_entries`; setting either
+to `0` disables registration.
+
+The registry is process-local. Multi-replica deployments must keep lifecycle
+requests sticky to the gateway replica that accepted creation; records do not
+survive a gateway restart. Route changes do not retarget an existing response.
+If its provider is removed, its provider kind changes, or its credential is
+rotated away, the record becomes unavailable. Unknown, expired, deleted,
+cross-key, and unavailable records all return the same `404 response_not_found`
+error so route ownership is not leaked.
+
+Responses translated through Chat Completions or Anthropic Messages retain an
+ownership record but expose no lifecycle capabilities, because those upstream
+contracts do not retain an OpenAI Responses resource. Their lifecycle calls
+return `501 response_lifecycle_unsupported`. Compaction and input-token counting
+remain unsupported for all providers.
 
 ## Examples
 
