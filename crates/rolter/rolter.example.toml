@@ -18,6 +18,12 @@ port = 4000
 # oversized body gets an openai-style 413. defaults to 33554432 (32 MiB).
 # max_body_bytes = 33554432
 
+# --- outbound TLS trust ---
+# PEM certificates in these files are added to the normal public-root trust
+# store. ROLTER_CA_BUNDLE overrides this global list with one container path.
+# [tls]
+# ca_bundles = ["/etc/rolter/ca/private-root.pem"]
+
 # --- providers: where rolter can forward to ---
 
 [[providers]]
@@ -26,6 +32,7 @@ kind = "openai"
 api_base = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 # egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
+# ca_bundles = ["/etc/rolter/ca/openai.pem"] # optional provider override
 
 [[providers]]
 name = "anthropic"

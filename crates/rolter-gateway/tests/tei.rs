@@ -26,6 +26,7 @@ fn config(addr: SocketAddr, api_key: Option<&str>) -> GatewayConfig {
         api_key: api_key.map(str::to_string),
         api_key_env: None,
         egress_proxy: None,
+        ca_bundles: None,
         api_keys: vec![],
         also_track_via_llm_call: false,
         llm_probe_model: None,

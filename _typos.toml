@@ -15,4 +15,10 @@ extend-ignore-re = [
   # dictionary reads as words (e.g. "ba" inside a span/trace id)
   "00f067aa0ba902b7",
   "80f198ee56343ba864fe8b2a57d3eff7",
+  # DER-encoded local TLS certificates in proxy integration tests: base64 spans
+  # happen to form dictionary words.
+  "0jAer87tnJgSEHH",
+  "QYMBaAFKpTnXjkmXVb",
+  "QYMBaAFD7y986Rvr1e",
+  "UVkOtC6gn12Y",
 ]

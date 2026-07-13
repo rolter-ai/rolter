@@ -129,38 +129,35 @@ pub fn spawn_scraper(config: &GatewayConfig, state: crate::state::AppState) {
 }
 
 async fn run_scraper(cfg: MetricsScrapeConfig, state: crate::state::AppState) {
-    // a dedicated client so scrape timeouts never interfere with forward traffic
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
     let mut ticker = tokio::time::interval(Duration::from_secs(cfg.interval_secs.max(1)));
     loop {
         ticker.tick().await;
         // read providers off the current snapshot each sweep so hot-reloads and
         // newly-added providers are picked up without restarting the scraper
-        let providers: Vec<(String, String)> = {
+        let providers: Vec<rolter_core::ProviderConfig> = {
             let snap = state.snapshot.load();
-            snap.providers
-                .values()
-                .map(|p| (p.name.clone(), p.api_base.clone()))
-                .collect()
+            snap.providers.values().cloned().collect()
         };
         let mut map = MetricsMap::with_capacity(providers.len());
-        for (name, api_base) in providers {
-            let url = format!("{}{}", api_base.trim_end_matches('/'), cfg.path);
-            let depth = match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => resp
-                    .text()
-                    .await
-                    .map(|b| parse_queue_depth(&b))
-                    .unwrap_or(0),
-                _ => 0,
+        for provider in providers {
+            let url = format!("{}{}", provider.api_base.trim_end_matches('/'), cfg.path);
+            let depth = match state.forwarder.client_for(&provider) {
+                Ok(client) => match tokio::time::timeout(
+                    Duration::from_secs(cfg.timeout_secs.max(1)),
+                    client.get(&url).send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => resp
+                        .text()
+                        .await
+                        .map(|b| parse_queue_depth(&b))
+                        .unwrap_or(0),
+                    _ => 0,
+                },
+                Err(_) => 0,
             };
-            map.insert(name, ProviderMetrics { queue_depth: depth });
+            map.insert(provider.name, ProviderMetrics { queue_depth: depth });
         }
         state.upstream_metrics.store(map);
         state

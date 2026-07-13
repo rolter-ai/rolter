@@ -420,15 +420,6 @@ async fn run_prober(state: crate::state::AppState) {
 /// Run a single probe sweep across every provider in the current snapshot using
 /// the supplied (live) tuning.
 async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
-    // a dedicated client, rebuilt each sweep so a hot-reloaded timeout takes
-    // effect; probe timeouts never interfere with forward traffic
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
     // probes run concurrently but bounded, so a sweep can never stampede
     // upstreams no matter how many providers are configured
     let limiter = Arc::new(tokio::sync::Semaphore::new(cfg.probe_concurrency.max(1)));
@@ -439,42 +430,55 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
         // read providers off the current snapshot so hot-reloads and newly-added
         // providers are picked up. resolve the whole probe plan here (while we
         // hold the config) so the spawned tasks own everything they need
-        let plans: Vec<(String, ProbePlan, crate::health_events::HealthSource)> = {
+        let plans: Vec<(
+            String,
+            ProbePlan,
+            crate::health_events::HealthSource,
+            reqwest::Client,
+        )> = {
             let snap = state.snapshot.load();
             snap.providers
                 .values()
-                .map(|p| {
+                .filter_map(|p| {
                     let (plan, source) = build_probe_plan(p, &cfg.path);
-                    (p.name.clone(), plan, source)
+                    match state.forwarder.client_for(p) {
+                        Ok(client) => Some((p.name.clone(), plan, source, client)),
+                        Err(error) => {
+                            tracing::warn!(provider = %p.name, %error, "cannot build health-probe TLS client");
+                            None
+                        }
+                    }
                 })
                 .collect()
         };
         let mut sweep = tokio::task::JoinSet::new();
-        for (name, plan, source) in plans {
+        for (name, plan, source, client) in plans {
             // a provider inside its 429 backoff window sits this sweep out
             if !state.health.should_probe(&name) {
                 continue;
             }
-            let client = client.clone();
             let limiter = limiter.clone();
             let jitter_ms = probe_jitter_ms(&name, jitter_window_ms);
+            let timeout = Duration::from_secs(cfg.timeout_secs.max(1));
             sweep.spawn(async move {
                 let _permit = limiter.acquire_owned().await.ok()?;
                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
                 let req = plan.build(&client);
                 let started = std::time::Instant::now();
-                let (outcome, status, timed_out) = match req.send().await {
-                    Ok(resp) => {
-                        let code = resp.status().as_u16();
-                        let out = match code {
-                            429 => ProbeOutcome::RateLimited,
-                            s if s < 500 => ProbeOutcome::Ok,
-                            _ => ProbeOutcome::Failed,
-                        };
-                        (out, Some(code), false)
-                    }
-                    Err(e) => (ProbeOutcome::Failed, None, e.is_timeout()),
-                };
+                let (outcome, status, timed_out) =
+                    match tokio::time::timeout(timeout, req.send()).await {
+                        Ok(Ok(resp)) => {
+                            let code = resp.status().as_u16();
+                            let out = match code {
+                                429 => ProbeOutcome::RateLimited,
+                                s if s < 500 => ProbeOutcome::Ok,
+                                _ => ProbeOutcome::Failed,
+                            };
+                            (out, Some(code), false)
+                        }
+                        Ok(Err(e)) => (ProbeOutcome::Failed, None, e.is_timeout()),
+                        Err(_) => (ProbeOutcome::Failed, None, true),
+                    };
                 let latency_ms = started.elapsed().as_millis() as u32;
                 Some((name, source, outcome, status, latency_ms, timed_out))
             });
@@ -725,6 +729,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,

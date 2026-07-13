@@ -11,6 +11,7 @@
 
 - Upstream calls use rustls (no OpenSSL). HTTP/2 keep-alive with connection pooling.
 - Optional per-provider **egress proxy** (`egress_proxy`, HTTP/HTTPS/SOCKS5) for networks where providers aren't directly reachable.
+- Optional global or per-provider **custom CA bundles** add private PKI roots to outbound upstream clients while retaining public roots, certificate-chain validation, and hostname verification.
 - Terminate TLS at the gateway or a fronting proxy/ingress in production.
 
 ## Wire transparency
