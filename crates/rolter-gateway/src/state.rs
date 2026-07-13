@@ -111,7 +111,10 @@ impl Snapshot {
             .providers
             .iter()
             .cloned()
-            .map(|p| (p.name.clone(), p))
+            .map(|mut p| {
+                p.ca_bundles = Some(config.ca_bundles_for(&p));
+                (p.name.clone(), p)
+            })
             .collect();
         let prices: HashMap<String, ModelPriceConfig> = config
             .model_prices
@@ -389,6 +392,9 @@ impl AppState {
     /// Records `version` in metrics and bumps the reload counter.
     pub fn reload(&self, config: &GatewayConfig, version: u64) {
         self.response_registry.reconfigure(&config.responses);
+        // configured clients capture CA roots at construction time; clearing
+        // them makes bundle rotation take effect on the next request
+        self.forwarder.reload();
         self.snapshot
             .store(Arc::new(Snapshot::build(config, &self.loads)));
         // re-tune the circuit breaker in place (enable/disable + thresholds)

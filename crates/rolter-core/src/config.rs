@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
+use rustls_pki_types::{pem::PemObject, CertificateDer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -10,6 +11,9 @@ use crate::error::Result;
 pub struct GatewayConfig {
     #[serde(default)]
     pub server: ServerConfig,
+    /// outbound TLS trust configuration shared by upstream providers
+    #[serde(default)]
+    pub tls: TlsConfig,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -60,6 +64,14 @@ pub struct GatewayConfig {
     pub realtime: RealtimeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// Outbound TLS trust configuration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TlsConfig {
+    /// PEM files whose certificates are added to the platform trust roots
+    #[serde(default)]
+    pub ca_bundles: Vec<PathBuf>,
 }
 
 /// Listener configuration for a rolter process.
@@ -245,6 +257,9 @@ pub struct ProviderConfig {
     /// optional outbound egress proxy url (http/https/socks5)
     #[serde(default)]
     pub egress_proxy: Option<String>,
+    /// provider-specific PEM CA bundles; when set, replaces `[tls].ca_bundles`
+    #[serde(default)]
+    pub ca_bundles: Option<Vec<PathBuf>>,
     /// multiple weighted api keys for this provider; when non-empty it takes
     /// precedence over the single `api_key`/`api_key_env` pair. Providers cap
     /// throughput per key, so rotating across keys multiplies effective RPM/TPM
@@ -1316,7 +1331,59 @@ impl GatewayConfig {
     /// Load a configuration from a TOML file on disk.
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
-        Self::from_toml_str(&raw)
+        let config = Self::from_toml_str(&raw)?;
+        config.validate_ca_bundles().map_err(|problems| {
+            crate::Error::Config(format!(
+                "invalid CA bundle configuration: {}",
+                problems.join("; ")
+            ))
+        })?;
+        Ok(config)
+    }
+
+    /// Return the CA bundles a provider should trust. An explicit provider
+    /// value replaces the global setting. `ROLTER_CA_BUNDLE` replaces the
+    /// global config value for container-friendly deployment.
+    pub fn ca_bundles_for(&self, provider: &ProviderConfig) -> Vec<PathBuf> {
+        if let Some(paths) = &provider.ca_bundles {
+            return paths.clone();
+        }
+        std::env::var_os("ROLTER_CA_BUNDLE")
+            .map(PathBuf::from)
+            .map(|path| vec![path])
+            .unwrap_or_else(|| self.tls.ca_bundles.clone())
+    }
+
+    /// Validate every effective CA bundle path and PEM payload.
+    pub fn validate_ca_bundles(&self) -> std::result::Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let mut checked = std::collections::HashSet::new();
+        for provider in &self.providers {
+            for path in self.ca_bundles_for(provider) {
+                if checked.insert(path.clone()) {
+                    if let Err(problem) = validate_ca_bundle(&path) {
+                        problems.push(problem);
+                    }
+                }
+            }
+        }
+        // validate global trust even when no providers are present yet
+        let global = std::env::var_os("ROLTER_CA_BUNDLE")
+            .map(PathBuf::from)
+            .map(|path| vec![path])
+            .unwrap_or_else(|| self.tls.ca_bundles.clone());
+        for path in global {
+            if checked.insert(path.clone()) {
+                if let Err(problem) = validate_ca_bundle(&path) {
+                    problems.push(problem);
+                }
+            }
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems)
+        }
     }
 
     /// Find a provider by name.
@@ -1334,6 +1401,10 @@ impl GatewayConfig {
     /// callers can log/report them all.
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
         let mut problems = Vec::new();
+
+        if let Err(mut ca_problems) = self.validate_ca_bundles() {
+            problems.append(&mut ca_problems);
+        }
 
         // the metrics path must be a rooted path that does not shadow a built-in
         // request route
@@ -1518,6 +1589,23 @@ impl GatewayConfig {
     }
 }
 
+fn validate_ca_bundle(path: &Path) -> std::result::Result<(), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("CA bundle '{}' cannot be read: {error}", path.display()))?;
+    let certs: std::result::Result<Vec<_>, _> = CertificateDer::pem_slice_iter(&bytes).collect();
+    match certs {
+        Ok(certs) if !certs.is_empty() => Ok(()),
+        Ok(_) => Err(format!(
+            "CA bundle '{}' contains no PEM certificates",
+            path.display()
+        )),
+        Err(error) => Err(format!(
+            "CA bundle '{}' contains malformed PEM: {error}",
+            path.display()
+        )),
+    }
+}
+
 /// Whether `s` is a plausible `http`/`https` URL with a non-empty host.
 fn is_http_url(s: &str) -> bool {
     for scheme in ["http://", "https://"] {
@@ -1575,6 +1663,7 @@ mod tests {
             api_key: Some("legacy".to_string()),
             api_key_env: None,
             egress_proxy: None,
+            ca_bundles: None,
             api_keys,
             also_track_via_llm_call: false,
             llm_probe_model: None,
@@ -2273,5 +2362,77 @@ mod tests {
             max_secs: 300,
         };
         assert!(!off.enabled());
+    }
+
+    #[test]
+    fn parses_global_and_provider_ca_bundles() {
+        let config = GatewayConfig::from_toml_str(
+            r#"
+            [tls]
+            ca_bundles = ["/etc/rolter/global.pem"]
+
+            [[providers]]
+            name = "private"
+            kind = "openai_compatible"
+            api_base = "https://llm.internal"
+            ca_bundles = ["/etc/rolter/provider.pem"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.tls.ca_bundles,
+            vec![PathBuf::from("/etc/rolter/global.pem")]
+        );
+        assert_eq!(
+            config.ca_bundles_for(&config.providers[0]),
+            vec![PathBuf::from("/etc/rolter/provider.pem")]
+        );
+    }
+
+    #[test]
+    fn load_rejects_missing_ca_bundle_with_path() {
+        let config_path = std::env::temp_dir().join(format!(
+            "rolter-missing-ca-config-{}.toml",
+            std::process::id()
+        ));
+        let missing =
+            std::env::temp_dir().join(format!("rolter-missing-ca-{}.pem", std::process::id()));
+        let _ = std::fs::remove_file(&missing);
+        std::fs::write(
+            &config_path,
+            format!(
+                "[[providers]]\nname = \"p\"\nkind = \"openai_compatible\"\napi_base = \"https://llm.internal\"\nca_bundles = [\"{}\"]\n",
+                missing.display()
+            ),
+        )
+        .unwrap();
+        let error = GatewayConfig::load(&config_path).unwrap_err().to_string();
+        let _ = std::fs::remove_file(config_path);
+        assert!(error.contains("cannot be read"));
+        assert!(error.contains(&missing.display().to_string()));
+    }
+
+    #[test]
+    fn load_rejects_malformed_ca_bundle() {
+        let suffix = std::process::id();
+        let config_path = std::env::temp_dir().join(format!("rolter-bad-ca-config-{suffix}.toml"));
+        let bundle_path = std::env::temp_dir().join(format!("rolter-bad-ca-{suffix}.pem"));
+        std::fs::write(
+            &bundle_path,
+            "-----BEGIN CERTIFICATE-----\nnot-base64!\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[[providers]]\nname = \"p\"\nkind = \"openai_compatible\"\napi_base = \"https://llm.internal\"\nca_bundles = [\"{}\"]\n",
+                bundle_path.display()
+            ),
+        )
+        .unwrap();
+        let error = GatewayConfig::load(&config_path).unwrap_err().to_string();
+        let _ = std::fs::remove_file(config_path);
+        let _ = std::fs::remove_file(bundle_path);
+        assert!(error.contains("contains malformed PEM"));
     }
 }

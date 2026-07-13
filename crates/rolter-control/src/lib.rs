@@ -456,6 +456,7 @@ mod tests {
             api_key: Some("sk-super-secret".to_string()),
             api_key_env: None,
             egress_proxy: None,
+            ca_bundles: None,
             api_keys: vec![rolter_core::ApiKeyConfig {
                 key: Some("sk-also-secret".to_string()),
                 env: None,

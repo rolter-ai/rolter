@@ -34,6 +34,7 @@ Start here. rolter is a high-performance OpenAI/Anthropic-compatible AI gateway 
 
 - [Zero-config quickstart](deployment/zero-config-quickstart.md) — start with no keys, add providers at runtime
 - [Configuration reference](deployment/configuration.md)
+- [Custom CA bundles](deployment/custom-ca-bundles.md) — trust private upstream PKI without disabling TLS verification
 - [Docker](deployment/docker.md)
 
 ## Planning

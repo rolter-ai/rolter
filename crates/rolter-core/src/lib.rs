@@ -12,8 +12,8 @@ pub use config::{
     BudgetScope, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, LoggingConfig,
     MetricsScrapeConfig, ModelPriceConfig, ModelRoute, OverrideMode, ParamPolicy, ProviderConfig,
     ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig,
-    RoleProfile, RouteCache, ServerConfig, Target, TimeoutConfig, Variant, VirtualKeyConfig,
-    VirtualKeyRecord, RESERVED_PATHS,
+    RoleProfile, RouteCache, ServerConfig, Target, TimeoutConfig, TlsConfig, Variant,
+    VirtualKeyConfig, VirtualKeyRecord, RESERVED_PATHS,
 };
 pub use error::{Error, Result};
 

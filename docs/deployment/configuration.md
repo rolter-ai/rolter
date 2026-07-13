@@ -9,6 +9,9 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `port` (u16, default `4000`)
 - `metrics_path` (string, default `/metrics`) — path the Prometheus metrics endpoint is served on; change it to avoid colliding with an upstream app or sidecar that already owns `/metrics`. Must be rooted (`/…`) and must not collide with a built-in route (`/healthz`, `/v1/*`).
 
+### `[tls]`
+- `ca_bundles` (string[], default `[]`) — PEM CA-bundle files added to the normal public-root trust store for outbound upstream TLS. `ROLTER_CA_BUNDLE` replaces this global list with a single deployment-local path. Files are checked for missing, unreadable, empty, and malformed content while config is loaded.
+
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
 - `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex`)
@@ -81,9 +84,12 @@ list, respectively; none invokes a model.
   - `weight` (u32, default `1`) — relative selection weight
 - `api_key_env` (string, optional) — env var to read the key from
 - `egress_proxy` (string, optional) — HTTP/HTTPS/SOCKS5 outbound proxy
+- `ca_bundles` (string[], optional) — provider-specific replacement for global `[tls].ca_bundles`; `[]` explicitly selects public roots only
 - `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
 - `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.
 - `status_page_url` (string, optional) — statuspage.io-style `status.json` URL (e.g. `https://status.anthropic.com/api/v2/status.json`). When set, a slow background poll records the provider's public status as a **secondary** `status_page` health signal — it surfaces in `provider_health_events`, the dashboard and `rolter_status_page_degraded_total`, but never marks the provider unhealthy or affects routing on its own. Parse/transport failures are logged and skipped.
+
+See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/Kubernetes mount examples.
 
 ### `[[routes]]`
 - `model` (string) — public model name clients request

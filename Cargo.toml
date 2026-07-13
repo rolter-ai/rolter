@@ -64,6 +64,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "http2",
 ] }
+rustls-pki-types = "1"
 bytes = "1"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }

@@ -13,6 +13,7 @@ toml.workspace = true
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
+rustls-pki-types.workspace = true
 
 # opentelemetry otlp export, behind the default `otlp` feature so a build can
 # opt out of the tonic/prost/reqwest exporter stack when it is not needed

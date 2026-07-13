@@ -11,6 +11,7 @@ mod translation;
 
 pub use translation::{Protocol, TranslatedStream, TranslationPlan};
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -21,11 +22,17 @@ use rolter_core::{Error, ProviderConfig, ProviderKind, Result, TimeoutConfig};
 /// Forwards requests to upstream providers using pooled, reused HTTP clients.
 pub struct Forwarder {
     default: Client,
-    proxied: DashMap<String, Client>,
+    configured: DashMap<ClientKey, Client>,
     /// connect-establishment timeout baked into every client
     connect_timeout: Option<Duration>,
     /// time-to-response-headers bound applied around each `send()` (0 disables)
     request_timeout: Option<Duration>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ClientKey {
+    proxy: Option<String>,
+    ca_bundles: Vec<PathBuf>,
 }
 
 impl Default for Forwarder {
@@ -47,22 +54,35 @@ impl Forwarder {
         let request_timeout =
             (timeouts.request_secs > 0).then(|| Duration::from_secs(timeouts.request_secs));
         Self {
-            default: build_client(None, connect_timeout),
-            proxied: DashMap::new(),
+            default: build_client(None, &[], connect_timeout).unwrap_or_else(|_| Client::new()),
+            configured: DashMap::new(),
             connect_timeout,
             request_timeout,
         }
     }
 
-    fn client_for(&self, provider: &ProviderConfig) -> Client {
-        match &provider.egress_proxy {
-            None => self.default.clone(),
-            Some(proxy) => self
-                .proxied
-                .entry(proxy.clone())
-                .or_insert_with(|| build_client(Some(proxy), self.connect_timeout))
-                .clone(),
+    /// Return the pooled client matching this provider's proxy and trust roots.
+    pub fn client_for(&self, provider: &ProviderConfig) -> Result<Client> {
+        let ca_bundles = provider.ca_bundles.clone().unwrap_or_default();
+        if provider.egress_proxy.is_none() && ca_bundles.is_empty() {
+            return Ok(self.default.clone());
         }
+        let key = ClientKey {
+            proxy: provider.egress_proxy.clone(),
+            ca_bundles,
+        };
+        if let Some(client) = self.configured.get(&key) {
+            return Ok(client.clone());
+        }
+        let client = build_client(key.proxy.as_deref(), &key.ca_bundles, self.connect_timeout)?;
+        Ok(self.configured.entry(key).or_insert(client).clone())
+    }
+
+    /// Drop configured pools after a validated snapshot reload. The next
+    /// request rereads CA files, so certificate rotation takes effect without
+    /// restarting the gateway.
+    pub fn reload(&self) {
+        self.configured.clear();
     }
 
     /// Forward a JSON body to `provider` at `path` and return the raw response.
@@ -102,7 +122,7 @@ impl Forwarder {
         let url = provider_url(provider, translation.upstream_path(path));
         let body = translation.translate_request(body)?;
         let body = maybe_rewrite_model(body, upstream_model);
-        let client = self.client_for(provider);
+        let client = self.client_for(provider)?;
         let mut req = client
             .request(Method::POST, &url)
             .header(reqwest::header::CONTENT_TYPE, "application/json");
@@ -165,7 +185,7 @@ impl Forwarder {
             )));
         }
         let url = provider_url(provider, path);
-        let client = self.client_for(provider);
+        let client = self.client_for(provider)?;
         let mut req = client
             .request(Method::POST, &url)
             .header(reqwest::header::CONTENT_TYPE, content_type.to_string());
@@ -206,7 +226,7 @@ impl Forwarder {
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
         let url = provider_url(provider, path);
-        let client = self.client_for(provider);
+        let client = self.client_for(provider)?;
         let mut req = client.request(method, &url);
         match provider.kind {
             ProviderKind::Anthropic => {
@@ -267,7 +287,11 @@ fn provider_url(provider: &ProviderConfig, path: &str) -> String {
     }
 }
 
-fn build_client(proxy: Option<&str>, connect_timeout: Option<Duration>) -> Client {
+fn build_client(
+    proxy: Option<&str>,
+    ca_bundles: &[PathBuf],
+    connect_timeout: Option<Duration>,
+) -> Result<Client> {
     let mut builder = Client::builder()
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(64)
@@ -276,11 +300,33 @@ fn build_client(proxy: Option<&str>, connect_timeout: Option<Duration>) -> Clien
         builder = builder.connect_timeout(ct);
     }
     if let Some(url) = proxy {
-        if let Ok(px) = Proxy::all(url) {
-            builder = builder.proxy(px);
+        let px = Proxy::all(url)
+            .map_err(|error| Error::Config(format!("invalid egress proxy '{url}': {error}")))?;
+        builder = builder.proxy(px);
+    }
+    for path in ca_bundles {
+        for certificate in load_ca_bundle(path)? {
+            builder = builder.add_root_certificate(certificate);
         }
     }
-    builder.build().unwrap_or_else(|_| Client::new())
+    builder
+        .build()
+        .map_err(|error| Error::Config(format!("failed to build upstream TLS client: {error}")))
+}
+
+fn load_ca_bundle(path: &Path) -> Result<Vec<reqwest::Certificate>> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        Error::Config(format!(
+            "CA bundle '{}' cannot be read: {error}",
+            path.display()
+        ))
+    })?;
+    reqwest::Certificate::from_pem_bundle(&bytes).map_err(|error| {
+        Error::Config(format!(
+            "CA bundle '{}' contains malformed PEM: {error}",
+            path.display()
+        ))
+    })
 }
 
 /// Rewrite the top-level `model` field when an upstream model name is configured.
@@ -367,6 +413,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
@@ -524,6 +571,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
             llm_probe_model: None,
@@ -639,5 +687,166 @@ mod tests {
             "post /v1/projects/p/locations/global/endpoints/openapi/chat/completions"
         ));
         assert!(head.contains("authorization: bearer oauth-token"));
+    }
+
+    struct TestTlsServer {
+        addr: std::net::SocketAddr,
+        ca_path: PathBuf,
+    }
+
+    struct TestTlsFixture {
+        ca_pem: &'static str,
+        server_cert_pem: &'static str,
+        server_key_pem: &'static str,
+    }
+
+    const ONE: TestTlsFixture = TestTlsFixture {
+        ca_pem: "-----BEGIN CERTIFICATE-----\nMIIBnjCCAUWgAwIBAgIUfxgZ9JoymX8Sv3T49mqG64zKBtwwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3Qgb25lIGNhMB4XDTI2MDcxMzEyNTg1N1oX\nDTI2MDcxNTEyNTg1N1owHTEbMBkGA1UEAwwScm9sdGVyIHRlc3Qgb25lIGNhMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEWTrGZoOOKndIPjyI02jOBHpkCkTeeF+\nbyJVYvgCv9VpWhkGSAMaXuLrJJ2y0JiCH3E4DSyNbGJCuUi4HeaUxqNjMGEwHQYD\nVR0OBBYEFKpTnXjkmXVb/0jAer87tnJgSEHHMB8GA1UdIwQYMBaAFKpTnXjkmXVb\n/0jAer87tnJgSEHHMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoG\nCCqGSM49BAMCA0cAMEQCIEQbIclicbU2JAbgYIqHIzDjVAKmKFLr7POSBd79PgoC\nAiBjWxEJ4UnWU6hlQmQEZjIrYRPXOiTh0pxl/CEeYrui6g==\n-----END CERTIFICATE-----\n",
+        server_cert_pem: "-----BEGIN CERTIFICATE-----\nMIIByTCCAW6gAwIBAgIUHnkBmxgKbit461qgZKJXjHF/B58wCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3Qgb25lIGNhMB4XDTI2MDcxMzEyNTg1N1oX\nDTI2MDcxNTEyNTg1N1owITEfMB0GA1UEAwwWcm9sdGVyIHRlc3Qgb25lIHNlcnZl\ncjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLivU90aOMFkuoQc0k/Q6J80NsxX\nUiU0J52pPLtdUjFGmK1wGOaSbhjprbIw/rt5uw7CjPhdqpnyZ9OrikdGXnujgYcw\ngYQwDAYDVR0TAQH/BAIwADAPBgNVHREECDAGhwR/AAABMBMGA1UdJQQMMAoGCCsG\nAQUFBwMBMA4GA1UdDwEB/wQEAwIFoDAdBgNVHQ4EFgQUk8wnUC4SAYSm/NlgB/io\nLhuvYZgwHwYDVR0jBBgwFoAUqlOdeOSZdVv/SMB6vzu2cmBIQccwCgYIKoZIzj0E\nAwIDSQAwRgIhAKLPtM9Qa1AWbs925IAHXbeo22o39jY59LtUQS9O2/9qAiEAkqn/\neHIzg843rP5KA3qQGC1DC5J088HxRvTml7Yspcw=\n-----END CERTIFICATE-----\n",
+        server_key_pem: concat!(
+            "-----BEGIN EC ",
+            "PRIVATE KEY-----\nMHcCAQEEINyQJcJG4kxH2Gnn+M1yPMf3FA5EjQAsMf7oPViJtStaoAoGCCqGSM49\nAwEHoUQDQgAEuK9T3Ro4wWS6hBzST9DonzQ2zFdSJTQnnak8u11SMUaYrXAY5pJu\nGOmtsjD+u3m7DsKM+F2qmfJn06uKR0Zeew==\n-----END EC ",
+            "PRIVATE KEY-----\n",
+        ),
+    };
+
+    const TWO: TestTlsFixture = TestTlsFixture {
+        ca_pem: "-----BEGIN CERTIFICATE-----\nMIIBnjCCAUWgAwIBAgIUS82iOLqT3bwuTd1pxkHyQZSJ4lQwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3QgdHdvIGNhMB4XDTI2MDcxMzEyNTg1N1oX\nDTI2MDcxNTEyNTg1N1owHTEbMBkGA1UEAwwScm9sdGVyIHRlc3QgdHdvIGNhMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUJTQ+CM+LCWCBMkpEljwFpRTi4d7sjrz\nud8VFXebsgqQtsZspofKP4hxWDEOi6On+AgVKtfWC3RyljgCDocXaaNjMGEwHQYD\nVR0OBBYEFD7y986Rvr1eTjKiDwEsM++Dc9LeMB8GA1UdIwQYMBaAFD7y986Rvr1e\nTjKiDwEsM++Dc9LeMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoG\nCCqGSM49BAMCA0cAMEQCIFih1b9BMxrL6qpV4QTyJaqcZDSDX/XRyU5Ntx3V4+LF\nAiAyPHBfB33aaVoTjFYEvhwGQy2yzrfYoPnYGtBHUb6OHg==\n-----END CERTIFICATE-----\n",
+        server_cert_pem: "-----BEGIN CERTIFICATE-----\nMIIBxzCCAW6gAwIBAgIUIhgTtyo3XM5UwPqGuTTIPY3BmsswCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3QgdHdvIGNhMB4XDTI2MDcxMzEyNTg1N1oX\nDTI2MDcxNTEyNTg1N1owITEfMB0GA1UEAwwWcm9sdGVyIHRlc3QgdHdvIHNlcnZl\ncjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABHTvMKtS57HTOCf46JpM92Rh+CXp\n8Sb2lFZDrQuoJ9dmLWl1vUSpvsHcqry8oPspGwUkbL3LI+Af2EaLGluC23+jgYcw\ngYQwDAYDVR0TAQH/BAIwADAPBgNVHREECDAGhwR/AAABMBMGA1UdJQQMMAoGCCsG\nAQUFBwMBMA4GA1UdDwEB/wQEAwIFoDAdBgNVHQ4EFgQUX5bbipqVwbskoa1iV/jZ\nGdlTSd8wHwYDVR0jBBgwFoAUPvL3zpG+vV5OMqIPASwz74Nz0t4wCgYIKoZIzj0E\nAwIDRwAwRAIgNGsYYkXFFB0P1rMG/eanIq7I+P6oFPcgRibW83CDD2cCIEmmUJA5\nyLAi4x88OBsW3K0PJeQVbqklHJIQn3+mJi3+\n-----END CERTIFICATE-----\n",
+        server_key_pem: concat!(
+            "-----BEGIN EC ",
+            "PRIVATE KEY-----\nMHcCAQEEIC7XcAAQFdluitOuNe9Z8Tt0PP/IEpYypkn2Dk3MvUDWoAoGCCqGSM49\nAwEHoUQDQgAEdO8wq1LnsdM4J/jomkz3ZGH4JenxJvaUVkOtC6gn12YtaXW9RKm+\nwdyqvLyg+ykbBSRsvcsj4B/YRosaW4Lbfw==\n-----END EC ",
+            "PRIVATE KEY-----\n",
+        ),
+    };
+
+    impl Drop for TestTlsServer {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.ca_path);
+        }
+    }
+
+    async fn spawn_tls_server(fixture: &TestTlsFixture) -> TestTlsServer {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+
+        let certificates = CertificateDer::pem_slice_iter(fixture.server_cert_pem.as_bytes())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .map(CertificateDer::into_owned)
+            .collect();
+        let key = PrivateKeyDer::from_pem_slice(fixture.server_key_pem.as_bytes()).unwrap();
+        let tls = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
+            tokio_rustls::rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(certificates, key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let Ok(mut stream) = acceptor.accept(stream).await else {
+                return;
+            };
+            let mut buf = [0_u8; 2048];
+            let _ = stream.read(&mut buf).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+        });
+
+        let ca_path = std::env::temp_dir().join(format!(
+            "rolter-test-ca-{}-{}.pem",
+            std::process::id(),
+            addr.port()
+        ));
+        std::fs::write(&ca_path, fixture.ca_pem).unwrap();
+        TestTlsServer { addr, ca_path }
+    }
+
+    async fn tls_request_with(
+        fwd: &Forwarder,
+        server: &TestTlsServer,
+        host: &str,
+        trusted: bool,
+    ) -> Result<Response> {
+        let mut upstream = provider(
+            ProviderKind::OpenaiCompatible,
+            format!("https://{host}:{}", server.addr.port()),
+        );
+        if trusted {
+            upstream.ca_bundles = Some(vec![server.ca_path.clone()]);
+        }
+        fwd.forward_json(
+            &upstream,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            None,
+            None,
+            &[],
+        )
+        .await
+    }
+
+    async fn tls_request(server: &TestTlsServer, host: &str, trusted: bool) -> Result<Response> {
+        tls_request_with(&Forwarder::new(), server, host, trusted).await
+    }
+
+    #[tokio::test]
+    async fn custom_ca_allows_private_tls_upstream() {
+        let server = spawn_tls_server(&ONE).await;
+        let response = tls_request(&server, "127.0.0.1", true).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn private_tls_upstream_is_rejected_without_custom_ca() {
+        let server = spawn_tls_server(&ONE).await;
+        let error = tls_request(&server, "127.0.0.1", false).await.unwrap_err();
+        assert!(matches!(error, Error::Upstream(_)));
+    }
+
+    #[tokio::test]
+    async fn custom_ca_keeps_hostname_verification_enabled() {
+        let server = spawn_tls_server(&ONE).await;
+        let error = tls_request(&server, "localhost", true).await.unwrap_err();
+        assert!(matches!(error, Error::Upstream(_)));
+    }
+
+    #[tokio::test]
+    async fn reload_rereads_rotated_ca_bundle() {
+        let first = spawn_tls_server(&ONE).await;
+        let fwd = Forwarder::new();
+        tls_request_with(&fwd, &first, "127.0.0.1", true)
+            .await
+            .unwrap();
+
+        let second = spawn_tls_server(&TWO).await;
+        std::fs::copy(&second.ca_path, &first.ca_path).unwrap();
+        fwd.reload();
+        let mut provider = provider(
+            ProviderKind::OpenaiCompatible,
+            format!("https://127.0.0.1:{}", second.addr.port()),
+        );
+        provider.ca_bundles = Some(vec![first.ca_path.clone()]);
+        let response = fwd
+            .forward_json(
+                &provider,
+                "/v1/chat/completions",
+                Bytes::from_static(b"{}"),
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
     }
 }
