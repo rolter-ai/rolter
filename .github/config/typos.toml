@@ -1,4 +1,4 @@
-# typos (crate-ci/typos) configuration. the spans below are real words or
+# typos (crate-ci/typos) configuration for the GitHub Actions quality gate. the spans below are real words or
 # intentional test fixtures the default dictionary flags as misspellings; each
 # regex ignores just that literal rather than globally redefining a word.
 [default]

@@ -1,4 +1,5 @@
 title = "rolter gitleaks config"
+# used by the GitHub Actions quality gate
 
 # use gitleaks' full default ruleset, plus the project allowlist below
 [extend]
