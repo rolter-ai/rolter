@@ -70,6 +70,12 @@ api_key_env = "OLLAMA_API_KEY"
 name = "vllm-1"
 kind = "openai_compatible"
 api_base = "http://localhost:8001"
+# OpenAI-compatible providers default to `system_only`: developer instructions
+# become system instructions, preserving their order. Override only when the
+# configured model template explicitly supports developer messages.
+# role_profile = "openai"
+# [providers.model_role_profiles]
+# "custom-developer-template" = "openai"
 
 [[providers]]
 name = "vllm-2"

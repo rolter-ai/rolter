@@ -210,6 +210,22 @@ pub enum ProviderKind {
     Vertex,
 }
 
+/// Instruction-role semantics supported by an upstream target.
+///
+/// Endpoint compatibility alone is not enough to determine this: OpenAI-style
+/// servers may render roles through a model-specific chat template.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleProfile {
+    /// Preserve distinct OpenAI `developer` and `system` messages.
+    Openai,
+    /// Accept system instructions only; `developer` is lowered to `system`.
+    #[default]
+    SystemOnly,
+    /// Anthropic Messages top-level `system` blocks.
+    Anthropic,
+}
+
 /// An upstream provider rolter can forward to.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderConfig {
@@ -248,6 +264,15 @@ pub struct ProviderConfig {
     /// `status_page` health signal; it never gates routing on its own
     #[serde(default)]
     pub status_page_url: Option<String>,
+    /// Explicit role semantics for this provider. When omitted, native OpenAI
+    /// preserves both instruction roles, Anthropic uses top-level system blocks,
+    /// and OpenAI-compatible providers use the conservative `system_only` mode.
+    #[serde(default)]
+    pub role_profile: Option<RoleProfile>,
+    /// Per-upstream-model role-profile overrides. Use this for custom chat
+    /// templates that explicitly support `developer`.
+    #[serde(default)]
+    pub model_role_profiles: HashMap<String, RoleProfile>,
 }
 
 /// One of a provider's weighted API keys. Same inline-vs-env split as the
@@ -276,6 +301,18 @@ impl ApiKeyConfig {
 }
 
 impl ProviderConfig {
+    /// Resolve the configured role semantics for an upstream model.
+    pub fn role_profile_for(&self, model: Option<&str>) -> RoleProfile {
+        model
+            .and_then(|model| self.model_role_profiles.get(model).copied())
+            .or(self.role_profile)
+            .unwrap_or(match self.kind {
+                ProviderKind::Openai => RoleProfile::Openai,
+                ProviderKind::Anthropic => RoleProfile::Anthropic,
+                _ => RoleProfile::SystemOnly,
+            })
+    }
+
     /// Resolve the effective api key. With `api_keys` configured this is the
     /// first resolvable entry; otherwise the legacy single `api_key`/`api_key_env`
     /// pair. Callers that balance across keys use [`Self::resolve_api_keys`].
@@ -1508,6 +1545,8 @@ mod tests {
             also_track_via_llm_call: false,
             llm_probe_model: None,
             status_page_url: None,
+            role_profile: None,
+            model_role_profiles: HashMap::new(),
         }
     }
 

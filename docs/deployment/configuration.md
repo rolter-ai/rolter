@@ -15,6 +15,23 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
+- `role_profile` (`openai` | `system_only` | `anthropic`, optional) — explicit instruction-role semantics. The default is `openai` for `kind = "openai"`, `anthropic` for `kind = "anthropic"`, and conservative `system_only` for every OpenAI-compatible kind. `system_only` converts leading `developer` messages to `system` in place; it rejects a `system` or `developer` message after a user/assistant/tool turn with `role_capability_unsupported` rather than silently changing it.
+- `model_role_profiles` (table, optional) — upstream-model-specific `role_profile` overrides. Use this only for a custom template whose developer-role support is explicitly known; rolter never probes a vLLM template at runtime.
+
+#### Role-capability profiles
+
+`openai_compatible` describes the HTTP surface only. vLLM, in particular,
+renders roles using the selected model's chat template, so an endpoint's role
+support must not be inferred from its `/v1` API. The default `system_only`
+profile is suitable for Qwen-style templates that do not define `developer`.
+Set `role_profile = "openai"` or a `model_role_profiles` entry only after
+confirming that the deployed template supports distinct `developer` messages.
+
+Anthropic targets collect leading OpenAI `developer` and `system` messages into
+ordered top-level `system` blocks. Instruction messages placed after a
+conversation turn are rejected for `anthropic` and `system_only` profiles;
+rolter returns an OpenAI-style `400` with code
+`role_capability_unsupported` instead of dropping or reclassifying them.
 
 #### Ollama: local daemon vs Cloud
 

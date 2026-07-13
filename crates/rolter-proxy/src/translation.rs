@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_util::Stream;
-use rolter_core::ProviderKind;
+use rolter_core::{Error, ProviderKind, Result, RoleProfile};
 use serde_json::{json, Map, Value};
 
 /// Public wire dialect presented by a client or accepted by an upstream.
@@ -80,6 +80,7 @@ fn registered_pair(source: Protocol, target: Protocol) -> Option<&'static Transl
 pub struct TranslationPlan {
     client: Protocol,
     upstream: Protocol,
+    role_profile: RoleProfile,
 }
 
 impl TranslationPlan {
@@ -87,12 +88,13 @@ impl TranslationPlan {
         Self {
             client: Protocol::Passthrough,
             upstream: Protocol::Passthrough,
+            role_profile: RoleProfile::Openai,
         }
     }
 
     /// Resolve the client dialect from the endpoint and the upstream dialect
     /// from provider capabilities.
-    pub fn resolve(path: &str, provider: ProviderKind) -> Self {
+    pub fn resolve(path: &str, provider: ProviderKind, role_profile: RoleProfile) -> Self {
         let client = match path {
             "/v1/chat/completions" => Protocol::OpenAiChat,
             "/v1/responses" => Protocol::OpenAiResponses,
@@ -108,7 +110,11 @@ impl TranslationPlan {
             (Protocol::OpenAiResponses, _) => Protocol::OpenAiChat,
             (other, _) => other,
         };
-        Self { client, upstream }
+        Self {
+            client,
+            upstream,
+            role_profile,
+        }
     }
 
     pub fn is_translation(self) -> bool {
@@ -124,11 +130,25 @@ impl TranslationPlan {
         }
     }
 
-    pub fn translate_request(self, body: Bytes) -> Bytes {
+    pub fn translate_request(self, body: Bytes) -> Result<Bytes> {
+        let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
+            return Ok(body);
+        };
+        validate_instruction_roles(&value, self.client, self.role_profile)?;
         if !self.is_translation() {
-            return body;
+            normalize_openai_roles(&mut value, self.client, self.role_profile);
+            return serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
+                Error::Config(format!("role_capability: failed to encode request: {err}"))
+            });
         }
-        translate_json(body, self.client, self.upstream, true)
+        let Some(pair) = registered_pair(self.client, self.upstream) else {
+            return Ok(body);
+        };
+        value = (pair.request)(value);
+        normalize_openai_roles(&mut value, self.upstream, self.role_profile);
+        serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
+            Error::Config(format!("role_capability: failed to encode request: {err}"))
+        })
     }
 
     /// Translate a complete JSON response or a fully buffered SSE response.
@@ -144,6 +164,57 @@ impl TranslationPlan {
             return Bytes::from(out.concat());
         }
         translate_json(body, self.client, self.upstream, false)
+    }
+}
+
+fn validate_instruction_roles(
+    value: &Value,
+    protocol: Protocol,
+    profile: RoleProfile,
+) -> Result<()> {
+    if profile == RoleProfile::Openai || protocol == Protocol::AnthropicMessages {
+        return Ok(());
+    }
+    let messages = match protocol {
+        Protocol::OpenAiChat => value.get("messages").and_then(Value::as_array),
+        Protocol::OpenAiResponses => value.get("input").and_then(Value::as_array),
+        _ => None,
+    };
+    let mut saw_turn = false;
+    for message in messages.into_iter().flatten() {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        if matches!(role, "system" | "developer") {
+            if saw_turn {
+                return Err(Error::Config(format!(
+                    "role_capability: {role} is only supported before the first conversational turn for the configured {:?} profile",
+                    profile
+                )));
+            }
+        } else {
+            saw_turn = true;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_openai_roles(value: &mut Value, protocol: Protocol, profile: RoleProfile) {
+    if profile != RoleProfile::SystemOnly {
+        return;
+    }
+    let Some(messages) = (protocol == Protocol::OpenAiChat)
+        .then(|| value.get_mut("messages"))
+        .flatten()
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for message in messages {
+        if message.get("role") == Some(&json!("developer")) {
+            message["role"] = json!("system");
+        }
     }
 }
 
@@ -1081,7 +1152,11 @@ mod tests {
     use super::*;
 
     fn plan(client: Protocol, upstream: Protocol) -> TranslationPlan {
-        TranslationPlan { client, upstream }
+        TranslationPlan {
+            client,
+            upstream,
+            role_profile: RoleProfile::Openai,
+        }
     }
 
     #[test]
@@ -1092,7 +1167,9 @@ mod tests {
             {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},
             {"role":"tool","tool_call_id":"call_1","content":"ok"}
         ],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]})).unwrap());
-        let out = plan(Protocol::OpenAiChat, Protocol::AnthropicMessages).translate_request(body);
+        let out = plan(Protocol::OpenAiChat, Protocol::AnthropicMessages)
+            .translate_request(body)
+            .unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["system"][0]["text"], "be concise");
         assert_eq!(v["messages"][0]["content"][1]["source"]["type"], "base64");
@@ -1100,6 +1177,50 @@ mod tests {
         assert_eq!(v["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(v["messages"][2]["content"][0]["type"], "tool_result");
         assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn system_only_profile_lowers_developer_without_reordering() {
+        let body = Bytes::from_static(br#"{"messages":[{"role":"developer","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hello"}]}"#);
+        let out = TranslationPlan {
+            client: Protocol::OpenAiChat,
+            upstream: Protocol::OpenAiChat,
+            role_profile: RoleProfile::SystemOnly,
+        }
+        .translate_request(body)
+        .unwrap();
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["messages"][0]["role"], "system");
+        assert_eq!(value["messages"][0]["content"], "first");
+        assert_eq!(value["messages"][1]["content"], "second");
+    }
+
+    #[test]
+    fn anthropic_profile_preserves_leading_instruction_block_order() {
+        let body = Bytes::from_static(br#"{"messages":[{"role":"developer","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hello"}]}"#);
+        let out = TranslationPlan {
+            client: Protocol::OpenAiChat,
+            upstream: Protocol::AnthropicMessages,
+            role_profile: RoleProfile::Anthropic,
+        }
+        .translate_request(body)
+        .unwrap();
+        let value: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["system"][0]["text"], "first");
+        assert_eq!(value["system"][1]["text"], "second");
+    }
+
+    #[test]
+    fn system_only_profile_rejects_mid_conversation_instruction() {
+        let body = Bytes::from_static(br#"{"messages":[{"role":"user","content":"hello"},{"role":"developer","content":"override"}]}"#);
+        let err = TranslationPlan {
+            client: Protocol::OpenAiChat,
+            upstream: Protocol::OpenAiChat,
+            role_profile: RoleProfile::SystemOnly,
+        }
+        .translate_request(body)
+        .unwrap_err();
+        assert!(err.to_string().contains("role_capability"));
     }
 
     #[test]
@@ -1126,7 +1247,9 @@ mod tests {
             "max_output_tokens":32,
             "reasoning":{"effort":"high"}
         })).unwrap());
-        let out = plan(Protocol::OpenAiResponses, Protocol::OpenAiChat).translate_request(body);
+        let out = plan(Protocol::OpenAiResponses, Protocol::OpenAiChat)
+            .translate_request(body)
+            .unwrap();
         let value: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value["messages"][0]["role"], "system");
         assert_eq!(value["messages"][1]["content"][0]["type"], "text");
