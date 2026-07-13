@@ -197,6 +197,12 @@ fn error_json(status: StatusCode, message: &str) -> Response {
 /// instead of flattening it into a generic upstream 502 after failover is
 /// exhausted. Other forwarding failures keep their existing gateway-error form.
 fn upstream_error_response(message: &str) -> Response {
+    if let Some(message) = message.strip_prefix("config error: role_capability: ") {
+        return crate::error::ApiError::new(StatusCode::BAD_REQUEST, message)
+            .with_code("role_capability_unsupported")
+            .with_param("messages")
+            .into_response();
+    }
     if message.starts_with("provider queue") {
         let (status, code) = if message.contains("dropped") {
             (StatusCode::SERVICE_UNAVAILABLE, "queue_dropped")
@@ -694,7 +700,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             let translation = if status < 400 {
                 snap.providers
                     .get(&last_provider)
-                    .map(|provider| rolter_proxy::TranslationPlan::resolve(path, provider.kind))
+                    .map(|provider| {
+                        rolter_proxy::TranslationPlan::resolve(
+                            path,
+                            provider.kind,
+                            provider.role_profile_for(Some(&last_target)),
+                        )
+                    })
                     .unwrap_or_else(rolter_proxy::TranslationPlan::passthrough)
             } else {
                 rolter_proxy::TranslationPlan::passthrough()

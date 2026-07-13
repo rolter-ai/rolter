@@ -94,9 +94,13 @@ impl Forwarder {
                 provider.name
             )));
         }
-        let translation = TranslationPlan::resolve(path, provider.kind);
+        let translation = TranslationPlan::resolve(
+            path,
+            provider.kind,
+            provider.role_profile_for(upstream_model),
+        );
         let url = provider_url(provider, translation.upstream_path(path));
-        let body = translation.translate_request(body);
+        let body = translation.translate_request(body)?;
         let body = maybe_rewrite_model(body, upstream_model);
         let client = self.client_for(provider);
         let mut req = client
@@ -329,6 +333,8 @@ mod tests {
             also_track_via_llm_call: false,
             llm_probe_model: None,
             status_page_url: None,
+            role_profile: None,
+            model_role_profiles: Default::default(),
         }
     }
 
@@ -484,6 +490,8 @@ mod tests {
             also_track_via_llm_call: false,
             llm_probe_model: None,
             status_page_url: None,
+            role_profile: None,
+            model_role_profiles: Default::default(),
         };
         let err = fwd
             .forward_json(

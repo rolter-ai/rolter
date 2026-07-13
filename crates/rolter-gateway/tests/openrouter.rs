@@ -32,6 +32,8 @@ fn provider(name: &str, api_base: String) -> ProviderConfig {
         also_track_via_llm_call: false,
         llm_probe_model: None,
         status_page_url: None,
+        role_profile: None,
+        model_role_profiles: Default::default(),
     }
 }
 

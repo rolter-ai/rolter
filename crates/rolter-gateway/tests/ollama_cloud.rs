@@ -49,6 +49,8 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
         also_track_via_llm_call: false,
         llm_probe_model: None,
         status_page_url: None,
+        role_profile: None,
+        model_role_profiles: Default::default(),
     });
     config.routes.push(ModelRoute {
         model: "cloud-model".into(),
