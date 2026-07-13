@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.8](https://github.com/ormeilu/rolter/compare/rolter-proxy-v0.0.7...rolter-proxy-v0.0.8) - 2026-07-13
+
+### Bug Fixes
+- *(gateway)* reject unsupported response resources ([#163](https://github.com/ormeilu/rolter/pull/163)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(proxy)* support custom ca bundles ([#168](https://github.com/ormeilu/rolter/pull/168)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* support responses lifecycle resources ([#166](https://github.com/ormeilu/rolter/pull/166)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* normalize provider role capabilities [ROL-262] ([#164](https://github.com/ormeilu/rolter/pull/164)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add responses api translation ([#162](https://github.com/ormeilu/rolter/pull/162)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* translate openai and anthropic APIs ([#159](https://github.com/ormeilu/rolter/pull/159)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add cloud provider health adapters ([#157](https://github.com/ormeilu/rolter/pull/157)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add OpenRouter provider ([#153](https://github.com/ormeilu/rolter/pull/153)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add self-hosted ollama provider ([#150](https://github.com/ormeilu/rolter/pull/150)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.6](https://github.com/ormeilu/rolter/compare/rolter-proxy-v0.0.5...rolter-proxy-v0.0.6) - 2026-07-12
 
 ### Features
