@@ -194,6 +194,36 @@ export function fetchProjects(teamId: string): Promise<ProjectRow[]> {
   return getJson<ProjectRow[]>(`/api/v1/teams/${teamId}/projects`);
 }
 
+export function createOrg(input: { name: string; slug: string }): Promise<OrgRow> {
+  return sendJson<OrgRow>("POST", "/api/v1/orgs", input);
+}
+
+export function deleteOrg(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/orgs/${id}`);
+}
+
+export function createTeam(
+  orgId: string,
+  input: { name: string },
+): Promise<TeamRow> {
+  return sendJson<TeamRow>("POST", `/api/v1/orgs/${orgId}/teams`, input);
+}
+
+export function deleteTeam(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/teams/${id}`);
+}
+
+export function createProject(
+  teamId: string,
+  input: { name: string },
+): Promise<ProjectRow> {
+  return sendJson<ProjectRow>("POST", `/api/v1/teams/${teamId}/projects`, input);
+}
+
+export function deleteProject(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/projects/${id}`);
+}
+
 export interface ProviderRow {
   id: string;
   org_id: string;

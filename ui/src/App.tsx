@@ -1,6 +1,7 @@
 import { LogOut } from "lucide-react";
 import { NavLink, Route, Routes } from "react-router-dom";
 
+import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import Health from "@/pages/Health";
 import Keys from "@/pages/Keys";
 import Login from "@/pages/Login";
@@ -36,6 +37,7 @@ export default function App() {
             <span className="text-[color:var(--red-folk)]">.</span>
           </span>
         </div>
+        <ScopeSwitcher />
         <nav className="flex flex-1 flex-col gap-0.5 px-2 py-2">
           {nav.map((item) => (
             <NavLink
