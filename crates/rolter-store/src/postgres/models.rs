@@ -118,3 +118,42 @@ pub struct ModelPrice {
     pub currency: String,
     pub created_at: DateTime<Utc>,
 }
+
+/// a local account. `password_hash` is `None` for sso-only users (a later
+/// phase) and is never serialized back to a client
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    #[serde(skip_serializing)]
+    pub password_hash: Option<String>,
+    pub is_superadmin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a role grant at a scope; scope is the most specific non-null id among
+/// `org_id`/`team_id`/`project_id`
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Membership {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    /// one of `admin` | `member` | `viewer`
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a login session. `token_hash` is the peppered digest of the opaque bearer
+/// token handed to the client; the plaintext token is never stored
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Session {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}

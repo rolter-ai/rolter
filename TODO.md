@@ -37,7 +37,7 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 - [x] Metrics for reload (`rolter_config_version`, `rolter_config_reloads_total`, `rolter_config_reload_failures_total`)
 
 ## Phase 3 — Auth & RBAC
-- [ ] Local accounts: argon2id hashing, login, sessions/JWT
+- [x] Local accounts: argon2id hashing, login, sessions (postgres-backed opaque bearer tokens)
 - [ ] RBAC middleware resolving most-specific membership per resource
 - [ ] Enforce roles on every control mutation
 - [ ] Pluggable `IdentityProvider` trait

@@ -10,6 +10,8 @@
 
 mod analytics;
 #[cfg(feature = "postgres")]
+mod auth;
+#[cfg(feature = "postgres")]
 mod crud;
 mod health;
 #[cfg(feature = "postgres")]
@@ -193,7 +195,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// Assemble the control-plane API router (no SPA fallback) with `state` applied.
 /// The CRUD routes are only mounted when a postgres pool is present.
 fn build_app(state: ControlState) -> Router {
-    let api = Router::new()
+    #[allow(unused_mut)]
+    let mut api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/ping",
@@ -203,6 +206,14 @@ fn build_app(state: ControlState) -> Router {
         .route("/api/v1/config", get(get_config))
         .merge(analytics::router())
         .merge(health::router());
+    // login is authenticated by the request body (email/password), not the
+    // admin token, so /api/v1/auth/* sits on the open router alongside
+    // everything else here; `me` still requires a valid session bearer token
+    // via the `CurrentUser` extractor, it's just not gated by admin_token
+    #[cfg(feature = "postgres")]
+    if state.pool.is_some() {
+        api = api.merge(auth::router());
+    }
 
     // the snapshot endpoint carries decrypted provider credentials and the
     // CRUD API mutates the effective config, so both sit behind the admin
