@@ -15,6 +15,8 @@ mod auth;
 mod crud;
 mod health;
 #[cfg(feature = "postgres")]
+mod rbac;
+#[cfg(feature = "postgres")]
 pub mod seed;
 
 use std::net::SocketAddr;
@@ -209,27 +211,28 @@ fn build_app(state: ControlState) -> Router {
     // login is authenticated by the request body (email/password), not the
     // admin token, so /api/v1/auth/* sits on the open router alongside
     // everything else here; `me` still requires a valid session bearer token
-    // via the `CurrentUser` extractor, it's just not gated by admin_token
+    // via the `CurrentUser` extractor, it's just not gated by admin_token.
+    //
+    // the CRUD API enforces RBAC per handler (see `crate::rbac`): each handler
+    // resolves a `Principal` and checks the caller's role at the resource's
+    // scope, so it is NOT behind the blanket admin-token layer. open mode (no
+    // admin token) is preserved inside the `Principal` extractor.
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
-        api = api.merge(auth::router());
+        api = api.merge(auth::router()).merge(crud::router());
     }
 
-    // the snapshot endpoint carries decrypted provider credentials and the
-    // CRUD API mutates the effective config, so both sit behind the admin
-    // token whenever one is configured
-    #[allow(unused_mut)]
-    let mut guarded = Router::new().route("/internal/snapshot", get(get_snapshot));
-    #[cfg(feature = "postgres")]
-    if state.pool.is_some() {
-        guarded = guarded.merge(crud::router());
-    }
-    let guarded = guarded.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        require_admin_token,
-    ));
+    // the snapshot endpoint carries decrypted provider credentials, so it stays
+    // behind the shared admin token only (machine/superadmin access, no per-user
+    // sessions) whenever one is configured, and open otherwise
+    let snapshot = Router::new()
+        .route("/internal/snapshot", get(get_snapshot))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_token,
+        ));
 
-    api.merge(guarded).with_state(state)
+    api.merge(snapshot).with_state(state)
 }
 
 /// Reject requests lacking `Authorization: Bearer <admin token>` when a token
