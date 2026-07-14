@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tag } from "@/components/ui/tag";
 import { fetchConfig } from "@/lib/api";
 
 function mask(key: string): string {
@@ -22,9 +24,15 @@ export default function Keys() {
             <CardHeader>
               <CardTitle>{key.name ?? "key"}</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-1 text-sm text-muted-foreground">
+            <CardContent className="space-y-2 text-sm text-muted-foreground">
               <div className="font-mono">{mask(key.key)}</div>
-              <div>{key.models.length ? key.models.join(", ") : "all models"}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {key.models.length ? (
+                  key.models.map((model) => <Tag key={model}>{model}</Tag>)
+                ) : (
+                  <Badge tone="neutral">all models</Badge>
+                )}
+              </div>
             </CardContent>
           </Card>
         ))}
