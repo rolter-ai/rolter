@@ -38,8 +38,8 @@ Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent
 
 ## Phase 3 — Auth & RBAC
 - [x] Local accounts: argon2id hashing, login, sessions (postgres-backed opaque bearer tokens)
-- [ ] RBAC middleware resolving most-specific membership per resource
-- [ ] Enforce roles on every control mutation
+- [x] RBAC middleware resolving most-specific membership per resource
+- [x] Enforce roles on every control mutation
 - [ ] Pluggable `IdentityProvider` trait
 - [ ] OAuth2/OIDC SSO (group→role mapping)
 - [ ] LDAP bind + group mapping

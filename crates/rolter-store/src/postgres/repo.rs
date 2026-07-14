@@ -418,6 +418,18 @@ impl RouteTargetRepo<'_> {
         .map_err(store_err)
     }
 
+    pub async fn get(&self, id: Uuid) -> Result<RouteTarget> {
+        sqlx::query_as(
+            "select id, route_id, provider_id, upstream_model, weight, created_at
+             from route_targets where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("route target {id}")))
+    }
+
     pub async fn create(
         &self,
         route_id: Uuid,
@@ -478,6 +490,18 @@ impl VirtualKeyRepo<'_> {
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
+        sqlx::query_as(
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+             from virtual_keys where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -563,6 +587,18 @@ impl BudgetRepo<'_> {
         .map_err(store_err)
     }
 
+    pub async fn get(&self, id: Uuid) -> Result<Budget> {
+        sqlx::query_as(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, created_at
+             from budgets where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("budget {id}")))
+    }
+
     pub async fn create(
         &self,
         scope_type: &str,
@@ -611,6 +647,18 @@ impl RateLimitRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<RateLimit> {
+        sqlx::query_as(
+            "select id, scope_type, scope_id, rpm, tpm, created_at
+             from rate_limits where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
     pub async fn create(

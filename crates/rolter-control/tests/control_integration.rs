@@ -536,3 +536,239 @@ async fn expired_session_is_rejected() {
         .unwrap();
     assert_eq!(resp.status(), 401);
 }
+
+/// Seed a local user directly (no signup flow) and return its id.
+async fn seed_user(pool: &sqlx::PgPool, email: &str, is_superadmin: bool) -> uuid::Uuid {
+    sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, null, $2) returning id",
+    )
+    .bind(email)
+    .bind(is_superadmin)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Grant `user` a role membership at an org/team/project scope (pass the ids
+/// that apply; `None` for the levels that don't).
+async fn seed_membership(
+    pool: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+    org: Option<uuid::Uuid>,
+    team: Option<uuid::Uuid>,
+    project: Option<uuid::Uuid>,
+    role: &str,
+) {
+    sqlx::query(
+        "insert into memberships (user_id, org_id, team_id, project_id, role)
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(org)
+    .bind(team)
+    .bind(project)
+    .bind(role)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Mint a live session for `user` and return the opaque bearer token. The
+/// digest is computed with the empty pepper the extractor uses when
+/// `ROLTER_SESSION_PEPPER` is unset in tests.
+async fn seed_session(pool: &sqlx::PgPool, user_id: uuid::Uuid, suffix: &str) -> String {
+    let token = format!("rolter_sess_{suffix}");
+    let token_hash = rolter_auth::hash_key("", &token);
+    sqlx::query(
+        "insert into sessions (user_id, token_hash, expires_at)
+         values ($1, $2, now() + interval '1 hour')",
+    )
+    .bind(user_id)
+    .bind(&token_hash)
+    .execute(pool)
+    .await
+    .unwrap();
+    token
+}
+
+/// With an admin token configured (RBAC enforcement active), every control
+/// mutation is checked against the caller's role at the resource's scope:
+/// viewers are denied, scoped admins are allowed only within their scope,
+/// cross-scope admins are denied, superadmins bypass, and the machine admin
+/// token bypasses. Covers ROL-33 (resolver) + ROL-34 (enforcement).
+#[tokio::test]
+async fn rbac_enforced_on_every_mutation() {
+    skip_without_db!();
+    let url = database_url().unwrap();
+    let pool = rolter_store::postgres::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("create schema public")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // bootstrap the org hierarchy as the machine admin token (superadmin)
+    async fn post_as(client: &reqwest::Client, url: &str, token: &str, body: Value) -> Value {
+        let resp = client
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org_a = post_as(
+        &client,
+        &format!("{base}/api/v1/orgs"),
+        "admintok",
+        json!({"name": "OrgA", "slug": "org-a"}),
+    )
+    .await;
+    let org_a_id = org_a["id"].as_str().unwrap().to_string();
+    let org_b = post_as(
+        &client,
+        &format!("{base}/api/v1/orgs"),
+        "admintok",
+        json!({"name": "OrgB", "slug": "org-b"}),
+    )
+    .await;
+    let org_b_id = org_b["id"].as_str().unwrap().to_string();
+
+    let org_a_uuid: uuid::Uuid = org_a_id.parse().unwrap();
+    let org_b_uuid: uuid::Uuid = org_b_id.parse().unwrap();
+
+    // seed principals: a viewer and an admin on org A, an admin on org B, and a
+    // superadmin with no memberships at all
+    let viewer = seed_user(&pool, "viewer@example.com", false).await;
+    seed_membership(&pool, viewer, Some(org_a_uuid), None, None, "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "viewer").await;
+
+    let admin_a = seed_user(&pool, "admin-a@example.com", false).await;
+    seed_membership(&pool, admin_a, Some(org_a_uuid), None, None, "admin").await;
+    let admin_a_token = seed_session(&pool, admin_a, "admina").await;
+
+    let admin_b = seed_user(&pool, "admin-b@example.com", false).await;
+    seed_membership(&pool, admin_b, Some(org_b_uuid), None, None, "admin").await;
+    let admin_b_token = seed_session(&pool, admin_b, "adminb").await;
+
+    let super_user = seed_user(&pool, "super@example.com", true).await;
+    let super_token = seed_session(&pool, super_user, "super").await;
+
+    let create_team_url = format!("{base}/api/v1/orgs/{org_a_id}/teams");
+
+    // unauthenticated → 401 (RBAC enforcement is active)
+    let unauth = client
+        .post(&create_team_url)
+        .json(&json!({"name": "T"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), 401, "no credentials must be rejected");
+
+    // viewer on org A → 403 creating a team (mutation needs admin)
+    let viewer_denied = client
+        .post(&create_team_url)
+        .bearer_auth(&viewer_token)
+        .json(&json!({"name": "T-viewer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(viewer_denied.status(), 403, "viewer must not create");
+
+    // admin on org A → allowed on org A
+    let admin_ok = client
+        .post(&create_team_url)
+        .bearer_auth(&admin_a_token)
+        .json(&json!({"name": "T-admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        admin_ok.status().is_success(),
+        "org-A admin must create under org A: {}",
+        admin_ok.status()
+    );
+
+    // admin on org B → 403 creating a provider under org A (cross-scope)
+    let cross_scope = client
+        .post(format!("{base}/api/v1/orgs/{org_a_id}/providers"))
+        .bearer_auth(&admin_b_token)
+        .json(&json!({"name": "p1", "kind": "openai", "api_base": "https://api.openai.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cross_scope.status(),
+        403,
+        "org-B admin must not mutate org-A resources"
+    );
+
+    // superadmin session → bypass, allowed even with no membership
+    let super_ok = client
+        .post(&create_team_url)
+        .bearer_auth(&super_token)
+        .json(&json!({"name": "T-super"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        super_ok.status().is_success(),
+        "superadmin must bypass: {}",
+        super_ok.status()
+    );
+
+    // global model-price catalog is superadmin-only: the org-A admin is denied
+    let price_denied = client
+        .put(format!("{base}/api/v1/model-prices"))
+        .bearer_auth(&admin_a_token)
+        .json(&json!({"model": "gpt-4o", "input_per_mtok": "1", "output_per_mtok": "2"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        price_denied.status(),
+        403,
+        "model-price mutation is superadmin-only"
+    );
+    let price_ok = client
+        .put(format!("{base}/api/v1/model-prices"))
+        .bearer_auth("admintok")
+        .json(&json!({"model": "gpt-4o", "input_per_mtok": "1", "output_per_mtok": "2"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(price_ok.status().is_success(), "{}", price_ok.status());
+}
+
+/// Open mode (no admin token) must keep the CRUD API fully open: an
+/// unauthenticated mutation still succeeds, preserving zero-cred local dev.
+#[tokio::test]
+async fn open_mode_allows_unauthenticated_mutations() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "open mode must allow unauthenticated mutations: {}",
+        resp.status()
+    );
+}

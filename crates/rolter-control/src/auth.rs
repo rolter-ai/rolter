@@ -59,7 +59,7 @@ pub fn router() -> Router<ControlState> {
 /// mirroring `ROLTER_KEY_PEPPER` for virtual keys: tokens are stored as
 /// `rolter_auth::hash_key(pepper, token)` so a stolen database dump alone
 /// cannot be replayed as a live session.
-fn session_pepper() -> String {
+pub(crate) fn session_pepper() -> String {
     std::env::var("ROLTER_SESSION_PEPPER").unwrap_or_default()
 }
 
@@ -164,7 +164,7 @@ async fn logout(State(state): State<ControlState>, headers: axum::http::HeaderMa
 }
 
 /// extract the bearer token from `Authorization: Bearer <token>`, if present
-fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
