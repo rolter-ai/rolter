@@ -1,46 +1,82 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* ==========================================================================
+   Rolter Design System — dark-only control-plane theme.
+   shadcn HSL contract mapped onto the design zinc ramp; raw design tokens
+   (red вышивка accent, status hues, surfaces, type scale) exposed alongside.
+   ========================================================================== */
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
-  }
+    /* shadcn contract (space-separated HSL) — graphite/zinc, dark by default */
+    --background: 240 5% 7%; /* #111113 surface-base */
+    --foreground: 0 0% 98%; /* #fafafa */
+    --card: 240 5% 7%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 6% 13%; /* #1f1f23 elevated */
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%; /* near-white primary button (dark text) */
+    --primary-foreground: 240 5% 7%;
+    --secondary: 240 4% 16%; /* #27272a */
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 65%; /* #a1a1aa */
+    --accent: 240 4% 16%; /* subtle zinc hover — NOT the brand red */
+    --accent-foreground: 0 0% 98%;
+    --destructive: 1 78% 55%; /* #e53935 */
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 4% 16%;
+    --input: 240 4% 16%;
+    --ring: 0 0% 55%;
+    --radius: 0.625rem; /* 10px cards; controls derive to 8px */
 
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    /* ---- raw design ramp (reference in DS components / ornament) --------- */
+    --zinc-950: #09090b;
+    --zinc-925: #111113;
+    --zinc-900: #18181b;
+    --zinc-850: #1f1f23;
+    --zinc-800: #27272a;
+    --zinc-700: #3f3f46;
+    --zinc-400: #a1a1aa;
+    --zinc-300: #d4d4d8;
+    --zinc-50: #fafafa;
+
+    /* brand — folkloric red (вышивка), used sparingly */
+    --red-500: #ff4017;
+    --red-600: #e5342a;
+    --red-700: #c22118;
+    --red-folk: #b41d21;
+    --red-tint: rgba(255, 64, 23, 0.12);
+    --red-tint-strong: rgba(255, 64, 23, 0.18);
+
+    /* status */
+    --status-success: #16a34a;
+    --status-warning: #f59e0b;
+    --status-info: #3b82f6;
+    --status-danger: #e53935;
+
+    /* surfaces + translucent borders (the borders do the work, not shadows) */
+    --surface-app: var(--zinc-900);
+    --surface-base: var(--zinc-925);
+    --surface-elevated: var(--zinc-850);
+    --surface-subtle: var(--zinc-800);
+    --surface-active: var(--zinc-700);
+    --border-default: rgba(255, 255, 255, 0.15);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.24);
+    --text-secondary: var(--zinc-300);
+
+    /* type */
+    --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", Roboto, sans-serif;
+    --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo,
+      Consolas, monospace;
+    --text-2xs: 0.6875rem;
+
+    /* layout */
+    --sidebar-width: 232px;
+    --header-height: 52px;
   }
 }
 
@@ -50,5 +86,24 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-size: 0.8125rem; /* 13px compact default */
+    -webkit-font-smoothing: antialiased;
+  }
+  code,
+  kbd,
+  pre,
+  samp,
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+  /* single deliberate вышивка cross-stitch rule for banners / empty states */
+  .vyshivka-rule {
+    height: 3px;
+    background-image: repeating-linear-gradient(
+      90deg,
+      var(--red-folk) 0 4px,
+      transparent 4px 8px
+    );
   }
 }

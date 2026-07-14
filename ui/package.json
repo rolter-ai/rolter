@@ -10,6 +10,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "^5.2.9",
+    "@fontsource-variable/geist-mono": "^5.2.8",
     "@tanstack/react-query": "^5.59.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
