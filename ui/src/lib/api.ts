@@ -422,3 +422,112 @@ export function setVirtualKeyCache(
 export function deleteVirtualKey(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/virtual-keys/${id}`);
 }
+
+// --- budgets, rate limits, model pricing (crates/rolter-control/src/crud.rs) ---
+
+export const SCOPE_TYPES = ["org", "team", "project", "virtual_key"] as const;
+
+export interface BudgetRow {
+  id: string;
+  scope_type: string;
+  scope_id: string;
+  /// decimal, returned as text
+  limit_usd: string;
+  period: string;
+  created_at: string;
+}
+
+export interface CreateBudgetInput {
+  scope_type: string;
+  scope_id: string;
+  limit_usd: string;
+  period?: string;
+}
+
+export function fetchBudgets(
+  scopeType: string,
+  scopeId: string,
+): Promise<BudgetRow[]> {
+  return getJson<BudgetRow[]>(
+    `/api/v1/budgets?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
+export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
+  return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
+}
+
+export function deleteBudget(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/budgets/${id}`);
+}
+
+export interface RateLimitRow {
+  id: string;
+  scope_type: string;
+  scope_id: string;
+  rpm?: number | null;
+  tpm?: number | null;
+  created_at: string;
+}
+
+export interface CreateRateLimitInput {
+  scope_type: string;
+  scope_id: string;
+  rpm?: number;
+  tpm?: number;
+}
+
+export function fetchRateLimits(
+  scopeType: string,
+  scopeId: string,
+): Promise<RateLimitRow[]> {
+  return getJson<RateLimitRow[]>(
+    `/api/v1/rate-limits?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
+export function createRateLimit(
+  input: CreateRateLimitInput,
+): Promise<RateLimitRow> {
+  return sendJson<RateLimitRow>("POST", "/api/v1/rate-limits", input);
+}
+
+export function deleteRateLimit(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/rate-limits/${id}`);
+}
+
+export interface ModelPriceRow {
+  id: string;
+  model: string;
+  /// decimal, returned as text
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cached_input_per_mtok?: string | null;
+  currency: string;
+  created_at: string;
+}
+
+export interface UpsertModelPriceInput {
+  model: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cached_input_per_mtok?: string;
+  currency?: string;
+}
+
+export function fetchModelPrices(): Promise<ModelPriceRow[]> {
+  return getJson<ModelPriceRow[]>("/api/v1/model-prices");
+}
+
+export function upsertModelPrice(
+  input: UpsertModelPriceInput,
+): Promise<ModelPriceRow> {
+  return sendJson<ModelPriceRow>("PUT", "/api/v1/model-prices", input);
+}
+
+export function deleteModelPrice(model: string): Promise<void> {
+  return sendJson<void>(
+    "DELETE",
+    `/api/v1/model-prices/${encodeURIComponent(model)}`,
+  );
+}
