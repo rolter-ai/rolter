@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { fetchConfig } from "@/lib/api";
 
 export default function Models() {
@@ -30,8 +31,9 @@ export default function Models() {
           <Card key={route.model}>
             <CardHeader>
               <CardTitle>{route.model}</CardTitle>
-              <CardDescription>
-                {route.strategy} · {route.targets.length} target(s)
+              <CardDescription className="flex items-center gap-2">
+                <Badge tone="outline">{route.strategy}</Badge>
+                {route.targets.length} target(s)
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-1 text-sm text-muted-foreground">

@@ -13,6 +13,7 @@ import {
   fetchUptime,
   type TimelineRow,
 } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const SLA = 0.99;
@@ -112,16 +113,9 @@ export default function Health() {
                     <CardTitle className="text-base">{row.target_id}</CardTitle>
                     <CardDescription>{row.provider}</CardDescription>
                   </div>
-                  <span
-                    className={cn(
-                      "rounded-full px-2 py-0.5 text-xs font-medium",
-                      breached
-                        ? "bg-destructive/15 text-destructive"
-                        : "bg-emerald-500/15 text-emerald-600",
-                    )}
-                  >
+                  <Badge tone={breached ? "danger" : "success"} dot>
                     {breached ? "SLA breached" : "Healthy"}
-                  </span>
+                  </Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
