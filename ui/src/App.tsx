@@ -1,9 +1,12 @@
+import { LogOut } from "lucide-react";
 import { NavLink, Route, Routes } from "react-router-dom";
 
 import Health from "@/pages/Health";
 import Keys from "@/pages/Keys";
+import Login from "@/pages/Login";
 import Logs from "@/pages/Logs";
 import Models from "@/pages/Models";
+import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -14,6 +17,12 @@ const nav = [
 ];
 
 export default function App() {
+  const { email, signOut } = useAuth();
+
+  if (!email) {
+    return <Login />;
+  }
+
   return (
     <div className="flex min-h-screen bg-[color:var(--surface-app)] p-2 text-foreground">
       <aside
@@ -47,6 +56,20 @@ export default function App() {
             </NavLink>
           ))}
         </nav>
+        {/* user pinned to the bottom */}
+        <div className="mx-2 mb-1 flex items-center justify-between gap-2 rounded-md border border-[color:var(--border-subtle)] px-3 py-2">
+          <span className="truncate font-mono text-xs text-muted-foreground">
+            {email}
+          </span>
+          <button
+            type="button"
+            onClick={signOut}
+            aria-label="Sign out"
+            className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </aside>
       {/* content floats as a crisp bordered card on the graphite backdrop */}
       <main className="flex-1 overflow-hidden rounded-lg border bg-background">
