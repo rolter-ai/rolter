@@ -49,3 +49,6 @@ Development. Add OpenAI Responses as a protocol pair for native OpenAI, Chat Com
 
 ## ADR-0016 — [Маршрутизация ресурсов OpenAI Responses по tenant-scoped registry](2026-07-13-responses-lifecycle-routing-registry.md)
 Development. Pin Responses lifecycle operations to a bounded tenant-scoped process-local record, preserving the original provider credential while making unknown and cross-tenant IDs indistinguishable.
+
+## ADR-0017 — [Provider/model addressing to disambiguate identical model names](2026-07-14-provider-model-addressing.md)
+Proposed. Add first-class `provider-slug/model` addressing that coexists with named routes: a stable, URL-safe provider `slug` resolves `provider-slug/model` to a pinned `(provider, upstream_model)` target, avoiding LiteLLM's base_url ambiguity. Awaiting decision on precedence/balancing before implementation issues are cut.
