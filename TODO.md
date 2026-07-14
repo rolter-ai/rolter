@@ -112,7 +112,7 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [ ] User & team management UI: create/invite/edit/deactivate users, assign roles/teams (blocked on Phase 3 accounts/RBAC)
 - [ ] End-user self-service panel: personal API keys + usage/spend view
 - [x] In-UI config editing with reload-free apply + validation feedback (route admin params/policy)
-- [ ] Logs explorer + cost/usage dashboards (ClickHouse), latency percentiles, error rates
+- [x] Cost/usage dashboards (ClickHouse), latency percentiles, error rates (per-request logs explorer still needed — no drill-down endpoint exists yet)
 - [x] Org/team/project switcher; role-aware UI (role-aware UI blocked on Phase 3 RBAC)
 - [x] [`bun run lint`/build wired into CI](https://linear.app/rolter/issue/ROL-85/bun-run-lintbuild-wired-into-ci)
 
