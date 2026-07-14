@@ -5,7 +5,21 @@ export default {
   theme: {
     container: { center: true, padding: "2rem", screens: { "2xl": "1400px" } },
     extend: {
+      fontFamily: {
+        sans: ["Geist Variable", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["Geist Mono Variable", "ui-monospace", "SFMono-Regular", "monospace"],
+      },
       colors: {
+        // folkloric red вышивка accent — the one CTA / active-nav thread
+        brand: {
+          DEFAULT: "var(--red-500)",
+          hover: "var(--red-600)",
+          press: "var(--red-700)",
+          folk: "var(--red-folk)",
+        },
+        success: "var(--status-success)",
+        warning: "var(--status-warning)",
+        info: "var(--status-info)",
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
