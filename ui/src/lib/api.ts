@@ -162,6 +162,57 @@ export function fetchAnalyticsByModel(
   ).then((r) => r.data);
 }
 
+// one row of the `request_logs` table: a single gateway invocation. numeric
+// columns may arrive as strings from ClickHouse JSON, so coerce when rendering.
+export interface InvocationRow {
+  ts: string;
+  request_id: string;
+  trace_id: string;
+  org_id: string;
+  team_id: string;
+  project_id: string;
+  virtual_key_id: string;
+  model: string;
+  provider: string;
+  target: string;
+  variant: string;
+  status: number | string;
+  stream: number | string;
+  cache_hit: number | string;
+  prompt_tokens: number | string;
+  completion_tokens: number | string;
+  total_tokens: number | string;
+  cost_usd: number | string;
+  latency_ms: number | string;
+  ttft_ms: number | string;
+  error: string;
+}
+
+export interface InvocationsQuery extends AnalyticsWindow {
+  model?: string;
+  key?: string;
+  status?: "all" | "error" | "success";
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchInvocations(
+  query: InvocationsQuery = {},
+): Promise<InvocationRow[]> {
+  const params = new URLSearchParams();
+  if (query.since) params.set("since", query.since);
+  if (query.until) params.set("until", query.until);
+  if (query.model) params.set("model", query.model);
+  if (query.key) params.set("key", query.key);
+  if (query.status) params.set("status", query.status);
+  if (query.limit != null) params.set("limit", String(query.limit));
+  if (query.offset != null) params.set("offset", String(query.offset));
+  const qs = params.toString();
+  return getAnalytics<DataEnvelope<InvocationRow>>(
+    `/api/v1/analytics/invocations${qs ? `?${qs}` : ""}`,
+  ).then((r) => r.data);
+}
+
 export function fetchConfig(): Promise<GatewayConfigDto> {
   return getJson<GatewayConfigDto>("/api/v1/config");
 }

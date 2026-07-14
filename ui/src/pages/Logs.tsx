@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 
+import { InvocationsPanel } from "@/components/InvocationsPanel";
 import { LineChart } from "@/components/ui/line-chart";
 import {
   Card,
@@ -50,7 +51,10 @@ function isUnavailable(error: unknown): boolean {
   return error instanceof AnalyticsUnavailableError;
 }
 
+type Tab = "analytics" | "invocations";
+
 export default function Logs() {
+  const [tab, setTab] = React.useState<Tab>("analytics");
   const [rangeIdx, setRangeIdx] = React.useState(1);
   const [bucket, setBucket] = React.useState<string>(RANGES[1].bucket);
 
@@ -116,21 +120,45 @@ export default function Logs() {
               </button>
             ))}
           </div>
-          <Select
-            className="w-28"
-            value={bucket}
-            onChange={(e) => setBucket(e.target.value)}
-          >
-            {BUCKETS.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </Select>
+          {tab === "analytics" && (
+            <Select
+              className="w-28"
+              value={bucket}
+              onChange={(e) => setBucket(e.target.value)}
+            >
+              {BUCKETS.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
       </div>
 
-      {unavailable && (
+      <div className="flex gap-1 border-b border-border">
+        {(
+          [
+            { id: "analytics", label: "Analytics" },
+            { id: "invocations", label: "Invocations" },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${
+              tab === t.id
+                ? "border-brand-folk font-medium text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "analytics" && unavailable && (
         <Card>
           <CardContent className="py-6 text-sm text-muted-foreground">
             Analytics isn&apos;t configured for this deployment — set{" "}
@@ -140,7 +168,7 @@ export default function Logs() {
         </Card>
       )}
 
-      {hasRealError && (
+      {tab === "analytics" && hasRealError && (
         <p className="text-sm text-destructive">
           {(summary.error as Error | undefined)?.message ??
             (timeseries.error as Error | undefined)?.message ??
@@ -149,7 +177,9 @@ export default function Logs() {
         </p>
       )}
 
-      {!unavailable && (
+      {tab === "invocations" && <InvocationsPanel window={window} />}
+
+      {tab === "analytics" && !unavailable && (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <StatCard
