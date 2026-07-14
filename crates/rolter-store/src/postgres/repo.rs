@@ -11,7 +11,8 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::models::{
-    Budget, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team, VirtualKey,
+    Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Session,
+    Team, User, VirtualKey,
 };
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -705,6 +706,100 @@ impl ModelPriceRepo<'_> {
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("model price '{model}'")));
         }
+        Ok(())
+    }
+}
+
+/// local accounts. see [`super::models::User`]; `find_by_email` backs login.
+pub struct UserRepo<'a>(pub &'a PgPool);
+
+impl UserRepo<'_> {
+    pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
+        sqlx::query_as(
+            "select id, email, password_hash, is_superadmin, created_at
+             from users where email = $1",
+        )
+        .bind(email)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<User> {
+        sqlx::query_as(
+            "select id, email, password_hash, is_superadmin, created_at from users where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+}
+
+/// role grants at an org/team/project scope. see [`super::models::Membership`].
+pub struct MembershipRepo<'a>(pub &'a PgPool);
+
+impl MembershipRepo<'_> {
+    pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<Membership>> {
+        sqlx::query_as(
+            "select id, user_id, org_id, team_id, project_id, role, created_at
+             from memberships where user_id = $1 order by created_at",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+}
+
+/// login sessions backing bearer-token auth. see [`super::models::Session`]
+/// and the rationale in `migrations/0013_sessions.sql` for why these are
+/// stateful (postgres-backed) rather than a stateless jwt.
+pub struct SessionRepo<'a>(pub &'a PgPool);
+
+impl SessionRepo<'_> {
+    pub async fn create(
+        &self,
+        user_id: Uuid,
+        token_hash: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Session> {
+        sqlx::query_as(
+            "insert into sessions (user_id, token_hash, expires_at)
+             values ($1, $2, $3)
+             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
+        )
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(expires_at)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// look up a live (unexpired) session by its token digest and bump
+    /// `last_seen_at`; returns `None` for a missing, wrong, or expired token
+    pub async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<Session>> {
+        sqlx::query_as(
+            "update sessions set last_seen_at = now()
+             where token_hash = $1 and expires_at > now()
+             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// delete a session by its token digest (logout); a no-op if it's
+    /// already gone or expired
+    pub async fn delete_by_hash(&self, token_hash: &str) -> Result<()> {
+        sqlx::query("delete from sessions where token_hash = $1")
+            .bind(token_hash)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
         Ok(())
     }
 }

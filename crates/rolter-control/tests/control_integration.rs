@@ -371,3 +371,168 @@ async fn admin_token_guards_crud_and_snapshot() {
         .unwrap();
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
+
+/// End-to-end local-account login (ROL-32): seed a user with an argon2id hash
+/// directly (no signup flow exists yet), then exercise login → `/auth/me` →
+/// logout → the now-revoked token is rejected.
+#[tokio::test]
+async fn login_me_logout_round_trip() {
+    skip_without_db!();
+    let url = database_url().unwrap();
+    let pool = rolter_store::postgres::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("create schema public")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // seed a user the way `rolter-seed` does (same argon2id hashing call shape)
+    use argon2::password_hash::rand_core::OsRng;
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple", &salt)
+        .unwrap()
+        .to_string();
+    sqlx::query("insert into users (email, password_hash, is_superadmin) values ($1, $2, true)")
+        .bind("admin@example.com")
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // wrong password is rejected
+    let denied = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "admin@example.com", "password": "wrong"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+
+    // /auth/me without a token is rejected
+    let no_token = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_token.status(), 401);
+
+    // a made-up token is rejected too (never matches a stored session hash)
+    let bad_token = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth("rolter_sess_not-a-real-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_token.status(), 401);
+
+    // correct credentials issue a session token
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "admin@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().expect("token").to_string();
+    assert_eq!(login["user"]["email"], "admin@example.com");
+
+    // the token resolves the current user via the CurrentUser extractor
+    let me: Value = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["user"]["email"], "admin@example.com");
+    assert!(me["memberships"].is_array());
+
+    // logout revokes the session; a repeat logout is a no-op (idempotent)
+    let logout = client
+        .post(format!("{base}/api/v1/auth/logout"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 204);
+    let logout_again = client
+        .post(format!("{base}/api/v1/auth/logout"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout_again.status(), 204);
+
+    // the revoked token no longer resolves a session
+    let after_logout = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after_logout.status(), 401);
+}
+
+/// An expired session row is rejected even though the token digest matches,
+/// proving `find_active_by_hash`'s `expires_at > now()` bound is doing its job.
+#[tokio::test]
+async fn expired_session_is_rejected() {
+    skip_without_db!();
+    let url = database_url().unwrap();
+    let pool = rolter_store::postgres::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("create schema public")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let user_id: uuid::Uuid = sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, $2, true) returning id",
+    )
+    .bind("expired@example.com")
+    .bind("unused-hash")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // insert an already-expired session directly, bypassing login, with a
+    // digest matching what the extractor computes for an empty pepper
+    let token = "rolter_sess_deadbeef";
+    let token_hash = rolter_auth::hash_key("", token);
+    sqlx::query(
+        "insert into sessions (user_id, token_hash, expires_at) values ($1, $2, now() - interval '1 hour')",
+    )
+    .bind(user_id)
+    .bind(&token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
