@@ -7,9 +7,10 @@
 | **Product** | rolter |
 | **Author** | Ilya Lubenets |
 | **Date** | 14 Jul 2026 |
-| **Status** | PROPOSED — awaiting decision |
+| **Status** | ACCEPTED |
 | **Issue** | [ROL-266](https://linear.app/rolter/issue/ROL-266) |
 | **Decision maker** | @Ilya |
+| **Decided** | 14 Jul 2026 |
 
 ## Context
 
@@ -151,14 +152,17 @@ additive: existing bare-`model` routes keep working.
 4. **`/v1/models`**: list both — existing route ids *and* `provider-slug/model` ids
    (grouped by provider in a follow-up UI), so either address is discoverable.
 
-## Open questions for the decision maker
+## Decision (14 Jul 2026)
 
-- [ ] Confirm B (coexist) over replacing named routes entirely.
-- [ ] Confirm the precedence rule (route-name-first, then `provider/model` split) and the
-      slug charset/immutability rules above.
-- [ ] Should pinning a provider fully bypass balancing, or should we allow a route to be
-      *scoped to one provider* yet still fan out across that provider's targets?
-- [ ] Ship Option D (header) now or defer?
+- **Adopt Option B, coexisting** with named routes. `provider-slug/model` resolves to a
+  pinned `(provider, upstream_model)`; bare route names keep full multi-provider
+  balancing. Named routes are **not** replaced.
+- **Balancing when pinned**: a `provider-slug/model` request pins the provider and
+  **bypasses cross-provider fan-out, but still fans out within that provider** — its key
+  pool, cooldowns, and any same-model targets stay in rotation.
+- **Precedence & slug rules** as proposed above (route-name-first, then first-`/` split;
+  slug `^[a-z0-9][a-z0-9-]{0,62}$`, `unique(org_id, slug)`, immutable by default).
+- **Option D (header selector)**: deferred, not part of the initial implementation.
 
 ## Proposed follow-up implementation issues
 
