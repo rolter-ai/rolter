@@ -108,12 +108,12 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [x] [Zero-cred startup + runtime provider/model CRUD with encrypted keys](https://linear.app/rolter/issue/ROL-250/zero-cred-startup-run-with-fake-llm-only-add-providersmodels-at) (provider `api_key` via API sealed with `ROLTER_KEK`, `PUT /providers/{id}`, `ROLTER_ADMIN_TOKEN` guard on CRUD + snapshot, gateway `/admin/*` proxy)
 - [ ] Auth screens (login, SSO)
 - [ ] CRUD: providers, routes (+ targets/strategy), virtual keys, members, budgets, pricing
-- [ ] Model management UI: add/edit/enable-disable/delete models + provider/route binding
-- [ ] User & team management UI: create/invite/edit/deactivate users, assign roles/teams
+- [x] Model management UI: add/edit/enable-disable/delete models + provider/route binding
+- [ ] User & team management UI: create/invite/edit/deactivate users, assign roles/teams (blocked on Phase 3 accounts/RBAC)
 - [ ] End-user self-service panel: personal API keys + usage/spend view
-- [ ] In-UI config editing with reload-free apply + validation feedback
+- [x] In-UI config editing with reload-free apply + validation feedback (route admin params/policy)
 - [ ] Logs explorer + cost/usage dashboards (ClickHouse), latency percentiles, error rates
-- [ ] Org/team/project switcher; role-aware UI
+- [x] Org/team/project switcher; role-aware UI (role-aware UI blocked on Phase 3 RBAC)
 - [x] [`bun run lint`/build wired into CI](https://linear.app/rolter/issue/ROL-85/bun-run-lintbuild-wired-into-ci)
 
 ## Cross-cutting / tech debt
