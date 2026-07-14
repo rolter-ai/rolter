@@ -71,6 +71,97 @@ async function sendJson<T>(
   return (await res.json()) as T;
 }
 
+/// thrown by the analytics fetchers when the control plane has no
+/// clickhouse_url configured (503 from crates/rolter-control/src/analytics.rs);
+/// callers check for this to render a calm "not configured" empty state
+/// instead of a real error banner (reserved for 502s / network failures)
+export class AnalyticsUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AnalyticsUnavailableError";
+  }
+}
+
+async function getAnalytics<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    const err = await apiError(res);
+    if (res.status === 503) {
+      throw new AnalyticsUnavailableError(err.message);
+    }
+    throw err;
+  }
+  return (await res.json()) as T;
+}
+
+export interface AnalyticsWindow {
+  since?: string;
+  until?: string;
+  bucket?: string;
+}
+
+function windowParams(window: AnalyticsWindow): string {
+  const params = new URLSearchParams();
+  if (window.since) params.set("since", window.since);
+  if (window.until) params.set("until", window.until);
+  if (window.bucket) params.set("bucket", window.bucket);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+// ClickHouse JSON rows: numeric columns may come back as strings depending on
+// type/format, so callers should coerce with Number(...) when rendering
+export interface AnalyticsSummary {
+  requests: number | string;
+  tokens: number | string;
+  prompt_tokens: number | string;
+  completion_tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+  avg_latency_ms: number | string;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucket: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+}
+
+export interface AnalyticsByModelRow {
+  model: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+  p50_latency_ms: number | string;
+  p95_latency_ms: number | string;
+}
+
+export function fetchAnalyticsSummary(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsSummary | undefined> {
+  return getAnalytics<DataEnvelope<AnalyticsSummary>>(
+    `/api/v1/analytics/summary${windowParams(window)}`,
+  ).then((r) => r.data[0]);
+}
+
+export function fetchAnalyticsTimeseries(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsTimeseriesPoint[]> {
+  return getAnalytics<DataEnvelope<AnalyticsTimeseriesPoint>>(
+    `/api/v1/analytics/timeseries${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
+export function fetchAnalyticsByModel(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsByModelRow[]> {
+  return getAnalytics<DataEnvelope<AnalyticsByModelRow>>(
+    `/api/v1/analytics/by-model${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
 export function fetchConfig(): Promise<GatewayConfigDto> {
   return getJson<GatewayConfigDto>("/api/v1/config");
 }
