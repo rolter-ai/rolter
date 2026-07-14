@@ -7,12 +7,14 @@ import Keys from "@/pages/Keys";
 import Login from "@/pages/Login";
 import Logs from "@/pages/Logs";
 import Models from "@/pages/Models";
+import Providers from "@/pages/Providers";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { to: "/", label: "Models", end: true },
   { to: "/keys", label: "Keys", end: false },
+  { to: "/providers", label: "Providers", end: false },
   { to: "/health", label: "Health", end: false },
   { to: "/logs", label: "Logs", end: false },
 ];
@@ -79,6 +81,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Models />} />
             <Route path="/keys" element={<Keys />} />
+            <Route path="/providers" element={<Providers />} />
             <Route path="/health" element={<Health />} />
             <Route path="/logs" element={<Logs />} />
           </Routes>
