@@ -38,6 +38,130 @@ async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/// extract the control api's `{"error": {"message": ...}}` body when present,
+/// falling back to the raw status text
+async function apiError(res: Response): Promise<Error> {
+  try {
+    const body = (await res.json()) as { error?: { message?: string } };
+    if (body?.error?.message) {
+      return new Error(body.error.message);
+    }
+  } catch {
+    // not json, fall through
+  }
+  return new Error(`request failed: ${res.status}`);
+}
+
+async function sendJson<T>(
+  method: "POST" | "PUT" | "DELETE",
+  url: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    throw await apiError(res);
+  }
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  return (await res.json()) as T;
+}
+
+/// thrown by the analytics fetchers when the control plane has no
+/// clickhouse_url configured (503 from crates/rolter-control/src/analytics.rs);
+/// callers check for this to render a calm "not configured" empty state
+/// instead of a real error banner (reserved for 502s / network failures)
+export class AnalyticsUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AnalyticsUnavailableError";
+  }
+}
+
+async function getAnalytics<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    const err = await apiError(res);
+    if (res.status === 503) {
+      throw new AnalyticsUnavailableError(err.message);
+    }
+    throw err;
+  }
+  return (await res.json()) as T;
+}
+
+export interface AnalyticsWindow {
+  since?: string;
+  until?: string;
+  bucket?: string;
+}
+
+function windowParams(window: AnalyticsWindow): string {
+  const params = new URLSearchParams();
+  if (window.since) params.set("since", window.since);
+  if (window.until) params.set("until", window.until);
+  if (window.bucket) params.set("bucket", window.bucket);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+// ClickHouse JSON rows: numeric columns may come back as strings depending on
+// type/format, so callers should coerce with Number(...) when rendering
+export interface AnalyticsSummary {
+  requests: number | string;
+  tokens: number | string;
+  prompt_tokens: number | string;
+  completion_tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+  avg_latency_ms: number | string;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucket: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+}
+
+export interface AnalyticsByModelRow {
+  model: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+  p50_latency_ms: number | string;
+  p95_latency_ms: number | string;
+}
+
+export function fetchAnalyticsSummary(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsSummary | undefined> {
+  return getAnalytics<DataEnvelope<AnalyticsSummary>>(
+    `/api/v1/analytics/summary${windowParams(window)}`,
+  ).then((r) => r.data[0]);
+}
+
+export function fetchAnalyticsTimeseries(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsTimeseriesPoint[]> {
+  return getAnalytics<DataEnvelope<AnalyticsTimeseriesPoint>>(
+    `/api/v1/analytics/timeseries${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
+export function fetchAnalyticsByModel(
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsByModelRow[]> {
+  return getAnalytics<DataEnvelope<AnalyticsByModelRow>>(
+    `/api/v1/analytics/by-model${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
 export function fetchConfig(): Promise<GatewayConfigDto> {
   return getJson<GatewayConfigDto>("/api/v1/config");
 }
@@ -99,4 +223,402 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
   return getJson<DataEnvelope<TimelineRow>>(
     `/api/v1/health/timeline?bucket=${bucket}`,
   ).then((r) => r.data);
+}
+
+// --- control-plane CRUD (only reachable when rolter-control is started
+// with --database-url; see crates/rolter-control/src/crud.rs) ---
+
+export const PROVIDER_KINDS = [
+  "openai",
+  "anthropic",
+  "openai_compatible",
+  "ollama",
+  "ollama_cloud",
+  "llama_cpp",
+  "openrouter",
+  "tei",
+  "azure_openai",
+  "bedrock",
+  "vertex",
+] as const;
+
+export const STRATEGIES = [
+  "round_robin",
+  "random",
+  "power_of_two",
+  "consistent_hash",
+  "cache_aware",
+  "weighted",
+  "pipeline",
+] as const;
+
+export interface OrgRow {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+}
+
+export interface TeamRow {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface ProjectRow {
+  id: string;
+  team_id: string;
+  name: string;
+  created_at: string;
+}
+
+export function fetchOrgs(): Promise<OrgRow[]> {
+  return getJson<OrgRow[]>("/api/v1/orgs");
+}
+
+export function fetchTeams(orgId: string): Promise<TeamRow[]> {
+  return getJson<TeamRow[]>(`/api/v1/orgs/${orgId}/teams`);
+}
+
+export function fetchProjects(teamId: string): Promise<ProjectRow[]> {
+  return getJson<ProjectRow[]>(`/api/v1/teams/${teamId}/projects`);
+}
+
+export function createOrg(input: { name: string; slug: string }): Promise<OrgRow> {
+  return sendJson<OrgRow>("POST", "/api/v1/orgs", input);
+}
+
+export function deleteOrg(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/orgs/${id}`);
+}
+
+export function createTeam(
+  orgId: string,
+  input: { name: string },
+): Promise<TeamRow> {
+  return sendJson<TeamRow>("POST", `/api/v1/orgs/${orgId}/teams`, input);
+}
+
+export function deleteTeam(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/teams/${id}`);
+}
+
+export function createProject(
+  teamId: string,
+  input: { name: string },
+): Promise<ProjectRow> {
+  return sendJson<ProjectRow>("POST", `/api/v1/teams/${teamId}/projects`, input);
+}
+
+export function deleteProject(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/projects/${id}`);
+}
+
+export interface ProviderRow {
+  id: string;
+  org_id: string;
+  name: string;
+  kind: string;
+  api_base: string;
+  api_key_env?: string | null;
+  egress_proxy?: string | null;
+  created_at: string;
+}
+
+export interface CreateProviderInput {
+  name: string;
+  kind: string;
+  api_base: string;
+  api_key?: string;
+  api_key_env?: string;
+  egress_proxy?: string;
+}
+
+export interface UpdateProviderInput {
+  kind?: string;
+  api_base?: string;
+  api_key?: string;
+  api_key_env?: string;
+  egress_proxy?: string;
+}
+
+export function fetchProviders(orgId: string): Promise<ProviderRow[]> {
+  return getJson<ProviderRow[]>(`/api/v1/orgs/${orgId}/providers`);
+}
+
+export function createProvider(
+  orgId: string,
+  input: CreateProviderInput,
+): Promise<ProviderRow> {
+  return sendJson<ProviderRow>("POST", `/api/v1/orgs/${orgId}/providers`, input);
+}
+
+export function updateProvider(
+  id: string,
+  input: UpdateProviderInput,
+): Promise<ProviderRow> {
+  return sendJson<ProviderRow>("PUT", `/api/v1/providers/${id}`, input);
+}
+
+export function deleteProvider(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/providers/${id}`);
+}
+
+export interface RouteRow {
+  id: string;
+  project_id: string;
+  model: string;
+  strategy: string;
+  enabled: boolean;
+  params: Record<string, unknown>;
+  param_policy: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RouteTargetRow {
+  id: string;
+  route_id: string;
+  provider_id: string;
+  upstream_model?: string | null;
+  weight: number;
+  created_at: string;
+}
+
+export function fetchRoutes(projectId: string): Promise<RouteRow[]> {
+  return getJson<RouteRow[]>(`/api/v1/projects/${projectId}/routes`);
+}
+
+export function createRoute(
+  projectId: string,
+  input: { model: string; strategy: string },
+): Promise<RouteRow> {
+  return sendJson<RouteRow>("POST", `/api/v1/projects/${projectId}/routes`, input);
+}
+
+export function setRouteEnabled(id: string, enabled: boolean): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, { enabled });
+}
+
+export function deleteRoute(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/routes/${id}`);
+}
+
+export function updateRouteParams(
+  id: string,
+  params: Record<string, unknown>,
+  paramPolicy: Record<string, unknown>,
+): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}/params`, {
+    params,
+    param_policy: paramPolicy,
+  });
+}
+
+export function fetchRouteTargets(routeId: string): Promise<RouteTargetRow[]> {
+  return getJson<RouteTargetRow[]>(`/api/v1/routes/${routeId}/targets`);
+}
+
+export function createRouteTarget(
+  routeId: string,
+  input: { provider_id: string; upstream_model?: string; weight?: number },
+): Promise<RouteTargetRow> {
+  return sendJson<RouteTargetRow>(
+    "POST",
+    `/api/v1/routes/${routeId}/targets`,
+    input,
+  );
+}
+
+export function deleteRouteTarget(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/route-targets/${id}`);
+}
+
+// effective model list — bootstrap-config routes (read-only) merged with
+// DB-defined routes (full CRUD), as served to the gateway
+export interface EffectiveModelDto {
+  model: string;
+  strategy: string;
+  targets: number;
+  source: "config" | "db";
+}
+
+export function fetchModels(): Promise<EffectiveModelDto[]> {
+  return getJson<EffectiveModelDto[]>("/api/v1/models");
+}
+
+export function deleteModel(model: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
+}
+
+// --- virtual keys (crates/rolter-control/src/crud.rs) ---
+
+export interface VirtualKeyRow {
+  id: string;
+  project_id: string;
+  key_hash: string;
+  key_prefix: string;
+  name?: string | null;
+  models: string[];
+  disabled: boolean;
+  expires_at?: string | null;
+  /// per-key response-cache override; null inherits the route decision
+  cache_enabled?: boolean | null;
+  created_at: string;
+}
+
+// returned only from createVirtualKey — carries the plaintext secret, shown
+// once and never persisted beyond the create mutation's immediate result
+export interface CreatedVirtualKey extends VirtualKeyRow {
+  key: string;
+}
+
+export interface CreateVirtualKeyInput {
+  name?: string;
+  models?: string[];
+  cache?: boolean | null;
+}
+
+export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
+  return getJson<VirtualKeyRow[]>(`/api/v1/projects/${projectId}/virtual-keys`);
+}
+
+export function createVirtualKey(
+  projectId: string,
+  input: CreateVirtualKeyInput,
+): Promise<CreatedVirtualKey> {
+  return sendJson<CreatedVirtualKey>(
+    "POST",
+    `/api/v1/projects/${projectId}/virtual-keys`,
+    input,
+  );
+}
+
+export function setVirtualKeyDisabled(
+  id: string,
+  disabled: boolean,
+): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, { disabled });
+}
+
+export function setVirtualKeyCache(
+  id: string,
+  cache: boolean | null,
+): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/cache`, {
+    cache,
+  });
+}
+
+export function deleteVirtualKey(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/virtual-keys/${id}`);
+}
+
+// --- budgets, rate limits, model pricing (crates/rolter-control/src/crud.rs) ---
+
+export const SCOPE_TYPES = ["org", "team", "project", "virtual_key"] as const;
+
+export interface BudgetRow {
+  id: string;
+  scope_type: string;
+  scope_id: string;
+  /// decimal, returned as text
+  limit_usd: string;
+  period: string;
+  created_at: string;
+}
+
+export interface CreateBudgetInput {
+  scope_type: string;
+  scope_id: string;
+  limit_usd: string;
+  period?: string;
+}
+
+export function fetchBudgets(
+  scopeType: string,
+  scopeId: string,
+): Promise<BudgetRow[]> {
+  return getJson<BudgetRow[]>(
+    `/api/v1/budgets?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
+export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
+  return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
+}
+
+export function deleteBudget(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/budgets/${id}`);
+}
+
+export interface RateLimitRow {
+  id: string;
+  scope_type: string;
+  scope_id: string;
+  rpm?: number | null;
+  tpm?: number | null;
+  created_at: string;
+}
+
+export interface CreateRateLimitInput {
+  scope_type: string;
+  scope_id: string;
+  rpm?: number;
+  tpm?: number;
+}
+
+export function fetchRateLimits(
+  scopeType: string,
+  scopeId: string,
+): Promise<RateLimitRow[]> {
+  return getJson<RateLimitRow[]>(
+    `/api/v1/rate-limits?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
+export function createRateLimit(
+  input: CreateRateLimitInput,
+): Promise<RateLimitRow> {
+  return sendJson<RateLimitRow>("POST", "/api/v1/rate-limits", input);
+}
+
+export function deleteRateLimit(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/rate-limits/${id}`);
+}
+
+export interface ModelPriceRow {
+  id: string;
+  model: string;
+  /// decimal, returned as text
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cached_input_per_mtok?: string | null;
+  currency: string;
+  created_at: string;
+}
+
+export interface UpsertModelPriceInput {
+  model: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cached_input_per_mtok?: string;
+  currency?: string;
+}
+
+export function fetchModelPrices(): Promise<ModelPriceRow[]> {
+  return getJson<ModelPriceRow[]>("/api/v1/model-prices");
+}
+
+export function upsertModelPrice(
+  input: UpsertModelPriceInput,
+): Promise<ModelPriceRow> {
+  return sendJson<ModelPriceRow>("PUT", "/api/v1/model-prices", input);
+}
+
+export function deleteModelPrice(model: string): Promise<void> {
+  return sendJson<void>(
+    "DELETE",
+    `/api/v1/model-prices/${encodeURIComponent(model)}`,
+  );
 }
