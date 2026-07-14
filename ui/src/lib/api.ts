@@ -313,6 +313,17 @@ export function deleteRoute(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/routes/${id}`);
 }
 
+export function updateRouteParams(
+  id: string,
+  params: Record<string, unknown>,
+  paramPolicy: Record<string, unknown>,
+): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}/params`, {
+    params,
+    param_policy: paramPolicy,
+  });
+}
+
 export function fetchRouteTargets(routeId: string): Promise<RouteTargetRow[]> {
   return getJson<RouteTargetRow[]>(`/api/v1/routes/${routeId}/targets`);
 }

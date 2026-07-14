@@ -22,6 +22,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   createRoute,
   createRouteTarget,
@@ -34,6 +35,7 @@ import {
   fetchRouteTargets,
   setRouteEnabled,
   STRATEGIES,
+  updateRouteParams,
   type EffectiveModelDto,
   type ProviderRow,
   type RouteRow,
@@ -391,13 +393,20 @@ function EditModelDialog({
   const [upstreamModel, setUpstreamModel] = React.useState("");
   const [weight, setWeight] = React.useState("1");
 
+  const [paramsText, setParamsText] = React.useState("{}");
+  const [paramPolicyText, setParamPolicyText] = React.useState("{}");
+  const [paramsError, setParamsError] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (open) {
       setProviderId(providers[0]?.id ?? "");
       setUpstreamModel("");
       setWeight("1");
+      setParamsText(JSON.stringify(route?.params ?? {}, null, 2));
+      setParamPolicyText(JSON.stringify(route?.param_policy ?? {}, null, 2));
+      setParamsError(null);
     }
-  }, [open, providers]);
+  }, [open, providers, route]);
 
   const invalidateTargets = () => {
     queryClient.invalidateQueries({ queryKey: ["route-targets", route?.id] });
@@ -430,6 +439,33 @@ function EditModelDialog({
       onOpenChange(false);
     },
   });
+
+  const saveParams = useMutation({
+    mutationFn: (input: {
+      params: Record<string, unknown>;
+      paramPolicy: Record<string, unknown>;
+    }) => updateRouteParams(route!.id, input.params, input.paramPolicy),
+    onSuccess: invalidateTargets,
+  });
+
+  const submitParams = () => {
+    let params: Record<string, unknown>;
+    let paramPolicy: Record<string, unknown>;
+    try {
+      params = JSON.parse(paramsText || "{}");
+    } catch {
+      setParamsError("params: invalid JSON");
+      return;
+    }
+    try {
+      paramPolicy = JSON.parse(paramPolicyText || "{}");
+    } catch {
+      setParamsError("param_policy: invalid JSON");
+      return;
+    }
+    setParamsError(null);
+    saveParams.mutate({ params, paramPolicy });
+  };
 
   const providerName = (id: string) =>
     providers.find((p) => p.id === id)?.name ?? id;
@@ -515,6 +551,48 @@ function EditModelDialog({
             Add target
           </Button>
         </div>
+        <div className="space-y-2 rounded-md border border-dashed border-border p-3">
+          <p className="text-sm font-medium leading-none">Params</p>
+          <p className="text-xs text-muted-foreground">
+            Admin default inference params and override policy, applied
+            reload-free on save. Both fields must be JSON objects.
+          </p>
+          <Field label="Params">
+            <Textarea
+              className="font-mono text-xs"
+              rows={4}
+              value={paramsText}
+              onChange={(e) => setParamsText(e.target.value)}
+              placeholder='{"temperature": 0}'
+            />
+          </Field>
+          <Field label="Param policy">
+            <Textarea
+              className="font-mono text-xs"
+              rows={4}
+              value={paramPolicyText}
+              onChange={(e) => setParamPolicyText(e.target.value)}
+              placeholder='{"mode": "merge", "allow": [], "deny": []}'
+            />
+          </Field>
+          {paramsError && (
+            <p className="text-xs text-destructive">{paramsError}</p>
+          )}
+          {saveParams.isError && (
+            <p className="text-xs text-destructive">
+              {(saveParams.error as Error).message}
+            </p>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={saveParams.isPending}
+            onClick={submitParams}
+          >
+            Save params
+          </Button>
+        </div>
+
         {removeRoute.isError && (
           <p className="text-xs text-destructive">
             {(removeRoute.error as Error).message}
