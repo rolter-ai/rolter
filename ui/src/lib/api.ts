@@ -359,3 +359,66 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
 export function deleteModel(model: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
 }
+
+// --- virtual keys (crates/rolter-control/src/crud.rs) ---
+
+export interface VirtualKeyRow {
+  id: string;
+  project_id: string;
+  key_hash: string;
+  key_prefix: string;
+  name?: string | null;
+  models: string[];
+  disabled: boolean;
+  expires_at?: string | null;
+  /// per-key response-cache override; null inherits the route decision
+  cache_enabled?: boolean | null;
+  created_at: string;
+}
+
+// returned only from createVirtualKey — carries the plaintext secret, shown
+// once and never persisted beyond the create mutation's immediate result
+export interface CreatedVirtualKey extends VirtualKeyRow {
+  key: string;
+}
+
+export interface CreateVirtualKeyInput {
+  name?: string;
+  models?: string[];
+  cache?: boolean | null;
+}
+
+export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
+  return getJson<VirtualKeyRow[]>(`/api/v1/projects/${projectId}/virtual-keys`);
+}
+
+export function createVirtualKey(
+  projectId: string,
+  input: CreateVirtualKeyInput,
+): Promise<CreatedVirtualKey> {
+  return sendJson<CreatedVirtualKey>(
+    "POST",
+    `/api/v1/projects/${projectId}/virtual-keys`,
+    input,
+  );
+}
+
+export function setVirtualKeyDisabled(
+  id: string,
+  disabled: boolean,
+): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, { disabled });
+}
+
+export function setVirtualKeyCache(
+  id: string,
+  cache: boolean | null,
+): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/cache`, {
+    cache,
+  });
+}
+
+export function deleteVirtualKey(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/virtual-keys/${id}`);
+}
