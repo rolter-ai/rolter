@@ -20,11 +20,13 @@ use rolter_auth::Role;
 use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::Error;
 use rolter_store::postgres::models::{
-    Budget, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team, VirtualKey,
+    Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team,
+    User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    BudgetRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo,
-    RouteRepo, RouteTargetRepo, TeamRepo, VirtualKeyRepo,
+    BudgetRepo, MembershipRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, TeamRepo, UserRepo,
+    VirtualKeyRepo,
 };
 
 use crate::rbac::{authorize, require_superadmin, Principal, ScopeChain};
@@ -92,6 +94,16 @@ pub fn router() -> Router<ControlState> {
         .route("/api/v1/model-prices/{model}", delete(delete_model_price))
         .route("/api/v1/models", get(list_models))
         .route("/api/v1/models/{model}", delete(delete_model))
+        .route(
+            "/api/v1/orgs/{org_id}/users",
+            get(list_users).post(create_user),
+        )
+        .route("/api/v1/users/{id}", put(update_user).delete(delete_user))
+        .route(
+            "/api/v1/orgs/{org_id}/memberships",
+            get(list_memberships).post(create_membership),
+        )
+        .route("/api/v1/memberships/{id}", delete(delete_membership))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -1153,6 +1165,290 @@ async fn delete_model(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- users + memberships (ROL-223) ---
+//
+// account lifecycle vs. role assignment are deliberately split by authority:
+// inviting a user into an org and granting roles within it are org-admin
+// operations (scoped, safe for a tenant admin), while editing or deleting the
+// underlying global account — and toggling the cross-org `is_superadmin`
+// bit — is superadmin-only. in open mode (no admin token) every caller is a
+// superadmin, so both paths pass through unchanged for local/single-tenant use.
+
+const MIN_PASSWORD_LEN: usize = 8;
+
+/// hash a plaintext password with argon2id for at-rest storage; the repo layer
+/// only ever sees the digest
+fn hash_password(password: &str) -> ApiResult<String> {
+    use argon2::password_hash::rand_core::OsRng;
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::Argon2;
+
+    if password.len() < MIN_PASSWORD_LEN {
+        return Err(ApiError::Core(Error::Config(format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        ))));
+    }
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| ApiError::Core(Error::Config(format!("failed to hash password: {e}"))))
+}
+
+/// minimal email sanity check: trimmed, non-empty, with a single `@` separating
+/// non-empty local and domain parts. deliberately permissive — full RFC 5322 is
+/// not worth the surface here, we only guard against obvious junk
+fn validate_email(email: &str) -> ApiResult<String> {
+    let email = email.trim();
+    let ok = match email.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@') && domain.contains('.')
+        }
+        None => false,
+    };
+    if !ok {
+        return Err(ApiError::Core(Error::Config(
+            "email must be a valid address".to_string(),
+        )));
+    }
+    Ok(email.to_string())
+}
+
+fn validate_role(role: &str) -> ApiResult<()> {
+    if !matches!(role, "admin" | "member" | "viewer") {
+        return Err(ApiError::Core(Error::Config(
+            "role must be one of admin, member, viewer".to_string(),
+        )));
+    }
+    Ok(())
+}
+
+async fn list_users(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<User>>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Viewer).await?;
+    Ok(Json(UserRepo(pool(&state)).list_in_org(org_id).await?))
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    email: String,
+    /// optional initial password; omit for an sso-only shell account that
+    /// cannot log in locally until a password is set
+    password: Option<String>,
+    /// role granted at this org for the new account; defaults to `member`
+    #[serde(default)]
+    role: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreatedUser {
+    user: User,
+    membership: Membership,
+}
+
+/// invite/create an account and grant it a role in this org atomically. an
+/// org admin can onboard a user without superadmin: the new account carries no
+/// superadmin bit and starts scoped to this org only.
+async fn create_user(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+    Json(body): Json<CreateUser>,
+) -> ApiResult<Json<CreatedUser>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Admin).await?;
+    let email = validate_email(&body.email)?;
+    let role = body.role.as_deref().unwrap_or("member");
+    validate_role(role)?;
+    let password_hash = match body.password.as_deref() {
+        Some(p) => Some(hash_password(p)?),
+        None => None,
+    };
+
+    let pool = pool(&state);
+    if UserRepo(pool).find_by_email(&email).await?.is_some() {
+        return Err(ApiError::Conflict(format!(
+            "a user with email '{email}' already exists"
+        )));
+    }
+
+    let user = UserRepo(pool)
+        .create(&email, password_hash.as_deref(), false)
+        .await?;
+    let membership = MembershipRepo(pool)
+        .create(user.id, Some(org_id), None, None, role)
+        .await?;
+    Ok(Json(CreatedUser { user, membership }))
+}
+
+#[derive(Deserialize)]
+struct UpdateUser {
+    email: Option<String>,
+    password: Option<String>,
+    is_superadmin: Option<bool>,
+    /// set to `true` to deactivate (block login, revoke sessions) or `false` to
+    /// re-enable the account
+    deactivated: Option<bool>,
+}
+
+/// edit a global account. superadmin-only because it reaches across every org
+/// the user belongs to and can grant the cross-org superadmin bit.
+async fn update_user(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateUser>,
+) -> ApiResult<Json<User>> {
+    require_superadmin(&principal)?;
+    let pool = pool(&state);
+
+    let email = match body.email.as_deref() {
+        Some(e) => Some(validate_email(e)?),
+        None => None,
+    };
+    let password_hash = match body.password.as_deref() {
+        Some(p) => Some(hash_password(p)?),
+        None => None,
+    };
+
+    // reject an email change that collides with a different account
+    if let Some(ref new_email) = email {
+        if let Some(existing) = UserRepo(pool).find_by_email(new_email).await? {
+            if existing.id != id {
+                return Err(ApiError::Conflict(format!(
+                    "a user with email '{new_email}' already exists"
+                )));
+            }
+        }
+    }
+
+    let mut user = UserRepo(pool)
+        .update(
+            id,
+            email.as_deref(),
+            password_hash.as_deref(),
+            body.is_superadmin,
+        )
+        .await?;
+
+    if let Some(deactivated) = body.deactivated {
+        user = UserRepo(pool).set_deactivated(id, deactivated).await?;
+        if deactivated {
+            // cut existing access immediately, not just at token expiry
+            SessionRepo(pool).delete_for_user(id).await?;
+        }
+    }
+
+    Ok(Json(user))
+}
+
+async fn delete_user(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    require_superadmin(&principal)?;
+    // memberships and sessions cascade on the users fk (on delete cascade)
+    UserRepo(pool(&state)).delete(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_memberships(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<Membership>>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Viewer).await?;
+    Ok(Json(
+        MembershipRepo(pool(&state)).list_in_org(org_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct CreateMembership {
+    user_id: Uuid,
+    /// one of `org` | `team` | `project`
+    scope_type: String,
+    scope_id: Uuid,
+    role: String,
+}
+
+/// grant a role to a user at a scope within this org. requires admin at the
+/// target scope, and the scope must resolve back to `org_id` so an org admin
+/// cannot grant into another tenant.
+async fn create_membership(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+    Json(body): Json<CreateMembership>,
+) -> ApiResult<Json<Membership>> {
+    validate_role(&body.role)?;
+    let pool = pool(&state);
+
+    let (chain, org, team, project) = match body.scope_type.as_str() {
+        "org" => {
+            let chain = ScopeChain::org(body.scope_id);
+            (chain, Some(body.scope_id), None, None)
+        }
+        "team" => {
+            let chain = ScopeChain::from_team(pool, body.scope_id).await?;
+            (chain, None, Some(body.scope_id), None)
+        }
+        "project" => {
+            let chain = ScopeChain::from_project(pool, body.scope_id).await?;
+            (chain, None, None, Some(body.scope_id))
+        }
+        other => {
+            return Err(ApiError::Core(Error::Config(format!(
+                "scope_type must be one of org, team, project (got '{other}')"
+            ))))
+        }
+    };
+
+    if chain.org != Some(org_id) {
+        return Err(ApiError::Core(Error::Config(
+            "scope does not belong to this org".to_string(),
+        )));
+    }
+    authorize(&state, &principal, chain, Role::Admin).await?;
+
+    // the target user must exist (surfaces a 404 rather than a fk error)
+    UserRepo(pool).get(body.user_id).await?;
+
+    Ok(Json(
+        MembershipRepo(pool)
+            .create(body.user_id, org, team, project, &body.role)
+            .await?,
+    ))
+}
+
+async fn delete_membership(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let pool = pool(&state);
+    let m = MembershipRepo(pool).get(id).await?;
+    // authorize admin at the membership's own scope
+    let chain = if let Some(project) = m.project_id {
+        ScopeChain::from_project(pool, project).await?
+    } else if let Some(team) = m.team_id {
+        ScopeChain::from_team(pool, team).await?
+    } else if let Some(org) = m.org_id {
+        ScopeChain::org(org)
+    } else {
+        // a membership with no scope should not exist; treat as superadmin-only
+        require_superadmin(&principal)?;
+        MembershipRepo(pool).delete(id).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    authorize(&state, &principal, chain, Role::Admin).await?;
+    MembershipRepo(pool).delete(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod slug_tests {
     use super::*;
@@ -1218,5 +1514,55 @@ mod slug_tests {
             "openai",
             true
         )));
+    }
+}
+
+#[cfg(test)]
+mod user_tests {
+    use super::*;
+
+    fn is_config_err<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
+        matches!(res, Err(ApiError::Core(Error::Config(_))))
+    }
+
+    #[test]
+    fn email_accepts_plain_addresses_and_trims() {
+        assert_eq!(validate_email("  a@b.com ").unwrap(), "a@b.com");
+        assert_eq!(
+            validate_email("user.name@sub.example.io").unwrap(),
+            "user.name@sub.example.io"
+        );
+    }
+
+    #[test]
+    fn email_rejects_junk() {
+        assert!(is_config_err(validate_email("")));
+        assert!(is_config_err(validate_email("nope")));
+        assert!(is_config_err(validate_email("@b.com")));
+        assert!(is_config_err(validate_email("a@")));
+        assert!(is_config_err(validate_email("a@b"))); // no dot in domain
+        assert!(is_config_err(validate_email("a@@b.com")));
+    }
+
+    #[test]
+    fn role_accepts_known_and_rejects_others() {
+        assert!(validate_role("admin").is_ok());
+        assert!(validate_role("member").is_ok());
+        assert!(validate_role("viewer").is_ok());
+        assert!(is_config_err(validate_role("superadmin")));
+        assert!(is_config_err(validate_role("")));
+    }
+
+    #[test]
+    fn password_hash_enforces_min_length_and_verifies() {
+        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        use argon2::Argon2;
+
+        assert!(is_config_err(hash_password("short")));
+        let hash = hash_password("longenough").unwrap();
+        let parsed = PasswordHash::new(&hash).unwrap();
+        assert!(Argon2::default()
+            .verify_password(b"longenough", &parsed)
+            .is_ok());
     }
 }
