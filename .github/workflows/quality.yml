@@ -321,6 +321,12 @@ jobs:
   # non-blocking for now (continue-on-error); promote to required once their
   # baseline is understood. see the required-checks policy in ROL-124.
 
+  # ── coverage: workspace line coverage with a ratcheting baseline ─────────────
+  # informational (continue-on-error) per ROL-246: it computes workspace line
+  # coverage, compares it against the committed baseline in
+  # .github/coverage-baseline.txt (new code cannot drop below baseline − tolerance),
+  # and uploads the lcov report as a CI artifact. it does not block until the
+  # baseline is trusted — promote by dropping continue-on-error here.
   coverage:
     name: coverage (informational)
     runs-on: ubuntu-latest
@@ -339,7 +345,22 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
-        run: cargo llvm-cov --workspace --all-features --summary-only
+        run: |
+          cargo llvm-cov --workspace --all-features --no-report
+          cargo llvm-cov report --summary-only
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --json --summary-only > coverage.json
+      - name: coverage ratchet
+        run: bash .github/scripts/coverage-ratchet.sh coverage.json
+      - name: upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-lcov
+          path: |
+            lcov.info
+            coverage.json
+          if-no-files-found: error
 
   # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
   # blocking: the whole tree is taplo-formatted, so any drift is a real diff.

@@ -57,6 +57,35 @@ Current coverage (`rolter-balancer`):
 
 criterion writes HTML reports to `target/criterion/`. Benches are **not** run in CI (timings are noisy on shared runners), but `cargo clippy --workspace --all-targets -- -D warnings` compiles them on every PR, so they cannot silently bit-rot. Use `just bench-check` (`cargo bench --workspace --no-run`) to compile them locally without running.
 
+## Coverage
+
+Workspace line coverage is measured with
+[`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --workspace --all-features --summary-only   # quick %
+cargo llvm-cov --workspace --all-features --html           # browsable report
+```
+
+CI runs coverage in the `coverage` job of `quality.yml` and enforces a
+**ratcheting baseline**: the committed baseline lives in
+[`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
+[`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
+fails the step if the current percentage drops more than
+`COVERAGE_TOLERANCE` points (default `0.5`) below it. The job also uploads the
+`lcov.info` report as a CI artifact.
+
+Policy (ROL-246):
+
+- New code must not push coverage below `baseline − tolerance`. If a PR
+  legitimately lowers coverage, edit `.github/coverage-baseline.txt` in the same
+  PR and explain why.
+- When coverage climbs well above the baseline, raise the baseline to lock in
+  the gain (the ratchet only goes up).
+- The job is **informational** (`continue-on-error: true`) until the baseline is
+  trusted; promote it to blocking by removing that flag on the `coverage` job.
+
 ## CI
 
 `.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
