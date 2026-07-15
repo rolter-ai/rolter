@@ -935,3 +935,156 @@ async fn user_and_membership_lifecycle() {
         "user should be gone after delete: {after}"
     );
 }
+
+/// Self-service key lifecycle (ROL-224): a logged-in member mints, lists,
+/// rotates and deletes their own virtual keys, and usage 503s without
+/// ClickHouse. Runs in open mode; `/me/*` still requires a real session.
+#[tokio::test]
+async fn self_service_key_lifecycle() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    // org → team → project
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+
+    // invite a member into the org (org membership authorizes the project too)
+    post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/users"),
+        json!({"email": "member@example.com", "password": "hunter2!!", "role": "member"}),
+    )
+    .await;
+
+    // log in to get a session token
+    let login = post(
+        &client,
+        format!("{base}/api/v1/auth/login"),
+        json!({"email": "member@example.com", "password": "hunter2!!"}),
+    )
+    .await;
+    let token = login["token"].as_str().unwrap().to_string();
+
+    // /me/* requires a session: unauthenticated is rejected
+    let anon = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+
+    // mint a key I own in the project I belong to
+    let minted = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project_id}/virtual-keys"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"name": "laptop", "models": ["gpt-4o"]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(minted.status().is_success());
+    let minted: Value = minted.json().await.unwrap();
+    assert!(minted["key"].as_str().unwrap().starts_with("sk-rolter-"));
+    let key_id = minted["id"].as_str().unwrap().to_string();
+
+    // it shows up in my key list, enriched with project/org names
+    let keys: Value = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let arr = keys.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["project_name"], "Gateway");
+    assert_eq!(arr[0]["org_name"], "Acme");
+    // the key hash is never exposed on the self-service surface
+    assert!(arr[0].get("key_hash").is_none());
+
+    // rotate: a new secret, old key disabled, both still owned/listed
+    let rotated = client
+        .post(format!("{base}/api/v1/me/virtual-keys/{key_id}/rotate"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert!(rotated.status().is_success());
+    let rotated: Value = rotated.json().await.unwrap();
+    let new_id = rotated["id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, key_id);
+
+    let after: Value = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let after = after.as_array().unwrap();
+    assert_eq!(after.len(), 2);
+    let old = after.iter().find(|k| k["id"] == key_id).unwrap();
+    assert_eq!(old["disabled"], true, "rotated-out key must be disabled");
+
+    // usage 503s without ClickHouse configured
+    let usage = client
+        .get(format!("{base}/api/v1/me/usage"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(usage.status(), 503);
+
+    // delete the new key
+    let del = client
+        .delete(format!("{base}/api/v1/me/virtual-keys/{new_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 204);
+    let remaining: Value = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(remaining.as_array().unwrap().len(), 1);
+}

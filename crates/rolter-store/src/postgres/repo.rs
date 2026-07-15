@@ -11,8 +11,8 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::models::{
-    Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Session,
-    Team, User, VirtualKey,
+    Budget, Membership, ModelPrice, Org, OwnedVirtualKey, Project, Provider, RateLimit, Route,
+    RouteTarget, Session, Team, User, VirtualKey,
 };
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -481,7 +481,7 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where project_id = $1 order by created_at",
         )
         .bind(project_id)
@@ -492,7 +492,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where key_hash = $1",
         )
         .bind(key_hash)
@@ -503,7 +503,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where id = $1",
         )
         .bind(id)
@@ -522,11 +522,12 @@ impl VirtualKeyRepo<'_> {
         name: Option<&str>,
         models: &[String],
         cache_enabled: Option<bool>,
+        created_by: Option<Uuid>,
     ) -> Result<VirtualKey> {
         sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled)
-             values ($1, $2, $3, $4, $5, $6)
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled, created_by)
+             values ($1, $2, $3, $4, $5, $6, $7)
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(project_id)
         .bind(key_hash)
@@ -534,7 +535,27 @@ impl VirtualKeyRepo<'_> {
         .bind(name)
         .bind(models)
         .bind(cache_enabled)
+        .bind(created_by)
         .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// every key minted by `user_id` via the self-service panel, newest first,
+    /// enriched with the owning project + org names. omits the key hash.
+    pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<OwnedVirtualKey>> {
+        sqlx::query_as(
+            "select vk.id, vk.project_id, p.name as project_name, o.name as org_name,
+                    vk.key_prefix, vk.name, vk.models, vk.disabled, vk.expires_at, vk.created_at
+             from virtual_keys vk
+             join projects p on p.id = vk.project_id
+             join teams t on t.id = p.team_id
+             join orgs o on o.id = t.org_id
+             where vk.created_by = $1
+             order by vk.created_at desc",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
         .await
         .map_err(store_err)
     }
@@ -542,7 +563,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(disabled)
@@ -557,7 +578,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set cache_enabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(cache_enabled)
@@ -1127,6 +1148,7 @@ mod tests {
                 "sk-abc",
                 Some("ci key"),
                 &["gpt-4o".to_string()],
+                None,
                 None,
             )
             .await
