@@ -38,6 +38,8 @@
     --zinc-850: #1f1f23;
     --zinc-800: #27272a;
     --zinc-700: #3f3f46;
+    --zinc-600: #52525b;
+    --zinc-500: #71717a;
     --zinc-400: #a1a1aa;
     --zinc-300: #d4d4d8;
     --zinc-50: #fafafa;
@@ -62,10 +64,19 @@
     --surface-elevated: var(--zinc-850);
     --surface-subtle: var(--zinc-800);
     --surface-active: var(--zinc-700);
+    --surface-card: var(--zinc-925);
+    --surface-hover: var(--zinc-800);
     --border-default: rgba(255, 255, 255, 0.15);
     --border-subtle: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.24);
+    --text-primary: var(--zinc-50);
     --text-secondary: var(--zinc-300);
+    --text-muted: var(--zinc-400);
+    --text-subtle: var(--zinc-500);
+
+    /* radius + elevation aliases used by ported DS chart/feedback components */
+    --radius-md: 8px;
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
 
     /* type */
     --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
@@ -97,6 +108,31 @@
   .font-mono {
     font-family: var(--font-mono);
   }
+  /* shimmering placeholder for the Skeleton component */
+  .rl-skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--surface-subtle) 25%,
+      var(--zinc-700) 37%,
+      var(--surface-subtle) 63%
+    );
+    background-size: 400% 100%;
+    animation: rl-shimmer 1.4s ease infinite;
+  }
+  @keyframes rl-shimmer {
+    0% {
+      background-position: 100% 0;
+    }
+    100% {
+      background-position: 0 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rl-skeleton {
+      animation: none;
+    }
+  }
+
   /* single deliberate вышивка cross-stitch rule for banners / empty states */
   .vyshivka-rule {
     height: 3px;
