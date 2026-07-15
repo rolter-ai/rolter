@@ -33,6 +33,8 @@ jobs:
   # commit can never be bootstrap-published (ROL-103).
   verify:
     uses: ./.github/workflows/quality.yml
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   publish:
     needs: verify
