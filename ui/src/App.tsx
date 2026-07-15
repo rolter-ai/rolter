@@ -2,6 +2,7 @@ import { LogOut } from "lucide-react";
 import { NavLink, Route, Routes } from "react-router-dom";
 
 import { ScopeSwitcher } from "@/components/ScopeSwitcher";
+import Account from "@/pages/Account";
 import Health from "@/pages/Health";
 import Keys from "@/pages/Keys";
 import Limits from "@/pages/Limits";
@@ -11,6 +12,7 @@ import Models from "@/pages/Models";
 import Pricing from "@/pages/Pricing";
 import Providers from "@/pages/Providers";
 import Users from "@/pages/Users";
+import { logout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +21,7 @@ const nav = [
   { to: "/keys", label: "Keys", end: false },
   { to: "/providers", label: "Providers", end: false },
   { to: "/users", label: "Users", end: false },
+  { to: "/account", label: "Account", end: false },
   { to: "/limits", label: "Limits", end: false },
   { to: "/pricing", label: "Pricing", end: false },
   { to: "/health", label: "Health", end: false },
@@ -26,7 +29,14 @@ const nav = [
 ];
 
 export default function App() {
-  const { email, signOut } = useAuth();
+  const { email, token, signOut } = useAuth();
+
+  // revoke the server-side session (if any) before clearing local state;
+  // best-effort so a network hiccup still logs the user out locally
+  const handleSignOut = () => {
+    if (token) void logout().catch(() => {});
+    signOut();
+  };
 
   if (!email) {
     return <Login />;
@@ -73,7 +83,7 @@ export default function App() {
           </span>
           <button
             type="button"
-            onClick={signOut}
+            onClick={handleSignOut}
             aria-label="Sign out"
             className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -89,6 +99,7 @@ export default function App() {
             <Route path="/keys" element={<Keys />} />
             <Route path="/providers" element={<Providers />} />
             <Route path="/users" element={<Users />} />
+            <Route path="/account" element={<Account />} />
             <Route path="/limits" element={<Limits />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/health" element={<Health />} />

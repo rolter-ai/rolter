@@ -30,8 +30,22 @@ export interface GatewayConfigDto {
   virtual_keys: VirtualKeyDto[];
 }
 
+// bearer token from a real login (see lib/auth.tsx); attached to every request
+// so the session-scoped /me/* endpoints authenticate. absent in open-mode /
+// email-only sessions, where the control plane needs no auth anyway.
+const TOKEN_STORAGE_KEY = "rolter.session.token";
+
+function authHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(`request failed: ${res.status}`);
   }
@@ -59,8 +73,10 @@ async function sendJson<T>(
 ): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers:
-      body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      ...authHeaders(),
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -84,7 +100,7 @@ export class AnalyticsUnavailableError extends Error {
 }
 
 async function getAnalytics<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     const err = await apiError(res);
     if (res.status === 503) {
@@ -702,6 +718,28 @@ export function deleteModelPrice(model: string): Promise<void> {
   );
 }
 
+// --- local-account auth (crates/rolter-control/src/auth.rs, ROL-32) ---
+
+export interface LoginResponse {
+  /** opaque bearer token; store it and send as Authorization: Bearer */
+  token: string;
+  expires_at: string;
+  user: { id: string; email: string; is_superadmin: boolean };
+}
+
+// authenticate a local account; returns a session token. rejects (throws) on
+// bad credentials or when local accounts aren't configured.
+export function login(email: string, password: string): Promise<LoginResponse> {
+  return sendJson<LoginResponse>("POST", "/api/v1/auth/login", {
+    email,
+    password,
+  });
+}
+
+export function logout(): Promise<void> {
+  return sendJson<void>("POST", "/api/v1/auth/logout");
+}
+
 // --- users + memberships (crates/rolter-control/src/crud.rs, ROL-223) ---
 
 export const ROLES = ["admin", "member", "viewer"] as const;
@@ -800,4 +838,76 @@ export function createMembership(
 
 export function deleteMembership(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/memberships/${id}`);
+}
+
+// --- self-service (crates/rolter-control/src/me.rs, ROL-224) ---
+//
+// end-user surface: manage your own virtual keys and see your own usage. these
+// require a real login session (not the admin token path).
+
+// a key the current user owns, enriched with its project/org names; never
+// carries the key hash
+export interface OwnedKeyRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  org_name: string;
+  key_prefix: string;
+  name?: string | null;
+  models: string[];
+  disabled: boolean;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+// returned from mint/rotate — carries the plaintext secret, shown once
+export interface MintedKey extends VirtualKeyRow {
+  key: string;
+}
+
+export interface MintKeyInput {
+  name?: string;
+  models?: string[];
+  cache?: boolean | null;
+}
+
+export interface MyUsageRow {
+  virtual_key_id: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+}
+
+export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
+  return getJson<OwnedKeyRow[]>("/api/v1/me/virtual-keys");
+}
+
+export function mintMyKey(
+  projectId: string,
+  input: MintKeyInput,
+): Promise<MintedKey> {
+  return sendJson<MintedKey>(
+    "POST",
+    `/api/v1/me/projects/${projectId}/virtual-keys`,
+    input,
+  );
+}
+
+export function rotateMyKey(id: string): Promise<MintedKey> {
+  return sendJson<MintedKey>("POST", `/api/v1/me/virtual-keys/${id}/rotate`);
+}
+
+export function deleteMyKey(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/me/virtual-keys/${id}`);
+}
+
+// per-key usage/spend over the window; throws AnalyticsUnavailableError (503)
+// when the deployment has no ClickHouse configured
+export function fetchMyUsage(
+  window: AnalyticsWindow = {},
+): Promise<MyUsageRow[]> {
+  return getAnalytics<DataEnvelope<MyUsageRow>>(
+    `/api/v1/me/usage${windowParams(window)}`,
+  ).then((r) => r.data);
 }
