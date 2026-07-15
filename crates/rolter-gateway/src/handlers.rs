@@ -571,7 +571,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         };
     }
 
-    let entry = match snap.routes.get(&model) {
+    // route-name-first: a named route always wins, even one whose name
+    // contains '/'. only on a miss do we try `provider-slug/model` addressing
+    // (ADR-0017), which pins a provider and forwards `model` as the upstream
+    // model through the same classic-pool machinery (owned entry held here).
+    let pinned = if snap.routes.contains_key(&model) {
+        None
+    } else {
+        snap.resolve_pinned(&model)
+    };
+    let entry = match snap.routes.get(&model).or(pinned.as_ref()) {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -1184,7 +1193,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         return fake_llm::transcription(response_format.as_deref());
     }
 
-    let entry = match snap.routes.get(&model) {
+    // route-name-first: a named route always wins, even one whose name
+    // contains '/'. only on a miss do we try `provider-slug/model` addressing
+    // (ADR-0017), which pins a provider and forwards `model` as the upstream
+    // model through the same classic-pool machinery (owned entry held here).
+    let pinned = if snap.routes.contains_key(&model) {
+        None
+    } else {
+        snap.resolve_pinned(&model)
+    };
+    let entry = match snap.routes.get(&model).or(pinned.as_ref()) {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(

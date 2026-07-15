@@ -123,6 +123,68 @@ async fn non_streaming_request_proxies_upstream_body() {
 }
 
 #[tokio::test]
+async fn provider_slug_model_pins_provider_and_rewrites_upstream_model() {
+    // a mock that echoes back the `model` field it received, so the test can
+    // assert the right segment of `slug/model` became the upstream model
+    async fn echo_model(Json(body): Json<Value>) -> impl IntoResponse {
+        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+        Json(json!({
+            "id": "chatcmpl-mock",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": model},
+                "finish_reason": "stop"
+            }]
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(echo_model))).await;
+    // a provider with an explicit slug, and no configured route: the request is
+    // resolved purely through `provider-slug/model` addressing (ADR-0017)
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "vLLM SPB".to_string(),
+        slug: Some("vllm-spb".to_string()),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        api_key: None,
+        api_key_env: None,
+        egress_proxy: None,
+        ca_bundles: None,
+        api_keys: Vec::new(),
+        also_track_via_llm_call: false,
+        llm_probe_model: None,
+        status_page_url: None,
+        role_profile: None,
+        model_role_profiles: Default::default(),
+    });
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(
+            &json!({"model": "vllm-spb/qwen3", "messages": [{"role": "user", "content": "ping"}]}),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // the pinned provider received the rewritten upstream model, not the address
+    assert_eq!(body["choices"][0]["message"]["content"], "qwen3");
+
+    // an unknown slug is a normal model-not-found, not a pinned forward
+    let missing = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "nope/qwen3", "messages": [{"role": "user", "content": "ping"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+}
+
+#[tokio::test]
 async fn system_only_profile_normalizes_developer_and_rejects_mid_conversation_roles() {
     async fn upstream(Json(body): Json<Value>) -> impl IntoResponse {
         assert_eq!(body["messages"][0]["role"], "system");
