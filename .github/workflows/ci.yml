@@ -26,6 +26,8 @@ jobs:
     # on this commit and never needs re-running for a metadata change
     if: github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   pr-title:
     if: github.event_name == 'pull_request'
