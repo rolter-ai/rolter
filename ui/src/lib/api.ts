@@ -370,6 +370,8 @@ export interface ProviderRow {
   id: string;
   org_id: string;
   name: string;
+  /** stable, URL-safe identity used for `provider-slug/model` addressing */
+  slug: string;
   kind: string;
   api_base: string;
   api_key_env?: string | null;
@@ -379,6 +381,8 @@ export interface ProviderRow {
 
 export interface CreateProviderInput {
   name: string;
+  /** omit to derive a slug from the name; immutable after create */
+  slug?: string;
   kind: string;
   api_base: string;
   api_key?: string;
