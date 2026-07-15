@@ -59,7 +59,8 @@ async function sendJson<T>(
 ): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers:
+      body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -336,7 +337,10 @@ export function fetchProjects(teamId: string): Promise<ProjectRow[]> {
   return getJson<ProjectRow[]>(`/api/v1/teams/${teamId}/projects`);
 }
 
-export function createOrg(input: { name: string; slug: string }): Promise<OrgRow> {
+export function createOrg(input: {
+  name: string;
+  slug: string;
+}): Promise<OrgRow> {
   return sendJson<OrgRow>("POST", "/api/v1/orgs", input);
 }
 
@@ -359,7 +363,11 @@ export function createProject(
   teamId: string,
   input: { name: string },
 ): Promise<ProjectRow> {
-  return sendJson<ProjectRow>("POST", `/api/v1/teams/${teamId}/projects`, input);
+  return sendJson<ProjectRow>(
+    "POST",
+    `/api/v1/teams/${teamId}/projects`,
+    input,
+  );
 }
 
 export function deleteProject(id: string): Promise<void> {
@@ -406,7 +414,11 @@ export function createProvider(
   orgId: string,
   input: CreateProviderInput,
 ): Promise<ProviderRow> {
-  return sendJson<ProviderRow>("POST", `/api/v1/orgs/${orgId}/providers`, input);
+  return sendJson<ProviderRow>(
+    "POST",
+    `/api/v1/orgs/${orgId}/providers`,
+    input,
+  );
 }
 
 export function updateProvider(
@@ -448,10 +460,17 @@ export function createRoute(
   projectId: string,
   input: { model: string; strategy: string },
 ): Promise<RouteRow> {
-  return sendJson<RouteRow>("POST", `/api/v1/projects/${projectId}/routes`, input);
+  return sendJson<RouteRow>(
+    "POST",
+    `/api/v1/projects/${projectId}/routes`,
+    input,
+  );
 }
 
-export function setRouteEnabled(id: string, enabled: boolean): Promise<RouteRow> {
+export function setRouteEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, { enabled });
 }
 
@@ -503,7 +522,10 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
 }
 
 export function deleteModel(model: string): Promise<void> {
-  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
+  return sendJson<void>(
+    "DELETE",
+    `/api/v1/models/${encodeURIComponent(model)}`,
+  );
 }
 
 // --- virtual keys (crates/rolter-control/src/crud.rs) ---
@@ -553,7 +575,9 @@ export function setVirtualKeyDisabled(
   id: string,
   disabled: boolean,
 ): Promise<VirtualKeyRow> {
-  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, { disabled });
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, {
+    disabled,
+  });
 }
 
 export function setVirtualKeyCache(
@@ -676,4 +700,104 @@ export function deleteModelPrice(model: string): Promise<void> {
     "DELETE",
     `/api/v1/model-prices/${encodeURIComponent(model)}`,
   );
+}
+
+// --- users + memberships (crates/rolter-control/src/crud.rs, ROL-223) ---
+
+export const ROLES = ["admin", "member", "viewer"] as const;
+export type Role = (typeof ROLES)[number];
+
+// scope types a membership can be granted at (virtual_key is not a role scope)
+export const MEMBERSHIP_SCOPE_TYPES = ["org", "team", "project"] as const;
+export type MembershipScopeType = (typeof MEMBERSHIP_SCOPE_TYPES)[number];
+
+export interface UserRow {
+  id: string;
+  email: string;
+  is_superadmin: boolean;
+  /** set when the account is deactivated (login blocked); null when active */
+  deactivated_at?: string | null;
+  created_at: string;
+}
+
+export interface MembershipRow {
+  id: string;
+  user_id: string;
+  org_id?: string | null;
+  team_id?: string | null;
+  project_id?: string | null;
+  role: string;
+  created_at: string;
+}
+
+// returned by inviteUser: the new account plus its initial org membership
+export interface CreatedUser {
+  user: UserRow;
+  membership: MembershipRow;
+}
+
+export interface InviteUserInput {
+  email: string;
+  /** optional initial password; omit for an sso-only shell account */
+  password?: string;
+  /** role granted at the org; defaults to member */
+  role?: string;
+}
+
+export interface UpdateUserInput {
+  email?: string;
+  password?: string;
+  is_superadmin?: boolean;
+  deactivated?: boolean;
+}
+
+export interface CreateMembershipInput {
+  user_id: string;
+  scope_type: MembershipScopeType;
+  scope_id: string;
+  role: string;
+}
+
+// every account with a membership anywhere in the org's tree
+export function fetchUsers(orgId: string): Promise<UserRow[]> {
+  return getJson<UserRow[]>(`/api/v1/orgs/${orgId}/users`);
+}
+
+// create/invite an account and grant it a role in the org atomically
+export function inviteUser(
+  orgId: string,
+  input: InviteUserInput,
+): Promise<CreatedUser> {
+  return sendJson<CreatedUser>("POST", `/api/v1/orgs/${orgId}/users`, input);
+}
+
+export function updateUser(
+  id: string,
+  input: UpdateUserInput,
+): Promise<UserRow> {
+  return sendJson<UserRow>("PUT", `/api/v1/users/${id}`, input);
+}
+
+export function deleteUser(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/users/${id}`);
+}
+
+// every role grant scoped within the org (org/team/project)
+export function fetchMemberships(orgId: string): Promise<MembershipRow[]> {
+  return getJson<MembershipRow[]>(`/api/v1/orgs/${orgId}/memberships`);
+}
+
+export function createMembership(
+  orgId: string,
+  input: CreateMembershipInput,
+): Promise<MembershipRow> {
+  return sendJson<MembershipRow>(
+    "POST",
+    `/api/v1/orgs/${orgId}/memberships`,
+    input,
+  );
+}
+
+export function deleteMembership(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/memberships/${id}`);
 }
