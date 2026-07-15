@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { login } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 // login — one of the two sanctioned places the вышивка thread runs
@@ -11,6 +12,24 @@ export default function Login() {
   const [email, setEmail] = useState("anya@acme.co");
   const [pw, setPw] = useState("correct-horse");
   const [show, setShow] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  // try a real local-account login first (needed for the self-service /me/*
+  // endpoints, which require a session token). if it fails — wrong creds, or an
+  // open-mode deployment with no local accounts — fall back to the email-only
+  // gate so the admin dashboard still opens exactly as before.
+  const submit = async () => {
+    const addr = email.trim() || "operator";
+    setPending(true);
+    try {
+      const res = await login(addr, pw);
+      signIn(res.user.email, res.token);
+    } catch {
+      signIn(addr);
+    } finally {
+      setPending(false);
+    }
+  };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
@@ -24,7 +43,9 @@ export default function Login() {
             </span>
           </div>
           <div className="flex flex-col gap-1">
-            <h1 className="text-xl font-semibold">Sign in to the control plane</h1>
+            <h1 className="text-xl font-semibold">
+              Sign in to the control plane
+            </h1>
             <p className="text-sm text-muted-foreground">
               Manage models, keys, routing and usage.
             </p>
@@ -33,7 +54,7 @@ export default function Login() {
             className="flex flex-col gap-4"
             onSubmit={(e) => {
               e.preventDefault();
-              signIn(email.trim() || "operator");
+              void submit();
             }}
           >
             <label className="flex flex-col gap-1.5 text-sm">
@@ -69,6 +90,7 @@ export default function Login() {
             </label>
             <Button
               type="submit"
+              disabled={pending}
               className="w-full bg-brand text-white hover:bg-brand-hover"
             >
               Sign in <ArrowRight className="h-4 w-4" />

@@ -37,6 +37,9 @@ pub struct Provider {
     pub id: Uuid,
     pub org_id: Uuid,
     pub name: String,
+    /// stable, URL-safe identity for `provider-slug/model` addressing;
+    /// `unique(org_id, slug)` and immutable by default
+    pub slug: String,
     /// a supported provider kind such as `openai`, `ollama`, `openrouter`, or `tei`
     pub kind: String,
     pub api_base: String,
@@ -82,6 +85,26 @@ pub struct VirtualKey {
     pub expires_at: Option<DateTime<Utc>>,
     /// per-key response-cache override; `NULL` inherits the route decision
     pub cache_enabled: Option<bool>,
+    /// local account that minted this key via the self-service panel; `NULL`
+    /// for admin-created or bootstrap-config keys (ROL-224)
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a virtual key owned by the current user, enriched with the project/org names
+/// it belongs to so the self-service panel can label it without needing admin
+/// read access to the tenancy tables. never carries the key hash.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OwnedVirtualKey {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub org_name: String,
+    pub key_prefix: String,
+    pub name: Option<String>,
+    pub models: Vec<String>,
+    pub disabled: bool,
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -117,4 +140,46 @@ pub struct ModelPrice {
     pub cached_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// a local account. `password_hash` is `None` for sso-only users (a later
+/// phase) and is never serialized back to a client
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    #[serde(skip_serializing)]
+    pub password_hash: Option<String>,
+    pub is_superadmin: bool,
+    /// set when an admin deactivates the account; a non-null value blocks login
+    /// while keeping the row, memberships and audit trail intact
+    pub deactivated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a role grant at a scope; scope is the most specific non-null id among
+/// `org_id`/`team_id`/`project_id`
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Membership {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    /// one of `admin` | `member` | `viewer`
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a login session. `token_hash` is the peppered digest of the opaque bearer
+/// token handed to the client; the plaintext token is never stored
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Session {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
 }
