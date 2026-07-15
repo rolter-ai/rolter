@@ -89,3 +89,23 @@ Policy (ROL-246):
 ## CI
 
 `.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
+
+### Full-stack compose smoke
+
+The `compose-smoke` job boots the production-shaped Docker Compose topology
+(Postgres, Redis, ClickHouse, gateway, control) and exercises it end-to-end. Run
+it locally with the same script CI uses:
+
+```bash
+bash docker/smoke/smoke.sh
+```
+
+It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
+over the base compose file: the overlay mounts
+[`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
+keyless open gateway config) so the built-in `fake-llm` model answers without any
+provider secret. The script waits for both `/healthz` endpoints, checks
+`/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
+postgres-backed `/internal/snapshot` on the control plane, then always dumps
+compose logs and runs `down -v`. It is **informational** (`continue-on-error`)
+until the image-build cost and flake profile are trusted (ROL-245).

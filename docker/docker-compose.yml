@@ -63,8 +63,8 @@ services:
     environment:
       RUST_LOG: info
       ROLTER_UI_DIR: /app/ui/dist
-      DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
-      REDIS_URL: redis://redis:6379
+      ROLTER_DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
+      ROLTER_REDIS_URL: redis://redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
     depends_on:
       - postgres
