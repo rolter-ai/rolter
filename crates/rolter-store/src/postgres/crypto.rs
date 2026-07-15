@@ -58,14 +58,12 @@ impl Kek {
         let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce)
             .map_err(|_| Error::Store("provider key nonce must be 12 bytes".into()))?;
         let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.0));
-        let plaintext = cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|_| {
-                Error::Store(format!(
-                    "failed to decrypt provider key; check that {KEK_ENV} matches the key \
+        let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| {
+            Error::Store(format!(
+                "failed to decrypt provider key; check that {KEK_ENV} matches the key \
                      used when the credential was stored"
-                ))
-            })?;
+            ))
+        })?;
         String::from_utf8(plaintext)
             .map_err(|_| Error::Store("decrypted provider key is not valid utf-8".into()))
     }
