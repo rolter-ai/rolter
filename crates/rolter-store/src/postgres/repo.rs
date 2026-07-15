@@ -166,7 +166,7 @@ pub struct ProviderRepo<'a>(pub &'a PgPool);
 impl ProviderRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -177,7 +177,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -192,18 +192,20 @@ impl ProviderRepo<'_> {
         &self,
         org_id: Uuid,
         name: &str,
+        slug: &str,
         kind: &str,
         api_base: &str,
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, kind, api_base, api_key_env, egress_proxy)
-             values ($1, $2, $3, $4, $5, $6)
-             returning id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy)
+             values ($1, $2, $3, $4, $5, $6, $7)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
         )
         .bind(org_id)
         .bind(name)
+        .bind(slug)
         .bind(kind)
         .bind(api_base)
         .bind(api_key_env)
@@ -214,10 +216,15 @@ impl ProviderRepo<'_> {
     }
 
     /// Partially update a provider. `None` leaves a field unchanged; the
-    /// nullable fields take `Some(None)` to clear.
+    /// nullable fields take `Some(None)` to clear. `slug` is immutable by
+    /// default — callers must only pass `Some` after an explicit override
+    /// (the control API gates this); the charset constraint is enforced by the
+    /// database.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update(
         &self,
         id: Uuid,
+        slug: Option<&str>,
         kind: Option<&str>,
         api_base: Option<&str>,
         api_key_env: Option<Option<&str>>,
@@ -225,14 +232,16 @@ impl ProviderRepo<'_> {
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
-                 kind = coalesce($2, kind),
-                 api_base = coalesce($3, api_base),
-                 api_key_env = case when $4 then $5 else api_key_env end,
-                 egress_proxy = case when $6 then $7 else egress_proxy end
+                 slug = coalesce($2, slug),
+                 kind = coalesce($3, kind),
+                 api_base = coalesce($4, api_base),
+                 api_key_env = case when $5 then $6 else api_key_env end,
+                 egress_proxy = case when $7 then $8 else egress_proxy end
              where id = $1
-             returning id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
         )
         .bind(id)
+        .bind(slug)
         .bind(kind)
         .bind(api_base)
         .bind(api_key_env.is_some())
@@ -901,6 +910,7 @@ mod tests {
         let provider = providers
             .create(
                 org.id,
+                "openai",
                 "openai",
                 "openai",
                 "https://api.openai.com",

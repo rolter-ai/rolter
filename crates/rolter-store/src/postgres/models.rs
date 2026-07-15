@@ -37,6 +37,9 @@ pub struct Provider {
     pub id: Uuid,
     pub org_id: Uuid,
     pub name: String,
+    /// stable, URL-safe identity for `provider-slug/model` addressing;
+    /// `unique(org_id, slug)` and immutable by default
+    pub slug: String,
     /// a supported provider kind such as `openai`, `ollama`, `openrouter`, or `tei`
     pub kind: String,
     pub api_base: String,

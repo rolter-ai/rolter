@@ -17,6 +17,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use rolter_auth::Role;
+use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::Error;
 use rolter_store::postgres::models::{
     Budget, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team, VirtualKey,
@@ -100,6 +101,7 @@ pub(crate) fn pool(state: &ControlState) -> &PgPool {
         .expect("crud router is only mounted when a postgres pool is configured")
 }
 
+#[derive(Debug)]
 pub(crate) enum ApiError {
     Core(Error),
     /// mutation collides with a config-file-owned resource (409)
@@ -358,6 +360,8 @@ async fn list_providers(
 #[derive(Deserialize)]
 struct CreateProvider {
     name: String,
+    /// stable URL-safe identity; when omitted it is derived from `name`
+    slug: Option<String>,
     kind: String,
     api_base: String,
     /// upstream credential, sealed with AES-256-GCM (`ROLTER_KEK`) before it
@@ -405,6 +409,53 @@ fn validate_kind(kind: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Resolve the slug for a new provider: an explicit `slug` is validated as-is;
+/// an omitted one is derived from `name`. A name with no ascii-alphanumerics
+/// slugifies to the empty string, so the caller must supply an explicit slug.
+fn resolve_new_slug(name: &str, slug: Option<&str>) -> ApiResult<String> {
+    let candidate = match slug.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(explicit) => explicit.to_string(),
+        None => slugify(name),
+    };
+    validate_slug(&candidate)?;
+    Ok(candidate)
+}
+
+fn validate_slug(slug: &str) -> ApiResult<()> {
+    if !is_valid_slug(slug) {
+        return Err(ApiError::Core(Error::Config(
+            "slug must match ^[a-z0-9][a-z0-9-]{0,62}$ (lowercase alphanumerics and \
+             hyphens, 1-63 chars, not starting with a hyphen); a name with no ascii \
+             letters or digits needs an explicit slug"
+                .to_string(),
+        )));
+    }
+    Ok(())
+}
+
+/// Decide whether a provider update changes the slug. `new` is the requested
+/// slug from the body (`None`/empty means leave unchanged). Since the slug is a
+/// stable identity, a real change requires `allow` (the `allow_slug_change`
+/// opt-in); a no-op that repeats the current slug is always allowed. Returns
+/// `Some(slug)` only when the row should actually change.
+fn resolve_slug_change(new: Option<&str>, current: &str, allow: bool) -> ApiResult<Option<String>> {
+    match new.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(v) if v == current => Ok(None),
+        Some(v) => {
+            if !allow {
+                return Err(ApiError::Core(Error::Config(
+                    "slug is immutable; pass allow_slug_change=true to rename it (this \
+                     changes the provider-slug/model address)"
+                        .to_string(),
+                )));
+            }
+            validate_slug(v)?;
+            Ok(Some(v.to_string()))
+        }
+    }
+}
+
 async fn create_provider(
     principal: Principal,
     State(state): State<ControlState>,
@@ -416,12 +467,14 @@ async fn create_provider(
     require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
     validate_kind(&body.kind)?;
+    let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
     // seal before touching the database so a missing KEK leaves no row behind
     let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
         .create(
             org_id,
             &body.name,
+            &slug,
             &body.kind,
             &body.api_base,
             body.api_key_env.as_deref(),
@@ -439,6 +492,12 @@ async fn create_provider(
 
 #[derive(Deserialize)]
 struct UpdateProvider {
+    /// new slug; rejected unless `allow_slug_change` is true, since the slug is
+    /// a stable identity that addresses (`provider-slug/model`) depend on
+    slug: Option<String>,
+    /// explicit opt-in to rename an immutable slug
+    #[serde(default)]
+    allow_slug_change: bool,
     /// omit to leave unchanged
     kind: Option<String>,
     /// omit to leave unchanged
@@ -481,6 +540,8 @@ async fn update_provider(
     if let Some(api_base) = &body.api_base {
         require_non_empty(api_base, "api_base")?;
     }
+    let slug_change =
+        resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     // seal before writing anything so a missing KEK changes nothing
     let sealed = match body.api_key.as_deref().map(str::trim) {
         None => None,
@@ -490,6 +551,7 @@ async fn update_provider(
     let row = ProviderRepo(pool(&state))
         .update(
             id,
+            slug_change.as_deref(),
             body.kind.as_deref(),
             body.api_base.as_deref(),
             tri_state(&body.api_key_env),
@@ -1089,4 +1151,72 @@ async fn delete_model(
     RouteRepo(pool(&state)).delete_by_model(&model).await?;
     publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::*;
+
+    fn is_config_err(res: ApiResult<impl std::fmt::Debug>) -> bool {
+        matches!(res, Err(ApiError::Core(Error::Config(_))))
+    }
+
+    #[test]
+    fn new_slug_derives_from_name_when_omitted() {
+        assert_eq!(resolve_new_slug("OpenAI MSK", None).unwrap(), "openai-msk");
+    }
+
+    #[test]
+    fn new_slug_accepts_explicit_and_trims() {
+        assert_eq!(
+            resolve_new_slug("whatever", Some("  vllm-spb ")).unwrap(),
+            "vllm-spb"
+        );
+    }
+
+    #[test]
+    fn new_slug_rejects_invalid_explicit() {
+        assert!(is_config_err(resolve_new_slug("x", Some("Bad Slug"))));
+    }
+
+    #[test]
+    fn new_slug_requires_explicit_when_name_has_no_ascii() {
+        assert!(is_config_err(resolve_new_slug("非漢字", None)));
+        assert_eq!(resolve_new_slug("非漢字", Some("kanji")).unwrap(), "kanji");
+    }
+
+    #[test]
+    fn slug_change_is_noop_when_absent_or_unchanged() {
+        assert_eq!(resolve_slug_change(None, "openai", false).unwrap(), None);
+        assert_eq!(
+            resolve_slug_change(Some(""), "openai", false).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_slug_change(Some("openai"), "openai", false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn slug_change_rejected_without_opt_in() {
+        assert!(is_config_err(resolve_slug_change(
+            Some("renamed"),
+            "openai",
+            false
+        )));
+    }
+
+    #[test]
+    fn slug_change_allowed_with_opt_in_and_validated() {
+        assert_eq!(
+            resolve_slug_change(Some("renamed"), "openai", true).unwrap(),
+            Some("renamed".to_string())
+        );
+        assert!(is_config_err(resolve_slug_change(
+            Some("Bad"),
+            "openai",
+            true
+        )));
+    }
 }
