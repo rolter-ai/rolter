@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { CopyButton } from "@/components/CopyButton";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -104,6 +105,20 @@ export default function Providers() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
+              <div className="flex items-center gap-1">
+                <Badge tone="outline" className="font-mono">
+                  {provider.slug}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  address models as{" "}
+                  <span className="font-mono">{provider.slug}/&lt;model&gt;</span>
+                </span>
+                <CopyButton
+                  value={`${provider.slug}/`}
+                  label="Copy address prefix"
+                  className="ml-auto h-6 px-1.5"
+                />
+              </div>
               {provider.egress_proxy && (
                 <p className="truncate text-xs text-muted-foreground">
                   egress proxy: {provider.egress_proxy}
@@ -176,7 +191,7 @@ export default function Providers() {
   );
 }
 
-function AddProviderDialog({
+export function AddProviderDialog({
   open,
   onOpenChange,
   orgId,
@@ -185,9 +200,10 @@ function AddProviderDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   orgId: string;
-  onDone: () => void;
+  onDone: (created: ProviderRow) => void;
 }) {
   const [name, setName] = React.useState("");
+  const [slug, setSlug] = React.useState("");
   const [kind, setKind] = React.useState<string>(PROVIDER_KINDS[0]);
   const [apiBase, setApiBase] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
@@ -197,6 +213,7 @@ function AddProviderDialog({
   React.useEffect(() => {
     if (open) {
       setName("");
+      setSlug("");
       setKind(PROVIDER_KINDS[0]);
       setApiBase("");
       setApiKey("");
@@ -209,14 +226,15 @@ function AddProviderDialog({
     mutationFn: () =>
       createProvider(orgId, {
         name,
+        slug: slug.trim() || undefined,
         kind,
         api_base: apiBase,
         api_key: apiKey || undefined,
         api_key_env: apiKeyEnv || undefined,
         egress_proxy: egressProxy || undefined,
       }),
-    onSuccess: () => {
-      onDone();
+    onSuccess: (created) => {
+      onDone(created);
       onOpenChange(false);
     },
   });
@@ -235,6 +253,17 @@ function AddProviderDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="openai-primary"
+          />
+        </Field>
+        <Field
+          label="Slug (optional)"
+          hint="URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create"
+        >
+          <Input
+            value={slug}
+            onChange={(e) => setSlug(e.target.value)}
+            placeholder="openai-primary"
+            className="font-mono"
           />
         </Field>
         <Field label="Kind">
@@ -354,6 +383,17 @@ function EditProviderDialog({
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
+        <Field
+          label="Slug"
+          hint="immutable identity for provider-slug/model addressing"
+        >
+          <div className="flex items-center gap-1">
+            <Input value={provider?.slug ?? ""} readOnly disabled className="font-mono" />
+            {provider && (
+              <CopyButton value={`${provider.slug}/`} label="Copy address prefix" />
+            )}
+          </div>
+        </Field>
         <Field label="Kind">
           <Select value={kind} onChange={(e) => setKind(e.target.value)}>
             {PROVIDER_KINDS.map((k) => (
