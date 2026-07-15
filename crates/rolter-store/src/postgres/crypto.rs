@@ -7,7 +7,7 @@
 //! not forced into a specific encoding or length. Ciphertext and the random
 //! 96-bit nonce are stored side by side; the KEK never touches the database.
 
-use aes_gcm::aead::{Aead, OsRng};
+use aes_gcm::aead::{Aead, Generate};
 use aes_gcm::{AeadCore, Aes256Gcm, Key, KeyInit, Nonce};
 use sha2::{Digest, Sha256};
 
@@ -44,8 +44,8 @@ impl Kek {
     /// Seal a plaintext credential. Returns `(ciphertext, nonce)` ready for
     /// the `provider_keys` table.
     pub fn encrypt(&self, plaintext: &str) -> Result<(Vec<u8>, Vec<u8>)> {
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0));
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.0));
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::generate();
         let ciphertext = cipher
             .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|_| Error::Store("failed to encrypt provider key".into()))?;
@@ -55,12 +55,11 @@ impl Kek {
     /// Open a sealed credential. Fails when the KEK does not match the one
     /// that sealed it or the ciphertext was tampered with.
     pub fn decrypt(&self, ciphertext: &[u8], nonce: &[u8]) -> Result<String> {
-        if nonce.len() != 12 {
-            return Err(Error::Store("provider key nonce must be 12 bytes".into()));
-        }
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0));
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce)
+            .map_err(|_| Error::Store("provider key nonce must be 12 bytes".into()))?;
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.0));
         let plaintext = cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| {
                 Error::Store(format!(
                     "failed to decrypt provider key; check that {KEK_ENV} matches the key \
