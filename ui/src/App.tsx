@@ -10,6 +10,7 @@ import Logs from "@/pages/Logs";
 import Models from "@/pages/Models";
 import Pricing from "@/pages/Pricing";
 import Providers from "@/pages/Providers";
+import Users from "@/pages/Users";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +18,7 @@ const nav = [
   { to: "/", label: "Models", end: true },
   { to: "/keys", label: "Keys", end: false },
   { to: "/providers", label: "Providers", end: false },
+  { to: "/users", label: "Users", end: false },
   { to: "/limits", label: "Limits", end: false },
   { to: "/pricing", label: "Pricing", end: false },
   { to: "/health", label: "Health", end: false },
@@ -86,6 +88,7 @@ export default function App() {
             <Route path="/" element={<Models />} />
             <Route path="/keys" element={<Keys />} />
             <Route path="/providers" element={<Providers />} />
+            <Route path="/users" element={<Users />} />
             <Route path="/limits" element={<Limits />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/health" element={<Health />} />
