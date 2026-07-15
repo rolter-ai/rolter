@@ -33,3 +33,6 @@ docs/book/
 
 # Local output from the optional CPU inference-engine smoke/benchmark suite.
 artifacts/engines/
+
+# machine-specific Claude Code preview launch config
+.claude/launch.json
