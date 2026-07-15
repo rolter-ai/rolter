@@ -338,14 +338,20 @@ function AddModelDialog({
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
-        <Field label="Model name">
+        <Field
+          label="Model name"
+          info="The public model name clients send as `model` (e.g. gpt-4o). rolter routes requests for this name to the targets below."
+        >
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="gpt-4o"
           />
         </Field>
-        <Field label="Strategy">
+        <Field
+          label="Strategy"
+          info="How requests spread across this route's targets. round_robin cycles evenly; weighted honours per-target weight; cache_aware/consistent_hash favour affinity; power_of_two picks the lighter of two random targets."
+        >
           <Select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
             {STRATEGIES.map((s) => (
               <option key={s} value={s}>
@@ -356,6 +362,7 @@ function AddModelDialog({
         </Field>
         <Field
           label="Target provider"
+          info="The upstream provider that actually serves this model. Pick 'none' to create a routing entry now and attach targets later from Edit."
           hint={providers.length ? undefined : "no providers configured for this org yet"}
         >
           <div className="flex items-center gap-1">
@@ -386,14 +393,20 @@ function AddModelDialog({
         </Field>
         {providerId && (
           <>
-            <Field label="Upstream model (optional)">
+            <Field
+              label="Upstream model (optional)"
+              info="The model name sent to the provider, if it differs from the public name. Leave blank to forward the public name unchanged."
+            >
               <Input
                 value={upstreamModel}
                 onChange={(e) => setUpstreamModel(e.target.value)}
                 placeholder="defaults to the public model name"
               />
             </Field>
-            <Field label="Weight">
+            <Field
+              label="Weight"
+              info="Relative share of traffic for this target under weighted strategies. Higher = more traffic. Ignored by non-weighted strategies. Default 1."
+            >
               <Input
                 type="number"
                 min={1}
@@ -567,7 +580,10 @@ function EditModelDialog({
         </div>
 
         <div className="space-y-2 rounded-md border border-dashed border-border p-3">
-          <Field label="Provider">
+          <Field
+            label="Provider"
+            info="The upstream provider that serves this target. Add more targets to load-balance one model across providers."
+          >
             <Select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -576,13 +592,19 @@ function EditModelDialog({
               ))}
             </Select>
           </Field>
-          <Field label="Upstream model (optional)">
+          <Field
+            label="Upstream model (optional)"
+            info="The model name sent to this provider, if it differs from the public name. Leave blank to forward the public name unchanged."
+          >
             <Input
               value={upstreamModel}
               onChange={(e) => setUpstreamModel(e.target.value)}
             />
           </Field>
-          <Field label="Weight">
+          <Field
+            label="Weight"
+            info="Relative share of traffic for this target under weighted strategies. Higher = more traffic. Default 1."
+          >
             <Input
               type="number"
               min={1}

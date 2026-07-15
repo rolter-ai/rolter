@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { InfoHint } from "@/components/ui/info-hint";
 import { cn } from "@/lib/utils";
 
 // label + control + helper/error wrapper, mirrors the Rolter Design System
@@ -10,6 +11,9 @@ export interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
   htmlFor?: string;
   error?: string;
   hint?: string;
+  // optional explanatory note surfaced via an (i) button beside the label:
+  // what the field is and what values to use
+  info?: React.ReactNode;
 }
 
 export function Field({
@@ -17,6 +21,7 @@ export function Field({
   htmlFor,
   error,
   hint,
+  info,
   className,
   children,
   ...props
@@ -24,9 +29,12 @@ export function Field({
   return (
     <div className={cn("space-y-1.5", className)} {...props}>
       {label && (
-        <label htmlFor={htmlFor} className="text-sm font-medium leading-none">
-          {label}
-        </label>
+        <div className="flex items-center gap-1.5">
+          <label htmlFor={htmlFor} className="text-sm font-medium leading-none">
+            {label}
+          </label>
+          {info && <InfoHint text={info} label={`About ${label}`} />}
+        </div>
       )}
       {children}
       {error ? (

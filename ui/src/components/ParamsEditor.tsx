@@ -2,6 +2,7 @@ import { AlertTriangle, Lock, LockOpen, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
@@ -264,7 +265,13 @@ export function ParamsEditor(props: EditProps | CreateProps) {
   return (
     <div className="space-y-3 rounded-md border border-dashed border-border p-3">
       <div className="space-y-0.5">
-        <p className="text-sm font-medium leading-none">Params</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium leading-none">Params</p>
+          <InfoHint
+            label="About params"
+            text="Default inference params sent to the upstream on every request for this model (e.g. temperature 0.7, max_tokens 1024). Pick the value's type per row; json accepts arrays/objects like stop sequences."
+          />
+        </div>
         <p className="text-xs text-muted-foreground">
           Admin default inference params, applied reload-free on save.
         </p>
@@ -342,10 +349,10 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                   aria-pressed={row.locked}
                   onClick={() => updateRow(row.id, { locked: !row.locked })}
                   className={
-                    "mt-0.5 shrink-0 rounded-md border p-1.5 transition-colors " +
+                    "mt-0.5 shrink-0 rounded-md border border-input p-1.5 transition-colors hover:bg-transparent " +
                     (row.locked
-                      ? "border-border bg-muted text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground")
+                      ? "bg-destructive text-destructive-foreground hover:text-destructive"
+                      : "bg-[color:var(--surface-subtle)] text-muted-foreground hover:text-foreground")
                   }
                 >
                   {row.locked ? (
@@ -388,7 +395,13 @@ export function ParamsEditor(props: EditProps | CreateProps) {
       )}
 
       <div className="space-y-2 border-t border-border pt-3">
-        <p className="text-sm font-medium leading-none">Override policy</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium leading-none">Override policy</p>
+          <InfoHint
+            label="About override policy"
+            text="Governs whether a caller's request params can replace these admin defaults. 'Callers may override' allows all; 'Locked by default' allows none; 'Manual' decides per param with the lock toggle on each row."
+          />
+        </div>
         <div className="inline-flex rounded-md border border-border p-0.5 text-xs">
           {(["allow", "deny", "manual"] as const).map((m) => (
             <button
