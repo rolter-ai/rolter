@@ -772,3 +772,166 @@ async fn open_mode_allows_unauthenticated_mutations() {
         resp.status()
     );
 }
+
+/// Full user lifecycle (ROL-223): invite an account into an org, list it, grant
+/// a team-scoped role, then deactivate it and confirm login is blocked while the
+/// row and its memberships survive.
+#[tokio::test]
+async fn user_and_membership_lifecycle() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    // org → team scaffold
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+
+    // invite a user into the org with an initial password + role
+    let created = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/users"),
+        json!({"email": "dev@example.com", "password": "hunter2!!", "role": "member"}),
+    )
+    .await;
+    let user_id = created["user"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["user"]["email"], "dev@example.com");
+    assert_eq!(created["user"]["is_superadmin"], false);
+    // the password hash must never be serialized back
+    assert!(created["user"].get("password_hash").is_none());
+    assert_eq!(created["membership"]["role"], "member");
+
+    // the account shows up in the org's user list
+    let users: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/users"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        users.as_array().unwrap().iter().any(|u| u["id"] == user_id),
+        "invited user missing from org list: {users}"
+    );
+
+    // duplicate email is a conflict
+    let dup = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/users"))
+        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dup.status(), 409);
+
+    // grant a team-scoped admin role
+    let membership = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/memberships"),
+        json!({"user_id": user_id, "scope_type": "team", "scope_id": team_id, "role": "admin"}),
+    )
+    .await;
+    let membership_id = membership["id"].as_str().unwrap().to_string();
+    assert_eq!(membership["team_id"], team_id);
+
+    // both memberships (org member + team admin) are listed for the org
+    let memberships: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/memberships"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        memberships.as_array().unwrap().len(),
+        2,
+        "expected org + team memberships: {memberships}"
+    );
+
+    // the account can log in before deactivation
+    let ok = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200, "login should succeed before deactivation");
+
+    // deactivate the account
+    let deact = client
+        .put(format!("{base}/api/v1/users/{user_id}"))
+        .json(&json!({"deactivated": true}))
+        .send()
+        .await
+        .unwrap();
+    assert!(deact.status().is_success());
+    let deact_body: Value = deact.json().await.unwrap();
+    assert!(deact_body["deactivated_at"].is_string());
+
+    // login is now blocked, but the user + memberships still exist
+    let blocked = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 401, "deactivated account must not log in");
+    let still: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/memberships"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(still.as_array().unwrap().len(), 2);
+
+    // revoke the team membership, then delete the account
+    let del_m = client
+        .delete(format!("{base}/api/v1/memberships/{membership_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_m.status(), 204);
+    let del_u = client
+        .delete(format!("{base}/api/v1/users/{user_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_u.status(), 204);
+
+    // the org user list is empty again (cascade removed the org membership too)
+    let after: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/users"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        after.as_array().unwrap().is_empty(),
+        "user should be gone after delete: {after}"
+    );
+}

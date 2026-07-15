@@ -127,6 +127,12 @@ async fn login(
         .await?
         .ok_or(AuthError::InvalidCredentials)?;
 
+    if user.deactivated_at.is_some() {
+        // deactivated accounts keep their row but cannot authenticate; reject
+        // like a bad credential rather than revealing the account is disabled
+        return Err(AuthError::InvalidCredentials);
+    }
+
     let Some(hash) = &user.password_hash else {
         // sso-only account (no local password set); reject like a wrong
         // password rather than leaking which accounts exist

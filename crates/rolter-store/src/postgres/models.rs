@@ -131,6 +131,9 @@ pub struct User {
     #[serde(skip_serializing)]
     pub password_hash: Option<String>,
     pub is_superadmin: bool,
+    /// set when an admin deactivates the account; a non-null value blocks login
+    /// while keeping the row, memberships and audit trail intact
+    pub deactivated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 

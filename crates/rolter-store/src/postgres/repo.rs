@@ -773,7 +773,7 @@ pub struct UserRepo<'a>(pub &'a PgPool);
 impl UserRepo<'_> {
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
              from users where email = $1",
         )
         .bind(email)
@@ -784,13 +784,113 @@ impl UserRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, created_at from users where id = $1",
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+             from users where id = $1",
         )
         .bind(id)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// list every user that holds at least one membership anywhere in `org_id`'s
+    /// tree (org, its teams, or their projects). this is the admin-visible set of
+    /// accounts for an org; superadmins with no org membership are not included.
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
+        sqlx::query_as(
+            "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
+                    u.deactivated_at, u.created_at
+             from users u
+             join memberships m on m.user_id = u.id
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1
+             order by u.email",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// create a local account. `password_hash` is a pre-computed argon2id digest
+    /// (the repo never sees plaintext); pass `None` for an sso-only shell account
+    pub async fn create(
+        &self,
+        email: &str,
+        password_hash: Option<&str>,
+        is_superadmin: bool,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "insert into users (email, password_hash, is_superadmin)
+             values ($1, $2, $3)
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(is_superadmin)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// update mutable account fields. each `Some` is applied via `coalesce`, so
+    /// `None` leaves the stored value untouched. `password_hash` follows the same
+    /// rule; there is no way to clear a password back to null through this path.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        email: Option<&str>,
+        password_hash: Option<&str>,
+        is_superadmin: Option<bool>,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "update users set
+                 email = coalesce($2, email),
+                 password_hash = coalesce($3, password_hash),
+                 is_superadmin = coalesce($4, is_superadmin)
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(password_hash)
+        .bind(is_superadmin)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// flip the deactivation flag. `true` stamps `deactivated_at = now()` (login
+    /// blocked); `false` clears it back to null (re-enabled). the caller is
+    /// responsible for deleting live sessions when deactivating.
+    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<User> {
+        sqlx::query_as(
+            "update users set deactivated_at = case when $2 then now() else null end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(id)
+        .bind(deactivated)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from users where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("user {id}")));
+        }
+        Ok(())
     }
 }
 
@@ -807,6 +907,75 @@ impl MembershipRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// every membership whose scope falls within `org_id`'s tree (an org-scoped
+    /// grant, a grant on one of its teams, or on one of their projects), so an
+    /// org admin can see and manage all role assignments under their org
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<Membership>> {
+        sqlx::query_as(
+            "select m.id, m.user_id, m.org_id, m.team_id, m.project_id, m.role, m.created_at
+             from memberships m
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1
+             order by m.created_at",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<Membership> {
+        sqlx::query_as(
+            "select id, user_id, org_id, team_id, project_id, role, created_at
+             from memberships where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("membership {id}")))
+    }
+
+    /// grant `role` to `user_id` at exactly one scope. exactly one of
+    /// `org_id`/`team_id`/`project_id` should be non-null (the most-specific
+    /// scope id); enforcement of that invariant is left to the caller.
+    pub async fn create(
+        &self,
+        user_id: Uuid,
+        org_id: Option<Uuid>,
+        team_id: Option<Uuid>,
+        project_id: Option<Uuid>,
+        role: &str,
+    ) -> Result<Membership> {
+        sqlx::query_as(
+            "insert into memberships (user_id, org_id, team_id, project_id, role)
+             values ($1, $2, $3, $4, $5)
+             returning id, user_id, org_id, team_id, project_id, role, created_at",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .bind(team_id)
+        .bind(project_id)
+        .bind(role)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from memberships where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("membership {id}")));
+        }
+        Ok(())
     }
 }
 
@@ -854,6 +1023,17 @@ impl SessionRepo<'_> {
     pub async fn delete_by_hash(&self, token_hash: &str) -> Result<()> {
         sqlx::query("delete from sessions where token_hash = $1")
             .bind(token_hash)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// revoke every live session for a user (used when an account is
+    /// deactivated or deleted so access is cut immediately)
+    pub async fn delete_for_user(&self, user_id: Uuid) -> Result<()> {
+        sqlx::query("delete from sessions where user_id = $1")
+            .bind(user_id)
             .execute(self.0)
             .await
             .map_err(store_err)?;
