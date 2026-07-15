@@ -408,6 +408,7 @@ mod tests {
     fn provider(kind: ProviderKind, api_base: String) -> ProviderConfig {
         ProviderConfig {
             name: "p".to_string(),
+            slug: None,
             kind,
             api_base,
             api_key: None,
@@ -566,6 +567,7 @@ mod tests {
         });
         let provider = ProviderConfig {
             name: "slow".to_string(),
+            slug: None,
             kind: ProviderKind::OpenaiCompatible,
             api_base: format!("http://{addr}"),
             api_key: None,

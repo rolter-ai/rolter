@@ -465,6 +465,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.providers.push(rolter_core::ProviderConfig {
             name: "openai".to_string(),
+            slug: None,
             kind: rolter_core::ProviderKind::Openai,
             api_base: "https://api.openai.com".to_string(),
             api_key: Some("sk-super-secret".to_string()),

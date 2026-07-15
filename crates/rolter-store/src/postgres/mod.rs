@@ -45,6 +45,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
 #[derive(FromRow)]
 struct ProviderRow {
     name: String,
+    slug: String,
     kind: String,
     api_base: String,
     api_key_env: Option<String>,
@@ -94,6 +95,7 @@ impl ProviderRow {
         };
         Ok(ProviderConfig {
             name: row.name,
+            slug: Some(row.slug),
             kind,
             api_base: row.api_base,
             api_key,
@@ -191,7 +193,7 @@ impl PostgresConfigStore {
 
     async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
-            "select p.name, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
+            "select p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
                     pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id
@@ -468,8 +470,8 @@ mod tests {
         assert_eq!(current_version(&pool).await.unwrap(), v0);
 
         sqlx::query(
-            "insert into providers (org_id, name, kind, api_base)
-             values ($1, 'openai', 'openai', 'https://api.openai.com')",
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'openai', 'openai', 'openai', 'https://api.openai.com')",
         )
         .bind(org_id)
         .execute(&pool)
@@ -480,8 +482,8 @@ mod tests {
         // a rolled-back write must not bump the version
         let mut txn = pool.begin().await.unwrap();
         sqlx::query(
-            "insert into providers (org_id, name, kind, api_base)
-             values ($1, 'ghost', 'openai', 'https://ghost.example.com')",
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'ghost', 'ghost', 'openai', 'https://ghost.example.com')",
         )
         .bind(org_id)
         .execute(&mut *txn)
@@ -527,8 +529,8 @@ mod tests {
         .await
         .unwrap();
         let provider_id: Uuid = sqlx::query_scalar(
-            "insert into providers (org_id, name, kind, api_base, api_key_env)
-             values ($1, 'openai', 'openai', 'https://api.openai.com', 'OPENAI_API_KEY')
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env)
+             values ($1, 'openai', 'openai', 'openai', 'https://api.openai.com', 'OPENAI_API_KEY')
              returning id",
         )
         .bind(org_id)

@@ -72,6 +72,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
     for (name, addr) in providers {
         config.providers.push(ProviderConfig {
             name: name.to_string(),
+            slug: None,
             kind: ProviderKind::OpenaiCompatible,
             api_base: format!("http://{addr}"),
             api_key: None,
@@ -1245,6 +1246,7 @@ async fn variant_routing_fails_over_to_next_variant() {
     for (name, addr) in [("down", down), ("up", up)] {
         config.providers.push(ProviderConfig {
             name: name.to_string(),
+            slug: None,
             kind: ProviderKind::OpenaiCompatible,
             api_base: format!("http://{addr}"),
             api_key: None,
