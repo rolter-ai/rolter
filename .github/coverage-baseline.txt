@@ -1,0 +1,7 @@
+# workspace line-coverage baseline (percent) for the coverage ratchet.
+# see .github/scripts/coverage-ratchet.sh and docs/development/testing.md.
+# measured with: cargo llvm-cov --workspace --all-features
+# raise this when coverage climbs; new code must not drop below baseline − tolerance.
+# set below the ~65.3% measured on 2026-07-15 to absorb CI/local variance
+# (the postgres suites need a live DB and don't contribute here).
+64.0
