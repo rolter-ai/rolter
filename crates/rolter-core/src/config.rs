@@ -245,6 +245,12 @@ pub enum RoleProfile {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderConfig {
     pub name: String,
+    /// stable, URL-safe identity for `provider-slug/model` addressing. When
+    /// absent (e.g. a bootstrap TOML that predates slugs) callers derive one
+    /// from `name` via [`crate::slug::slugify`]; the postgres store always
+    /// populates it from the `providers.slug` column
+    #[serde(default)]
+    pub slug: Option<String>,
     pub kind: ProviderKind,
     /// base url without a trailing slash, e.g. `https://api.openai.com`
     pub api_base: String,
@@ -1658,6 +1664,7 @@ mod tests {
     fn provider_with_keys(api_keys: Vec<ApiKeyConfig>) -> ProviderConfig {
         ProviderConfig {
             name: "p".to_string(),
+            slug: None,
             kind: ProviderKind::OpenaiCompatible,
             api_base: "http://x".to_string(),
             api_key: Some("legacy".to_string()),

@@ -23,6 +23,7 @@ async fn serve(app: Router) -> SocketAddr {
 fn provider(name: &str, api_base: String) -> ProviderConfig {
     ProviderConfig {
         name: name.into(),
+        slug: None,
         kind: ProviderKind::Openrouter,
         api_base,
         api_key: Some("test-openrouter-key".into()),

@@ -25,6 +25,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
     let mut config = GatewayConfig::default();
     config.providers.push(ProviderConfig {
         name: "local-llama".into(),
+        slug: None,
         kind: ProviderKind::LlamaCpp,
         api_base: format!("http://{addr}"),
         api_key: None,
