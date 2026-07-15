@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.9](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.8...rolter-control-v0.0.9) - 2026-07-15
+
+### Features
+- *(control)* self-service virtual keys + usage API [ROL-224] ([#198](https://github.com/rolter-ai/rolter/pull/198)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add user & membership CRUD API [ROL-223] ([#196](https://github.com/rolter-ai/rolter/pull/196)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* add immutable URL-safe provider slug for model addressing ([#191](https://github.com/rolter-ai/rolter/pull/191)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add per-invocation log viewer to Logs page ([#189](https://github.com/rolter-ai/rolter/pull/189)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* enforce per-user roles on control mutations (RBAC) ([#188](https://github.com/rolter-ai/rolter/pull/188)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add local account login/session auth (argon2id + postgres bearer tokens) ([#187](https://github.com/rolter-ai/rolter/pull/187)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.8](https://github.com/ormeilu/rolter/compare/rolter-control-v0.0.7...rolter-control-v0.0.8) - 2026-07-13
 
 ### Features
