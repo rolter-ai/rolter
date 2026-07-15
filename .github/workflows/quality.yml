@@ -12,6 +12,13 @@ name: quality
 # promoted to blocking — see ROL-124.
 on:
   workflow_call:
+    # reusable workflows do not inherit caller secrets automatically. the gitleaks
+    # job needs a license because the repo is org-owned; each caller passes it
+    # explicitly (least-privilege — no `secrets: inherit`). optional so callers
+    # that predate the secret still validate; gitleaks then fails loudly.
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
 
 # least-privilege GITHUB_TOKEN: every job here only reads the checked-out repo.
 # a reusable workflow cannot exceed the caller's grant, but declaring it here
@@ -155,6 +162,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_CONFIG: .github/config/gitleaks.toml
+          # required since the repo moved under the rolter-ai org: gitleaks-action
+          # gates org-owned repos behind a license (the CLI itself is free)
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   # ── workflow lint: validate the CI yaml itself ──────────────────────────────
   # agents edit workflows too; catch syntax and shell smells early.

@@ -30,6 +30,8 @@ jobs:
   # never ships.
   verify:
     uses: ./.github/workflows/quality.yml
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   # asserts the external app-provided checks (CodeQL, secret scanning) reported
   # success for this commit. fail-closed: pending or missing checks block the
