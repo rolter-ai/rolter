@@ -272,6 +272,25 @@ jobs:
             -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
             | grep -q 'data:'
 
+  # ── full-stack smoke: the production-shaped docker compose topology ──────────
+  # boots postgres, redis, clickhouse, gateway and control together via
+  # docker-compose.yml + the CI overlay, then exercises the gateway (fake-llm)
+  # and the control snapshot path. catches wiring/env/compose regressions the
+  # single-binary smoke above cannot see (e.g. a mis-named ROLTER_DATABASE_URL).
+  # informational until the ~image-build cost and flake profile are trusted;
+  # promote by dropping continue-on-error. see ROL-245.
+  compose-smoke:
+    name: compose smoke (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: full-stack compose smoke
+        run: bash docker/smoke/smoke.sh
+
   # ── packaging: catch crate-publish breakage before a release ────────────────
   # `cargo publish` builds each crate from its packaged tarball in isolation, so a
   # file referenced outside the crate directory (e.g. include_str!("../../x")) or a
