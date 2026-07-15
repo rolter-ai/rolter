@@ -23,7 +23,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { ParamsEditor, type ParamsEditorResult } from "@/components/ParamsEditor";
 import { AddProviderDialog } from "@/pages/Providers";
 import {
   createRoute,
@@ -272,6 +272,12 @@ function AddModelDialog({
   const [upstreamModel, setUpstreamModel] = React.useState("");
   const [weight, setWeight] = React.useState("1");
   const [newProviderOpen, setNewProviderOpen] = React.useState(false);
+  // latest serialized params/policy reported by the ParamsEditor, or an error
+  // while a row is mid-edit. seeded empty; only persisted when non-empty
+  const [paramsResult, setParamsResult] = React.useState<ParamsEditorResult>({
+    ok: true,
+    value: { params: {}, paramPolicy: {} },
+  });
 
   React.useEffect(() => {
     if (open) {
@@ -280,6 +286,7 @@ function AddModelDialog({
       setProviderId(providers[0]?.id ?? "");
       setUpstreamModel("");
       setWeight("1");
+      setParamsResult({ ok: true, value: { params: {}, paramPolicy: {} } });
     }
   }, [open, providers]);
 
@@ -304,6 +311,15 @@ function AddModelDialog({
           upstream_model: upstreamModel || undefined,
           weight: Number(weight) || 1,
         });
+      }
+      // persist admin default params only when the operator set any, so a
+      // bare route isn't burdened with an empty params write
+      if (paramsResult.ok && Object.keys(paramsResult.value.params).length > 0) {
+        await updateRouteParams(
+          route.id,
+          paramsResult.value.params,
+          paramsResult.value.paramPolicy,
+        );
       }
       return route;
     },
@@ -410,6 +426,10 @@ function AddModelDialog({
             }}
           />
         )}
+        <ParamsEditor variant="create" onChange={setParamsResult} />
+        {!paramsResult.ok && (
+          <p className="text-xs text-destructive">{paramsResult.error}</p>
+        )}
         {create.isError && (
           <p className="text-xs text-destructive">{(create.error as Error).message}</p>
         )}
@@ -419,7 +439,7 @@ function AddModelDialog({
           Cancel
         </Button>
         <Button
-          disabled={!model.trim() || create.isPending}
+          disabled={!model.trim() || create.isPending || !paramsResult.ok}
           onClick={() => create.mutate()}
         >
           Create
@@ -453,20 +473,13 @@ function EditModelDialog({
   const [upstreamModel, setUpstreamModel] = React.useState("");
   const [weight, setWeight] = React.useState("1");
 
-  const [paramsText, setParamsText] = React.useState("{}");
-  const [paramPolicyText, setParamPolicyText] = React.useState("{}");
-  const [paramsError, setParamsError] = React.useState<string | null>(null);
-
   React.useEffect(() => {
     if (open) {
       setProviderId(providers[0]?.id ?? "");
       setUpstreamModel("");
       setWeight("1");
-      setParamsText(JSON.stringify(route?.params ?? {}, null, 2));
-      setParamPolicyText(JSON.stringify(route?.param_policy ?? {}, null, 2));
-      setParamsError(null);
     }
-  }, [open, providers, route]);
+  }, [open, providers]);
 
   const invalidateTargets = () => {
     queryClient.invalidateQueries({ queryKey: ["route-targets", route?.id] });
@@ -507,25 +520,6 @@ function EditModelDialog({
     }) => updateRouteParams(route!.id, input.params, input.paramPolicy),
     onSuccess: invalidateTargets,
   });
-
-  const submitParams = () => {
-    let params: Record<string, unknown>;
-    let paramPolicy: Record<string, unknown>;
-    try {
-      params = JSON.parse(paramsText || "{}");
-    } catch {
-      setParamsError("params: invalid JSON");
-      return;
-    }
-    try {
-      paramPolicy = JSON.parse(paramPolicyText || "{}");
-    } catch {
-      setParamsError("param_policy: invalid JSON");
-      return;
-    }
-    setParamsError(null);
-    saveParams.mutate({ params, paramPolicy });
-  };
 
   const providerName = (id: string) =>
     providers.find((p) => p.id === id)?.name ?? id;
@@ -611,47 +605,17 @@ function EditModelDialog({
             Add target
           </Button>
         </div>
-        <div className="space-y-2 rounded-md border border-dashed border-border p-3">
-          <p className="text-sm font-medium leading-none">Params</p>
-          <p className="text-xs text-muted-foreground">
-            Admin default inference params and override policy, applied
-            reload-free on save. Both fields must be JSON objects.
-          </p>
-          <Field label="Params">
-            <Textarea
-              className="font-mono text-xs"
-              rows={4}
-              value={paramsText}
-              onChange={(e) => setParamsText(e.target.value)}
-              placeholder='{"temperature": 0}'
-            />
-          </Field>
-          <Field label="Param policy">
-            <Textarea
-              className="font-mono text-xs"
-              rows={4}
-              value={paramPolicyText}
-              onChange={(e) => setParamPolicyText(e.target.value)}
-              placeholder='{"mode": "merge", "allow": [], "deny": []}'
-            />
-          </Field>
-          {paramsError && (
-            <p className="text-xs text-destructive">{paramsError}</p>
-          )}
-          {saveParams.isError && (
-            <p className="text-xs text-destructive">
-              {(saveParams.error as Error).message}
-            </p>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={saveParams.isPending}
-            onClick={submitParams}
-          >
-            Save params
-          </Button>
-        </div>
+        {route && (
+          <ParamsEditor
+            params={route.params}
+            paramPolicy={route.param_policy}
+            saving={saveParams.isPending}
+            error={saveParams.isError ? (saveParams.error as Error).message : null}
+            onSave={(v) =>
+              saveParams.mutate({ params: v.params, paramPolicy: v.paramPolicy })
+            }
+          />
+        )}
 
         {removeRoute.isError && (
           <p className="text-xs text-destructive">
