@@ -47,7 +47,8 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let builtin = std::iter::once(fake_llm::MODEL_NAME)
         .filter(|m| !snap.routes.contains_key(*m))
         .map(str::to_string);
-    let data: Vec<Value> = snap
+    // bare route ids (and the builtin) are owned_by "rolter"
+    let mut data: Vec<Value> = snap
         .routes
         .keys()
         .cloned()
@@ -58,6 +59,45 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         })
         .map(|m| json!({"id": m, "object": "model", "owned_by": "rolter"}))
         .collect();
+
+    // provider-slug/model ids (ADR-0017): make every provider-addressable model
+    // discoverable alongside the route ids. a provider's models are the upstream
+    // models it serves across the configured routes' targets (and variants);
+    // owned_by names the provider so a client can group by it. sorted + deduped
+    // for a stable listing, and filtered by the same key allow-list
+    let name_to_slug: std::collections::HashMap<&str, &str> = snap
+        .providers_by_slug
+        .iter()
+        .map(|(slug, name)| (name.as_str(), slug.as_str()))
+        .collect();
+    let mut pinned: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for entry in snap.routes.values() {
+        let route = &entry.route;
+        let targets = route
+            .targets
+            .iter()
+            .chain(route.variants.iter().flat_map(|v| v.targets.iter()));
+        for target in targets {
+            let Some(slug) = name_to_slug.get(target.provider.as_str()) else {
+                continue;
+            };
+            let upstream = target.model.as_deref().unwrap_or(&route.model);
+            let id = format!("{slug}/{upstream}");
+            if vk
+                .as_ref()
+                .is_none_or(|vk| rolter_auth::model_allowed(&vk.models, &id))
+            {
+                pinned.insert((id, target.provider.clone()));
+            }
+        }
+    }
+    data.extend(
+        pinned
+            .into_iter()
+            .map(|(id, provider)| json!({"id": id, "object": "model", "owned_by": provider})),
+    );
+
     Json(json!({"object": "list", "data": data})).into_response()
 }
 
