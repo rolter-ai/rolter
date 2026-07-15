@@ -68,15 +68,59 @@ jobs:
             release
           requireScope: false
 
+  # CodeQL security analysis, folded into ci-ok so it gates merges without being
+  # a separate required status check. this advanced setup replaces GitHub's
+  # default setup (disabled on the repo). rust only supports build-mode `none`
+  # (a build-free source extractor), so to lift call-target resolution above
+  # CodeQL's quality threshold we `cargo fetch` the dependencies first, giving
+  # the extractor the crate sources it needs to resolve calls. see #484.
+  codeql:
+    name: codeql (${{ matrix.language }})
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, python, actions]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      # make the dependency sources available so the rust extractor resolves
+      # calls into crates instead of leaving them unresolved
+      - if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - if: matrix.language == 'rust'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - if: matrix.language == 'rust'
+        name: fetch dependencies for analysis
+        run: cargo fetch --locked
+      - name: initialize codeql
+        uses: github/codeql-action/init@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - name: analyze
+        uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          category: "/language:${{ matrix.language }}"
+
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
   # required status check on master; it turns green only when the quality
-  # workflow and pr-title both succeed (a skipped pr-title on push is fine).
-  # adding/removing jobs inside quality.yml then never requires touching branch
-  # protection settings. see ROL-124.
+  # workflow, pr-title and codeql all succeed (a skipped pr-title on push is
+  # fine). adding/removing jobs then never requires touching branch protection
+  # settings. see ROL-124.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [quality, pr-title]
+    needs: [quality, pr-title, codeql]
     runs-on: ubuntu-latest
     steps:
       - name: assert required jobs succeeded
@@ -84,20 +128,27 @@ jobs:
           set -euo pipefail
           echo "quality:  ${{ needs.quality.result }}"
           echo "pr-title: ${{ needs.pr-title.result }}"
+          echo "codeql:   ${{ needs.codeql.result }}"
           echo "action:   ${GITHUB_EVENT_ACTION}"
-          # quality must succeed; pr-title may be skipped (push builds) but must
-          # not have failed. on a title-only `edited` event the heavy gate is
-          # intentionally skipped (it already ran on this commit), so a skipped
-          # quality is acceptable there and only pr-title is re-evaluated
+          # quality and codeql must succeed; pr-title may be skipped (push builds)
+          # but must not have failed. on a title-only `edited` event the heavy
+          # gate and codeql are intentionally skipped (they already ran on this
+          # commit), so skipped is acceptable there and only pr-title re-runs
           if [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
             if [ "${{ needs.quality.result }}" != "success" ] \
                && [ "${{ needs.quality.result }}" != "skipped" ]; then
               echo "::error::quality gate did not pass"
               exit 1
             fi
-          elif [ "${{ needs.quality.result }}" != "success" ]; then
-            echo "::error::quality gate did not pass"
-            exit 1
+          else
+            if [ "${{ needs.quality.result }}" != "success" ]; then
+              echo "::error::quality gate did not pass"
+              exit 1
+            fi
+            if [ "${{ needs.codeql.result }}" != "success" ]; then
+              echo "::error::codeql analysis did not pass"
+              exit 1
+            fi
           fi
           if [ "${{ needs.pr-title.result }}" = "failure" ]; then
             echo "::error::pr-title check failed"
