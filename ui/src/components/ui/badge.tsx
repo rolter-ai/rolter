@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 // tones mirror the Rolter Design System Badge (7 tones + optional leading dot)
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 h-5 px-2 rounded border text-[0.625rem] font-medium leading-none whitespace-nowrap",
+  "inline-flex items-center gap-1 h-5 px-2 rounded-sm border text-[0.625rem] font-medium leading-none whitespace-nowrap",
   {
     variants: {
       tone: {
