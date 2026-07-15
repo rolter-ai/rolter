@@ -50,6 +50,8 @@ jobs:
   # run on an unverified commit (ROL-103).
   verify:
     uses: ./.github/workflows/quality.yml
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   release-plz-release:
     name: release-plz release
