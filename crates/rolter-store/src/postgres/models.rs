@@ -85,6 +85,26 @@ pub struct VirtualKey {
     pub expires_at: Option<DateTime<Utc>>,
     /// per-key response-cache override; `NULL` inherits the route decision
     pub cache_enabled: Option<bool>,
+    /// local account that minted this key via the self-service panel; `NULL`
+    /// for admin-created or bootstrap-config keys (ROL-224)
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a virtual key owned by the current user, enriched with the project/org names
+/// it belongs to so the self-service panel can label it without needing admin
+/// read access to the tenancy tables. never carries the key hash.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OwnedVirtualKey {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub org_name: String,
+    pub key_prefix: String,
+    pub name: Option<String>,
+    pub models: Vec<String>,
+    pub disabled: bool,
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 

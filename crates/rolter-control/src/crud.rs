@@ -177,7 +177,7 @@ fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
 /// version on [`rolter_core::CONFIG_CHANNEL`] when redis is configured
 /// (best-effort, off the request path) so gateways refetch immediately
 /// instead of waiting for their poll interval.
-async fn publish_config_change(state: &ControlState) -> ApiResult<()> {
+pub(crate) async fn publish_config_change(state: &ControlState) -> ApiResult<()> {
     let Some(client) = state.redis.clone() else {
         return Ok(());
     };
@@ -817,11 +817,11 @@ struct CreatedVirtualKey {
 /// Deployment-wide pepper shared with the gateway (`ROLTER_KEY_PEPPER`). Keys
 /// are stored as `rolter_auth::hash_key(pepper, key)` so the gateway can match
 /// presented keys by the same peppered digest.
-fn key_pepper() -> String {
+pub(crate) fn key_pepper() -> String {
     std::env::var("ROLTER_KEY_PEPPER").unwrap_or_default()
 }
 
-fn generate_virtual_key(pepper: &str) -> (String, String, String) {
+pub(crate) fn generate_virtual_key(pepper: &str) -> (String, String, String) {
     let mut bytes = [0u8; 24];
     rand::rng().fill_bytes(&mut bytes);
     let key = format!("sk-rolter-{}", hex_encode(&bytes));
@@ -851,6 +851,7 @@ async fn create_virtual_key(
             body.name.as_deref(),
             &body.models,
             body.cache,
+            None,
         )
         .await?;
     publish_config_change(&state).await?;

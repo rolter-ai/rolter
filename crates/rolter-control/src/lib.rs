@@ -15,6 +15,8 @@ mod auth;
 mod crud;
 mod health;
 #[cfg(feature = "postgres")]
+mod me;
+#[cfg(feature = "postgres")]
 mod rbac;
 #[cfg(feature = "postgres")]
 pub mod seed;
@@ -219,7 +221,10 @@ fn build_app(state: ControlState) -> Router {
     // admin token) is preserved inside the `Principal` extractor.
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
-        api = api.merge(auth::router()).merge(crud::router());
+        api = api
+            .merge(auth::router())
+            .merge(crud::router())
+            .merge(me::router());
     }
 
     // the snapshot endpoint carries decrypted provider credentials, so it stays
