@@ -60,6 +60,10 @@ impl KeyMeta {
 /// so request handlers never block on a lock or observe a half-applied config.
 pub struct Snapshot {
     pub providers: HashMap<String, ProviderConfig>,
+    /// provider slug -> provider name, for `provider-slug/model` addressing
+    /// (ADR-0017). A provider without an explicit slug is indexed under one
+    /// derived from its name so TOML-configured deployments get addressing too
+    pub providers_by_slug: HashMap<String, String>,
     pub routes: HashMap<String, RouteEntry>,
     /// virtual keys indexed by their peppered digest ([`rolter_auth::hash_key`]),
     /// never by plaintext — merges config-defined and database-defined keys
@@ -107,7 +111,7 @@ impl Snapshot {
     /// Build a snapshot from a configuration. `loads` is the shared in-flight/
     /// latency tracker the `fastest` strategy reads live at pick time.
     pub fn build(config: &GatewayConfig, loads: &crate::load::LoadTracker) -> Self {
-        let providers = config
+        let providers: HashMap<String, ProviderConfig> = config
             .providers
             .iter()
             .cloned()
@@ -116,6 +120,22 @@ impl Snapshot {
                 (p.name.clone(), p)
             })
             .collect();
+        // index providers by their URL-safe slug for `provider-slug/model`
+        // addressing; an explicit slug wins, otherwise derive one from the
+        // name. skip invalid/empty derived slugs, and let the first provider
+        // win a collision so the index stays deterministic
+        let mut providers_by_slug: HashMap<String, String> = HashMap::new();
+        for p in providers.values() {
+            let slug = p
+                .slug
+                .clone()
+                .unwrap_or_else(|| rolter_core::slug::slugify(&p.name));
+            if rolter_core::slug::is_valid_slug(&slug) {
+                providers_by_slug
+                    .entry(slug)
+                    .or_insert_with(|| p.name.clone());
+            }
+        }
         let prices: HashMap<String, ModelPriceConfig> = config
             .model_prices
             .iter()
@@ -193,6 +213,7 @@ impl Snapshot {
         }
         Self {
             providers,
+            providers_by_slug,
             routes,
             keys,
             pepper,
@@ -206,6 +227,50 @@ impl Snapshot {
             cache: config.cache.clone(),
             realtime: config.realtime.clone(),
         }
+    }
+
+    /// Resolve a `provider-slug/model` address to a synthetic single-target
+    /// [`RouteEntry`] pinned to that provider (ADR-0017). Callers try
+    /// [`Snapshot::routes`] first so a route whose name literally contains `/`
+    /// keeps winning; only on a miss do they split on the first `/` and land
+    /// here. Returns `None` when the string has no `/`, the left segment is not
+    /// a known provider slug, or the right (upstream model) segment is empty.
+    ///
+    /// The pinned entry bypasses cross-provider fan-out but still fans out
+    /// within the provider: its key pool, cooldowns, and circuit breaker run
+    /// through the same classic-pool machinery, and the right segment becomes
+    /// the target's upstream model rewrite.
+    pub fn resolve_pinned(&self, model: &str) -> Option<RouteEntry> {
+        let (slug, upstream) = model.split_once('/')?;
+        if upstream.is_empty() {
+            return None;
+        }
+        let provider_name = self.providers_by_slug.get(slug)?;
+        let target = Target {
+            provider: provider_name.clone(),
+            model: Some(upstream.to_string()),
+            weight: 1,
+        };
+        let stats = TargetStats {
+            cost_per_mtok: target_costs(std::slice::from_ref(&target), model, &self.prices),
+            latency: None,
+        };
+        let strategy = rolter_core::BalancingStrategy::default();
+        let balancer = build_with_stats(strategy, &[target.weight], &stats);
+        let route = ModelRoute {
+            model: model.to_string(),
+            strategy,
+            targets: vec![target],
+            params: Default::default(),
+            param_policy: Default::default(),
+            variants: Vec::new(),
+            cache: None,
+        };
+        Some(RouteEntry {
+            route,
+            balancer,
+            variant_balancers: Vec::new(),
+        })
     }
 }
 
@@ -480,6 +545,91 @@ mod tests {
         config.breaker.enabled = false;
         state.reload(&config, 2);
         assert!(state.breaker.allows("m", 0));
+    }
+
+    fn provider_cfg(name: &str, slug: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            name: name.to_string(),
+            slug: slug.map(str::to_string),
+            kind: rolter_core::ProviderKind::OpenaiCompatible,
+            api_base: "http://x".to_string(),
+            api_key: None,
+            api_key_env: None,
+            egress_proxy: None,
+            ca_bundles: None,
+            api_keys: Vec::new(),
+            also_track_via_llm_call: false,
+            llm_probe_model: None,
+            status_page_url: None,
+            role_profile: None,
+            model_role_profiles: Default::default(),
+        }
+    }
+
+    fn pinning_snapshot() -> Snapshot {
+        let mut config = GatewayConfig::default();
+        // one provider with an explicit slug, one that must derive it from name
+        config
+            .providers
+            .push(provider_cfg("vLLM SPB", Some("vllm-spb")));
+        config.providers.push(provider_cfg("derived-name", None));
+        // a route whose public name literally contains a slash
+        config.routes.push(ModelRoute {
+            model: "vllm-spb/named-route".to_string(),
+            strategy: rolter_core::BalancingStrategy::default(),
+            targets: vec![target("vLLM SPB", Some("real-model"))],
+            params: Default::default(),
+            param_policy: Default::default(),
+            variants: Vec::new(),
+            cache: None,
+        });
+        Snapshot::build(&config, &crate::load::LoadTracker::new())
+    }
+
+    #[test]
+    fn pinning_resolves_explicit_slug_to_provider_and_upstream() {
+        let snap = pinning_snapshot();
+        let entry = snap.resolve_pinned("vllm-spb/qwen3").expect("resolves");
+        assert_eq!(entry.route.targets.len(), 1);
+        assert_eq!(entry.route.targets[0].provider, "vLLM SPB");
+        assert_eq!(entry.route.targets[0].model.as_deref(), Some("qwen3"));
+    }
+
+    #[test]
+    fn pinning_derives_slug_from_name_when_unset() {
+        let snap = pinning_snapshot();
+        let entry = snap.resolve_pinned("derived-name/m").expect("resolves");
+        assert_eq!(entry.route.targets[0].provider, "derived-name");
+        assert_eq!(entry.route.targets[0].model.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn pinning_rejects_unknown_slug_and_malformed_addresses() {
+        let snap = pinning_snapshot();
+        assert!(snap.resolve_pinned("nope/model").is_none());
+        assert!(snap.resolve_pinned("no-slash").is_none());
+        assert!(snap.resolve_pinned("vllm-spb/").is_none()); // empty upstream
+    }
+
+    #[test]
+    fn pinning_splits_on_the_first_slash_only() {
+        let snap = pinning_snapshot();
+        let entry = snap
+            .resolve_pinned("vllm-spb/org/model:tag")
+            .expect("resolves");
+        // everything after the first '/' is the upstream model, verbatim
+        assert_eq!(
+            entry.route.targets[0].model.as_deref(),
+            Some("org/model:tag")
+        );
+    }
+
+    #[test]
+    fn named_route_with_slash_is_indexed_and_shadows_pinning() {
+        let snap = pinning_snapshot();
+        // the route name containing '/' is a real route; the handler tries this
+        // map before ever calling resolve_pinned, so the named route wins
+        assert!(snap.routes.contains_key("vllm-spb/named-route"));
     }
 
     #[test]

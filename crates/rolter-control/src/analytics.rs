@@ -105,6 +105,23 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/summary", get(summary))
         .route("/api/v1/analytics/timeseries", get(timeseries))
         .route("/api/v1/analytics/by-model", get(by_model))
+        .route("/api/v1/analytics/invocations", get(invocations))
+}
+
+/// Map a status filter name to a whitelisted SQL predicate. Anything else is
+/// rejected so it can never be spliced into SQL. `all` applies no filter.
+pub(crate) fn status_predicate(status: &str) -> Option<&'static str> {
+    match status {
+        "all" => Some("1"),
+        "error" => Some("status >= 400"),
+        "success" => Some("status > 0 and status < 400"),
+        _ => None,
+    }
+}
+
+/// Clamp a page size into `[1, 200]`, defaulting to 50.
+pub(crate) fn clamp_limit(limit: Option<u32>) -> u32 {
+    limit.unwrap_or(50).clamp(1, 200)
 }
 
 #[allow(clippy::result_large_err)]
@@ -205,6 +222,74 @@ async fn by_model(
     run(ch.query(&sql, &window_params(&q)).await)
 }
 
+/// Query params for the per-invocation log list: the shared time window plus
+/// optional model/key/status filters and pagination.
+#[derive(Debug, Deserialize)]
+pub struct InvocationsQuery {
+    pub(crate) since: Option<String>,
+    pub(crate) until: Option<String>,
+    /// exact model name to filter to; empty/omitted means all models
+    pub(crate) model: Option<String>,
+    /// exact virtual key id to filter to; empty/omitted means all keys
+    pub(crate) key: Option<String>,
+    /// status class: all|error|success (defaults to all)
+    pub(crate) status: Option<String>,
+    /// page size, 1..=200 (defaults to 50)
+    pub(crate) limit: Option<u32>,
+    /// row offset for pagination (defaults to 0)
+    pub(crate) offset: Option<u32>,
+}
+
+/// Individual gateway invocations, newest first. Returns every persisted column
+/// of `request_logs` so the dashboard can render both the list row and a detail
+/// drawer. Raw request/response bodies are not stored, so they are not returned.
+async fn invocations(
+    State(state): State<crate::ControlState>,
+    Query(q): Query<InvocationsQuery>,
+) -> Response {
+    let ch = match client_or_503(&state) {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+    let status = q.status.as_deref().unwrap_or("all");
+    let Some(status_expr) = status_predicate(status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": "status must be one of all|error|success"}})),
+        )
+            .into_response();
+    };
+    let limit = clamp_limit(q.limit);
+    let offset = q.offset.unwrap_or(0);
+    // all user-supplied values are passed as clickhouse params; the only spliced
+    // text is the status predicate, which is whitelisted above.
+    let sql = format!(
+        "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
+                model, provider, target, variant, status, stream, cache_hit, \
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, ttft_ms, error \
+         from request_logs \
+         where {WHERE_WINDOW} \
+           and ({{model:String}} = '' or model = {{model:String}}) \
+           and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \
+           and {status_expr} \
+         order by ts desc \
+         limit {{limit:UInt32}} offset {{offset:UInt32}} format JSON"
+    );
+    let mut params = window_params(&WindowQuery {
+        since: q.since.clone(),
+        until: q.until.clone(),
+        bucket: None,
+    });
+    params.push((
+        "param_model".to_string(),
+        q.model.clone().unwrap_or_default(),
+    ));
+    params.push(("param_key".to_string(), q.key.clone().unwrap_or_default()));
+    params.push(("param_limit".to_string(), limit.to_string()));
+    params.push(("param_offset".to_string(), offset.to_string()));
+    run(ch.query(&sql, &params).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +327,26 @@ mod tests {
         let params = window_params(&q);
         assert_eq!(params[0].1, "2026-07-01T00:00:00Z");
         assert_eq!(params[1].1, "2026-07-08T00:00:00Z");
+    }
+
+    #[test]
+    fn status_predicate_whitelists() {
+        assert_eq!(status_predicate("all"), Some("1"));
+        assert_eq!(status_predicate("error"), Some("status >= 400"));
+        assert_eq!(
+            status_predicate("success"),
+            Some("status > 0 and status < 400")
+        );
+        // anything else is rejected, so it can never be spliced into SQL
+        assert_eq!(status_predicate("error; drop table request_logs"), None);
+        assert_eq!(status_predicate(""), None);
+    }
+
+    #[test]
+    fn clamp_limit_bounds() {
+        assert_eq!(clamp_limit(None), 50);
+        assert_eq!(clamp_limit(Some(0)), 1);
+        assert_eq!(clamp_limit(Some(25)), 25);
+        assert_eq!(clamp_limit(Some(10_000)), 200);
     }
 }

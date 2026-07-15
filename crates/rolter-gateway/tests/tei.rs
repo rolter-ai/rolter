@@ -21,6 +21,7 @@ fn config(addr: SocketAddr, api_key: Option<&str>) -> GatewayConfig {
     let mut config = GatewayConfig::default();
     config.providers.push(ProviderConfig {
         name: "tei-local".into(),
+        slug: None,
         kind: ProviderKind::Tei,
         api_base: format!("http://{addr}"),
         api_key: api_key.map(str::to_string),
