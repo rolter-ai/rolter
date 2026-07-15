@@ -1,0 +1,23 @@
+# CI overlay for the full-stack smoke (ROL-245), layered on docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build
+#
+# it swaps the gateway config for a keyless open one so fake-llm needs no secret,
+# and turns off restart policies so a crash surfaces as an exited container the
+# smoke can detect instead of an endless restart loop.
+services:
+  gateway:
+    restart: "no"
+    volumes:
+      - ./smoke/rolter.smoke.toml:/app/rolter.toml:ro
+
+  control:
+    restart: "no"
+
+  postgres:
+    restart: "no"
+
+  redis:
+    restart: "no"
+
+  clickhouse:
+    restart: "no"

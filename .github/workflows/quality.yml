@@ -272,6 +272,25 @@ jobs:
             -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
             | grep -q 'data:'
 
+  # ── full-stack smoke: the production-shaped docker compose topology ──────────
+  # boots postgres, redis, clickhouse, gateway and control together via
+  # docker-compose.yml + the CI overlay, then exercises the gateway (fake-llm)
+  # and the control snapshot path. catches wiring/env/compose regressions the
+  # single-binary smoke above cannot see (e.g. a mis-named ROLTER_DATABASE_URL).
+  # informational until the ~image-build cost and flake profile are trusted;
+  # promote by dropping continue-on-error. see ROL-245.
+  compose-smoke:
+    name: compose smoke (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: full-stack compose smoke
+        run: bash docker/smoke/smoke.sh
+
   # ── packaging: catch crate-publish breakage before a release ────────────────
   # `cargo publish` builds each crate from its packaged tarball in isolation, so a
   # file referenced outside the crate directory (e.g. include_str!("../../x")) or a
@@ -321,6 +340,12 @@ jobs:
   # non-blocking for now (continue-on-error); promote to required once their
   # baseline is understood. see the required-checks policy in ROL-124.
 
+  # ── coverage: workspace line coverage with a ratcheting baseline ─────────────
+  # informational (continue-on-error) per ROL-246: it computes workspace line
+  # coverage, compares it against the committed baseline in
+  # .github/coverage-baseline.txt (new code cannot drop below baseline − tolerance),
+  # and uploads the lcov report as a CI artifact. it does not block until the
+  # baseline is trusted — promote by dropping continue-on-error here.
   coverage:
     name: coverage (informational)
     runs-on: ubuntu-latest
@@ -339,7 +364,22 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
-        run: cargo llvm-cov --workspace --all-features --summary-only
+        run: |
+          cargo llvm-cov --workspace --all-features --no-report
+          cargo llvm-cov report --summary-only
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --json --summary-only > coverage.json
+      - name: coverage ratchet
+        run: bash .github/scripts/coverage-ratchet.sh coverage.json
+      - name: upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-lcov
+          path: |
+            lcov.info
+            coverage.json
+          if-no-files-found: error
 
   # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
   # blocking: the whole tree is taplo-formatted, so any drift is a real diff.

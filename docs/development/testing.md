@@ -57,6 +57,55 @@ Current coverage (`rolter-balancer`):
 
 criterion writes HTML reports to `target/criterion/`. Benches are **not** run in CI (timings are noisy on shared runners), but `cargo clippy --workspace --all-targets -- -D warnings` compiles them on every PR, so they cannot silently bit-rot. Use `just bench-check` (`cargo bench --workspace --no-run`) to compile them locally without running.
 
+## Coverage
+
+Workspace line coverage is measured with
+[`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --workspace --all-features --summary-only   # quick %
+cargo llvm-cov --workspace --all-features --html           # browsable report
+```
+
+CI runs coverage in the `coverage` job of `quality.yml` and enforces a
+**ratcheting baseline**: the committed baseline lives in
+[`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
+[`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
+fails the step if the current percentage drops more than
+`COVERAGE_TOLERANCE` points (default `0.5`) below it. The job also uploads the
+`lcov.info` report as a CI artifact.
+
+Policy (ROL-246):
+
+- New code must not push coverage below `baseline − tolerance`. If a PR
+  legitimately lowers coverage, edit `.github/coverage-baseline.txt` in the same
+  PR and explain why.
+- When coverage climbs well above the baseline, raise the baseline to lock in
+  the gain (the ratchet only goes up).
+- The job is **informational** (`continue-on-error: true`) until the baseline is
+  trusted; promote it to blocking by removing that flag on the `coverage` job.
+
 ## CI
 
 `.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
+
+### Full-stack compose smoke
+
+The `compose-smoke` job boots the production-shaped Docker Compose topology
+(Postgres, Redis, ClickHouse, gateway, control) and exercises it end-to-end. Run
+it locally with the same script CI uses:
+
+```bash
+bash docker/smoke/smoke.sh
+```
+
+It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
+over the base compose file: the overlay mounts
+[`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
+keyless open gateway config) so the built-in `fake-llm` model answers without any
+provider secret. The script waits for both `/healthz` endpoints, checks
+`/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
+postgres-backed `/internal/snapshot` on the control plane, then always dumps
+compose logs and runs `down -v`. It is **informational** (`continue-on-error`)
+until the image-build cost and flake profile are trusted (ROL-245).

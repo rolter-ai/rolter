@@ -1,0 +1,14 @@
+# CodeQL advanced-setup config for rolter. advanced setup (a workflow job folded
+# into ci-ok) replaces GitHub's default setup so rust can be built explicitly
+# with --all-features — default setup's autobuild left call-target resolution
+# below CodeQL's quality threshold (#484).
+name: rolter-codeql
+
+# analyse first-party source only; skip build output, vendored and generated
+# assets so the extractor spends its budget on code we own.
+paths-ignore:
+  - target
+  - ui/dist
+  - ui/node_modules
+  - docs/book
+  - "**/*.min.js"
