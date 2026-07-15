@@ -82,12 +82,12 @@ jobs:
           set -euo pipefail
           echo "quality:  ${{ needs.quality.result }}"
           echo "pr-title: ${{ needs.pr-title.result }}"
-          echo "action:   ${{ github.event.action }}"
+          echo "action:   ${GITHUB_EVENT_ACTION}"
           # quality must succeed; pr-title may be skipped (push builds) but must
           # not have failed. on a title-only `edited` event the heavy gate is
           # intentionally skipped (it already ran on this commit), so a skipped
           # quality is acceptable there and only pr-title is re-evaluated
-          if [ "${{ github.event.action }}" = "edited" ]; then
+          if [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
             if [ "${{ needs.quality.result }}" != "success" ] \
                && [ "${{ needs.quality.result }}" != "skipped" ]; then
               echo "::error::quality gate did not pass"
@@ -102,3 +102,5 @@ jobs:
             exit 1
           fi
           echo "all required checks green"
+        env:
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
