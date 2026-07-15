@@ -40,6 +40,7 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
     let mut config = GatewayConfig::default();
     config.providers.push(ProviderConfig {
         name: "cloud".into(),
+        slug: None,
         kind: ProviderKind::OllamaCloud,
         api_base,
         api_key: None,

@@ -724,6 +724,7 @@ mod tests {
     fn provider(kind: ProviderKind) -> rolter_core::ProviderConfig {
         rolter_core::ProviderConfig {
             name: "p".to_string(),
+            slug: None,
             kind,
             api_base: "https://api.test".to_string(),
             api_key: None,

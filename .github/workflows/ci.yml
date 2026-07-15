@@ -3,7 +3,10 @@ name: ci
 on:
   push:
     branches: [master, main]
+  # `edited` lets a title-only fix retrigger the cheap pr-title check without a
+  # new commit; the full `quality` gate skips that event (see its `if:` below)
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,6 +22,9 @@ jobs:
   # checks). shared with the release paths via workflow_call so publish and CI
   # enforce the exact same checks on a commit.
   quality:
+    # a title-only edit reruns pr-title/ci-ok only; the heavy gate already ran
+    # on this commit and never needs re-running for a metadata change
+    if: github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
 
   pr-title:
@@ -76,9 +82,18 @@ jobs:
           set -euo pipefail
           echo "quality:  ${{ needs.quality.result }}"
           echo "pr-title: ${{ needs.pr-title.result }}"
+          echo "action:   ${GITHUB_EVENT_ACTION}"
           # quality must succeed; pr-title may be skipped (push builds) but must
-          # not have failed
-          if [ "${{ needs.quality.result }}" != "success" ]; then
+          # not have failed. on a title-only `edited` event the heavy gate is
+          # intentionally skipped (it already ran on this commit), so a skipped
+          # quality is acceptable there and only pr-title is re-evaluated
+          if [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
+            if [ "${{ needs.quality.result }}" != "success" ] \
+               && [ "${{ needs.quality.result }}" != "skipped" ]; then
+              echo "::error::quality gate did not pass"
+              exit 1
+            fi
+          elif [ "${{ needs.quality.result }}" != "success" ]; then
             echo "::error::quality gate did not pass"
             exit 1
           fi
@@ -87,3 +102,5 @@ jobs:
             exit 1
           fi
           echo "all required checks green"
+        env:
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}

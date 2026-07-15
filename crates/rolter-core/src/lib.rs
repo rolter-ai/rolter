@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod slug;
 pub mod telemetry;
 
 pub use config::{
