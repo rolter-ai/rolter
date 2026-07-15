@@ -10,8 +10,14 @@
 
 mod analytics;
 #[cfg(feature = "postgres")]
+mod auth;
+#[cfg(feature = "postgres")]
 mod crud;
 mod health;
+#[cfg(feature = "postgres")]
+mod me;
+#[cfg(feature = "postgres")]
+mod rbac;
 #[cfg(feature = "postgres")]
 pub mod seed;
 
@@ -193,7 +199,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 /// Assemble the control-plane API router (no SPA fallback) with `state` applied.
 /// The CRUD routes are only mounted when a postgres pool is present.
 fn build_app(state: ControlState) -> Router {
-    let api = Router::new()
+    #[allow(unused_mut)]
+    let mut api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/ping",
@@ -203,22 +210,34 @@ fn build_app(state: ControlState) -> Router {
         .route("/api/v1/config", get(get_config))
         .merge(analytics::router())
         .merge(health::router());
-
-    // the snapshot endpoint carries decrypted provider credentials and the
-    // CRUD API mutates the effective config, so both sit behind the admin
-    // token whenever one is configured
-    #[allow(unused_mut)]
-    let mut guarded = Router::new().route("/internal/snapshot", get(get_snapshot));
+    // login is authenticated by the request body (email/password), not the
+    // admin token, so /api/v1/auth/* sits on the open router alongside
+    // everything else here; `me` still requires a valid session bearer token
+    // via the `CurrentUser` extractor, it's just not gated by admin_token.
+    //
+    // the CRUD API enforces RBAC per handler (see `crate::rbac`): each handler
+    // resolves a `Principal` and checks the caller's role at the resource's
+    // scope, so it is NOT behind the blanket admin-token layer. open mode (no
+    // admin token) is preserved inside the `Principal` extractor.
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
-        guarded = guarded.merge(crud::router());
+        api = api
+            .merge(auth::router())
+            .merge(crud::router())
+            .merge(me::router());
     }
-    let guarded = guarded.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        require_admin_token,
-    ));
 
-    api.merge(guarded).with_state(state)
+    // the snapshot endpoint carries decrypted provider credentials, so it stays
+    // behind the shared admin token only (machine/superadmin access, no per-user
+    // sessions) whenever one is configured, and open otherwise
+    let snapshot = Router::new()
+        .route("/internal/snapshot", get(get_snapshot))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_token,
+        ));
+
+    api.merge(snapshot).with_state(state)
 }
 
 /// Reject requests lacking `Authorization: Bearer <admin token>` when a token
@@ -451,6 +470,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.providers.push(rolter_core::ProviderConfig {
             name: "openai".to_string(),
+            slug: None,
             kind: rolter_core::ProviderKind::Openai,
             api_base: "https://api.openai.com".to_string(),
             api_key: Some("sk-super-secret".to_string()),

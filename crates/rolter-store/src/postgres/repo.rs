@@ -11,7 +11,8 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::models::{
-    Budget, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team, VirtualKey,
+    Budget, Membership, ModelPrice, Org, OwnedVirtualKey, Project, Provider, RateLimit, Route,
+    RouteTarget, Session, Team, User, VirtualKey,
 };
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -165,7 +166,7 @@ pub struct ProviderRepo<'a>(pub &'a PgPool);
 impl ProviderRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -176,7 +177,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -191,18 +192,20 @@ impl ProviderRepo<'_> {
         &self,
         org_id: Uuid,
         name: &str,
+        slug: &str,
         kind: &str,
         api_base: &str,
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, kind, api_base, api_key_env, egress_proxy)
-             values ($1, $2, $3, $4, $5, $6)
-             returning id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy)
+             values ($1, $2, $3, $4, $5, $6, $7)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
         )
         .bind(org_id)
         .bind(name)
+        .bind(slug)
         .bind(kind)
         .bind(api_base)
         .bind(api_key_env)
@@ -213,10 +216,15 @@ impl ProviderRepo<'_> {
     }
 
     /// Partially update a provider. `None` leaves a field unchanged; the
-    /// nullable fields take `Some(None)` to clear.
+    /// nullable fields take `Some(None)` to clear. `slug` is immutable by
+    /// default — callers must only pass `Some` after an explicit override
+    /// (the control API gates this); the charset constraint is enforced by the
+    /// database.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update(
         &self,
         id: Uuid,
+        slug: Option<&str>,
         kind: Option<&str>,
         api_base: Option<&str>,
         api_key_env: Option<Option<&str>>,
@@ -224,14 +232,16 @@ impl ProviderRepo<'_> {
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
-                 kind = coalesce($2, kind),
-                 api_base = coalesce($3, api_base),
-                 api_key_env = case when $4 then $5 else api_key_env end,
-                 egress_proxy = case when $6 then $7 else egress_proxy end
+                 slug = coalesce($2, slug),
+                 kind = coalesce($3, kind),
+                 api_base = coalesce($4, api_base),
+                 api_key_env = case when $5 then $6 else api_key_env end,
+                 egress_proxy = case when $7 then $8 else egress_proxy end
              where id = $1
-             returning id, org_id, name, kind, api_base, api_key_env, egress_proxy, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
         )
         .bind(id)
+        .bind(slug)
         .bind(kind)
         .bind(api_base)
         .bind(api_key_env.is_some())
@@ -417,6 +427,18 @@ impl RouteTargetRepo<'_> {
         .map_err(store_err)
     }
 
+    pub async fn get(&self, id: Uuid) -> Result<RouteTarget> {
+        sqlx::query_as(
+            "select id, route_id, provider_id, upstream_model, weight, created_at
+             from route_targets where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("route target {id}")))
+    }
+
     pub async fn create(
         &self,
         route_id: Uuid,
@@ -459,7 +481,7 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where project_id = $1 order by created_at",
         )
         .bind(project_id)
@@ -470,13 +492,25 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where key_hash = $1",
         )
         .bind(key_hash)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
+        sqlx::query_as(
+            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
+             from virtual_keys where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -488,11 +522,12 @@ impl VirtualKeyRepo<'_> {
         name: Option<&str>,
         models: &[String],
         cache_enabled: Option<bool>,
+        created_by: Option<Uuid>,
     ) -> Result<VirtualKey> {
         sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled)
-             values ($1, $2, $3, $4, $5, $6)
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled, created_by)
+             values ($1, $2, $3, $4, $5, $6, $7)
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(project_id)
         .bind(key_hash)
@@ -500,7 +535,27 @@ impl VirtualKeyRepo<'_> {
         .bind(name)
         .bind(models)
         .bind(cache_enabled)
+        .bind(created_by)
         .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// every key minted by `user_id` via the self-service panel, newest first,
+    /// enriched with the owning project + org names. omits the key hash.
+    pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<OwnedVirtualKey>> {
+        sqlx::query_as(
+            "select vk.id, vk.project_id, p.name as project_name, o.name as org_name,
+                    vk.key_prefix, vk.name, vk.models, vk.disabled, vk.expires_at, vk.created_at
+             from virtual_keys vk
+             join projects p on p.id = vk.project_id
+             join teams t on t.id = p.team_id
+             join orgs o on o.id = t.org_id
+             where vk.created_by = $1
+             order by vk.created_at desc",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
         .await
         .map_err(store_err)
     }
@@ -508,7 +563,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(disabled)
@@ -523,7 +578,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set cache_enabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(cache_enabled)
@@ -560,6 +615,18 @@ impl BudgetRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<Budget> {
+        sqlx::query_as(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, created_at
+             from budgets where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("budget {id}")))
     }
 
     pub async fn create(
@@ -610,6 +677,18 @@ impl RateLimitRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<RateLimit> {
+        sqlx::query_as(
+            "select id, scope_type, scope_id, rpm, tpm, created_at
+             from rate_limits where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
     pub async fn create(
@@ -709,6 +788,280 @@ impl ModelPriceRepo<'_> {
     }
 }
 
+/// local accounts. see [`super::models::User`]; `find_by_email` backs login.
+pub struct UserRepo<'a>(pub &'a PgPool);
+
+impl UserRepo<'_> {
+    pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
+        sqlx::query_as(
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+             from users where email = $1",
+        )
+        .bind(email)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<User> {
+        sqlx::query_as(
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+             from users where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// list every user that holds at least one membership anywhere in `org_id`'s
+    /// tree (org, its teams, or their projects). this is the admin-visible set of
+    /// accounts for an org; superadmins with no org membership are not included.
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
+        sqlx::query_as(
+            "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
+                    u.deactivated_at, u.created_at
+             from users u
+             join memberships m on m.user_id = u.id
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1
+             order by u.email",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// create a local account. `password_hash` is a pre-computed argon2id digest
+    /// (the repo never sees plaintext); pass `None` for an sso-only shell account
+    pub async fn create(
+        &self,
+        email: &str,
+        password_hash: Option<&str>,
+        is_superadmin: bool,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "insert into users (email, password_hash, is_superadmin)
+             values ($1, $2, $3)
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(is_superadmin)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// update mutable account fields. each `Some` is applied via `coalesce`, so
+    /// `None` leaves the stored value untouched. `password_hash` follows the same
+    /// rule; there is no way to clear a password back to null through this path.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        email: Option<&str>,
+        password_hash: Option<&str>,
+        is_superadmin: Option<bool>,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "update users set
+                 email = coalesce($2, email),
+                 password_hash = coalesce($3, password_hash),
+                 is_superadmin = coalesce($4, is_superadmin)
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(password_hash)
+        .bind(is_superadmin)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// flip the deactivation flag. `true` stamps `deactivated_at = now()` (login
+    /// blocked); `false` clears it back to null (re-enabled). the caller is
+    /// responsible for deleting live sessions when deactivating.
+    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<User> {
+        sqlx::query_as(
+            "update users set deactivated_at = case when $2 then now() else null end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+        )
+        .bind(id)
+        .bind(deactivated)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from users where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("user {id}")));
+        }
+        Ok(())
+    }
+}
+
+/// role grants at an org/team/project scope. see [`super::models::Membership`].
+pub struct MembershipRepo<'a>(pub &'a PgPool);
+
+impl MembershipRepo<'_> {
+    pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<Membership>> {
+        sqlx::query_as(
+            "select id, user_id, org_id, team_id, project_id, role, created_at
+             from memberships where user_id = $1 order by created_at",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// every membership whose scope falls within `org_id`'s tree (an org-scoped
+    /// grant, a grant on one of its teams, or on one of their projects), so an
+    /// org admin can see and manage all role assignments under their org
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<Membership>> {
+        sqlx::query_as(
+            "select m.id, m.user_id, m.org_id, m.team_id, m.project_id, m.role, m.created_at
+             from memberships m
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1
+             order by m.created_at",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<Membership> {
+        sqlx::query_as(
+            "select id, user_id, org_id, team_id, project_id, role, created_at
+             from memberships where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("membership {id}")))
+    }
+
+    /// grant `role` to `user_id` at exactly one scope. exactly one of
+    /// `org_id`/`team_id`/`project_id` should be non-null (the most-specific
+    /// scope id); enforcement of that invariant is left to the caller.
+    pub async fn create(
+        &self,
+        user_id: Uuid,
+        org_id: Option<Uuid>,
+        team_id: Option<Uuid>,
+        project_id: Option<Uuid>,
+        role: &str,
+    ) -> Result<Membership> {
+        sqlx::query_as(
+            "insert into memberships (user_id, org_id, team_id, project_id, role)
+             values ($1, $2, $3, $4, $5)
+             returning id, user_id, org_id, team_id, project_id, role, created_at",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .bind(team_id)
+        .bind(project_id)
+        .bind(role)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from memberships where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("membership {id}")));
+        }
+        Ok(())
+    }
+}
+
+/// login sessions backing bearer-token auth. see [`super::models::Session`]
+/// and the rationale in `migrations/0013_sessions.sql` for why these are
+/// stateful (postgres-backed) rather than a stateless jwt.
+pub struct SessionRepo<'a>(pub &'a PgPool);
+
+impl SessionRepo<'_> {
+    pub async fn create(
+        &self,
+        user_id: Uuid,
+        token_hash: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Session> {
+        sqlx::query_as(
+            "insert into sessions (user_id, token_hash, expires_at)
+             values ($1, $2, $3)
+             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
+        )
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(expires_at)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// look up a live (unexpired) session by its token digest and bump
+    /// `last_seen_at`; returns `None` for a missing, wrong, or expired token
+    pub async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<Session>> {
+        sqlx::query_as(
+            "update sessions set last_seen_at = now()
+             where token_hash = $1 and expires_at > now()
+             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// delete a session by its token digest (logout); a no-op if it's
+    /// already gone or expired
+    pub async fn delete_by_hash(&self, token_hash: &str) -> Result<()> {
+        sqlx::query("delete from sessions where token_hash = $1")
+            .bind(token_hash)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// revoke every live session for a user (used when an account is
+    /// deactivated or deleted so access is cut immediately)
+    pub async fn delete_for_user(&self, user_id: Uuid) -> Result<()> {
+        sqlx::query("delete from sessions where user_id = $1")
+            .bind(user_id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +1113,7 @@ mod tests {
                 org.id,
                 "openai",
                 "openai",
+                "openai",
                 "https://api.openai.com",
                 Some("OPENAI_API_KEY"),
                 None,
@@ -794,6 +1148,7 @@ mod tests {
                 "sk-abc",
                 Some("ci key"),
                 &["gpt-4o".to_string()],
+                None,
                 None,
             )
             .await

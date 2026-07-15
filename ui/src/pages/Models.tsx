@@ -18,11 +18,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { CopyButton } from "@/components/CopyButton";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { AddProviderDialog } from "@/pages/Providers";
 import {
   createRoute,
   createRouteTarget,
@@ -195,7 +197,11 @@ export default function Models() {
           open={addOpen}
           onOpenChange={setAddOpen}
           projectId={scope.projectId}
+          orgId={scope.orgId ?? null}
           providers={providers.data ?? []}
+          onProvidersChanged={() =>
+            queryClient.invalidateQueries({ queryKey: ["providers", scope.orgId] })
+          }
           onDone={invalidate}
         />
       )}
@@ -247,13 +253,17 @@ function AddModelDialog({
   open,
   onOpenChange,
   projectId,
+  orgId,
   providers,
+  onProvidersChanged,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectId: string;
+  orgId: string | null;
   providers: ProviderRow[];
+  onProvidersChanged: () => void;
   onDone: () => void;
 }) {
   const [model, setModel] = React.useState("");
@@ -261,6 +271,7 @@ function AddModelDialog({
   const [providerId, setProviderId] = React.useState("");
   const [upstreamModel, setUpstreamModel] = React.useState("");
   const [weight, setWeight] = React.useState("1");
+  const [newProviderOpen, setNewProviderOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -271,6 +282,15 @@ function AddModelDialog({
       setWeight("1");
     }
   }, [open, providers]);
+
+  const selectedProvider = providers.find((p) => p.id === providerId) ?? null;
+  // the resolvable provider-slug/model address for the picked binding: the
+  // upstream model (or the public model name when left blank) under the
+  // provider's slug. this is exactly what a client can send as `model`
+  const address =
+    selectedProvider && (upstreamModel.trim() || model.trim())
+      ? `${selectedProvider.slug}/${upstreamModel.trim() || model.trim()}`
+      : null;
 
   // create-then-attach-target: two calls against the control api since a
   // route and its first target are separate resources. multi-target add on
@@ -322,14 +342,31 @@ function AddModelDialog({
           label="Target provider"
           hint={providers.length ? undefined : "no providers configured for this org yet"}
         >
-          <Select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
-            <option value="">none (create route only)</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.kind})
-              </option>
-            ))}
-          </Select>
+          <div className="flex items-center gap-1">
+            <Select
+              value={providerId}
+              onChange={(e) => setProviderId(e.target.value)}
+              className="flex-1"
+            >
+              <option value="">none (create route only)</option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.kind})
+                </option>
+              ))}
+            </Select>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!orgId}
+              title={orgId ? "Add a new provider" : "no org selected"}
+              onClick={() => setNewProviderOpen(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New
+            </Button>
+          </div>
         </Field>
         {providerId && (
           <>
@@ -348,7 +385,30 @@ function AddModelDialog({
                 onChange={(e) => setWeight(e.target.value)}
               />
             </Field>
+            {address && (
+              <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5">
+                <span className="text-xs text-muted-foreground">Address</span>
+                <span className="truncate font-mono text-xs">{address}</span>
+                <CopyButton
+                  value={address}
+                  label="Copy provider-slug/model address"
+                  className="ml-auto h-6 px-1.5"
+                />
+              </div>
+            )}
           </>
+        )}
+        {orgId && (
+          <AddProviderDialog
+            open={newProviderOpen}
+            onOpenChange={setNewProviderOpen}
+            orgId={orgId}
+            onDone={(created) => {
+              onProvidersChanged();
+              // select the freshly created provider so the binding continues
+              setProviderId(created.id);
+            }}
+          />
         )}
         {create.isError && (
           <p className="text-xs text-destructive">{(create.error as Error).message}</p>

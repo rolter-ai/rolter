@@ -174,10 +174,12 @@ async fn import_bootstrap_toml(
         let row = match existing {
             Some(row) => row,
             None => {
+                let slug = p.slug.clone().unwrap_or_else(|| slugify(&p.name));
                 providers
                     .create(
                         org_id,
                         &p.name,
+                        &slug,
                         kind,
                         &p.api_base,
                         p.api_key_env.as_deref(),

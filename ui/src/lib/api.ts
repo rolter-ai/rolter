@@ -30,8 +30,22 @@ export interface GatewayConfigDto {
   virtual_keys: VirtualKeyDto[];
 }
 
+// bearer token from a real login (see lib/auth.tsx); attached to every request
+// so the session-scoped /me/* endpoints authenticate. absent in open-mode /
+// email-only sessions, where the control plane needs no auth anyway.
+const TOKEN_STORAGE_KEY = "rolter.session.token";
+
+function authHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     throw new Error(`request failed: ${res.status}`);
   }
@@ -59,7 +73,10 @@ async function sendJson<T>(
 ): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      ...authHeaders(),
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -83,7 +100,7 @@ export class AnalyticsUnavailableError extends Error {
 }
 
 async function getAnalytics<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     const err = await apiError(res);
     if (res.status === 503) {
@@ -159,6 +176,57 @@ export function fetchAnalyticsByModel(
 ): Promise<AnalyticsByModelRow[]> {
   return getAnalytics<DataEnvelope<AnalyticsByModelRow>>(
     `/api/v1/analytics/by-model${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
+// one row of the `request_logs` table: a single gateway invocation. numeric
+// columns may arrive as strings from ClickHouse JSON, so coerce when rendering.
+export interface InvocationRow {
+  ts: string;
+  request_id: string;
+  trace_id: string;
+  org_id: string;
+  team_id: string;
+  project_id: string;
+  virtual_key_id: string;
+  model: string;
+  provider: string;
+  target: string;
+  variant: string;
+  status: number | string;
+  stream: number | string;
+  cache_hit: number | string;
+  prompt_tokens: number | string;
+  completion_tokens: number | string;
+  total_tokens: number | string;
+  cost_usd: number | string;
+  latency_ms: number | string;
+  ttft_ms: number | string;
+  error: string;
+}
+
+export interface InvocationsQuery extends AnalyticsWindow {
+  model?: string;
+  key?: string;
+  status?: "all" | "error" | "success";
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchInvocations(
+  query: InvocationsQuery = {},
+): Promise<InvocationRow[]> {
+  const params = new URLSearchParams();
+  if (query.since) params.set("since", query.since);
+  if (query.until) params.set("until", query.until);
+  if (query.model) params.set("model", query.model);
+  if (query.key) params.set("key", query.key);
+  if (query.status) params.set("status", query.status);
+  if (query.limit != null) params.set("limit", String(query.limit));
+  if (query.offset != null) params.set("offset", String(query.offset));
+  const qs = params.toString();
+  return getAnalytics<DataEnvelope<InvocationRow>>(
+    `/api/v1/analytics/invocations${qs ? `?${qs}` : ""}`,
   ).then((r) => r.data);
 }
 
@@ -285,7 +353,10 @@ export function fetchProjects(teamId: string): Promise<ProjectRow[]> {
   return getJson<ProjectRow[]>(`/api/v1/teams/${teamId}/projects`);
 }
 
-export function createOrg(input: { name: string; slug: string }): Promise<OrgRow> {
+export function createOrg(input: {
+  name: string;
+  slug: string;
+}): Promise<OrgRow> {
   return sendJson<OrgRow>("POST", "/api/v1/orgs", input);
 }
 
@@ -308,7 +379,11 @@ export function createProject(
   teamId: string,
   input: { name: string },
 ): Promise<ProjectRow> {
-  return sendJson<ProjectRow>("POST", `/api/v1/teams/${teamId}/projects`, input);
+  return sendJson<ProjectRow>(
+    "POST",
+    `/api/v1/teams/${teamId}/projects`,
+    input,
+  );
 }
 
 export function deleteProject(id: string): Promise<void> {
@@ -319,6 +394,8 @@ export interface ProviderRow {
   id: string;
   org_id: string;
   name: string;
+  /** stable, URL-safe identity used for `provider-slug/model` addressing */
+  slug: string;
   kind: string;
   api_base: string;
   api_key_env?: string | null;
@@ -328,6 +405,8 @@ export interface ProviderRow {
 
 export interface CreateProviderInput {
   name: string;
+  /** omit to derive a slug from the name; immutable after create */
+  slug?: string;
   kind: string;
   api_base: string;
   api_key?: string;
@@ -351,7 +430,11 @@ export function createProvider(
   orgId: string,
   input: CreateProviderInput,
 ): Promise<ProviderRow> {
-  return sendJson<ProviderRow>("POST", `/api/v1/orgs/${orgId}/providers`, input);
+  return sendJson<ProviderRow>(
+    "POST",
+    `/api/v1/orgs/${orgId}/providers`,
+    input,
+  );
 }
 
 export function updateProvider(
@@ -393,10 +476,17 @@ export function createRoute(
   projectId: string,
   input: { model: string; strategy: string },
 ): Promise<RouteRow> {
-  return sendJson<RouteRow>("POST", `/api/v1/projects/${projectId}/routes`, input);
+  return sendJson<RouteRow>(
+    "POST",
+    `/api/v1/projects/${projectId}/routes`,
+    input,
+  );
 }
 
-export function setRouteEnabled(id: string, enabled: boolean): Promise<RouteRow> {
+export function setRouteEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, { enabled });
 }
 
@@ -448,7 +538,10 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
 }
 
 export function deleteModel(model: string): Promise<void> {
-  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
+  return sendJson<void>(
+    "DELETE",
+    `/api/v1/models/${encodeURIComponent(model)}`,
+  );
 }
 
 // --- virtual keys (crates/rolter-control/src/crud.rs) ---
@@ -498,7 +591,9 @@ export function setVirtualKeyDisabled(
   id: string,
   disabled: boolean,
 ): Promise<VirtualKeyRow> {
-  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, { disabled });
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, {
+    disabled,
+  });
 }
 
 export function setVirtualKeyCache(
@@ -621,4 +716,198 @@ export function deleteModelPrice(model: string): Promise<void> {
     "DELETE",
     `/api/v1/model-prices/${encodeURIComponent(model)}`,
   );
+}
+
+// --- local-account auth (crates/rolter-control/src/auth.rs, ROL-32) ---
+
+export interface LoginResponse {
+  /** opaque bearer token; store it and send as Authorization: Bearer */
+  token: string;
+  expires_at: string;
+  user: { id: string; email: string; is_superadmin: boolean };
+}
+
+// authenticate a local account; returns a session token. rejects (throws) on
+// bad credentials or when local accounts aren't configured.
+export function login(email: string, password: string): Promise<LoginResponse> {
+  return sendJson<LoginResponse>("POST", "/api/v1/auth/login", {
+    email,
+    password,
+  });
+}
+
+export function logout(): Promise<void> {
+  return sendJson<void>("POST", "/api/v1/auth/logout");
+}
+
+// --- users + memberships (crates/rolter-control/src/crud.rs, ROL-223) ---
+
+export const ROLES = ["admin", "member", "viewer"] as const;
+export type Role = (typeof ROLES)[number];
+
+// scope types a membership can be granted at (virtual_key is not a role scope)
+export const MEMBERSHIP_SCOPE_TYPES = ["org", "team", "project"] as const;
+export type MembershipScopeType = (typeof MEMBERSHIP_SCOPE_TYPES)[number];
+
+export interface UserRow {
+  id: string;
+  email: string;
+  is_superadmin: boolean;
+  /** set when the account is deactivated (login blocked); null when active */
+  deactivated_at?: string | null;
+  created_at: string;
+}
+
+export interface MembershipRow {
+  id: string;
+  user_id: string;
+  org_id?: string | null;
+  team_id?: string | null;
+  project_id?: string | null;
+  role: string;
+  created_at: string;
+}
+
+// returned by inviteUser: the new account plus its initial org membership
+export interface CreatedUser {
+  user: UserRow;
+  membership: MembershipRow;
+}
+
+export interface InviteUserInput {
+  email: string;
+  /** optional initial password; omit for an sso-only shell account */
+  password?: string;
+  /** role granted at the org; defaults to member */
+  role?: string;
+}
+
+export interface UpdateUserInput {
+  email?: string;
+  password?: string;
+  is_superadmin?: boolean;
+  deactivated?: boolean;
+}
+
+export interface CreateMembershipInput {
+  user_id: string;
+  scope_type: MembershipScopeType;
+  scope_id: string;
+  role: string;
+}
+
+// every account with a membership anywhere in the org's tree
+export function fetchUsers(orgId: string): Promise<UserRow[]> {
+  return getJson<UserRow[]>(`/api/v1/orgs/${orgId}/users`);
+}
+
+// create/invite an account and grant it a role in the org atomically
+export function inviteUser(
+  orgId: string,
+  input: InviteUserInput,
+): Promise<CreatedUser> {
+  return sendJson<CreatedUser>("POST", `/api/v1/orgs/${orgId}/users`, input);
+}
+
+export function updateUser(
+  id: string,
+  input: UpdateUserInput,
+): Promise<UserRow> {
+  return sendJson<UserRow>("PUT", `/api/v1/users/${id}`, input);
+}
+
+export function deleteUser(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/users/${id}`);
+}
+
+// every role grant scoped within the org (org/team/project)
+export function fetchMemberships(orgId: string): Promise<MembershipRow[]> {
+  return getJson<MembershipRow[]>(`/api/v1/orgs/${orgId}/memberships`);
+}
+
+export function createMembership(
+  orgId: string,
+  input: CreateMembershipInput,
+): Promise<MembershipRow> {
+  return sendJson<MembershipRow>(
+    "POST",
+    `/api/v1/orgs/${orgId}/memberships`,
+    input,
+  );
+}
+
+export function deleteMembership(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/memberships/${id}`);
+}
+
+// --- self-service (crates/rolter-control/src/me.rs, ROL-224) ---
+//
+// end-user surface: manage your own virtual keys and see your own usage. these
+// require a real login session (not the admin token path).
+
+// a key the current user owns, enriched with its project/org names; never
+// carries the key hash
+export interface OwnedKeyRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  org_name: string;
+  key_prefix: string;
+  name?: string | null;
+  models: string[];
+  disabled: boolean;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+// returned from mint/rotate — carries the plaintext secret, shown once
+export interface MintedKey extends VirtualKeyRow {
+  key: string;
+}
+
+export interface MintKeyInput {
+  name?: string;
+  models?: string[];
+  cache?: boolean | null;
+}
+
+export interface MyUsageRow {
+  virtual_key_id: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+  errors: number | string;
+}
+
+export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
+  return getJson<OwnedKeyRow[]>("/api/v1/me/virtual-keys");
+}
+
+export function mintMyKey(
+  projectId: string,
+  input: MintKeyInput,
+): Promise<MintedKey> {
+  return sendJson<MintedKey>(
+    "POST",
+    `/api/v1/me/projects/${projectId}/virtual-keys`,
+    input,
+  );
+}
+
+export function rotateMyKey(id: string): Promise<MintedKey> {
+  return sendJson<MintedKey>("POST", `/api/v1/me/virtual-keys/${id}/rotate`);
+}
+
+export function deleteMyKey(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/me/virtual-keys/${id}`);
+}
+
+// per-key usage/spend over the window; throws AnalyticsUnavailableError (503)
+// when the deployment has no ClickHouse configured
+export function fetchMyUsage(
+  window: AnalyticsWindow = {},
+): Promise<MyUsageRow[]> {
+  return getAnalytics<DataEnvelope<MyUsageRow>>(
+    `/api/v1/me/usage${windowParams(window)}`,
+  ).then((r) => r.data);
 }
