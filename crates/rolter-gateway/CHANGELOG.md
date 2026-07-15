@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.9](https://github.com/ormeilu/rolter/compare/v0.0.8...v0.0.9) - 2026-07-15
+
+### Features
+- *(gateway)* surface provider-slug/model ids in /v1/models ([#193](https://github.com/ormeilu/rolter/pull/193)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* resolve provider-slug/model addressing with provider pinning ([#192](https://github.com/ormeilu/rolter/pull/192)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* add immutable URL-safe provider slug for model addressing ([#191](https://github.com/ormeilu/rolter/pull/191)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.8](https://github.com/ormeilu/rolter/compare/v0.0.7...v0.0.8) - 2026-07-13
 
 ### Bug Fixes
