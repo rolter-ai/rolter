@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use rolter_store::postgres::models::{Membership, Session, User};
-use rolter_store::postgres::repo::{MembershipRepo, SessionRepo, UserRepo};
+use rolter_store::postgres::repo::{AuditLogRepo, MembershipRepo, SessionRepo, UserRepo};
 
 use crate::ControlState;
 
@@ -152,6 +152,18 @@ async fn login(
         .create(user.id, &token_hash, expires_at)
         .await?;
 
+    // best-effort; login must succeed even if the audit write fails
+    let _ = AuditLogRepo(pool)
+        .create(
+            None,
+            Some(user.id),
+            "auth.login",
+            Some("user"),
+            Some(user.id),
+            None,
+        )
+        .await;
+
     Ok(Json(LoginResponse {
         token,
         expires_at,
@@ -163,8 +175,21 @@ async fn logout(State(state): State<ControlState>, headers: axum::http::HeaderMa
     // no-op if the header is missing or the session is already gone: logout
     // is idempotent from the client's point of view
     if let Some(token) = bearer_token(&headers) {
+        let pool = pool(&state);
         let token_hash = rolter_auth::hash_key(&session_pepper(), token);
-        let _ = SessionRepo(pool(&state)).delete_by_hash(&token_hash).await;
+        if let Ok(Some(session)) = SessionRepo(pool).find_active_by_hash(&token_hash).await {
+            let _ = AuditLogRepo(pool)
+                .create(
+                    None,
+                    Some(session.user_id),
+                    "auth.logout",
+                    Some("user"),
+                    Some(session.user_id),
+                    None,
+                )
+                .await;
+        }
+        let _ = SessionRepo(pool).delete_by_hash(&token_hash).await;
     }
     StatusCode::NO_CONTENT
 }

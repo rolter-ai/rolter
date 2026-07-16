@@ -6,6 +6,7 @@ import {
   ChevronDown,
   DollarSign,
   Gauge,
+  History,
   KeyRound,
   Play,
   ScrollText,
@@ -21,6 +22,7 @@ import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { Button } from "@/components/ui/button";
 import { NavSidebar, type NavGroup } from "@/components/ui/nav-sidebar";
 import Account from "@/pages/Account";
+import AuditLog from "@/pages/AuditLog";
 import Analytics from "@/pages/Analytics";
 import Config from "@/pages/Config";
 import Health from "@/pages/Health";
@@ -71,6 +73,7 @@ const GROUPS: { label?: string; items: NavEntry[] }[] = [
       { key: "limits", label: "Limits", path: "/limits", icon: <Gauge /> },
       { key: "pricing", label: "Pricing", path: "/pricing", icon: <DollarSign /> },
       { key: "health", label: "Health", path: "/health", icon: <Activity /> },
+      { key: "audit-log", label: "Audit Log", path: "/audit-log", icon: <History /> },
       { key: "account", label: "Account", path: "/account", icon: <BookText /> },
     ],
   },
@@ -218,6 +221,7 @@ export default function App() {
               <Route path="/limits" element={<Limits />} />
               <Route path="/pricing" element={<Pricing />} />
               <Route path="/health" element={<Health />} />
+              <Route path="/audit-log" element={<AuditLog />} />
               <Route path="/account" element={<Account />} />
             </Routes>
           </div>
