@@ -1,0 +1,60 @@
+# path -> label map for actions/labeler (v5+ syntax).
+# labels must already exist in the repo; keep in sync with `gh label list`.
+
+routing-balancing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/rolter-balancer/**"
+
+providers-api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/rolter-proxy/**"
+          - "crates/rolter-gateway/**"
+
+auth-rbac:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/rolter-auth/**"
+
+ui-dashboard:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ui/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "user-docs/**"
+          - "**/*.md"
+
+ci-cd:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - ".github/actions/**"
+
+deployment:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docker/**"
+          - "**/Dockerfile*"
+
+observability:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "clickhouse/**"
+
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.rs"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/Cargo.toml"
+          - "**/Cargo.lock"
+          - "ui/package.json"
+          - "ui/bun.lock"

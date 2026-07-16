@@ -1,0 +1,22 @@
+name: labeler
+
+# path-based auto-labeling for PRs. maps changed files to area labels via
+# .github/labeler.yml so triage does not depend on the author remembering.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    name: apply path labels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@b8dd2d9be0f68b860e7dae5dae7d772984eacd6d # v6.2.0
+        with:
+          sync-labels: false
