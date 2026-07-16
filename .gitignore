@@ -36,3 +36,6 @@ artifacts/engines/
 
 # machine-specific Claude Code preview launch config
 .claude/launch.json
+
+# macOS Finder metadata
+.DS_Store
