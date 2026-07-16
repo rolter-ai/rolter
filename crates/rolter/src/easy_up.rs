@@ -118,6 +118,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         host: args.host.clone(),
         port: args.control_port,
         ui_dir: args.ui_dir.clone(),
+        gateway_url: format!("http://127.0.0.1:{}", args.gateway_port),
         config: Some(args.config.clone()),
         #[cfg(feature = "postgres")]
         database_url,
