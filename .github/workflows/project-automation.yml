@@ -1,0 +1,60 @@
+name: project-automation
+
+# adds every new issue and PR to the rolter-ai project board (#1) and seeds a
+# default Status (Todo) and Priority (Medium) so items land triaged instead of
+# in the untracked "no status" column.
+#
+# org Projects v2 are not reachable with the default GITHUB_TOKEN, so this uses
+# a fine-grained PAT stored as the secret ADD_TO_PROJECT_PAT (org: projects
+# read/write, repo: contents/issues/pull-requests read). pull_request_target is
+# required so PRs from forks can still see the secret.
+on:
+  issues:
+    types: [opened]
+  # pull_request_target is required so PRs from forks can read the org PAT; this
+  # workflow never checks out PR head and passes only static field IDs to run:,
+  # so the usual injection risk does not apply.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  add-to-board:
+    name: add to project board
+    runs-on: ubuntu-latest
+    steps:
+      - name: add item to project
+        id: add
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
+        with:
+          project-url: https://github.com/orgs/rolter-ai/projects/1
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+
+      - name: seed default Status and Priority
+        if: steps.add.outputs.itemId != ''
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          PROJECT_ID: PVT_kwDOEjWga84Bdezc
+          STATUS_FIELD: PVTSSF_lADOEjWga84BdezczhYACo4
+          STATUS_TODO: f75ad846
+          PRIORITY_FIELD: PVTSSF_lADOEjWga84BdezczhYAQGI
+          PRIORITY_MEDIUM: 82100b74
+        run: |
+          set -euo pipefail
+          # $-prefixed names in the query are graphql variables, not shell vars
+          set_field() {
+            # shellcheck disable=SC2016
+            gh api graphql -f query='
+              mutation($project:ID!,$item:ID!,$field:ID!,$opt:String!){
+                updateProjectV2ItemFieldValue(input:{
+                  projectId:$project,itemId:$item,fieldId:$field,
+                  value:{singleSelectOptionId:$opt}
+                }){ projectV2Item { id } }
+              }' -f project="$PROJECT_ID" -f item="$ITEM_ID" \
+                 -f field="$1" -f opt="$2"
+          }
+          set_field "$STATUS_FIELD" "$STATUS_TODO"
+          set_field "$PRIORITY_FIELD" "$PRIORITY_MEDIUM"
