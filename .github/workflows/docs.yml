@@ -13,8 +13,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # allow one concurrent deployment; don't cancel an in-progress publish
 concurrency:
@@ -24,6 +22,10 @@ concurrency:
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write # publish the built book to github pages
+      id-token: write # oidc token for actions/deploy-pages
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
