@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.9"
+version = "0.0.10"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ormeilu/rolter"
@@ -110,13 +110,13 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # internal crates
 # internal deps carry an explicit version (kept in sync with workspace.package
 # by release-plz) so they are not wildcard deps and can publish to crates.io
-rolter-core = { path = "crates/rolter-core", version = "0.0.9" }
-rolter-balancer = { path = "crates/rolter-balancer", version = "0.0.9" }
-rolter-proxy = { path = "crates/rolter-proxy", version = "0.0.9" }
-rolter-store = { path = "crates/rolter-store", version = "0.0.9" }
-rolter-auth = { path = "crates/rolter-auth", version = "0.0.9" }
-rolter-gateway = { path = "crates/rolter-gateway", version = "0.0.9" }
-rolter-control = { path = "crates/rolter-control", version = "0.0.9" }
+rolter-core = { path = "crates/rolter-core", version = "0.0.10" }
+rolter-balancer = { path = "crates/rolter-balancer", version = "0.0.10" }
+rolter-proxy = { path = "crates/rolter-proxy", version = "0.0.10" }
+rolter-store = { path = "crates/rolter-store", version = "0.0.10" }
+rolter-auth = { path = "crates/rolter-auth", version = "0.0.10" }
+rolter-gateway = { path = "crates/rolter-gateway", version = "0.0.10" }
+rolter-control = { path = "crates/rolter-control", version = "0.0.10" }
 
 [profile.release]
 opt-level = 3
