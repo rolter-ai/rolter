@@ -172,7 +172,7 @@ export default function App() {
   const initials = (email.trim()[0] ?? "?").toUpperCase();
 
   return (
-    <div className="flex min-h-screen bg-[color:var(--surface-app)] p-2 text-foreground">
+    <div className="flex h-screen bg-[color:var(--surface-app)] p-2 text-foreground">
       <NavSidebar
         className="rounded-lg border"
         logoSrc="/logo-mark.svg"
