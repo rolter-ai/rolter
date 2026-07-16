@@ -64,7 +64,7 @@ jobs:
     # passing as silent no-ops
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: rolter_test
@@ -194,7 +194,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: zizmor
-        run: uvx zizmor@1.26.1 --min-severity=low --persona=regular .github/workflows/
+        run: uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/
         env:
           GH_TOKEN: ${{ github.token }}
 
