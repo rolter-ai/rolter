@@ -16,6 +16,7 @@ mod crud;
 mod health;
 #[cfg(feature = "postgres")]
 mod me;
+mod proxy;
 #[cfg(feature = "postgres")]
 mod rbac;
 #[cfg(feature = "postgres")]
@@ -51,6 +52,14 @@ pub struct Args {
     /// directory holding the built UI (index.html + assets)
     #[arg(long, env = "ROLTER_UI_DIR", default_value = "ui/dist")]
     pub ui_dir: PathBuf,
+    /// base URL of the rolter-gateway data plane; the dashboard Playground's
+    /// `/gw/*` calls are reverse-proxied here (see `crate::proxy`)
+    #[arg(
+        long,
+        env = "ROLTER_GATEWAY_URL",
+        default_value = "http://localhost:4000"
+    )]
+    pub gateway_url: String,
     /// optional bootstrap config. Without a database it seeds the in-memory
     /// store; with `--database-url` its providers/routes become read-only
     /// "config models" merged over the DB-defined ones (config wins on
@@ -113,6 +122,10 @@ struct ControlState {
     /// when set, the CRUD API and `/internal/snapshot` require
     /// `Authorization: Bearer <token>`
     admin_token: Option<Arc<String>>,
+    /// shared client for the `/gw/*` reverse proxy to the gateway data plane
+    http: reqwest::Client,
+    /// base URL of the rolter-gateway the `/gw/*` proxy forwards to
+    gateway_url: Arc<String>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -167,6 +180,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     #[allow(unused_variables)]
     let (store, pool) = build_store(&args, bootstrap).await?;
+    let http = reqwest::Client::new();
+    let gateway_url = Arc::new(args.gateway_url.trim_end_matches('/').to_string());
+    tracing::info!(gateway_url = %gateway_url, "proxying /gw/* to the gateway");
     #[cfg(feature = "postgres")]
     let state = ControlState {
         store,
@@ -174,6 +190,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         redis,
         clickhouse,
         admin_token,
+        http,
+        gateway_url,
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -183,6 +201,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         redis,
         clickhouse,
         admin_token,
+        http,
+        gateway_url,
     };
 
     let app = build_app(state)
@@ -209,7 +229,10 @@ fn build_app(state: ControlState) -> Router {
         .route("/api/v1/roles", get(list_roles))
         .route("/api/v1/config", get(get_config))
         .merge(analytics::router())
-        .merge(health::router());
+        .merge(health::router())
+        // reverse-proxy the gateway data plane for the dashboard Playground;
+        // authenticated by the virtual key the gateway itself checks
+        .merge(proxy::router());
     // login is authenticated by the request body (email/password), not the
     // admin token, so /api/v1/auth/* sits on the open router alongside
     // everything else here; `me` still requires a valid session bearer token
@@ -294,6 +317,8 @@ pub async fn test_app_with_admin_token(
         redis: None,
         clickhouse: None,
         admin_token: admin_token.map(Arc::new),
+        http: reqwest::Client::new(),
+        gateway_url: Arc::new("http://localhost:4000".to_string()),
         pool: Some(pool),
     };
     Ok(build_app(state))
@@ -416,6 +441,8 @@ mod tests {
             redis: None,
             clickhouse: None,
             admin_token: token.map(|t| Arc::new(t.to_string())),
+            http: reqwest::Client::new(),
+            gateway_url: Arc::new("http://localhost:4000".to_string()),
             #[cfg(feature = "postgres")]
             pool: None,
         }
@@ -463,6 +490,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn gw_proxies_http_to_the_gateway() {
+        // stand-in for the gateway data plane
+        let upstream = Router::new()
+            .route("/v1/ping", get(|| async { "pong-from-gw" }))
+            .route(
+                "/v1/echo",
+                axum::routing::post(|body: String| async move { body }),
+            );
+        let up_addr = serve(upstream).await;
+
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(None)
+        };
+        let addr = serve(build_app(state)).await;
+        let client = reqwest::Client::new();
+
+        // GET forwards path + response body
+        let got = client
+            .get(format!("http://{addr}/gw/v1/ping"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(got, "pong-from-gw");
+
+        // POST forwards the request body
+        let echoed = client
+            .post(format!("http://{addr}/gw/v1/echo"))
+            .body("hello gateway")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(echoed, "hello gateway");
     }
 
     #[tokio::test]
