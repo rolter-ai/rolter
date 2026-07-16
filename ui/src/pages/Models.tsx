@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Lock, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Table } from "@/components/ui/table";
+import { Tabs } from "@/components/ui/tabs";
 import {
   Card,
   CardContent,
@@ -49,6 +52,8 @@ const MODELS_QUERY_KEY = ["models"];
 export default function Models() {
   const queryClient = useQueryClient();
   const scope = useScope();
+  const navigate = useNavigate();
+  const [tab, setTab] = React.useState("routes");
 
   const models = useQuery({
     queryKey: MODELS_QUERY_KEY,
@@ -110,16 +115,35 @@ export default function Models() {
             Public model names routed by rolter.
           </p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => setAddOpen(true)}
-          disabled={scopeBlocked || !scope.projectId}
-        >
-          <Plus className="h-4 w-4" />
-          Add model
-        </Button>
+        {tab === "routes" ? (
+          <Button
+            size="sm"
+            onClick={() => setAddOpen(true)}
+            disabled={scopeBlocked || !scope.projectId}
+          >
+            <Plus className="h-4 w-4" />
+            Add model
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => navigate("/providers")}>
+            Manage providers
+          </Button>
+        )}
       </div>
 
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { value: "routes", label: "Routes", count: models.data?.length },
+          { value: "providers", label: "Providers", count: providers.data?.length },
+        ]}
+      />
+
+      {tab === "providers" ? (
+        <ProvidersTab providers={providers.data ?? []} loading={providers.isLoading} />
+      ) : (
+        <>
       {models.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {models.error && (
         <p className="text-sm text-destructive">Failed to load models.</p>
@@ -191,6 +215,8 @@ export default function Models() {
           );
         })}
       </div>
+        </>
+      )}
 
       {scope.projectId && (
         <AddModelDialog
@@ -659,5 +685,48 @@ function EditModelDialog({
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+// read-only providers view for the Models "Providers" tab (DS parity). full
+// CRUD lives on the Providers admin page — linked from the header.
+function ProvidersTab({
+  providers,
+  loading,
+}: {
+  providers: ProviderRow[];
+  loading: boolean;
+}) {
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+  if (providers.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No providers configured for this org yet.
+      </p>
+    );
+  }
+  return (
+    <Table
+      rowKey="id"
+      columns={[
+        { key: "name", header: "Provider", mono: true },
+        {
+          key: "kind",
+          header: "Kind",
+          render: (v) => <Badge tone="neutral">{v as string}</Badge>,
+        },
+        { key: "slug", header: "Slug", mono: true },
+        { key: "api_base", header: "API base", mono: true },
+        {
+          key: "api_key_env",
+          header: "Key env",
+          mono: true,
+          render: (v) => (v as string) || "—",
+        },
+      ]}
+      data={providers as unknown as Record<string, unknown>[]}
+    />
   );
 }

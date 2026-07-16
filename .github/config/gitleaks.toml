@@ -6,5 +6,9 @@ title = "rolter gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "documentation carries placeholder credentials in examples (e.g. the dev virtual key sk-rolter-dev in curl snippets). real secrets come from env vars or the encrypted store and never live in docs, so exempt the docs trees from secret scanning while all code, configs, and examples elsewhere stay covered."
+description = "documentation carries placeholder credentials in examples (e.g. the dev virtual key sk-rolter-dev in curl snippets). real secrets come from env vars or the encrypted store and never live in docs, so exempt the docs trees from secret scanning while all code, configs, and examples elsewhere stay covered. also exempt data-table/column identifier literals (`key:`/`header:` field names like p95_latency_ms), which the generic-api-key rule false-positives on — these are UI field names, never secrets."
 paths = ['''user-docs/.*''', '''docs/.*''', '''README\.md''']
+# match against the whole source line, not just the detected token, so the
+# allowlist is anchored to the column-definition shape rather than the value
+regexTarget = "line"
+regexes = ['''^\s*(key|header):\s*["'][A-Za-z0-9_]+["'],?\s*$''']
