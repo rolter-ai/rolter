@@ -171,6 +171,19 @@ pub struct Membership {
     pub created_at: DateTime<Utc>,
 }
 
+/// a record of an admin/CRUD/auth action, for the audit-log API
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: Uuid,
+    pub org_id: Option<Uuid>,
+    pub actor_user_id: Option<Uuid>,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<Uuid>,
+    pub detail: Option<serde_json::Value>,
+    pub at: DateTime<Utc>,
+}
+
 /// a login session. `token_hash` is the peppered digest of the opaque bearer
 /// token handed to the client; the plaintext token is never stored
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

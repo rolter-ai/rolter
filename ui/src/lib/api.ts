@@ -911,3 +911,23 @@ export function fetchMyUsage(
     `/api/v1/me/usage${windowParams(window)}`,
   ).then((r) => r.data);
 }
+
+export interface AuditLogEntry {
+  id: string;
+  org_id?: string | null;
+  actor_user_id?: string | null;
+  action: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  detail?: unknown;
+  at: string;
+}
+
+export function fetchAuditLog(
+  orgId: string,
+  limit = 100,
+): Promise<AuditLogEntry[]> {
+  return getJson<AuditLogEntry[]>(
+    `/api/v1/orgs/${orgId}/audit-log?limit=${limit}`,
+  );
+}

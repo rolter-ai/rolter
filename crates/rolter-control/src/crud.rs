@@ -20,13 +20,13 @@ use rolter_auth::Role;
 use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::Error;
 use rolter_store::postgres::models::{
-    Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route, RouteTarget, Team,
-    User, VirtualKey,
+    AuditLogEntry, Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route,
+    RouteTarget, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    BudgetRepo, MembershipRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo,
-    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, TeamRepo, UserRepo,
-    VirtualKeyRepo,
+    AuditLogRepo, BudgetRepo, MembershipRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
+    ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo,
+    TeamRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::rbac::{authorize, require_superadmin, Principal, ScopeChain};
@@ -104,6 +104,7 @@ pub fn router() -> Router<ControlState> {
             get(list_memberships).post(create_membership),
         )
         .route("/api/v1/memberships/{id}", delete(delete_membership))
+        .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -198,6 +199,52 @@ pub(crate) async fn publish_config_change(state: &ControlState) -> ApiResult<()>
     Ok(())
 }
 
+/// Record an admin/CRUD/auth action to the audit log. Best-effort: a logging
+/// failure is warned about but never fails the request it's attached to.
+async fn log_audit(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Option<Uuid>,
+    action: &str,
+    target_type: &str,
+    target_id: Uuid,
+    detail: serde_json::Value,
+) {
+    let actor = match principal {
+        Principal::User(user) => Some(user.id),
+        Principal::Superadmin => None,
+    };
+    if let Err(err) = AuditLogRepo(pool(state))
+        .create(
+            org_id,
+            actor,
+            action,
+            Some(target_type),
+            Some(target_id),
+            Some(detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, action, "failed to write audit log entry");
+    }
+}
+
+async fn list_audit_log(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+    Query(query): Query<AuditLogQuery>,
+) -> ApiResult<Json<Vec<AuditLogEntry>>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Admin).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    Ok(Json(AuditLogRepo(pool(&state)).list(org_id, limit).await?))
+}
+
+#[derive(Deserialize)]
+struct AuditLogQuery {
+    limit: Option<i64>,
+}
+
 /// Reject a mutation that collides with a bootstrap-config-owned resource.
 fn require_not_config_owned(
     owned: &std::collections::HashSet<String>,
@@ -215,21 +262,31 @@ fn require_not_config_owned(
 
 /// Require admin on the project owning route `id` (walked route → project →
 /// team → org). Used by the route mutations that only carry the route id.
-async fn authorize_route(state: &ControlState, principal: &Principal, id: Uuid) -> ApiResult<()> {
+/// Returns the resolved org id, for audit-log scoping.
+async fn authorize_route(
+    state: &ControlState,
+    principal: &Principal,
+    id: Uuid,
+) -> ApiResult<Option<Uuid>> {
     let route = RouteRepo(pool(state)).get(id).await?;
     let chain = ScopeChain::from_project(pool(state), route.project_id).await?;
-    authorize(state, principal, chain, Role::Admin).await
+    let org_id = chain.org;
+    authorize(state, principal, chain, Role::Admin).await?;
+    Ok(org_id)
 }
 
-/// Require admin on the project owning virtual key `id`.
+/// Require admin on the project owning virtual key `id`. Returns the resolved
+/// org id, for audit-log scoping.
 async fn authorize_virtual_key(
     state: &ControlState,
     principal: &Principal,
     id: Uuid,
-) -> ApiResult<()> {
+) -> ApiResult<Option<Uuid>> {
     let vk = VirtualKeyRepo(pool(state)).get(id).await?;
     let chain = ScopeChain::from_project(pool(state), vk.project_id).await?;
-    authorize(state, principal, chain, Role::Admin).await
+    let org_id = chain.org;
+    authorize(state, principal, chain, Role::Admin).await?;
+    Ok(org_id)
 }
 
 // --- orgs ---
@@ -259,9 +316,18 @@ async fn create_org(
     require_superadmin(&principal)?;
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
-    Ok(Json(
-        OrgRepo(pool(&state)).create(&body.name, &body.slug).await?,
-    ))
+    let org = OrgRepo(pool(&state)).create(&body.name, &body.slug).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org.id),
+        "org.create",
+        "org",
+        org.id,
+        serde_json::json!({"name": org.name}),
+    )
+    .await;
+    Ok(Json(org))
 }
 
 async fn delete_org(
@@ -271,6 +337,18 @@ async fn delete_org(
 ) -> ApiResult<StatusCode> {
     authorize(&state, &principal, ScopeChain::org(id), Role::Admin).await?;
     OrgRepo(pool(&state)).delete(id).await?;
+    // org_id is FK-cascaded, so deleting the org would delete a log row scoped
+    // to it too; log this one unscoped so the deletion itself survives
+    log_audit(
+        &state,
+        &principal,
+        None,
+        "org.delete",
+        "org",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -298,9 +376,18 @@ async fn create_team(
 ) -> ApiResult<Json<Team>> {
     authorize(&state, &principal, ScopeChain::org(org_id), Role::Admin).await?;
     require_non_empty(&body.name, "name")?;
-    Ok(Json(
-        TeamRepo(pool(&state)).create(org_id, &body.name).await?,
-    ))
+    let team = TeamRepo(pool(&state)).create(org_id, &body.name).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "team.create",
+        "team",
+        team.id,
+        serde_json::json!({"name": team.name}),
+    )
+    .await;
+    Ok(Json(team))
 }
 
 async fn delete_team(
@@ -309,8 +396,19 @@ async fn delete_team(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let chain = ScopeChain::from_team(pool(&state), id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     TeamRepo(pool(&state)).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "team.delete",
+        "team",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -338,13 +436,23 @@ async fn create_project(
     Json(body): Json<CreateProject>,
 ) -> ApiResult<Json<Project>> {
     let chain = ScopeChain::from_team(pool(&state), team_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     require_non_empty(&body.name, "name")?;
-    Ok(Json(
-        ProjectRepo(pool(&state))
-            .create(team_id, &body.name)
-            .await?,
-    ))
+    let project = ProjectRepo(pool(&state))
+        .create(team_id, &body.name)
+        .await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "project.create",
+        "project",
+        project.id,
+        serde_json::json!({"name": project.name}),
+    )
+    .await;
+    Ok(Json(project))
 }
 
 async fn delete_project(
@@ -353,8 +461,19 @@ async fn delete_project(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let chain = ScopeChain::from_project(pool(&state), id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     ProjectRepo(pool(&state)).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "project.delete",
+        "project",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -499,6 +618,16 @@ async fn create_provider(
             .await?;
     }
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "provider.create",
+        "provider",
+        row.id,
+        serde_json::json!({"name": row.name, "slug": row.slug, "kind": row.kind}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -538,6 +667,7 @@ async fn update_provider(
     Json(body): Json<UpdateProvider>,
 ) -> ApiResult<Json<Provider>> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
+    let org_id = existing.org_id;
     authorize(
         &state,
         &principal,
@@ -580,6 +710,16 @@ async fn update_provider(
         }
     }
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "provider.update",
+        "provider",
+        id,
+        serde_json::json!({"slug": row.slug}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -598,6 +738,16 @@ async fn delete_provider(
     .await?;
     ProviderRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(existing.org_id),
+        "provider.delete",
+        "provider",
+        id,
+        serde_json::json!({"name": existing.name}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -641,6 +791,7 @@ async fn create_route(
     Json(body): Json<CreateRoute>,
 ) -> ApiResult<Json<Route>> {
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     require_non_empty(&body.model, "model")?;
     require_not_config_owned(&state.config_owned.models, &body.model, "model")?;
@@ -653,6 +804,16 @@ async fn create_route(
         .create(project_id, &body.model, &body.strategy)
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.create",
+        "route",
+        row.id,
+        serde_json::json!({"model": row.model, "strategy": row.strategy}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -667,11 +828,21 @@ async fn set_route_enabled(
     Path(id): Path<Uuid>,
     Json(body): Json<SetRouteEnabled>,
 ) -> ApiResult<Json<Route>> {
-    authorize_route(&state, &principal, id).await?;
+    let org_id = authorize_route(&state, &principal, id).await?;
     let row = RouteRepo(pool(&state))
         .set_enabled(id, body.enabled)
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_enabled",
+        "route",
+        id,
+        serde_json::json!({"enabled": body.enabled}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -691,7 +862,7 @@ async fn set_route_params(
     Path(id): Path<Uuid>,
     Json(body): Json<SetRouteParams>,
 ) -> ApiResult<Json<Route>> {
-    authorize_route(&state, &principal, id).await?;
+    let org_id = authorize_route(&state, &principal, id).await?;
     // both must be json objects (or null → treated as empty) so the gateway can
     // deserialize them into the param map / policy
     let params = normalize_json_object(body.params, "params")?;
@@ -700,6 +871,16 @@ async fn set_route_params(
         .set_params(id, &params, &param_policy)
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_params",
+        "route",
+        id,
+        serde_json::json!({"params": params, "param_policy": param_policy}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -720,9 +901,19 @@ async fn delete_route(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize_route(&state, &principal, id).await?;
+    let org_id = authorize_route(&state, &principal, id).await?;
     RouteRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.delete",
+        "route",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -755,7 +946,7 @@ async fn create_route_target(
     Path(route_id): Path<Uuid>,
     Json(body): Json<CreateRouteTarget>,
 ) -> ApiResult<Json<RouteTarget>> {
-    authorize_route(&state, &principal, route_id).await?;
+    let org_id = authorize_route(&state, &principal, route_id).await?;
     if body.weight <= 0 {
         return Err(ApiError::Core(Error::Config("weight must be > 0".into())));
     }
@@ -768,6 +959,16 @@ async fn create_route_target(
         )
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route_target.create",
+        "route_target",
+        row.id,
+        serde_json::json!({"route_id": route_id, "provider_id": body.provider_id}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -777,9 +978,19 @@ async fn delete_route_target(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let target = RouteTargetRepo(pool(&state)).get(id).await?;
-    authorize_route(&state, &principal, target.route_id).await?;
+    let org_id = authorize_route(&state, &principal, target.route_id).await?;
     RouteTargetRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route_target.delete",
+        "route_target",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -841,6 +1052,7 @@ async fn create_virtual_key(
     Json(body): Json<CreateVirtualKey>,
 ) -> ApiResult<Json<CreatedVirtualKey>> {
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
@@ -855,6 +1067,16 @@ async fn create_virtual_key(
         )
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.create",
+        "virtual_key",
+        row.id,
+        serde_json::json!({"name": row.name, "key_prefix": key_prefix}),
+    )
+    .await;
     Ok(Json(CreatedVirtualKey { row, key }))
 }
 
@@ -869,11 +1091,21 @@ async fn set_virtual_key_disabled(
     Path(id): Path<Uuid>,
     Json(body): Json<SetVirtualKeyDisabled>,
 ) -> ApiResult<Json<VirtualKey>> {
-    authorize_virtual_key(&state, &principal, id).await?;
+    let org_id = authorize_virtual_key(&state, &principal, id).await?;
     let row = VirtualKeyRepo(pool(&state))
         .set_disabled(id, body.disabled)
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.set_disabled",
+        "virtual_key",
+        id,
+        serde_json::json!({"disabled": body.disabled}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -890,11 +1122,21 @@ async fn set_virtual_key_cache(
     Path(id): Path<Uuid>,
     Json(body): Json<SetVirtualKeyCache>,
 ) -> ApiResult<Json<VirtualKey>> {
-    authorize_virtual_key(&state, &principal, id).await?;
+    let org_id = authorize_virtual_key(&state, &principal, id).await?;
     let row = VirtualKeyRepo(pool(&state))
         .set_cache(id, body.cache)
         .await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.set_cache",
+        "virtual_key",
+        id,
+        serde_json::json!({"cache": body.cache}),
+    )
+    .await;
     Ok(Json(row))
 }
 
@@ -903,9 +1145,19 @@ async fn delete_virtual_key(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize_virtual_key(&state, &principal, id).await?;
+    let org_id = authorize_virtual_key(&state, &principal, id).await?;
     VirtualKeyRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.delete",
+        "virtual_key",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -963,22 +1215,32 @@ async fn create_budget(
 ) -> ApiResult<Json<Budget>> {
     validate_scope(&body.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     if body.limit_usd.trim().parse::<f64>().is_err() {
         return Err(ApiError::Core(Error::Config(
             "limit_usd must be numeric".into(),
         )));
     }
-    Ok(Json(
-        BudgetRepo(pool(&state))
-            .create(
-                &body.scope_type,
-                body.scope_id,
-                &body.limit_usd,
-                &body.period,
-            )
-            .await?,
-    ))
+    let row = BudgetRepo(pool(&state))
+        .create(
+            &body.scope_type,
+            body.scope_id,
+            &body.limit_usd,
+            &body.period,
+        )
+        .await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "budget.create",
+        "budget",
+        row.id,
+        serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "limit_usd": body.limit_usd}),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 async fn delete_budget(
@@ -988,8 +1250,19 @@ async fn delete_budget(
 ) -> ApiResult<StatusCode> {
     let budget = BudgetRepo(pool(&state)).get(id).await?;
     let chain = ScopeChain::from_scope(pool(&state), &budget.scope_type, budget.scope_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     BudgetRepo(pool(&state)).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "budget.delete",
+        "budget",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1025,12 +1298,22 @@ async fn create_rate_limit(
 ) -> ApiResult<Json<RateLimit>> {
     validate_scope(&body.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
-    Ok(Json(
-        RateLimitRepo(pool(&state))
-            .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
-            .await?,
-    ))
+    let row = RateLimitRepo(pool(&state))
+        .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
+        .await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "rate_limit.create",
+        "rate_limit",
+        row.id,
+        serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "rpm": body.rpm, "tpm": body.tpm}),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 async fn delete_rate_limit(
@@ -1040,8 +1323,19 @@ async fn delete_rate_limit(
 ) -> ApiResult<StatusCode> {
     let limit = RateLimitRepo(pool(&state)).get(id).await?;
     let chain = ScopeChain::from_scope(pool(&state), &limit.scope_type, limit.scope_id).await?;
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     RateLimitRepo(pool(&state)).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "rate_limit.delete",
+        "rate_limit",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1281,6 +1575,16 @@ async fn create_user(
     let membership = MembershipRepo(pool)
         .create(user.id, Some(org_id), None, None, role)
         .await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "user.create",
+        "user",
+        user.id,
+        serde_json::json!({"email": user.email, "role": role}),
+    )
+    .await;
     Ok(Json(CreatedUser { user, membership }))
 }
 
@@ -1342,6 +1646,17 @@ async fn update_user(
         }
     }
 
+    // global account edit spans orgs, so it's logged unscoped
+    log_audit(
+        &state,
+        &principal,
+        None,
+        "user.update",
+        "user",
+        id,
+        serde_json::json!({"email": user.email, "deactivated": body.deactivated}),
+    )
+    .await;
     Ok(Json(user))
 }
 
@@ -1353,6 +1668,16 @@ async fn delete_user(
     require_superadmin(&principal)?;
     // memberships and sessions cascade on the users fk (on delete cascade)
     UserRepo(pool(&state)).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        None,
+        "user.delete",
+        "user",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1418,11 +1743,20 @@ async fn create_membership(
     // the target user must exist (surfaces a 404 rather than a fk error)
     UserRepo(pool).get(body.user_id).await?;
 
-    Ok(Json(
-        MembershipRepo(pool)
-            .create(body.user_id, org, team, project, &body.role)
-            .await?,
-    ))
+    let membership = MembershipRepo(pool)
+        .create(body.user_id, org, team, project, &body.role)
+        .await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "membership.create",
+        "membership",
+        membership.id,
+        serde_json::json!({"user_id": body.user_id, "role": body.role, "scope_type": body.scope_type, "scope_id": body.scope_id}),
+    )
+    .await;
+    Ok(Json(membership))
 }
 
 async fn delete_membership(
@@ -1443,10 +1777,31 @@ async fn delete_membership(
         // a membership with no scope should not exist; treat as superadmin-only
         require_superadmin(&principal)?;
         MembershipRepo(pool).delete(id).await?;
+        log_audit(
+            &state,
+            &principal,
+            None,
+            "membership.delete",
+            "membership",
+            id,
+            serde_json::json!({}),
+        )
+        .await;
         return Ok(StatusCode::NO_CONTENT);
     };
+    let org_id = chain.org;
     authorize(&state, &principal, chain, Role::Admin).await?;
     MembershipRepo(pool).delete(id).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "membership.delete",
+        "membership",
+        id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
