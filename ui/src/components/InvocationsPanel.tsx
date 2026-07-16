@@ -10,8 +10,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  FilterCheckList,
+  FilterPanel,
+  FilterSection,
+} from "@/components/ui/filter-panel";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import {
   AnalyticsUnavailableError,
   fetchInvocations,
@@ -103,32 +107,44 @@ export function InvocationsPanel({ window }: { window: AnalyticsWindow }) {
   const rows = query.data ?? [];
   const hasMore = rows.length === PAGE_SIZE;
 
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          className="h-8 w-48 text-xs"
-          placeholder="Filter by model"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-        />
-        <Input
-          className="h-8 w-56 text-xs"
-          placeholder="Filter by virtual key id"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-        />
-        <Select
-          className="h-8 w-32 text-xs"
-          value={status}
-          onChange={(e) => setStatus(e.target.value as StatusFilter)}
-        >
-          <option value="all">All statuses</option>
-          <option value="success">Success (2xx/3xx)</option>
-          <option value="error">Errors (4xx/5xx)</option>
-        </Select>
-      </div>
+  // checklist ↔ single status param: none or both checked means "all"
+  const statusSelected =
+    status === "all" ? [] : status === "success" ? ["success"] : ["error"];
+  const onStatusChange = (sel: string[]) =>
+    setStatus(sel.length === 1 ? (sel[0] as StatusFilter) : "all");
 
+  return (
+    <div className="flex items-start gap-4">
+      <FilterPanel className="h-auto w-[220px] flex-none rounded-lg border border-[color:var(--border-subtle)]">
+        <FilterSection title="Status" defaultOpen count={statusSelected.length}>
+          <FilterCheckList
+            options={[
+              { value: "success", label: "Success (2xx/3xx)" },
+              { value: "error", label: "Errors (4xx/5xx)" },
+            ]}
+            selected={statusSelected}
+            onChange={onStatusChange}
+          />
+        </FilterSection>
+        <FilterSection title="Model" defaultOpen count={debounced.model ? 1 : 0}>
+          <Input
+            className="h-8 text-xs"
+            placeholder="Filter by model"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </FilterSection>
+        <FilterSection title="Virtual key" count={debounced.key ? 1 : 0}>
+          <Input
+            className="h-8 text-xs"
+            placeholder="Filter by virtual key id"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+          />
+        </FilterSection>
+      </FilterPanel>
+
+      <div className="min-w-0 flex-1 space-y-3">
       {query.isError && !isUnavailable(query.error) && (
         <p className="text-sm text-destructive">
           {(query.error as Error).message}
@@ -229,6 +245,7 @@ export function InvocationsPanel({ window }: { window: AnalyticsWindow }) {
       </div>
 
       <InvocationDetail row={selected} onClose={() => setSelected(null)} />
+      </div>
     </div>
   );
 }
