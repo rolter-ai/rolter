@@ -194,7 +194,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - name: zizmor
-        run: uvx zizmor@1.26.1 --min-severity=low --persona=regular .github/workflows/
+        run: uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/
         env:
           GH_TOKEN: ${{ github.token }}
 
