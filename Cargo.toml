@@ -9,6 +9,7 @@ members = [
   "crates/rolter-gateway",
   "crates/rolter-control",
   "crates/rolter",
+  "ui",
 ]
 
 [workspace.package]
@@ -16,7 +17,7 @@ version = "0.0.9"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ormeilu/rolter"
-authors = ["rolter contributors"]
+authors = ["Ilya Lubenets <lii291001@gmail.com>"]
 rust-version = "1.82"
 
 [workspace.dependencies]

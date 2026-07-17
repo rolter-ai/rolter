@@ -5,6 +5,9 @@ FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* rust-toolchain.toml ./
 COPY crates ./crates
+# ui/ is a workspace member (rolter-ui marker crate for release-plz changelog
+# tracking); copy its manifest + stub lib so cargo can resolve the workspace
+COPY ui/Cargo.toml ui/changelog.rs ./ui/
 RUN cargo build --release --workspace
 
 # --- build the ui ---

@@ -58,3 +58,16 @@ git_tag_enable = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
 git_release_name = "v{{ version }}"
+# the dashboard (ui/) is a vite/react app carried by the `rolter-ui` marker
+# crate; fold its commits into the single gateway release changelog so ui
+# changes show up in the v{version} github release
+changelog_include = ["rolter-ui"]
+
+[[package]]
+# marker crate for the dashboard; never publishes and produces no tag/release
+# of its own. its commits surface only via the gateway's changelog_include.
+name = "rolter-ui"
+publish = false
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
