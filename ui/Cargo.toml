@@ -1,0 +1,18 @@
+[package]
+name = "rolter-ui"
+# marker crate: the dashboard is a vite/react app, not rust. this manifest exists
+# only so release-plz treats `ui/` as a workspace package and attributes ui
+# commits to a changelog. it never publishes and ships no code.
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+description = "marker crate so release-plz tracks the rolter dashboard (ui/) commits"
+
+# point the lib at a standalone file so cargo does not pick up ui/src (react)
+[lib]
+name = "rolter_ui"
+path = "changelog.rs"
