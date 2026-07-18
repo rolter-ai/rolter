@@ -55,7 +55,7 @@ GHCR always publishes via the built-in `GITHUB_TOKEN`. To also push to Docker Hu
 - Put the gateway behind TLS (ingress/load balancer); keep the control plane private.
 - Set a strong `ROLTER_MASTER_KEY`; provide DB/Redis/ClickHouse URLs via env or a secrets manager.
 - Scale `gateway` horizontally; all replicas hot-reload config from Redis. ClickHouse and Postgres are shared.
-- Kubernetes manifests/Helm chart are a roadmap item.
+- Kubernetes deployments are supported through the [rolter Helm chart](kubernetes.md).
 
 ## Air-gapped
 

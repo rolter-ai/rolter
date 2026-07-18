@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rolter.fullname" . }}-gateway
+  labels:
+    {{- include "rolter.labels" . | nindent 4 }}
+  {{- with .Values.gateway.service.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "rolter.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rolter.fullname" . }}-control
+  labels:
+    {{- include "rolter.labels" . | nindent 4 }}
+  {{- with .Values.control.service.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.control.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "rolter.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: control
+  ports:
+    - name: http
+      port: {{ .Values.control.service.port }}
+      targetPort: http
+

@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rolter.fullname" . }}-gateway
+  labels:
+    {{- include "rolter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rolter.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ .Values.config.file | sha256sum }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+      labels:
+        app.kubernetes.io/name: {{ include "rolter.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: gateway
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "rolter.serviceAccountName" . }}
+      securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "rolter.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["rolter-gateway"]
+          args: ["--config", "/etc/rolter/rolter.toml", "--snapshot-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}/internal/snapshot", "--admin-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}"]
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.env.rustLog | quote }}
+            {{- if .Values.env.redisUrl }}
+            - name: REDIS_URL
+              value: {{ .Values.env.redisUrl | quote }}
+            {{- end }}
+            {{- with .Values.secretEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+            {{- with .Values.gateway.extraEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rolter
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+          resources: {{ toYaml .Values.gateway.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "rolter.configMapName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints: {{ toYaml . | nindent 8 }}
+      {{- end }}
+
