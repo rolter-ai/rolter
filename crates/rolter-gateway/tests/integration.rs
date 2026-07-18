@@ -7,15 +7,18 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{OriginalUri, Path, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
 use rolter_core::{
     BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, RoleProfile,
     Target, VirtualKeyConfig,
 };
 use serde_json::{json, Value};
+use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
 /// Bind an axum app to an ephemeral port and serve it in the background,
 /// returning the bound address.
@@ -106,6 +109,95 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
 async fn serve_gateway(config: &GatewayConfig) -> SocketAddr {
     let app = rolter_gateway::build_router_from_config(config);
     serve(app).await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedRealtimeRequest {
+    uri: String,
+    authorization: Option<String>,
+    beta: Option<String>,
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite's handshake callback fixes the large HTTP error response type"
+)]
+async fn serve_realtime_echo() -> (
+    SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<CapturedRealtimeRequest>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (captured_tx, captured_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let captured_tx = captured_tx.clone();
+            tokio::spawn(async move {
+                let callback = move |
+                    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                    response: tokio_tungstenite::tungstenite::handshake::server::Response,
+                | {
+                    let _ = captured_tx.send(CapturedRealtimeRequest {
+                        uri: request.uri().to_string(),
+                        authorization: request
+                            .headers()
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string),
+                        beta: request
+                            .headers()
+                            .get("openai-beta")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string),
+                    });
+                    Ok(response)
+                };
+                let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, callback).await
+                else {
+                    return;
+                };
+                while let Some(Ok(message)) = socket.next().await {
+                    let close = message.is_close();
+                    if socket.send(message).await.is_err() || close {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, captured_rx)
+}
+
+fn realtime_client_request(
+    gateway: SocketAddr,
+    model: &str,
+    authorization: Option<&str>,
+    beta: Option<&str>,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!(
+            "ws://{gateway}/v1/realtime?model={model}"
+        ))
+        .unwrap();
+    if let Some(authorization) = authorization {
+        request.headers_mut().insert(
+            axum::http::header::AUTHORIZATION,
+            authorization.parse().unwrap(),
+        );
+    }
+    if let Some(beta) = beta {
+        request
+            .headers_mut()
+            .insert("openai-beta", beta.parse().unwrap());
+    }
+    request
+}
+
+fn websocket_handshake_status(error: tokio_tungstenite::tungstenite::Error) -> u16 {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => response.status().as_u16(),
+        other => panic!("expected HTTP handshake rejection, got {other}"),
+    }
 }
 
 #[tokio::test]
@@ -1092,6 +1184,299 @@ async fn streaming_request_passes_through_sse() {
     assert!(text.contains("data:"), "missing SSE data frames");
     assert!(text.contains("[DONE]"), "missing SSE terminator");
     assert!(text.contains("pong"), "missing streamed content");
+}
+
+#[tokio::test]
+async fn streaming_response_is_forwarded_incrementally() {
+    async fn delayed_sse(
+        State(release): State<Arc<tokio::sync::Notify>>,
+    ) -> axum::response::Response {
+        let chunks = futures_util::stream::unfold((0, release), |(step, release)| async move {
+            match step {
+                0 => Some((
+                    Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(
+                        b"data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n",
+                    )),
+                    (1, release),
+                )),
+                1 => {
+                    release.notified().await;
+                    Some((
+                        Ok(bytes::Bytes::from_static(
+                            b"data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\ndata: [DONE]\n\n",
+                        )),
+                        (2, release),
+                    ))
+                }
+                _ => None,
+            }
+        });
+        axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(chunks))
+            .unwrap()
+    }
+
+    let release = Arc::new(tokio::sync::Notify::new());
+    let upstream = serve(
+        Router::new()
+            .route("/v1/chat/completions", post(delayed_sse))
+            .with_state(release.clone()),
+    )
+    .await;
+    let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
+
+    let mut response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "stream": true, "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(1), response.chunk())
+        .await
+        .expect("gateway buffered the first SSE event")
+        .unwrap()
+        .expect("upstream ended before its first SSE event");
+    let first = String::from_utf8(first.to_vec()).unwrap();
+    assert!(first.contains("first"), "unexpected first chunk: {first}");
+    assert!(
+        !first.contains("second"),
+        "gateway buffered SSE events: {first}"
+    );
+
+    release.notify_one();
+    let rest = response.text().await.unwrap();
+    assert!(rest.contains("second"), "missing second SSE event: {rest}");
+    assert!(rest.contains("[DONE]"), "missing SSE terminator: {rest}");
+}
+
+#[tokio::test]
+async fn retry_policy_distinguishes_client_and_transient_upstream_errors() {
+    async fn failing(
+        State((status, hits)): State<(axum::http::StatusCode, Arc<AtomicU32>)>,
+    ) -> axum::response::Response {
+        hits.fetch_add(1, Ordering::SeqCst);
+        (
+            status,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!(r#"{{"error":{{"message":"upstream {status}"}}}}"#),
+        )
+            .into_response()
+    }
+
+    async fn healthy(State(hits): State<Arc<AtomicU32>>) -> axum::response::Response {
+        hits.fetch_add(1, Ordering::SeqCst);
+        Json(json!({
+            "id": "chatcmpl-fallback",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "fallback"}}]
+        }))
+        .into_response()
+    }
+
+    for (status, should_retry) in [
+        (axum::http::StatusCode::BAD_REQUEST, false),
+        (axum::http::StatusCode::NOT_FOUND, false),
+        (axum::http::StatusCode::UNPROCESSABLE_ENTITY, false),
+        (axum::http::StatusCode::REQUEST_TIMEOUT, true),
+        (axum::http::StatusCode::TOO_MANY_REQUESTS, true),
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, true),
+    ] {
+        let failing_hits = Arc::new(AtomicU32::new(0));
+        let healthy_hits = Arc::new(AtomicU32::new(0));
+        let down = serve(
+            Router::new()
+                .route("/v1/chat/completions", post(failing))
+                .with_state((status, failing_hits.clone())),
+        )
+        .await;
+        let up = serve(
+            Router::new()
+                .route("/v1/chat/completions", post(healthy))
+                .with_state(healthy_hits.clone()),
+        )
+        .await;
+        let mut config = config_for("test-model", vec![("down", down), ("up", up)]);
+        config.retry.base_backoff_ms = 0;
+        config.retry.max_backoff_ms = 0;
+        let gw = serve_gateway(&config).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .json(&json!({"model": "test-model", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(failing_hits.load(Ordering::SeqCst), 1, "status {status}");
+        if should_retry {
+            assert_eq!(response.status(), 200, "status {status} was not retried");
+            assert_eq!(healthy_hits.load(Ordering::SeqCst), 1, "status {status}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["choices"][0]["message"]["content"], "fallback");
+        } else {
+            assert_eq!(response.status(), status, "status {status} was retried");
+            assert_eq!(healthy_hits.load(Ordering::SeqCst), 0, "status {status}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(
+                body["error"]["message"],
+                format!("upstream {status}"),
+                "status {status} error body changed"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn realtime_websocket_rewrites_model_and_relays_frames_with_upstream_auth() {
+    let (upstream_addr, mut captured_rx) = serve_realtime_echo().await;
+
+    let mut config = config_for("realtime-alias", vec![("up", upstream_addr)]);
+    config.providers[0].api_key = Some("provider-secret".to_string());
+    config.routes[0].targets[0].model = Some("gpt-realtime-upstream".to_string());
+    let gw = serve_gateway(&config).await;
+
+    let request = realtime_client_request(gw, "realtime-alias", None, Some("realtime=v1"));
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    let event = r#"{"type":"session.update","session":{"modalities":["text"]}}"#;
+    socket
+        .send(WebSocketMessage::Text(event.into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        event
+    );
+    let audio = bytes::Bytes::from_static(&[0, 1, 2, 3]);
+    socket
+        .send(WebSocketMessage::Binary(audio.clone()))
+        .await
+        .unwrap();
+    assert_eq!(socket.next().await.unwrap().unwrap().into_data(), audio);
+    socket.close(None).await.unwrap();
+
+    assert_eq!(
+        captured_rx.recv().await.unwrap(),
+        CapturedRealtimeRequest {
+            uri: "/v1/realtime?model=gpt-realtime-upstream".to_string(),
+            authorization: Some("Bearer provider-secret".to_string()),
+            beta: Some("realtime=v1".to_string()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn realtime_websocket_rejects_missing_auth_disallowed_and_unknown_models() {
+    let mut config = config_for("realtime-alias", vec![]);
+    config.virtual_keys = vec![
+        VirtualKeyConfig {
+            key: "sk-restricted".to_string(),
+            name: None,
+            models: vec!["other-model".to_string()],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        },
+        VirtualKeyConfig {
+            key: "sk-all".to_string(),
+            name: None,
+            models: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        },
+    ];
+    let gw = serve_gateway(&config).await;
+
+    let missing_auth =
+        tokio_tungstenite::connect_async(realtime_client_request(gw, "realtime-alias", None, None))
+            .await
+            .unwrap_err();
+    assert_eq!(websocket_handshake_status(missing_auth), 401);
+
+    let disallowed = tokio_tungstenite::connect_async(realtime_client_request(
+        gw,
+        "realtime-alias",
+        Some("Bearer sk-restricted"),
+        None,
+    ))
+    .await
+    .unwrap_err();
+    assert_eq!(websocket_handshake_status(disallowed), 403);
+
+    let unknown = tokio_tungstenite::connect_async(realtime_client_request(
+        gw,
+        "missing-model",
+        Some("Bearer sk-all"),
+        None,
+    ))
+    .await
+    .unwrap_err();
+    assert_eq!(websocket_handshake_status(unknown), 404);
+}
+
+#[tokio::test]
+async fn realtime_websocket_fails_over_during_connection_establishment() {
+    let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_addr = unavailable.local_addr().unwrap();
+    drop(unavailable);
+    let (upstream_addr, mut captured_rx) = serve_realtime_echo().await;
+
+    let config = config_for(
+        "realtime-alias",
+        vec![
+            ("unavailable", unavailable_addr),
+            ("healthy", upstream_addr),
+        ],
+    );
+    let gw = serve_gateway(&config).await;
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(realtime_client_request(gw, "realtime-alias", None, None))
+            .await
+            .unwrap();
+
+    socket
+        .send(WebSocketMessage::Text("ping".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        "ping"
+    );
+    socket.close(None).await.unwrap();
+    assert_eq!(
+        captured_rx.recv().await.unwrap().uri,
+        "/v1/realtime?model=realtime-alias"
+    );
+}
+
+#[tokio::test]
+async fn realtime_websocket_enforces_concurrent_session_limit() {
+    let (upstream_addr, mut captured_rx) = serve_realtime_echo().await;
+    let mut config = config_for("realtime-alias", vec![("up", upstream_addr)]);
+    config.realtime.max_connections = 1;
+    let gw = serve_gateway(&config).await;
+
+    let (mut first, _) =
+        tokio_tungstenite::connect_async(realtime_client_request(gw, "realtime-alias", None, None))
+            .await
+            .unwrap();
+    captured_rx
+        .recv()
+        .await
+        .expect("first session never reached upstream");
+
+    let second =
+        tokio_tungstenite::connect_async(realtime_client_request(gw, "realtime-alias", None, None))
+            .await
+            .unwrap_err();
+    assert_eq!(websocket_handshake_status(second), 429);
+    assert!(captured_rx.try_recv().is_err());
+
+    first.close(None).await.unwrap();
 }
 
 #[tokio::test]
