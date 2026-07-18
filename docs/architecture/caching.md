@@ -26,11 +26,25 @@ flowchart TD
 
 Subscribe to vLLM KV-cache events over ZMQ, hash blocks the same way vLLM does (`--block-size`, hash seed), and maintain a global block→target index. Score targets by exact resident-prefix fraction blended with live load. This mirrors llm-d's precise prefix-cache-aware scheduling and gives the largest, most reliable TTFT/throughput wins on prefix-heavy workloads.
 
-## 2. Response cache (roadmap)
+## 2. Response cache
 
 Optional caching of full responses to cut cost/latency for repeated requests:
 
 - **exact**: hash of the normalized request → cached response (Redis), short TTL, opt-in per route/key.
-- **semantic**: embed the prompt, match by cosine similarity above a threshold; requires an embeddings provider.
+- **semantic**: after an exact miss, embed the normalized prompt through a configured provider and compare cosine similarity against a bounded recent-entry window in Redis. The route controls the threshold and candidate cap. Embedding, Redis, and decode failures fail open to normal routing.
 
 Streaming responses are cached on completion and replayed as a synthetic stream. Cache status is surfaced via response headers (e.g. `x-rolter-cache: hit|miss`).
+
+```toml
+[cache]
+enabled = true
+
+[routes.cache]
+enabled = true
+
+[routes.cache.semantic]
+provider = "openai"
+model = "text-embedding-3-small"
+threshold = 0.92
+max_candidates = 256
+```

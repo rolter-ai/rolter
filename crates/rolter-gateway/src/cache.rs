@@ -27,6 +27,12 @@ pub struct CachedResponse {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SemanticEntry {
+    embedding: Vec<f32>,
+    response: CachedResponse,
+}
+
 /// Exact-match response cache. Cheap to clone (shared connection). Disabled when
 /// no Redis url is configured; disabled instances treat every request as a miss.
 #[derive(Clone)]
@@ -87,6 +93,22 @@ impl ResponseCache {
         out
     }
 
+    /// Stable list key for the bounded semantic candidate window of one route
+    /// and optional virtual-key scope.
+    pub fn semantic_index_key(
+        namespace: &str,
+        path: &str,
+        route: &str,
+        per_key_scope: &str,
+    ) -> String {
+        Self::make_key(
+            &format!("{namespace}:semantic"),
+            path,
+            per_key_scope,
+            route.as_bytes(),
+        )
+    }
+
     async fn connection(inner: &Inner) -> Option<redis::aio::MultiplexedConnection> {
         match inner
             .conn
@@ -141,6 +163,123 @@ impl ResponseCache {
             tracing::warn!(error = %err, key, "failed to store cached response");
         }
     }
+
+    /// Find the nearest response in a bounded recent-candidate window. Any
+    /// Redis or decode failure is a miss so semantic caching remains fail-open.
+    pub async fn semantic_get(
+        &self,
+        index_key: &str,
+        embedding: &[f32],
+        threshold: f32,
+        max_candidates: usize,
+    ) -> Option<CachedResponse> {
+        if embedding.is_empty() || max_candidates == 0 {
+            return None;
+        }
+        let inner = self.inner.as_ref()?;
+        let mut conn = Self::connection(inner).await?;
+        let ids: Vec<String> = conn
+            .lrange(index_key, 0, max_candidates.saturating_sub(1) as isize)
+            .await
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return None;
+        }
+        let keys: Vec<String> = ids
+            .iter()
+            .map(|id| format!("{index_key}:entry:{id}"))
+            .collect();
+        let blobs: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
+            .arg(&keys)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or_default();
+        blobs
+            .into_iter()
+            .flatten()
+            .filter_map(|blob| serde_json::from_slice::<SemanticEntry>(&blob).ok())
+            .filter_map(|entry| {
+                cosine_similarity(embedding, &entry.embedding)
+                    .filter(|score| *score >= threshold)
+                    .map(|score| (score, entry.response))
+            })
+            .max_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map(|(_, response)| response)
+    }
+
+    /// Add or refresh one semantic candidate and trim the route's index to a
+    /// fixed size. `entry_id` is normally the exact-cache key for the request.
+    pub async fn semantic_put(
+        &self,
+        index_key: &str,
+        entry_id: &str,
+        embedding: Vec<f32>,
+        response: &CachedResponse,
+        ttl_secs: u64,
+        max_candidates: usize,
+    ) {
+        if embedding.is_empty() || ttl_secs == 0 || max_candidates == 0 {
+            return;
+        }
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let Some(mut conn) = Self::connection(inner).await else {
+            return;
+        };
+        let Ok(blob) = serde_json::to_vec(&SemanticEntry {
+            embedding,
+            response: response.clone(),
+        }) else {
+            return;
+        };
+        let entry_key = format!("{index_key}:entry:{entry_id}");
+        let result: redis::RedisResult<()> = redis::pipe()
+            .atomic()
+            .cmd("SETEX")
+            .arg(&entry_key)
+            .arg(ttl_secs)
+            .arg(blob)
+            .ignore()
+            .cmd("LREM")
+            .arg(index_key)
+            .arg(0)
+            .arg(entry_id)
+            .ignore()
+            .cmd("LPUSH")
+            .arg(index_key)
+            .arg(entry_id)
+            .ignore()
+            .cmd("LTRIM")
+            .arg(index_key)
+            .arg(0)
+            .arg(max_candidates.saturating_sub(1))
+            .ignore()
+            .cmd("EXPIRE")
+            .arg(index_key)
+            .arg(ttl_secs)
+            .ignore()
+            .query_async(&mut conn)
+            .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "failed to store semantic cache entry");
+        }
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+    let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
+    for (&x, &y) in a.iter().zip(b) {
+        let (x, y) = (x as f64, y as f64);
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    (denom > 0.0).then(|| (dot / denom).clamp(-1.0, 1.0) as f32)
 }
 
 #[cfg(test)]
@@ -222,5 +361,13 @@ mod tests {
                 60,
             )
             .await;
+    }
+
+    #[test]
+    fn cosine_similarity_handles_matches_misses_and_bad_shapes() {
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]), Some(1.0));
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]), Some(0.0));
+        assert_eq!(cosine_similarity(&[1.0], &[1.0, 0.0]), None);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[0.0, 0.0]), None);
     }
 }

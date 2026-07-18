@@ -58,3 +58,6 @@ Accepted. The normalized Postgres store (ADR-0004, source of truth) is mutated o
 
 ## ADR-0019 — [Per-provider egress proxy pools](2026-07-18-provider-egress-proxy-pools.md)
 Accepted. Rotate across a provider-local proxy pool, fail over only connection/tunnel failures, and quarantine repeatedly failing members. Authenticated URLs are resolved exclusively from whole-value environment references. Consequence: resilient egress without leaking credentials; health state remains process-local.
+
+## ADR-0020 — [Bounded semantic response caching in Redis](2026-07-18-semantic-response-cache.md)
+Accepted. Run semantic lookup only after an exact miss, embed through an explicitly configured provider, and scan a bounded recent Redis window. Consequence: similarity reuse without another datastore; embedding and cache failures fail open and candidate search remains deliberately bounded.

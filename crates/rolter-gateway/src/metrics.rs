@@ -127,6 +127,12 @@ pub struct Metrics {
     pub cache_stores_total: AtomicU64,
     /// cacheable responses skipped for exceeding `cache.max_entry_bytes`
     pub cache_too_large_total: AtomicU64,
+    /// semantic candidates served above the configured cosine threshold
+    pub semantic_cache_hits_total: AtomicU64,
+    /// semantic lookups with no candidate above threshold
+    pub semantic_cache_misses_total: AtomicU64,
+    /// responses added to bounded semantic candidate indexes
+    pub semantic_cache_stores_total: AtomicU64,
     /// per-model latency + TTFT histograms, keyed by public model name
     by_model: DashMap<String, ModelHist>,
     /// passive per-target success/error tally, keyed by (provider, target)
@@ -361,6 +367,27 @@ impl Metrics {
             "rolter_cache_stores_total",
             "successful responses written into the response cache",
             self.cache_stores_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_semantic_cache_hits_total",
+            "responses served from semantic cache",
+            self.semantic_cache_hits_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_semantic_cache_misses_total",
+            "semantic cache lookups below the similarity threshold",
+            self.semantic_cache_misses_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_semantic_cache_stores_total",
+            "responses stored in semantic cache indexes",
+            self.semantic_cache_stores_total.load(Relaxed),
         );
         metric(
             &mut out,
