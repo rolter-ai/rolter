@@ -10,8 +10,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ormeilu/rolter/actions/workflows/ci.yml"><img src="https://github.com/ormeilu/rolter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/rolter-ai/rolter/actions/workflows/ci.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="https://github.com/rolter-ai/rolter/actions/workflows/release.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/rolter-ai/rolter/actions/workflows/docs.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/docs.yml/badge.svg?branch=master" alt="Documentation"></a>
+  <a href="docs/development/testing.md#coverage"><img src="https://img.shields.io/badge/coverage%20baseline-64%25-yellowgreen" alt="Coverage baseline: 64%"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/rolter-ai/rolter/releases/latest"><img src="https://img.shields.io/github/v/release/rolter-ai/rolter" alt="Latest release"></a>
+  <a href="https://crates.io/crates/rolter"><img src="https://img.shields.io/crates/v/rolter" alt="crates.io"></a>
+  <a href="https://pypi.org/project/rolter/"><img src="https://img.shields.io/pypi/v/rolter" alt="PyPI"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.82-blue" alt="MSRV: Rust 1.82"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/rolter-ai/rolter" alt="License"></a>
 </p>
 
 ---
