@@ -761,6 +761,66 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
         state.metrics.cache_misses_total.fetch_add(1, Relaxed);
     }
+    let mut semantic_store = None;
+    if let (Some(exact_key), Some(semantic)) = (
+        cache_key.as_ref(),
+        entry.route.cache.as_ref().and_then(|c| c.semantic.as_ref()),
+    ) {
+        if let Some(text) = semantic_cache_text(&forward_body) {
+            if let Some(embedding) = semantic_embedding(&state, &snap, semantic, &text).await {
+                let scope_seg = if entry.route.cache_per_key() {
+                    vk_id.as_str()
+                } else {
+                    ""
+                };
+                let index_key = ResponseCache::semantic_index_key(
+                    &snap.cache.namespace,
+                    path,
+                    &entry.route.model,
+                    scope_seg,
+                );
+                if let Some(hit) = state
+                    .response_cache
+                    .semantic_get(
+                        &index_key,
+                        &embedding,
+                        semantic.threshold,
+                        semantic.max_candidates,
+                    )
+                    .await
+                {
+                    state
+                        .metrics
+                        .semantic_cache_hits_total
+                        .fetch_add(1, Relaxed);
+                    return cached_response(
+                        hit,
+                        &state.log,
+                        CacheHitLog {
+                            request_id: request_id.clone(),
+                            trace_id: trace_id.clone(),
+                            vk_id: vk_id.clone(),
+                            org_id: org_id.clone(),
+                            team_id: team_id.clone(),
+                            project_id: project_id.clone(),
+                            model: model.clone(),
+                            started,
+                        },
+                    );
+                }
+                state
+                    .metrics
+                    .semantic_cache_misses_total
+                    .fetch_add(1, Relaxed);
+                semantic_store = Some((
+                    index_key,
+                    exact_key.clone(),
+                    embedding,
+                    semantic.max_candidates,
+                ));
+            }
+        }
+    }
 
     // pick a target and forward, retrying transient failures on a fresh target
     // (exponential backoff + jitter). retries happen before any body bytes reach
@@ -1069,18 +1129,31 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             // (0 = no limit); they're still served normally
                             let limit = snap.cache.max_entry_bytes;
                             if limit == 0 || bytes.len() as u64 <= limit {
-                                state
-                                    .response_cache
-                                    .put(
-                                        &key,
-                                        &CachedResponse {
-                                            status,
-                                            content_type: content_type.clone(),
-                                            body: bytes.to_vec(),
-                                        },
-                                        cache_ttl,
-                                    )
-                                    .await;
+                                let cached = CachedResponse {
+                                    status,
+                                    content_type: content_type.clone(),
+                                    body: bytes.to_vec(),
+                                };
+                                state.response_cache.put(&key, &cached, cache_ttl).await;
+                                if let Some((index, entry_id, embedding, max_candidates)) =
+                                    semantic_store
+                                {
+                                    state
+                                        .response_cache
+                                        .semantic_put(
+                                            &index,
+                                            &entry_id,
+                                            embedding,
+                                            &cached,
+                                            cache_ttl,
+                                            max_candidates,
+                                        )
+                                        .await;
+                                    state
+                                        .metrics
+                                        .semantic_cache_stores_total
+                                        .fetch_add(1, Relaxed);
+                                }
                                 state.metrics.cache_stores_total.fetch_add(1, Relaxed);
                             } else {
                                 state.metrics.cache_too_large_total.fetch_add(1, Relaxed);
@@ -2002,6 +2075,82 @@ struct CacheHitLog {
     started: Instant,
 }
 
+fn semantic_cache_text(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let mut parts = Vec::new();
+    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            if let Some(role) = message.get("role").and_then(Value::as_str) {
+                parts.push(role.to_string());
+            }
+            collect_semantic_text(message.get("content"), &mut parts);
+        }
+    } else {
+        collect_semantic_text(value.get("input"), &mut parts);
+        collect_semantic_text(value.get("prompt"), &mut parts);
+    }
+    let normalized = parts
+        .join("\n")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn collect_semantic_text(value: Option<&Value>, out: &mut Vec<String>) {
+    match value {
+        Some(Value::String(text)) => out.push(text.clone()),
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    out.push(text.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn semantic_embedding(
+    state: &AppState,
+    snap: &Snapshot,
+    config: &rolter_core::SemanticCacheConfig,
+    text: &str,
+) -> Option<Vec<f32>> {
+    let provider = snap.providers.get(&config.provider)?;
+    let api_key = provider.resolve_api_key();
+    let body = serde_json::to_vec(&json!({
+        "model": config.model,
+        "input": text,
+    }))
+    .ok()?;
+    let response = state
+        .forwarder
+        .forward_json(
+            provider,
+            "/v1/embeddings",
+            Bytes::from(body),
+            api_key.as_deref(),
+            None,
+            &[],
+        )
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
+    value
+        .get("data")?
+        .as_array()?
+        .first()?
+        .get("embedding")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_f64().map(|number| number as f32))
+        .collect()
+}
+
 /// Build the client reply for a cache hit: the stored body verbatim, decision
 /// headers with `x-rolter-cache: HIT`, and a log row marked `cache_hit` with
 /// zero cost/tokens (a hit spends nothing upstream, so it is not billed and
@@ -2113,6 +2262,21 @@ mod tests {
         assert_eq!(dropped.status(), StatusCode::SERVICE_UNAVAILABLE);
         let upstream = upstream_error_response("connection refused");
         assert_eq!(upstream.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn semantic_text_normalizes_chat_content_only() {
+        let body = br#"{
+            "model":"gpt-4o","temperature":0.7,
+            "messages":[
+                {"role":"system","content":"You are helpful."},
+                {"role":"user","content":[{"type":"text","text":"hello   world"}]}
+            ]
+        }"#;
+        assert_eq!(
+            semantic_cache_text(body).as_deref(),
+            Some("system You are helpful. user hello world")
+        );
     }
 
     fn config_with_keys() -> GatewayConfig {

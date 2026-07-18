@@ -1028,6 +1028,34 @@ pub struct RouteCache {
     /// keys; when false all callers of the route share the cache
     #[serde(default)]
     pub per_key: bool,
+    /// optional semantic lookup layered after exact-match lookup
+    #[serde(default)]
+    pub semantic: Option<SemanticCacheConfig>,
+}
+
+/// Per-route semantic response-cache settings. The embeddings provider is a
+/// normal configured provider and therefore reuses its auth, proxy, and CA
+/// policy. Candidate scans are explicitly bounded for predictable latency.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SemanticCacheConfig {
+    /// provider name used for `/v1/embeddings`
+    pub provider: String,
+    /// embeddings model sent upstream
+    pub model: String,
+    /// minimum cosine similarity for a hit
+    #[serde(default = "default_semantic_threshold")]
+    pub threshold: f32,
+    /// most recent semantic entries compared per request
+    #[serde(default = "default_semantic_max_candidates")]
+    pub max_candidates: usize,
+}
+
+fn default_semantic_threshold() -> f32 {
+    0.92
+}
+
+fn default_semantic_max_candidates() -> usize {
+    256
 }
 
 fn default_true() -> bool {
@@ -1556,6 +1584,32 @@ impl GatewayConfig {
                     }
                 }
             }
+            if let Some(semantic) = route.cache.as_ref().and_then(|c| c.semantic.as_ref()) {
+                if !provider_names.contains(semantic.provider.as_str()) {
+                    problems.push(format!(
+                        "route '{}' semantic cache uses unknown embeddings provider '{}'",
+                        route.model, semantic.provider
+                    ));
+                }
+                if semantic.model.trim().is_empty() {
+                    problems.push(format!(
+                        "route '{}' semantic cache has an empty embeddings model",
+                        route.model
+                    ));
+                }
+                if !(0.0..=1.0).contains(&semantic.threshold) || semantic.threshold == 0.0 {
+                    problems.push(format!(
+                        "route '{}' semantic cache threshold must be in (0, 1]",
+                        route.model
+                    ));
+                }
+                if semantic.max_candidates == 0 {
+                    problems.push(format!(
+                        "route '{}' semantic cache max_candidates must be greater than zero",
+                        route.model
+                    ));
+                }
+            }
         }
 
         let mut key_values = std::collections::HashSet::new();
@@ -1924,6 +1978,7 @@ mod tests {
             enabled: false,
             ttl_secs: Some(10),
             per_key: true,
+            semantic: None,
         });
         assert!(!route.cache_enabled());
         // ttl override applies regardless of the enabled flag
@@ -1934,6 +1989,7 @@ mod tests {
             enabled: true,
             ttl_secs: None,
             per_key: true,
+            semantic: None,
         });
         assert!(route.cache_enabled());
         assert!(route.cache_per_key());

@@ -331,6 +331,11 @@ disabled = false      # revoke without deleting
 # enabled = true       # cache this route (global [cache] switch must also be on)
 # ttl_secs = 600       # optional TTL override; falls back to default_ttl_secs
 # per_key = false      # true isolates cached entries per virtual key
+# [routes.cache.semantic]
+# provider = "openai"               # configured provider used for embeddings
+# model = "text-embedding-3-small"
+# threshold = 0.92                   # cosine similarity required for a hit
+# max_candidates = 256               # bounded recent-entry scan per route/key
 
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
