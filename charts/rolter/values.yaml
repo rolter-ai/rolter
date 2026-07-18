@@ -1,0 +1,107 @@
+image:
+  repository: ghcr.io/rolter-ai/rolter
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
+gateway:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 4000
+    annotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  extraEnv: []
+
+control:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 4001
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  extraEnv: []
+
+config:
+  existingConfigMap: ""
+  file: |
+    [server]
+    host = "0.0.0.0"
+    port = 4000
+
+    [[providers]]
+    name = "local"
+    kind = "openai_compatible"
+    api_base = "http://vllm:8000"
+
+    [[routes]]
+    model = "default"
+    strategy = "round_robin"
+
+    [[routes.targets]]
+    provider = "local"
+
+env:
+  rustLog: info
+  databaseUrl: ""
+  redisUrl: ""
+  clickhouseUrl: ""
+
+secretEnv: []
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: rolter.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+  tls: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+

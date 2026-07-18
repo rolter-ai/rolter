@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rolter.fullname" . }}-control
+  labels:
+    {{- include "rolter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control
+spec:
+  replicas: {{ .Values.control.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "rolter.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "rolter.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: control
+    spec:
+      serviceAccountName: {{ include "rolter.serviceAccountName" . }}
+      securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: control
+          image: {{ include "rolter.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["rolter-control"]
+          args: ["--gateway-url", "http://{{ include "rolter.fullname" . }}-gateway:{{ .Values.gateway.service.port }}"]
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 4001
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.env.rustLog | quote }}
+            {{- if .Values.env.databaseUrl }}
+            - name: ROLTER_DATABASE_URL
+              value: {{ .Values.env.databaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.redisUrl }}
+            - name: ROLTER_REDIS_URL
+              value: {{ .Values.env.redisUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.clickhouseUrl }}
+            - name: CLICKHOUSE_URL
+              value: {{ .Values.env.clickhouseUrl | quote }}
+            {{- end }}
+            {{- with .Values.secretEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+            {{- with .Values.control.extraEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+          resources: {{ toYaml .Values.control.resources | nindent 12 }}
+

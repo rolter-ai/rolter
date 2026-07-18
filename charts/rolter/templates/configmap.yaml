@@ -1,0 +1,12 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rolter.configMapName" . }}
+  labels:
+    {{- include "rolter.labels" . | nindent 4 }}
+data:
+  rolter.toml: |
+    {{- .Values.config.file | nindent 4 }}
+{{- end }}
+

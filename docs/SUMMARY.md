@@ -38,6 +38,7 @@
 - [Self-hosted Ollama](deployment/ollama.md)
 - [OpenRouter](deployment/openrouter.md)
 - [Docker](deployment/docker.md)
+- [Kubernetes and Helm](deployment/kubernetes.md)
 - [llama.cpp](deployment/llama-cpp.md)
 - [Hugging Face TEI](deployment/tei.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)

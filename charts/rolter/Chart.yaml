@@ -1,0 +1,12 @@
+apiVersion: v2
+name: rolter
+description: High-performance OpenAI and Anthropic compatible AI gateway
+type: application
+version: 0.1.0
+appVersion: "0.0.9"
+home: https://github.com/rolter-ai/rolter
+sources:
+  - https://github.com/rolter-ai/rolter
+maintainers:
+  - name: rolter maintainers
+

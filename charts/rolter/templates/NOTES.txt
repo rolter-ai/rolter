@@ -1,0 +1,6 @@
+Gateway endpoint:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "rolter.fullname" . }}-gateway 4000:{{ .Values.gateway.service.port }}
+
+Control UI endpoint:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "rolter.fullname" . }}-control 4001:{{ .Values.control.service.port }}
+
