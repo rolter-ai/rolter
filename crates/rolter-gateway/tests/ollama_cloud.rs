@@ -46,6 +46,7 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
         api_key: None,
         api_key_env: Some(key_env.into()),
         egress_proxy: None,
+        egress_proxies: Vec::new(),
         ca_bundles: None,
         api_keys: vec![],
         also_track_via_llm_call: false,

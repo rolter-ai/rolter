@@ -500,6 +500,8 @@ struct CreateProvider {
     api_key: Option<String>,
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
+    #[serde(default)]
+    egress_proxies: Vec<String>,
 }
 
 const PROVIDER_KINDS: [&str; 11] = [
@@ -610,6 +612,7 @@ async fn create_provider(
             &body.api_base,
             body.api_key_env.as_deref(),
             body.egress_proxy.as_deref(),
+            &body.egress_proxies,
         )
         .await?;
     if let Some((ciphertext, nonce)) = sealed {
@@ -650,6 +653,8 @@ struct UpdateProvider {
     api_key_env: Option<String>,
     /// omit to leave unchanged; empty string clears
     egress_proxy: Option<String>,
+    /// omit to leave unchanged; an empty array clears
+    egress_proxies: Option<Vec<String>>,
 }
 
 /// Map an optional string field to the repo's tri-state: omitted = unchanged,
@@ -698,6 +703,7 @@ async fn update_provider(
             body.api_base.as_deref(),
             tri_state(&body.api_key_env),
             tri_state(&body.egress_proxy),
+            body.egress_proxies.as_deref(),
         )
         .await?;
     match sealed {

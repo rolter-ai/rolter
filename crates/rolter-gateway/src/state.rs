@@ -556,6 +556,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            egress_proxies: Vec::new(),
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,

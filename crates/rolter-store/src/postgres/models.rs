@@ -45,6 +45,7 @@ pub struct Provider {
     pub api_base: String,
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
+    pub egress_proxies: sqlx::types::Json<Vec<String>>,
     pub created_at: DateTime<Utc>,
 }
 

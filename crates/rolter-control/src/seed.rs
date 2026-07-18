@@ -184,6 +184,7 @@ async fn import_bootstrap_toml(
                         &p.api_base,
                         p.api_key_env.as_deref(),
                         p.egress_proxy.as_deref(),
+                        &p.egress_proxies,
                     )
                     .await?
             }

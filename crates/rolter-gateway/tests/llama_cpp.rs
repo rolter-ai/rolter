@@ -31,6 +31,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
         api_key: None,
         api_key_env: None,
         egress_proxy: None,
+        egress_proxies: Vec::new(),
         ca_bundles: None,
         api_keys: vec![],
         also_track_via_llm_call: false,
