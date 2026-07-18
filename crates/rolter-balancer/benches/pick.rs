@@ -34,6 +34,7 @@ fn bench_pick(c: &mut Criterion) {
             "summarize the following document for me in three concise bullet points: lorem \
              ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor",
         ),
+        token_ids: None,
     };
 
     let mut group = c.benchmark_group("pick");

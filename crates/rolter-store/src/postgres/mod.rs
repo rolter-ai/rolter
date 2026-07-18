@@ -103,6 +103,8 @@ impl ProviderRow {
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
             egress_proxies: serde_json::from_value(row.egress_proxies).unwrap_or_default(),
+            kv_events: None,
+            lmcache: None,
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
@@ -155,6 +157,8 @@ fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
         "pipeline" => BalancingStrategy::Pipeline,
         "cheapest" => BalancingStrategy::Cheapest,
         "fastest" => BalancingStrategy::Fastest,
+        "precise_cache_aware" => BalancingStrategy::PreciseCacheAware,
+        "lmcache_aware" => BalancingStrategy::LmcacheAware,
         other => {
             return Err(Error::Store(format!(
                 "unknown balancing strategy '{other}'"

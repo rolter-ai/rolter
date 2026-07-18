@@ -11,6 +11,7 @@ mod admin_proxy;
 mod breaker;
 mod budgets;
 mod cache;
+mod cache_telemetry;
 mod cooldowns;
 mod error;
 mod fake_llm;

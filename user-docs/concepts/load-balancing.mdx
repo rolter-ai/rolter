@@ -1,10 +1,10 @@
 ---
 title: "Load Balancing Strategies for LLM Routing in Rolter"
 sidebarTitle: "Load Balancing"
-description: "Explore all seven load balancing strategies Rolter supports, understand when to use each one, and see how to configure them in your route definitions."
+description: "Explore Rolter's load balancing strategies, understand when to use each one, and see how to configure them in your route definitions."
 ---
 
-Every route in Rolter picks exactly one load-balancing strategy. The strategy runs on every incoming request and returns the target that should handle it. Rolter ships seven strategies, from stateless round-robin to a composable pipeline that blends weight, load, and cache-affinity signals. Choosing the right strategy for your workload can meaningfully reduce latency and cost.
+Every route in Rolter picks exactly one load-balancing strategy. The strategy runs on every incoming request and returns the target that should handle it. Choosing the right strategy for your workload can meaningfully reduce latency and cost.
 
 ## Strategy overview
 
@@ -19,6 +19,8 @@ Every route in Rolter picks exactly one load-balancing strategy. The strategy ru
 | `pipeline` | Composable filter → scored → argmax selection | Blending weight, load, and cache signals together |
 | `cheapest` | Lowest catalog price for the target's upstream model; load breaks ties | Cost-sensitive routing across mixed-price providers |
 | `fastest` | Lowest observed request latency (EWMA); load breaks ties and carries cold routes | Heterogeneous pools where speed matters most |
+| `precise_cache_aware` | Exact resident-prefix score from vLLM KV events; load fallback | vLLM fleets with KV-event publishing |
+| `lmcache_aware` | Cache availability and free-capacity score from controller occupancy | LMCache-backed fleets |
 
 ---
 

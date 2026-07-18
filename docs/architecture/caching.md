@@ -22,9 +22,43 @@ flowchart TD
   L --> O
 ```
 
-### Precise mode (roadmap)
+### Precise vLLM mode
 
-Subscribe to vLLM KV-cache events over ZMQ, hash blocks the same way vLLM does (`--block-size`, hash seed), and maintain a global block→target index. Score targets by exact resident-prefix fraction blended with live load. This mirrors llm-d's precise prefix-cache-aware scheduling and gives the largest, most reliable TTFT/throughput wins on prefix-heavy workloads.
+Set a provider's `[providers.kv_events]` block and choose `strategy = "precise_cache_aware"`. rolter supports the vLLM V1 msgpack `KVEventBatch` protocol documented for vLLM 0.22: a three-frame ZMQ publication (`topic`, big-endian sequence, payload) containing tagged `BlockStored`, `BlockRemoved`, and `AllBlocksCleared` events. `BlockStored.token_ids` and `block_size` derive stable local prefix identities; external block hashes allow exact removals. State is capped by `max_blocks` per provider.
+
+Exact scoring needs the token ids produced by the same tokenizer as vLLM. Send them in `x-rolter-vllm-token-ids` as comma-separated unsigned integers. Without the header, with stale/malformed events, or after a sequence gap, the scorer is neutral and least-load routing takes over. A sequence gap clears the local index and precise scoring remains disabled until an `AllBlocksCleared` event establishes a clean boundary.
+
+```toml
+[[providers]]
+name = "vllm-a"
+kind = "openai_compatible"
+api_base = "http://vllm-a:8000"
+
+[providers.kv_events]
+endpoint = "tcp://vllm-a:5557"
+topic = "kv-events"
+max_blocks = 1000000
+stale_secs = 30
+```
+
+vLLM must enable KV events with the ZMQ publisher and matching topic. Metrics expose consumed/malformed events, stream failures, decision count, and per-provider freshness.
+
+### LMCache-aware mode
+
+Set `[providers.lmcache]` and use `strategy = "lmcache_aware"`. The supported controller signal is an HTTP `200` JSON object:
+
+```json
+{"occupancy": 0.42, "cache_available": true}
+```
+
+`occupancy` is clamped to `[0,1]`; available targets score `1 - occupancy`, unavailable targets score zero. Polling happens in the background. Failed, malformed, or stale signals are neutral, so existing least-load routing continues.
+
+```toml
+[providers.lmcache]
+endpoint = "http://lmcache-a:9000/v1/occupancy"
+refresh_secs = 2
+stale_secs = 10
+```
 
 ## 2. Response cache
 

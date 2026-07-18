@@ -53,6 +53,17 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             u8::from(proxy.quarantined)
         );
     }
+    body.push_str(
+        "# HELP rolter_cache_telemetry_age_seconds age of the latest cache telemetry update\n",
+    );
+    body.push_str("# TYPE rolter_cache_telemetry_age_seconds gauge\n");
+    for (provider, source, age) in state.cache_telemetry.freshness() {
+        let provider = provider.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = writeln!(
+            body,
+            "rolter_cache_telemetry_age_seconds{{provider=\"{provider}\",source=\"{source}\"}} {age}"
+        );
+    }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
@@ -701,9 +712,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
     let prompt = std::str::from_utf8(&body).ok();
+    let token_ids = parse_vllm_token_ids(&headers);
     let ctx = RouteContext {
         session_key,
         prompt,
+        token_ids: token_ids.as_deref(),
     };
     // the caller's inbound trace context, propagated verbatim to whichever
     // upstream is chosen so it continues the same distributed trace (ROL-61)
@@ -1371,9 +1384,11 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
     let price = snap.prices.get(&model).cloned();
 
+    let token_ids = parse_vllm_token_ids(&headers);
     let ctx = RouteContext {
         session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
         prompt: None,
+        token_ids: token_ids.as_deref(),
     };
     let trace_ctx = crate::trace::outbound_trace_headers(&headers);
     let trace_headers: Vec<(&str, &str)> =
@@ -2095,6 +2110,17 @@ fn semantic_cache_text(body: &[u8]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn parse_vllm_token_ids(headers: &HeaderMap) -> Option<Vec<u32>> {
+    headers
+        .get("x-rolter-vllm-token-ids")?
+        .to_str()
+        .ok()?
+        .split(',')
+        .map(|value| value.trim().parse().ok())
+        .collect::<Option<Vec<_>>>()
+        .filter(|ids| !ids.is_empty())
 }
 
 fn collect_semantic_text(value: Option<&Value>, out: &mut Vec<String>) {

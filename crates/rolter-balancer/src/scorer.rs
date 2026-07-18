@@ -280,6 +280,73 @@ pub trait LatencySource: Send + Sync {
     fn latencies(&self, n: usize) -> Vec<f64>;
 }
 
+/// Live exact KV-cache residency. `scores` returns route-order-aligned resident
+/// prefix fractions, or `None` when token ids are absent or telemetry is stale.
+pub trait KvCacheSource: Send + Sync {
+    fn scores(&self, token_ids: &[u32]) -> Option<Vec<f32>>;
+}
+
+/// Live LMCache controller signal. Scores are route-order-aligned and already
+/// bounded to `[0, 1]`; `None` means missing, failed, or stale telemetry.
+pub trait LmCacheSource: Send + Sync {
+    fn scores(&self) -> Option<Vec<f32>>;
+}
+
+pub struct PreciseKvScorer {
+    source: std::sync::Arc<dyn KvCacheSource>,
+}
+
+impl PreciseKvScorer {
+    pub fn new(source: std::sync::Arc<dyn KvCacheSource>) -> Self {
+        Self { source }
+    }
+}
+
+impl Scorer for PreciseKvScorer {
+    fn name(&self) -> &'static str {
+        "precise_kv_cache"
+    }
+
+    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+        let Some(token_ids) = ctx.token_ids.filter(|ids| !ids.is_empty()) else {
+            return vec![0.0; candidates.len()];
+        };
+        let Some(scores) = self.source.scores(token_ids) else {
+            return vec![0.0; candidates.len()];
+        };
+        candidates
+            .iter()
+            .map(|&index| scores.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0))
+            .collect()
+    }
+}
+
+pub struct LmCacheScorer {
+    source: std::sync::Arc<dyn LmCacheSource>,
+}
+
+impl LmCacheScorer {
+    pub fn new(source: std::sync::Arc<dyn LmCacheSource>) -> Self {
+        Self { source }
+    }
+}
+
+impl Scorer for LmCacheScorer {
+    fn name(&self) -> &'static str {
+        "lmcache"
+    }
+
+    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+        let Some(scores) = self.source.scores() else {
+            return vec![0.0; candidates.len()];
+        };
+        candidates
+            .iter()
+            .map(|&index| scores.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0))
+            .collect()
+    }
+}
+
 /// Prefer the target with the lowest observed latency. Reads a live
 /// [`LatencySource`] on every pick (latency moves with traffic, unlike catalog
 /// price), then ranks exactly like [`CheapestScorer`]: fastest candidate
@@ -562,6 +629,50 @@ mod tests {
         }
     }
 
+    struct FixedKv(Option<Vec<f32>>);
+    impl KvCacheSource for FixedKv {
+        fn scores(&self, _token_ids: &[u32]) -> Option<Vec<f32>> {
+            self.0.clone()
+        }
+    }
+
+    struct FixedLmCache(Option<Vec<f32>>);
+    impl LmCacheSource for FixedLmCache {
+        fn scores(&self) -> Option<Vec<f32>> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn precise_kv_prefers_largest_resident_prefix_and_fails_neutral() {
+        let scorer = PreciseKvScorer::new(std::sync::Arc::new(FixedKv(Some(vec![0.25, 1.0]))));
+        let ctx = RouteContext {
+            token_ids: Some(&[1, 2, 3, 4]),
+            ..Default::default()
+        };
+        assert_eq!(scorer.score(&ctx, &[0, 1], &[]), vec![0.25, 1.0]);
+        let stale = PreciseKvScorer::new(std::sync::Arc::new(FixedKv(None)));
+        assert_eq!(stale.score(&ctx, &[0, 1], &[]), vec![0.0, 0.0]);
+        assert_eq!(
+            scorer.score(&RouteContext::default(), &[0, 1], &[]),
+            vec![0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn lmcache_scores_are_bounded_and_stale_is_neutral() {
+        let scorer = LmCacheScorer::new(std::sync::Arc::new(FixedLmCache(Some(vec![1.5, -0.2]))));
+        assert_eq!(
+            scorer.score(&RouteContext::default(), &[0, 1], &[]),
+            vec![1.0, 0.0]
+        );
+        let stale = LmCacheScorer::new(std::sync::Arc::new(FixedLmCache(None)));
+        assert_eq!(
+            stale.score(&RouteContext::default(), &[0, 1], &[]),
+            vec![0.0, 0.0]
+        );
+    }
+
     #[test]
     fn fastest_prefers_lowest_latency() {
         let source = std::sync::Arc::new(FixedLatency(vec![300.0, 40.0, 900.0]));
@@ -606,6 +717,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: None,
             prompt: Some("a long shared system prompt then a question"),
+            token_ids: None,
         };
         // cold: prefix scores 0 for both, load scorer absent -> tie, any target ok
         let first = p.select(&ctx, &[], |_| true).unwrap();
@@ -622,6 +734,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: Some("user-1"),
             prompt: None,
+            token_ids: None,
         };
         // cold: no affinity, all candidates tie -> record whichever wins as served
         p.observe(2, &ctx);
@@ -644,6 +757,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: Some("s"),
             prompt: None,
+            token_ids: None,
         };
         scorer.observe(1, &ctx);
         // zero ttl -> entry is immediately stale, so no boost
@@ -656,6 +770,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: Some("s"),
             prompt: None,
+            token_ids: None,
         };
         scorer.observe(2, &ctx);
         // target 2 not in the candidate set -> no boost applied

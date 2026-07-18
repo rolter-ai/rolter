@@ -104,6 +104,7 @@ pub async fn realtime(
     let context = RouteContext {
         session_key,
         prompt: None,
+        token_ids: None,
     };
     let selected = match connect_selected(
         &state,

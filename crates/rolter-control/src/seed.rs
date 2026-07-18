@@ -204,6 +204,8 @@ async fn import_bootstrap_toml(
             BalancingStrategy::Pipeline => "pipeline",
             BalancingStrategy::Cheapest => "cheapest",
             BalancingStrategy::Fastest => "fastest",
+            BalancingStrategy::PreciseCacheAware => "precise_cache_aware",
+            BalancingStrategy::LmcacheAware => "lmcache_aware",
         };
         let existing = routes
             .list(project_id)

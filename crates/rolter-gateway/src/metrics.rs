@@ -133,6 +133,13 @@ pub struct Metrics {
     pub semantic_cache_misses_total: AtomicU64,
     /// responses added to bounded semantic candidate indexes
     pub semantic_cache_stores_total: AtomicU64,
+    pub kv_events_total: AtomicU64,
+    pub kv_events_malformed_total: AtomicU64,
+    pub kv_event_stream_failures_total: AtomicU64,
+    pub kv_cache_decisions_total: AtomicU64,
+    pub lmcache_refreshes_total: AtomicU64,
+    pub lmcache_refresh_failures_total: AtomicU64,
+    pub lmcache_decisions_total: AtomicU64,
     /// per-model latency + TTFT histograms, keyed by public model name
     by_model: DashMap<String, ModelHist>,
     /// passive per-target success/error tally, keyed by (provider, target)
@@ -389,6 +396,45 @@ impl Metrics {
             "responses stored in semantic cache indexes",
             self.semantic_cache_stores_total.load(Relaxed),
         );
+        for (name, help, value) in [
+            (
+                "rolter_kv_events_total",
+                "validated vLLM KV events consumed",
+                self.kv_events_total.load(Relaxed),
+            ),
+            (
+                "rolter_kv_events_malformed_total",
+                "malformed vLLM KV event batches ignored",
+                self.kv_events_malformed_total.load(Relaxed),
+            ),
+            (
+                "rolter_kv_event_stream_failures_total",
+                "vLLM KV event stream disconnects and connection failures",
+                self.kv_event_stream_failures_total.load(Relaxed),
+            ),
+            (
+                "rolter_kv_cache_decisions_total",
+                "routing decisions using fresh exact KV residency",
+                self.kv_cache_decisions_total.load(Relaxed),
+            ),
+            (
+                "rolter_lmcache_refreshes_total",
+                "successful LMCache controller refreshes",
+                self.lmcache_refreshes_total.load(Relaxed),
+            ),
+            (
+                "rolter_lmcache_refresh_failures_total",
+                "failed or malformed LMCache controller refreshes",
+                self.lmcache_refresh_failures_total.load(Relaxed),
+            ),
+            (
+                "rolter_lmcache_decisions_total",
+                "routing decisions using fresh LMCache signals",
+                self.lmcache_decisions_total.load(Relaxed),
+            ),
+        ] {
+            metric(&mut out, "counter", name, help, value);
+        }
         metric(
             &mut out,
             "counter",
