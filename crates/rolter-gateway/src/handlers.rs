@@ -81,8 +81,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // bare route ids (and the builtin) are owned_by "rolter"
     let mut data: Vec<Value> = snap
         .routes
-        .keys()
-        .cloned()
+        .iter()
+        .filter(|(_, entry)| vk.as_ref().is_none_or(|key| key_allows_route(key, entry)))
+        .map(|(model, _)| model.clone())
         .chain(builtin)
         .filter(|m| {
             vk.as_ref()
@@ -115,10 +116,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             };
             let upstream = target.model.as_deref().unwrap_or(&route.model);
             let id = format!("{slug}/{upstream}");
-            if vk
-                .as_ref()
-                .is_none_or(|vk| rolter_auth::model_allowed(&vk.models, &id))
-            {
+            if vk.as_ref().is_none_or(|vk| {
+                rolter_auth::model_allowed(&vk.models, &id) && vk.provider_allowed(&target.provider)
+            }) {
                 pinned.insert((id, target.provider.clone()));
             }
         }
@@ -130,6 +130,23 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     );
 
     Json(json!({"object": "list", "data": data})).into_response()
+}
+
+/// Whether a virtual key can reach at least one target of this route. An empty
+/// provider list is deliberately permissive for existing keys and configs.
+pub(crate) fn key_allows_route(key: &KeyMeta, entry: &crate::state::RouteEntry) -> bool {
+    entry
+        .route
+        .targets
+        .iter()
+        .chain(
+            entry
+                .route
+                .variants
+                .iter()
+                .flat_map(|variant| variant.targets.iter()),
+        )
+        .any(|target| key.provider_allowed(&target.provider))
 }
 
 pub async fn chat_completions(
@@ -666,6 +683,17 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
+    if let Some(key) = &vk {
+        if !key_allows_route(key, entry) {
+            return crate::error::ApiError::new(
+                StatusCode::FORBIDDEN,
+                "no provider on this route is allowed for this key",
+            )
+            .with_code("provider_not_allowed")
+            .with_param("model")
+            .into_response();
+        }
+    }
 
     // inject the admin's per-model param defaults (temperature, max_tokens, ...)
     // before forwarding; caller values survive only where the override policy
@@ -860,6 +888,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             path,
             started,
             &trace_headers,
+            vk.as_ref(),
         )
         .await;
         (
@@ -904,6 +933,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 &state.breaker,
                 &model,
                 cd_enabled,
+                vk.as_ref(),
             ) {
                 Some(i) => i,
                 None => break, // no untried target left to fail over to
@@ -1058,6 +1088,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         )
     };
 
+    let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
     match outcome {
         // token counts, latency and ttft are filled by the stream wrapper once
         // the body has been fully forwarded to the client
@@ -1119,6 +1150,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 variant: chosen_variant,
                 status,
                 stream: stream as u8,
+                capture_payloads,
+                payload_max_bytes: snap.logging.payload_capture.max_bytes,
+                payload_redact_fields: snap.logging.payload_capture.redact_fields.clone(),
+                request_payload: if capture_payloads {
+                    crate::logging::capture_payload(
+                        &forward_body,
+                        snap.logging.payload_capture.max_bytes,
+                        &snap.logging.payload_capture.redact_fields,
+                    )
+                } else {
+                    String::new()
+                },
                 ..Default::default()
             };
             // on a cache-eligible route, buffer a successful response (JSON or a
@@ -1421,6 +1464,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
             &state.breaker,
             &model,
             cd_enabled,
+            vk.as_ref(),
         ) {
             Some(i) => i,
             None => break,
@@ -1543,6 +1587,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         }
     }
 
+    let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
     match outcome {
         Some((response, status, is_sse)) => {
             let log = RequestLog {
@@ -1558,6 +1603,18 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 variant: String::new(),
                 status,
                 stream: 0,
+                capture_payloads,
+                payload_max_bytes: snap.logging.payload_capture.max_bytes,
+                payload_redact_fields: snap.logging.payload_capture.redact_fields.clone(),
+                request_payload: if capture_payloads {
+                    crate::logging::capture_payload(
+                        &body,
+                        snap.logging.payload_capture.max_bytes,
+                        &snap.logging.payload_capture.redact_fields,
+                    )
+                } else {
+                    String::new()
+                },
                 ..Default::default()
             };
             stream_response(
@@ -1673,6 +1730,7 @@ async fn forward_variants(
     path: &str,
     started: Instant,
     trace_headers: &[(&str, &str)],
+    key_meta: Option<&KeyMeta>,
 ) -> ForwardOutcome {
     let route = &entry.route;
     let retry = &snap.retry;
@@ -1694,7 +1752,9 @@ async fn forward_variants(
                 }
             }
             for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads) {
-                candidates.push((vi, ti));
+                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
+                    candidates.push((vi, ti));
+                }
             }
         }
     }
@@ -1888,12 +1948,14 @@ pub(crate) fn pick_untried(
     breaker: &crate::breaker::Breaker,
     model: &str,
     cd_enabled: bool,
+    key_meta: Option<&KeyMeta>,
 ) -> Option<usize> {
     // a target is skippable when parked on a cooldown, when its provider is
     // currently marked unhealthy by the active prober, or when its circuit
     // breaker is open
     let skip = |i: usize| {
-        (cd_enabled && cooldowns.is_parked(model, i))
+        key_meta.is_some_and(|key| !key.provider_allowed(&entry.route.targets[i].provider))
+            || (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
             || !breaker.allows(model, i)
     };
@@ -1907,7 +1969,13 @@ pub(crate) fn pick_untried(
     // every remaining sibling is parked or unhealthy
     (0..n)
         .find(|i| !tried.contains(i) && !skip(*i))
-        .or_else(|| (0..n).find(|i| !tried.contains(i)))
+        .or_else(|| {
+            (0..n).find(|i| {
+                !tried.contains(i)
+                    && key_meta
+                        .is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
+            })
+        })
 }
 
 /// Whether an upstream HTTP status is worth retrying: request timeout, too many
@@ -2088,6 +2156,17 @@ struct CacheHitLog {
     project_id: String,
     model: String,
     started: Instant,
+}
+
+fn payload_capture_enabled(
+    config: &rolter_core::PayloadCaptureConfig,
+    model: &str,
+    virtual_key_id: &str,
+) -> bool {
+    config.enabled
+        && (config.models.is_empty() || config.models.iter().any(|name| name == model))
+        && (config.virtual_key_ids.is_empty()
+            || config.virtual_key_ids.iter().any(|id| id == virtual_key_id))
 }
 
 fn semantic_cache_text(body: &[u8]) -> Option<String> {
@@ -2337,6 +2416,7 @@ mod tests {
             key: "sk-gpt-only".to_string(),
             name: None,
             models: vec!["gpt-4o".to_string()],
+            providers: vec![],
             disabled: false,
             expires_at: None,
             cache: None,
@@ -2486,6 +2566,7 @@ mod tests {
             team_id: "team-1".to_string(),
             project_id: "proj-1".to_string(),
             models: vec![],
+            providers: vec![],
             disabled: false,
             expires_at: None,
             cache: None,
@@ -2517,6 +2598,7 @@ mod tests {
             key: "sk-expired".to_string(),
             name: None,
             models: vec![],
+            providers: vec![],
             disabled: false,
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
             cache: None,
@@ -2532,6 +2614,7 @@ mod tests {
             key: "sk-disabled".to_string(),
             name: None,
             models: vec![],
+            providers: vec![],
             disabled: true,
             expires_at: None,
             cache: None,
@@ -2547,6 +2630,7 @@ mod tests {
             key: "sk-live".to_string(),
             name: None,
             models: vec![],
+            providers: vec![],
             disabled: false,
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
             cache: None,
@@ -2706,9 +2790,10 @@ mod tests {
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::default();
         let bb = crate::breaker::Breaker::default();
-        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).unwrap();
+        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second = pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, &bb, "m", false).unwrap();
+        let second =
+            pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, &bb, "m", false, None).unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
         assert_eq!(
@@ -2721,7 +2806,8 @@ mod tests {
                 &hh,
                 &bb,
                 "m",
-                false
+                false,
+                None
             ),
             None
         );
@@ -2761,12 +2847,12 @@ mod tests {
         // park target 0: selection must avoid it and pick 1
         cd.park("m", 0, 60);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None),
             Some(1)
         );
         // park both: fail open to an untried target rather than returning None
         cd.park("m", 1, 60);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None).is_some());
     }
 
     #[test]
@@ -2803,12 +2889,12 @@ mod tests {
         // mark provider "a" (target 0) unhealthy: selection must pick target 1
         hh.set("a", false);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
             Some(1)
         );
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
     }
 
     #[test]
@@ -2845,11 +2931,81 @@ mod tests {
         // trip target 0 open: selection must avoid it and pick 1
         assert!(bb.on_failure("m", 0));
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
             Some(1)
         );
         // both open: fail open to an untried target rather than returning None
         assert!(bb.on_failure("m", 1));
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false).is_some());
+        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+    }
+
+    #[test]
+    fn provider_policy_excludes_disallowed_targets_without_fail_open() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![
+                Target {
+                    provider: "a".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+                Target {
+                    provider: "b".to_string(),
+                    model: None,
+                    weight: 1,
+                },
+            ],
+            params: Default::default(),
+            param_policy: Default::default(),
+            variants: Vec::new(),
+            cache: None,
+        };
+        let entry = crate::state::RouteEntry {
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let key = KeyMeta {
+            providers: vec!["b".to_string()],
+            ..Default::default()
+        };
+        let ctx = RouteContext::default();
+        assert!(key_allows_route(&key, &entry));
+        assert_eq!(
+            pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &[],
+                &crate::cooldowns::Cooldowns::default(),
+                &crate::health::Health::default(),
+                &crate::breaker::Breaker::default(),
+                "m",
+                false,
+                Some(&key),
+            ),
+            Some(1)
+        );
+        let denied = KeyMeta {
+            providers: vec!["missing".to_string()],
+            ..Default::default()
+        };
+        assert!(!key_allows_route(&denied, &entry));
+        assert_eq!(
+            pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &[],
+                &crate::cooldowns::Cooldowns::default(),
+                &crate::health::Health::default(),
+                &crate::breaker::Breaker::default(),
+                "m",
+                false,
+                Some(&denied),
+            ),
+            None
+        );
     }
 }

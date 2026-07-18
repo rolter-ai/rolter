@@ -37,16 +37,36 @@ rolter proxies commercial providers and load-balances self-hosted OpenAI-compati
 - **Drop-in** — speak the OpenAI and Anthropic APIs your clients already use.
 - **Operable** — virtual keys, budgets, rate limits, cost tracking, RBAC, and reload-free config changes from the UI.
 
-## Quick start
+## Quick start — launch, configure, call
 
-One command brings up the gateway, control plane, and UI. No provider keys are needed — the built-in `fake-llm` model answers locally:
+Go from zero to a working AI gateway in under a minute. The built-in `fake-llm`
+model answers locally, so the first request needs no provider key or config.
+
+### 1. Launch
 
 ```bash
-just dev          # from a source checkout (hot reload via cargo/bun)
-rolter easy-up    # from an installed binary or the docker image
+# single image: gateway + dashboard, no compose or config file
+docker pull ghcr.io/rolter-ai/rolter:latest
+docker run --rm -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest
+
+# native binary (installed from a release, cargo, uv, or pip)
+rolter easy-up
 ```
 
-Then query the built-in model:
+Open the dashboard at http://localhost:4001. For Postgres, Redis, and
+ClickHouse, use the full-stack option instead:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+### 2. Configure
+
+The dashboard is ready at http://localhost:4001. Add real providers and routes
+there when running in database mode, or use the bundled `rolter.toml` as your
+file-backed bootstrap config.
+
+### 3. Call
 
 ```bash
 curl -s http://localhost:4000/v1/chat/completions \
@@ -55,7 +75,7 @@ curl -s http://localhost:4000/v1/chat/completions \
   -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Install methods, the `rolter` CLI reference, and configuration are in the [documentation](#documentation).
+Install methods, the `rolter` CLI reference, and production configuration are in the [documentation](#documentation).
 
 ## Architecture
 

@@ -18,19 +18,29 @@ DB schemas auto-apply on first start (`migrations/` → Postgres initdb, `clickh
 
 ## Image
 
-The multi-stage `docker/Dockerfile` produces a slim Debian runtime with both binaries and the built UI at `/app/ui/dist`.
+The multi-stage `docker/Dockerfile` produces a slim Debian runtime with both
+binaries and the built UI at `/app/ui/dist`. Its default command is `rolter
+easy-up`, so one image serves the gateway and dashboard with the built-in
+`fake-llm` model — no compose file, provider key, or config mount required.
 
 ```bash
 docker build -f docker/Dockerfile -t rolter:dev .
-docker run --rm -p 4000:4000 \
-  -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -v "$PWD/rolter.toml:/app/rolter.toml" \
-  rolter:dev
+docker run --rm -p 4000:4000 -p 4001:4001 rolter:dev
 ```
 
-Override the entrypoint to run the control plane:
+Then open http://localhost:4001 and verify the data plane with:
 
 ```bash
+curl -s http://localhost:4000/v1/chat/completions \
+  -H 'Authorization: Bearer sk-rolter-dev' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
+```
+
+Override the command to run just the gateway or control plane:
+
+```bash
+docker run --rm -p 4000:4000 rolter:dev rolter-gateway --config /app/rolter.toml
 docker run --rm -p 4001:4001 rolter:dev rolter-control
 ```
 

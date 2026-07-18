@@ -338,6 +338,9 @@ async fn build_store(
     if let Some(database_url) = &args.database_url {
         let pool = rolter_store::postgres::connect(database_url).await?;
         rolter_store::postgres::run_migrations(&pool).await?;
+        if let Some(config) = bootstrap.as_ref() {
+            seed_default_models(&pool, config).await?;
+        }
         let db_store: Arc<dyn ConfigStore> =
             Arc::new(rolter_store::PostgresConfigStore::new(pool.clone()));
         let store: Arc<dyn ConfigStore> = match bootstrap {
@@ -349,6 +352,84 @@ async fn build_store(
 
     let config = bootstrap.unwrap_or_default();
     Ok((Arc::new(InMemoryConfigStore::new(config)), None))
+}
+
+/// Seed editable `[[models.default]]` routes exactly once. Defaults deliberately
+/// target the bootstrap `default/default/default` tenancy created by `rolter
+/// seed`; a deployment without that project is left untouched rather than
+/// guessing a tenant. Existing rows are never overwritten on a restart.
+#[cfg(feature = "postgres")]
+async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
+    if config.models.defaults.is_empty() {
+        return Ok(());
+    }
+    let project: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "select p.id, o.id from projects p \
+         join teams t on t.id = p.team_id \
+         join orgs o on o.id = t.org_id \
+         where o.slug = 'default' and t.name = 'default' and p.name = 'default' \
+         limit 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let Some((project_id, org_id)) = project else {
+        tracing::warn!(
+            "models.default was not seeded: create the default org/team/project first with rolter-seed"
+        );
+        return Ok(());
+    };
+    let routes = rolter_store::postgres::repo::RouteRepo(pool);
+    let targets = rolter_store::postgres::repo::RouteTargetRepo(pool);
+    let providers = rolter_store::postgres::repo::ProviderRepo(pool)
+        .list(org_id)
+        .await?;
+    for route in &config.models.defaults {
+        if routes
+            .list(project_id)
+            .await?
+            .iter()
+            .any(|existing| existing.model == route.model)
+        {
+            continue;
+        }
+        let strategy = match route.strategy {
+            rolter_core::BalancingStrategy::RoundRobin => "round_robin",
+            rolter_core::BalancingStrategy::Random => "random",
+            rolter_core::BalancingStrategy::PowerOfTwo => "power_of_two",
+            rolter_core::BalancingStrategy::ConsistentHash => "consistent_hash",
+            rolter_core::BalancingStrategy::CacheAware => "cache_aware",
+            rolter_core::BalancingStrategy::Weighted => "weighted",
+            rolter_core::BalancingStrategy::Pipeline => "pipeline",
+            rolter_core::BalancingStrategy::Cheapest => "cheapest",
+            rolter_core::BalancingStrategy::Fastest => "fastest",
+            rolter_core::BalancingStrategy::PreciseCacheAware => "precise_cache_aware",
+            rolter_core::BalancingStrategy::LmcacheAware => "lmcache_aware",
+        };
+        let created = routes.create(project_id, &route.model, strategy).await?;
+        let params = serde_json::to_value(&route.params)?;
+        let policy = serde_json::to_value(&route.param_policy)?;
+        routes.set_params(created.id, &params, &policy).await?;
+        for target in &route.targets {
+            if let Some(provider) = providers.iter().find(|p| p.name == target.provider) {
+                targets
+                    .create(
+                        created.id,
+                        provider.id,
+                        target.model.as_deref(),
+                        target.weight as i32,
+                    )
+                    .await?;
+            } else {
+                tracing::warn!(
+                    model = %route.model,
+                    provider = %target.provider,
+                    "models.default target was not seeded because the provider is not DB-owned"
+                );
+            }
+        }
+        tracing::info!(model = %route.model, "seeded editable default model");
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "postgres"))]

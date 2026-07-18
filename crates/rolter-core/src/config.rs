@@ -18,6 +18,10 @@ pub struct GatewayConfig {
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub routes: Vec<ModelRoute>,
+    /// Model presets declared in the bootstrap file. `readonly` routes remain
+    /// config-owned; `default` routes are a one-time control-plane DB seed.
+    #[serde(default)]
+    pub models: ModelTiersConfig,
     #[serde(default)]
     pub virtual_keys: Vec<VirtualKeyConfig>,
     /// database-defined virtual keys, carried as peppered digests plus scope
@@ -64,6 +68,18 @@ pub struct GatewayConfig {
     pub realtime: RealtimeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+/// Two-tier bootstrap model presets for database-backed control planes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ModelTiersConfig {
+    /// immutable routes served directly from config and rejected by CRUD
+    #[serde(default)]
+    pub readonly: Vec<ModelRoute>,
+    /// idempotent seed routes: inserted into the default DB project only when
+    /// absent, then owned and editable by the database
+    #[serde(default, rename = "default")]
+    pub defaults: Vec<ModelRoute>,
 }
 
 /// Outbound TLS trust configuration.
@@ -726,6 +742,11 @@ pub struct VirtualKeyConfig {
     /// allowed public model names; empty means all models are allowed
     #[serde(default)]
     pub models: Vec<String>,
+    /// allowed upstream provider names; empty means every provider on an
+    /// allowed route may be selected. this is independent from `models`, which
+    /// controls the public route/model namespace exposed to the client
+    #[serde(default)]
+    pub providers: Vec<String>,
     /// administratively revoke the key without deleting it
     #[serde(default)]
     pub disabled: bool,
@@ -763,6 +784,9 @@ pub struct VirtualKeyRecord {
     pub project_id: String,
     #[serde(default)]
     pub models: Vec<String>,
+    /// allowed upstream provider names; empty means all providers are allowed
+    #[serde(default)]
+    pub providers: Vec<String>,
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
@@ -1402,6 +1426,10 @@ pub struct LoggingConfig {
     /// the request hot path never blocks on the log writer
     #[serde(default = "default_log_queue_capacity")]
     pub queue_capacity: usize,
+    /// optional raw request/response capture. Disabled by default because
+    /// payloads can contain prompts, completions, and other sensitive data.
+    #[serde(default)]
+    pub payload_capture: PayloadCaptureConfig,
 }
 
 impl Default for LoggingConfig {
@@ -1411,8 +1439,58 @@ impl Default for LoggingConfig {
             batch_max: default_log_batch_max(),
             flush_ms: default_log_flush_ms(),
             queue_capacity: default_log_queue_capacity(),
+            payload_capture: PayloadCaptureConfig::default(),
         }
     }
+}
+
+/// Guardrails for opt-in raw invocation payload capture.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PayloadCaptureConfig {
+    /// master switch; capture is disabled unless this is explicitly true
+    #[serde(default)]
+    pub enabled: bool,
+    /// maximum number of UTF-8 bytes retained for each request or response
+    #[serde(default = "default_payload_capture_max_bytes")]
+    pub max_bytes: usize,
+    /// JSON object keys whose values are replaced before storage. Matching is
+    /// case-insensitive and recursive, covering nested tool arguments too.
+    #[serde(default = "default_payload_redact_fields")]
+    pub redact_fields: Vec<String>,
+    /// optional public-model allow-list. Empty captures every route when
+    /// enabled; non-empty limits capture to the named routes.
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// optional database virtual-key id allow-list. Empty captures every key
+    /// allowed by `models`; non-empty makes capture key-specific.
+    #[serde(default)]
+    pub virtual_key_ids: Vec<String>,
+}
+
+impl Default for PayloadCaptureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_bytes: default_payload_capture_max_bytes(),
+            redact_fields: default_payload_redact_fields(),
+            models: Vec::new(),
+            virtual_key_ids: Vec::new(),
+        }
+    }
+}
+
+fn default_payload_capture_max_bytes() -> usize {
+    32 * 1024
+}
+
+fn default_payload_redact_fields() -> Vec<String> {
+    vec![
+        "api_key".to_string(),
+        "authorization".to_string(),
+        "password".to_string(),
+        "secret".to_string(),
+        "token".to_string(),
+    ]
 }
 
 fn default_log_batch_max() -> usize {
@@ -1430,7 +1508,31 @@ fn default_log_queue_capacity() -> usize {
 impl GatewayConfig {
     /// Parse a configuration from a TOML string.
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
+        let mut config: Self = toml::from_str(s)?;
+        let readonly = std::mem::take(&mut config.models.readonly);
+        let mut names: std::collections::HashSet<String> = config
+            .routes
+            .iter()
+            .map(|route| route.model.clone())
+            .collect();
+        for route in readonly {
+            if !names.insert(route.model.clone()) {
+                return Err(crate::Error::Config(format!(
+                    "models.readonly model '{}' duplicates an existing route",
+                    route.model
+                )));
+            }
+            config.routes.push(route);
+        }
+        for route in &config.models.defaults {
+            if names.contains(&route.model) {
+                return Err(crate::Error::Config(format!(
+                    "models.default model '{}' conflicts with a read-only/config route",
+                    route.model
+                )));
+            }
+        }
+        Ok(config)
     }
 
     /// Load a configuration from a TOML file on disk.
@@ -1701,6 +1803,15 @@ impl GatewayConfig {
                 problems.push("virtual key has an empty key value".to_string());
             } else if !key_values.insert(vk.key.as_str()) {
                 problems.push("duplicate virtual key value".to_string());
+            }
+            for provider in &vk.providers {
+                if !provider_names.contains(provider.as_str()) {
+                    problems.push(format!(
+                        "virtual key '{}' allows unknown provider '{}'",
+                        vk.name.as_deref().unwrap_or("<unnamed>"),
+                        provider
+                    ));
+                }
             }
         }
 
@@ -2124,6 +2235,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(on.cache, Some(true));
+    }
+
+    #[test]
+    fn virtual_key_provider_allow_list_parses_and_defaults_to_all() {
+        let unrestricted: VirtualKeyConfig = toml::from_str(r#"key = "sk-a""#).unwrap();
+        assert!(unrestricted.providers.is_empty());
+        let restricted: VirtualKeyConfig = toml::from_str(
+            r#"
+            key = "sk-b"
+            providers = ["openai", "anthropic"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(restricted.providers, ["openai", "anthropic"]);
     }
 
     #[test]
@@ -2640,5 +2765,23 @@ mod tests {
         let _ = std::fs::remove_file(config_path);
         let _ = std::fs::remove_file(bundle_path);
         assert!(error.contains("contains malformed PEM"));
+    }
+
+    #[test]
+    fn expands_readonly_models_and_keeps_editable_defaults_separate() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[models.readonly]]
+            model = "locked"
+
+            [[models.default]]
+            model = "editable"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.routes.len(), 1);
+        assert_eq!(cfg.routes[0].model, "locked");
+        assert_eq!(cfg.models.defaults.len(), 1);
+        assert_eq!(cfg.models.defaults[0].model, "editable");
     }
 }

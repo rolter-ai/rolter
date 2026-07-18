@@ -293,6 +293,10 @@ function InvocationDetail({
         <DetailRow label="Stream" value={num(row.stream) ? "yes" : "no"} />
         <DetailRow label="Cache hit" value={num(row.cache_hit) ? "yes" : "no"} />
         <DetailRow
+          label="Provider prompt cache (read / write)"
+          value={`${num(row.cache_read_tokens)} / ${num(row.cache_write_tokens)}`}
+        />
+        <DetailRow
           label="Tokens (prompt / completion / total)"
           value={`${num(row.prompt_tokens)} / ${num(row.completion_tokens)} / ${num(
             row.total_tokens,
@@ -315,10 +319,27 @@ function InvocationDetail({
           </pre>
         </div>
       )}
-      <p className="mt-4 text-[0.625rem] text-muted-foreground">
-        Raw request/response bodies aren&apos;t captured. Enable payload capture to
-        inspect full prompts and completions.
-      </p>
+      {row.request_payload || row.response_payload ? (
+        <div className="mt-4 space-y-3">
+          {row.request_payload && <Payload label="Request payload" value={row.request_payload} />}
+          {row.response_payload && <Payload label="Response payload" value={row.response_payload} />}
+        </div>
+      ) : (
+        <p className="mt-4 text-[0.625rem] text-muted-foreground">
+          Raw request/response bodies weren&apos;t captured for this invocation.
+        </p>
+      )}
     </Dialog>
+  );
+}
+
+function Payload({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="mb-1 text-xs font-medium">{label}</p>
+      <pre className="max-h-60 overflow-auto rounded border bg-muted/30 p-2 font-mono text-xs whitespace-pre-wrap">
+        {value}
+      </pre>
+    </div>
   );
 }

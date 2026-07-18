@@ -241,8 +241,8 @@ pub struct InvocationsQuery {
 }
 
 /// Individual gateway invocations, newest first. Returns every persisted column
-/// of `request_logs` so the dashboard can render both the list row and a detail
-/// drawer. Raw request/response bodies are not stored, so they are not returned.
+/// of `request_logs` plus any short-retention raw payload row, so the dashboard
+/// can render both the list row and its optional detail bodies.
 async fn invocations(
     State(state): State<crate::ControlState>,
     Query(q): Query<InvocationsQuery>,
@@ -265,9 +265,15 @@ async fn invocations(
     // text is the status predicate, which is whitelisted above.
     let sql = format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
-                model, provider, target, variant, status, stream, cache_hit, \
-                prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, ttft_ms, error \
+                model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, ttft_ms, error, \
+                payload.request_payload, payload.response_payload \
          from request_logs \
+         left join ( \
+             select request_id, argMax(request_payload, ts) as request_payload, \
+                    argMax(response_payload, ts) as response_payload \
+             from request_payloads group by request_id \
+         ) as payload using (request_id) \
          where {WHERE_WINDOW} \
            and ({{model:String}} = '' or model = {{model:String}}) \
            and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \

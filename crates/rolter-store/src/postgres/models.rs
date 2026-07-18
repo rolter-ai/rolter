@@ -82,6 +82,8 @@ pub struct VirtualKey {
     pub key_prefix: String,
     pub name: Option<String>,
     pub models: Vec<String>,
+    /// empty means the key may reach every provider on an allowed route
+    pub providers: Vec<String>,
     pub disabled: bool,
     pub expires_at: Option<DateTime<Utc>>,
     /// per-key response-cache override; `NULL` inherits the route decision

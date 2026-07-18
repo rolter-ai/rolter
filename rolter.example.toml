@@ -202,7 +202,8 @@ weight = 1
 key = "sk-rolter-dev"
 name = "local-dev"
 models = []           # empty = all models allowed
-disabled = false      # revoke without deleting
+# providers = ["openai"] # optional upstream allow-list; empty = all providers
+disabled = false # revoke without deleting
 # expires_at = "2027-01-01T00:00:00Z"   # rfc3339; key stops working at/after this
 # cache = false   # per-key response-cache override, independent of a route's opt-in:
 #                 # omit to inherit the route, false to bypass, true to cache even on
@@ -350,6 +351,24 @@ disabled = false      # revoke without deleting
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
 # clickhouse_url = "http://localhost:8123"
+# Raw prompts/completions are sensitive and disabled by default. When enabled,
+# redacted bodies are kept in ClickHouse's short-retention request_payloads table.
+# [logging.payload_capture]
+# enabled = true
+# max_bytes = 32768
+# redact_fields = ["api_key", "authorization", "password", "secret", "token"]
+# models = ["support-agent"]                 # empty means every route
+# virtual_key_ids = ["key-uuid"]             # empty means every virtual key
+
+# Model presets can be declared in two tiers when the control plane uses Postgres.
+# [[models.readonly]] stays config-owned and cannot be edited in the dashboard.
+# [[models.default]] is seeded once into the default DB project, then is editable.
+# [[models.readonly]]
+# model = "company-safe"
+# targets = [{ provider = "openai", model = "gpt-4o-mini" }]
+# [[models.default]]
+# model = "starter-chat"
+# targets = [{ provider = "openai", model = "gpt-4o-mini" }]
 # batch_max = 1000        # flush once a batch reaches this many rows
 # flush_ms = 1000         # also flush a partial batch at least this often
 # queue_capacity = 10000  # rows are dropped (and counted) when this queue is full

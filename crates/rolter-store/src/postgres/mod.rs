@@ -138,6 +138,7 @@ struct VirtualKeyRow {
     id: Uuid,
     key_hash: String,
     models: Vec<String>,
+    providers: Vec<String>,
     disabled: bool,
     expires_at: Option<DateTime<Utc>>,
     cache_enabled: Option<bool>,
@@ -269,7 +270,7 @@ impl PostgresConfigStore {
     /// gateway matches presented keys against it by peppered digest.
     async fn load_virtual_keys(&self) -> Result<Vec<VirtualKeyRecord>> {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
-            "select vk.id, vk.key_hash, vk.models, vk.disabled, vk.expires_at, \
+            "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
                     vk.cache_enabled, vk.project_id, p.team_id, t.org_id \
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
@@ -288,6 +289,7 @@ impl PostgresConfigStore {
                 team_id: r.team_id.to_string(),
                 project_id: r.project_id.to_string(),
                 models: r.models,
+                providers: r.providers,
                 disabled: r.disabled,
                 expires_at: r.expires_at,
                 cache: r.cache_enabled,

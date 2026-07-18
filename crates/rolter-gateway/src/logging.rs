@@ -79,6 +79,11 @@ pub struct RequestLog {
     pub status: u16,
     pub stream: u8,
     pub cache_hit: u8,
+    /// provider-native prompt-cache input tokens reused by the upstream; this
+    /// is distinct from `cache_hit`, which means a Rolter response-cache hit
+    pub cache_read_tokens: u32,
+    /// provider-native prompt-cache tokens written/created for this request
+    pub cache_write_tokens: u32,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
@@ -86,6 +91,18 @@ pub struct RequestLog {
     pub latency_ms: u32,
     pub ttft_ms: u32,
     pub error: String,
+    /// raw bodies are persisted in the short-retention `request_payloads`
+    /// table, never in the primary metadata table
+    #[serde(skip)]
+    pub request_payload: String,
+    #[serde(skip)]
+    pub response_payload: String,
+    #[serde(skip)]
+    pub capture_payloads: bool,
+    #[serde(skip)]
+    pub payload_max_bytes: usize,
+    #[serde(skip)]
+    pub payload_redact_fields: Vec<String>,
 }
 
 impl Default for RequestLog {
@@ -104,6 +121,8 @@ impl Default for RequestLog {
             status: 0,
             stream: 0,
             cache_hit: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
@@ -111,7 +130,57 @@ impl Default for RequestLog {
             latency_ms: 0,
             ttft_ms: 0,
             error: String::new(),
+            request_payload: String::new(),
+            response_payload: String::new(),
+            capture_payloads: false,
+            payload_max_bytes: 0,
+            payload_redact_fields: Vec::new(),
         }
+    }
+}
+
+/// Serialize a payload safely for the short-retention capture store. JSON is
+/// redacted before truncation so a large secret can never escape at the edge of
+/// the retained prefix; non-JSON bodies are retained as lossy UTF-8 text.
+pub fn capture_payload(body: &[u8], max_bytes: usize, redact_fields: &[String]) -> String {
+    if max_bytes == 0 || body.is_empty() {
+        return String::new();
+    }
+    let mut rendered = match serde_json::from_slice::<Value>(body) {
+        Ok(mut json) => {
+            redact_json(&mut json, redact_fields);
+            serde_json::to_string(&json).unwrap_or_else(|_| String::new())
+        }
+        Err(_) => String::from_utf8_lossy(body).into_owned(),
+    };
+    if rendered.len() > max_bytes {
+        let end = rendered.floor_char_boundary(max_bytes);
+        rendered.truncate(end);
+        rendered.push_str("…[truncated]");
+    }
+    rendered
+}
+
+fn redact_json(value: &mut Value, redact_fields: &[String]) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if redact_fields
+                    .iter()
+                    .any(|field| field.eq_ignore_ascii_case(key))
+                {
+                    *value = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_json(value, redact_fields);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_json(value, redact_fields);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -121,6 +190,8 @@ pub struct Usage {
     pub prompt: u32,
     pub completion: u32,
     pub total: u32,
+    pub cache_read: u32,
+    pub cache_write: u32,
 }
 
 /// Extract token usage from a fully-buffered upstream response body.
@@ -193,6 +264,16 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         }
         if let Some(t) = u32_field(u, "total_tokens") {
             usage.total = usage.total.max(t);
+        }
+        if let Some(read) = u32_field(u, "cache_read_input_tokens").or_else(|| {
+            u.pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32)
+        }) {
+            usage.cache_read = usage.cache_read.max(read);
+        }
+        if let Some(write) = u32_field(u, "cache_creation_input_tokens") {
+            usage.cache_write = usage.cache_write.max(write);
         }
     }
 }
@@ -272,16 +353,22 @@ impl UsageLoggingStream {
         if let Some(observer) = self.completion_observer.take() {
             observer(&self.buf);
         }
+        if log.capture_payloads {
+            log.response_payload =
+                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redact_fields);
+        }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
         log.completion_tokens = usage.completion;
         log.total_tokens = usage.total;
+        log.cache_read_tokens = usage.cache_read;
+        log.cache_write_tokens = usage.cache_write;
         // cache_hit accounting arrives with the response-cache phase; price the
         // full prompt as fresh input for now
         log.cost_usd = self
             .price
             .as_ref()
-            .map(|p| p.cost_usd(usage.prompt, usage.completion, 0))
+            .map(|p| p.cost_usd(usage.prompt, usage.completion, usage.cache_read))
             .unwrap_or(0.0);
         log.latency_ms = self.started.elapsed().as_millis() as u32;
         log.ttft_ms = self.ttft_ms.unwrap_or(log.latency_ms);
@@ -420,6 +507,10 @@ impl LogSink {
                 "{}/?query=INSERT%20INTO%20request_logs%20FORMAT%20JSONEachRow",
                 clickhouse_url.trim_end_matches('/')
             ),
+            payload_url: format!(
+                "{}/?query=INSERT%20INTO%20request_payloads%20FORMAT%20JSONEachRow",
+                clickhouse_url.trim_end_matches('/')
+            ),
             client: reqwest::Client::new(),
             batch_max: batch_max.max(1),
             flush,
@@ -465,6 +556,7 @@ impl LogSink {
 /// Owns the batching loop and the ClickHouse HTTP client.
 struct BatchWriter {
     url: String,
+    payload_url: String,
     client: reqwest::Client,
     batch_max: usize,
     flush: Duration,
@@ -532,7 +624,55 @@ impl BatchWriter {
                 self.metrics.logs_dropped_total.fetch_add(count, Relaxed);
             }
         }
+        let mut payloads = String::new();
+        for record in batch.iter().filter(|record| {
+            !record.request_payload.is_empty() || !record.response_payload.is_empty()
+        }) {
+            let payload = PayloadLog::from(record);
+            match serde_json::to_string(&payload) {
+                Ok(line) => {
+                    payloads.push_str(&line);
+                    payloads.push('\n');
+                }
+                Err(err) => tracing::warn!(%err, "failed to serialize request payload"),
+            }
+        }
+        if !payloads.is_empty() {
+            match self
+                .client
+                .post(&self.payload_url)
+                .body(payloads)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {}
+                Ok(resp) => {
+                    let status = resp.status();
+                    let detail = resp.text().await.unwrap_or_default();
+                    tracing::warn!(%status, detail, "clickhouse rejected payload batch");
+                }
+                Err(err) => tracing::warn!(%err, "failed to write payload batch to clickhouse"),
+            }
+        }
         batch.clear();
+    }
+}
+
+/// One short-retention raw payload row keyed by the corresponding metadata log.
+#[derive(Serialize)]
+struct PayloadLog<'a> {
+    request_id: &'a str,
+    request_payload: &'a str,
+    response_payload: &'a str,
+}
+
+impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
+    fn from(log: &'a RequestLog) -> Self {
+        Self {
+            request_id: &log.request_id,
+            request_payload: &log.request_payload,
+            response_payload: &log.response_payload,
+        }
     }
 }
 
@@ -549,6 +689,19 @@ mod tests {
         pool.recycle(buffer);
         let reused = pool.take();
         assert_eq!(reused.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn payload_capture_redacts_before_truncation() {
+        let fields = vec!["token".to_string(), "password".to_string()];
+        let captured = capture_payload(
+            br#"{"token":"secret-value","nested":{"password":"also-secret"},"text":"hello"}"#,
+            64,
+            &fields,
+        );
+        assert!(!captured.contains("secret-value"));
+        assert!(!captured.contains("also-secret"));
+        assert!(captured.contains("[REDACTED]"));
     }
 
     #[test]
@@ -584,7 +737,8 @@ mod tests {
             Usage {
                 prompt: 11,
                 completion: 22,
-                total: 33
+                total: 33,
+                ..Usage::default()
             }
         );
     }
@@ -598,7 +752,8 @@ mod tests {
             Usage {
                 prompt: 7,
                 completion: 5,
-                total: 12
+                total: 12,
+                ..Usage::default()
             }
         );
     }
@@ -613,7 +768,8 @@ data: [DONE]\n\n";
             Usage {
                 prompt: 3,
                 completion: 9,
-                total: 12
+                total: 12,
+                ..Usage::default()
             }
         );
     }
@@ -630,7 +786,8 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
             Usage {
                 prompt: 40,
                 completion: 25,
-                total: 65
+                total: 65,
+                ..Usage::default()
             }
         );
     }

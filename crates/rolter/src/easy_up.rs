@@ -187,14 +187,18 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
 
 fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&str>) {
     let mode = if db_mode { "database" } else { "file" };
+    let display_host = match args.host.as_str() {
+        "0.0.0.0" | "::" => "localhost",
+        host => host,
+    };
     eprintln!("\nrolter easy-up — {mode} mode");
     eprintln!(
         "  gateway (OpenAI/Anthropic):  http://{}:{}",
-        args.host, args.gateway_port
+        display_host, args.gateway_port
     );
     eprintln!(
         "  control + UI:                http://{}:{}",
-        args.host, args.control_port
+        display_host, args.control_port
     );
     eprintln!("  config:                      {}", args.config.display());
     if !db_mode {
@@ -203,6 +207,11 @@ fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&
     if let Some(email) = admin_created_email {
         eprintln!("  admin user created:          {email}");
     }
+    eprintln!("\n  try it:");
+    eprintln!(
+        "  curl http://{display_host}:{}/v1/chat/completions -H 'Content-Type: application/json' -d '{{\"model\":\"fake-llm\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}'",
+        args.gateway_port
+    );
     eprintln!();
 }
 

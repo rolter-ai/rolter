@@ -80,6 +80,10 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/virtual-keys/{id}/cache",
             put(set_virtual_key_cache),
         )
+        .route(
+            "/api/v1/virtual-keys/{id}/providers",
+            put(set_virtual_key_providers),
+        )
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
         .route("/api/v1/budgets/{id}", delete(delete_budget))
         .route(
@@ -1021,6 +1025,10 @@ struct CreateVirtualKey {
     name: Option<String>,
     #[serde(default)]
     models: Vec<String>,
+    /// upstream providers this key may reach; an empty list permits every
+    /// provider on an allowed route
+    #[serde(default)]
+    providers: Vec<String>,
     /// per-key response-cache override; omit/null to inherit the route decision,
     /// false to bypass, true to cache even on a route that didn't opt in
     #[serde(default)]
@@ -1072,6 +1080,7 @@ async fn create_virtual_key(
             &key_prefix,
             body.name.as_deref(),
             &body.models,
+            &body.providers,
             body.cache,
             None,
         )
@@ -1088,6 +1097,37 @@ async fn create_virtual_key(
     )
     .await;
     Ok(Json(CreatedVirtualKey { row, key }))
+}
+
+#[derive(Deserialize)]
+struct SetVirtualKeyProviders {
+    /// empty restores the permissive default
+    #[serde(default)]
+    providers: Vec<String>,
+}
+
+async fn set_virtual_key_providers(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetVirtualKeyProviders>,
+) -> ApiResult<Json<VirtualKey>> {
+    let org_id = authorize_virtual_key(&state, &principal, id).await?;
+    let row = VirtualKeyRepo(pool(&state))
+        .set_providers(id, &body.providers)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.set_providers",
+        "virtual_key",
+        id,
+        serde_json::json!({"providers": body.providers}),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 #[derive(Deserialize)]

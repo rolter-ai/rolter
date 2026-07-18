@@ -7,6 +7,8 @@ Start here. rolter is a high-performance OpenAI/Anthropic-compatible AI gateway 
 - [Overview](architecture/overview.md) — system shape, crates, data/control plane split
 - [Load balancing](architecture/load-balancing.md) — strategies and the cache-aware design
 - [Caching](architecture/caching.md) — response cache and KV-cache affinity
+- [Provider prompt caching](architecture/prompt-caching.md) — portable Anthropic prompt-cache controls
+- [Multi-region deployment](deployment/multi-region.md) — active-active/passive state and failover topology
 - [Config & hot reload](architecture/config-and-hot-reload.md) — reload-free updates
 - [Data model](architecture/data-model.md) — tenancy, keys, pricing, budgets
 - [RBAC & auth](architecture/rbac-and-auth.md) — roles, virtual keys, SSO/LDAP roadmap

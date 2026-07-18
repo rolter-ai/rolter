@@ -92,6 +92,7 @@ async fn mint_my_key(
             &key_prefix,
             body.name.as_deref(),
             &body.models,
+            &[],
             body.cache,
             Some(current.user.id),
         )
@@ -127,6 +128,7 @@ async fn rotate_my_key(
             &key_prefix,
             old.name.as_deref(),
             &old.models,
+            &old.providers,
             old.cache_enabled,
             Some(current.user.id),
         )
