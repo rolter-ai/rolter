@@ -86,6 +86,8 @@ list, respectively; none invokes a model.
 - `egress_proxy` (string, optional) — legacy single HTTP/HTTPS/SOCKS5 outbound proxy; treated as a one-element pool
 - `egress_proxies` (string[], optional) — round-robin HTTP, HTTPS, SOCKS5, or SOCKS5H proxy pool. A connect/tunnel failure retries the next member; three consecutive failures quarantine a member for 30 seconds. Authenticated proxy URLs must be supplied as whole-value environment references such as `"${PROVIDER_PROXY_EU}"`, keeping credentials out of config snapshots and database/API output
 - `ca_bundles` (string[], optional) — provider-specific replacement for global `[tls].ca_bundles`; `[]` explicitly selects public roots only
+- `[providers.kv_events]` (optional) — vLLM V1 ZMQ KV-event source for `precise_cache_aware`: `endpoint` (`tcp://…`), `topic` (default `kv-events`), `max_blocks` (default 1,000,000), and `stale_secs` (default 30)
+- `[providers.lmcache]` (optional) — LMCache controller signal for `lmcache_aware`: `endpoint` (HTTP JSON occupancy signal), `refresh_secs` (default 2), and `stale_secs` (default 10)
 - `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
 - `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.
 - `status_page_url` (string, optional) — statuspage.io-style `status.json` URL (e.g. `https://status.anthropic.com/api/v2/status.json`). When set, a slow background poll records the provider's public status as a **secondary** `status_page` health signal — it surfaces in `provider_health_events`, the dashboard and `rolter_status_page_degraded_total`, but never marks the provider unhealthy or affects routing on its own. Parse/transport failures are logged and skipped.
@@ -94,7 +96,7 @@ See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/K
 
 ### `[[routes]]`
 - `model` (string) — public model name clients request
-- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline`, default `round_robin`)
+- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline` | `cheapest` | `fastest` | `precise_cache_aware` | `lmcache_aware`, default `round_robin`)
 - `[[routes.targets]]`
   - `provider` (string) — a provider `name`
   - `model` (string, optional) — upstream model id; defaults to the requested model

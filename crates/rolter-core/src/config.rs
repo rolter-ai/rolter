@@ -269,6 +269,12 @@ pub struct ProviderConfig {
     /// appear in serialized configuration or database rows.
     #[serde(default)]
     pub egress_proxies: Vec<String>,
+    /// optional vLLM ZMQ KV-event subscriber settings for this target
+    #[serde(default)]
+    pub kv_events: Option<KvEventsConfig>,
+    /// optional LMCache controller signal for this target
+    #[serde(default)]
+    pub lmcache: Option<LmCacheConfig>,
     /// provider-specific PEM CA bundles; when set, replaces `[tls].ca_bundles`
     #[serde(default)]
     pub ca_bundles: Option<Vec<PathBuf>>,
@@ -303,6 +309,51 @@ pub struct ProviderConfig {
     /// templates that explicitly support `developer`.
     #[serde(default)]
     pub model_role_profiles: HashMap<String, RoleProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KvEventsConfig {
+    /// subscriber endpoint, e.g. `tcp://vllm-0:5557`
+    pub endpoint: String,
+    /// ZMQ topic; vLLM examples use `kv-events`
+    #[serde(default = "default_kv_events_topic")]
+    pub topic: String,
+    /// maximum resident block identities kept for this provider
+    #[serde(default = "default_kv_events_max_blocks")]
+    pub max_blocks: usize,
+    /// telemetry older than this is ignored
+    #[serde(default = "default_kv_events_stale_secs")]
+    pub stale_secs: u64,
+}
+
+fn default_kv_events_topic() -> String {
+    "kv-events".to_string()
+}
+
+fn default_kv_events_max_blocks() -> usize {
+    1_000_000
+}
+
+fn default_kv_events_stale_secs() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LmCacheConfig {
+    /// HTTP endpoint returning `{ "occupancy": 0..1, "cache_available": bool }`
+    pub endpoint: String,
+    #[serde(default = "default_lmcache_refresh_secs")]
+    pub refresh_secs: u64,
+    #[serde(default = "default_lmcache_stale_secs")]
+    pub stale_secs: u64,
+}
+
+fn default_lmcache_refresh_secs() -> u64 {
+    2
+}
+
+fn default_lmcache_stale_secs() -> u64 {
+    10
 }
 
 /// One of a provider's weighted API keys. Same inline-vs-env split as the
@@ -440,6 +491,10 @@ pub enum BalancingStrategy {
     /// latency-aware: prefer the target with the lowest observed request
     /// latency (in-flight load breaks ties, and carries a cold route alone)
     Fastest,
+    /// exact resident-prefix routing from vLLM KV-cache events
+    PreciseCacheAware,
+    /// LMCache controller occupancy and cache-availability routing
+    LmcacheAware,
 }
 
 /// A single upstream target within a route.
@@ -1533,6 +1588,34 @@ impl GatewayConfig {
                     ));
                 }
             }
+            if let Some(kv) = &provider.kv_events {
+                if !kv.endpoint.starts_with("tcp://") || kv.endpoint.len() <= "tcp://".len() {
+                    problems.push(format!(
+                        "provider '{}' kv_events.endpoint must be a non-empty tcp:// URL",
+                        provider.name
+                    ));
+                }
+                if kv.max_blocks == 0 || kv.stale_secs == 0 {
+                    problems.push(format!(
+                        "provider '{}' kv_events max_blocks and stale_secs must be greater than zero",
+                        provider.name
+                    ));
+                }
+            }
+            if let Some(lmcache) = &provider.lmcache {
+                if !is_http_url(&lmcache.endpoint) {
+                    problems.push(format!(
+                        "provider '{}' lmcache.endpoint must be an http(s) URL",
+                        provider.name
+                    ));
+                }
+                if lmcache.refresh_secs == 0 || lmcache.stale_secs == 0 {
+                    problems.push(format!(
+                        "provider '{}' lmcache refresh_secs and stale_secs must be greater than zero",
+                        provider.name
+                    ));
+                }
+            }
         }
 
         let mut route_models = std::collections::HashSet::new();
@@ -1759,6 +1842,8 @@ mod tests {
             api_key_env: None,
             egress_proxy: None,
             egress_proxies: Vec::new(),
+            kv_events: None,
+            lmcache: None,
             ca_bundles: None,
             api_keys,
             also_track_via_llm_call: false,

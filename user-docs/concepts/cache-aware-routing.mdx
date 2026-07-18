@@ -31,7 +31,7 @@ Rolter's `cache_aware` strategy maintains a **per-target byte trie** of the prom
 The trie is capped at a node ceiling (default 1 million nodes) with LRU eviction: when the cap is reached, the least-recently-inserted prompt is pruned, but shared prefix nodes that are still referenced by other prompts survive.
 
 <Note>
-  Cache-aware routing is **approximate** — Rolter tracks prompt byte prefixes in its own trie, not vLLM's internal block state. It does not require any changes to vLLM configuration and works with any OpenAI-compatible engine. A precise mode that subscribes to vLLM KV-cache events over ZMQ is on the roadmap.
+  `cache_aware` is approximate — Rolter tracks prompt byte prefixes in its own trie, not vLLM's internal block state. For a vLLM fleet that publishes KV events, use `precise_cache_aware` below.
 </Note>
 
 ---
@@ -126,6 +126,18 @@ Cache-aware routing delivers the biggest benefit when your prompts share a long 
 
 ---
 
-## Roadmap: precise KV-cache mode
+## Precise vLLM and LMCache modes
 
-The current approximate mode gives meaningful TTFT improvements without any engine coupling. A **precise mode** is planned that subscribes to vLLM KV-cache events over ZMQ, hashes blocks the same way vLLM does, and maintains a gateway-side block→target index. This will score targets by their exact resident-prefix fraction blended with live load — delivering the largest and most reliable wins on prefix-heavy workloads, mirroring how llm-d's prefix-cache-aware scheduling works. Precise mode requires vLLM 0.10 or later.
+`precise_cache_aware` subscribes to each target's vLLM V1 ZMQ KV-event stream, maintains a bounded exact residency index, and scores the resident leading block fraction. Requests must send tokenizer-consistent comma-separated ids in `x-rolter-vllm-token-ids`. Missing ids and stale, malformed, or sequence-gapped streams fall back safely to least-load routing.
+
+```toml rolter.toml
+[providers.kv_events]
+endpoint = "tcp://vllm-1:5557"
+topic = "kv-events"
+
+[[routes]]
+model = "llama"
+strategy = "precise_cache_aware"
+```
+
+`lmcache_aware` polls `[providers.lmcache]` HTTP endpoints for `{ "occupancy": 0..1, "cache_available": bool }` and prefers available targets with more free cache capacity. Failed and stale controllers are neutral, preserving normal routing.

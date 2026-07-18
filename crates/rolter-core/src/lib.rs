@@ -10,11 +10,11 @@ pub mod telemetry;
 
 pub use config::{
     ApiKeyConfig, BackpressurePolicy, BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod,
-    BudgetScope, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, LoggingConfig,
-    MetricsScrapeConfig, ModelPriceConfig, ModelRoute, OverrideMode, ParamPolicy, ProviderConfig,
-    ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig,
-    RoleProfile, RouteCache, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig, TlsConfig,
-    Variant, VirtualKeyConfig, VirtualKeyRecord, RESERVED_PATHS,
+    BudgetScope, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, KvEventsConfig,
+    LmCacheConfig, LoggingConfig, MetricsScrapeConfig, ModelPriceConfig, ModelRoute, OverrideMode,
+    ParamPolicy, ProviderConfig, ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig,
+    ResponsesConfig, RetryConfig, RoleProfile, RouteCache, SemanticCacheConfig, ServerConfig,
+    Target, TimeoutConfig, TlsConfig, Variant, VirtualKeyConfig, VirtualKeyRecord, RESERVED_PATHS,
 };
 pub use error::{Error, Result};
 

@@ -111,6 +111,14 @@ impl Snapshot {
     /// Build a snapshot from a configuration. `loads` is the shared in-flight/
     /// latency tracker the `fastest` strategy reads live at pick time.
     pub fn build(config: &GatewayConfig, loads: &crate::load::LoadTracker) -> Self {
+        Self::build_with_telemetry(config, loads, None)
+    }
+
+    fn build_with_telemetry(
+        config: &GatewayConfig,
+        loads: &crate::load::LoadTracker,
+        telemetry: Option<&crate::cache_telemetry::CacheTelemetry>,
+    ) -> Self {
         let providers: HashMap<String, ProviderConfig> = config
             .providers
             .iter()
@@ -151,6 +159,24 @@ impl Snapshot {
                     loads: loads.clone(),
                     namespace: route.model.clone(),
                 })),
+                kv_cache: telemetry.map(|source| {
+                    source.kv_source(
+                        route
+                            .targets
+                            .iter()
+                            .map(|target| target.provider.clone())
+                            .collect(),
+                    )
+                }),
+                lmcache: telemetry.map(|source| {
+                    source.lmcache_source(
+                        route
+                            .targets
+                            .iter()
+                            .map(|target| target.provider.clone())
+                            .collect(),
+                    )
+                }),
             };
             let balancer = build_with_stats(route.strategy, &weights, &stats);
             let variant_balancers = route
@@ -164,6 +190,22 @@ impl Snapshot {
                             loads: loads.clone(),
                             namespace: crate::handlers::variant_key(&route.model, &v.name),
                         })),
+                        kv_cache: telemetry.map(|source| {
+                            source.kv_source(
+                                v.targets
+                                    .iter()
+                                    .map(|target| target.provider.clone())
+                                    .collect(),
+                            )
+                        }),
+                        lmcache: telemetry.map(|source| {
+                            source.lmcache_source(
+                                v.targets
+                                    .iter()
+                                    .map(|target| target.provider.clone())
+                                    .collect(),
+                            )
+                        }),
                     };
                     build_with_stats(route.strategy, &w, &s)
                 })
@@ -254,6 +296,7 @@ impl Snapshot {
         let stats = TargetStats {
             cost_per_mtok: target_costs(std::slice::from_ref(&target), model, &self.prices),
             latency: None,
+            ..Default::default()
         };
         let strategy = rolter_core::BalancingStrategy::default();
         let balancer = build_with_stats(strategy, &[target.weight], &stats);
@@ -329,6 +372,8 @@ pub struct AppState {
     pub breaker: crate::breaker::Breaker,
     /// upstream engine metrics snapshot populated by the background scraper
     pub upstream_metrics: crate::upstream_metrics::UpstreamMetrics,
+    /// background vLLM/LMCache telemetry read by cache-aware scorers
+    pub cache_telemetry: crate::cache_telemetry::CacheTelemetry,
     /// process-local concurrency registry for persistent Realtime sessions
     pub(crate) realtime_sessions: crate::realtime::Sessions,
 }
@@ -416,8 +461,14 @@ impl AppState {
         let loads = crate::load::LoadTracker::new();
         let forwarder = Arc::new(Forwarder::with_timeouts(&config.timeouts));
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
+        let cache_telemetry = crate::cache_telemetry::CacheTelemetry::new(metrics.clone());
+        cache_telemetry.configure(&config.providers);
         Self {
-            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build(config, &loads))),
+            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build_with_telemetry(
+                config,
+                &loads,
+                Some(&cache_telemetry),
+            ))),
             forwarder,
             provider_queues,
             metrics,
@@ -449,6 +500,7 @@ impl AppState {
             } else {
                 crate::upstream_metrics::UpstreamMetrics::default()
             },
+            cache_telemetry,
             realtime_sessions: crate::realtime::Sessions::default(),
         }
     }
@@ -460,8 +512,12 @@ impl AppState {
         // configured clients capture CA roots at construction time; clearing
         // them makes bundle rotation take effect on the next request
         self.forwarder.reload();
-        self.snapshot
-            .store(Arc::new(Snapshot::build(config, &self.loads)));
+        self.cache_telemetry.configure(&config.providers);
+        self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
+            config,
+            &self.loads,
+            Some(&self.cache_telemetry),
+        )));
         // re-tune the circuit breaker in place (enable/disable + thresholds)
         // without discarding accumulated per-target state; the health prober picks
         // up its tuning from the new snapshot on its next sweep
@@ -557,6 +613,8 @@ mod tests {
             api_key_env: None,
             egress_proxy: None,
             egress_proxies: Vec::new(),
+            kv_events: None,
+            lmcache: None,
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,

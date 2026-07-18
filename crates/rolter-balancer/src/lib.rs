@@ -23,6 +23,8 @@ pub struct RouteContext<'a> {
     pub session_key: Option<&'a str>,
     /// request prompt used for prefix/cache affinity scoring
     pub prompt: Option<&'a str>,
+    /// token ids used for exact vLLM block-prefix matching when supplied
+    pub token_ids: Option<&'a [u32]>,
 }
 
 /// A strategy that selects one target index for a request.
@@ -52,6 +54,10 @@ pub struct TargetStats {
     /// live per-target latency handle for the `fastest` strategy; read at pick
     /// time, so the balancer follows shifting latency without a rebuild
     pub latency: Option<std::sync::Arc<dyn scorer::LatencySource>>,
+    /// live exact KV residency source for vLLM event-aware routing
+    pub kv_cache: Option<std::sync::Arc<dyn scorer::KvCacheSource>>,
+    /// live LMCache occupancy/availability source
+    pub lmcache: Option<std::sync::Arc<dyn scorer::LmCacheSource>>,
 }
 
 impl std::fmt::Debug for TargetStats {
@@ -59,6 +65,8 @@ impl std::fmt::Debug for TargetStats {
         f.debug_struct("TargetStats")
             .field("cost_per_mtok", &self.cost_per_mtok)
             .field("latency", &self.latency.as_ref().map(|_| "<live>"))
+            .field("kv_cache", &self.kv_cache.as_ref().map(|_| "<live>"))
+            .field("lmcache", &self.lmcache.as_ref().map(|_| "<live>"))
             .finish()
     }
 }
@@ -102,6 +110,32 @@ pub fn build_with_stats(
             None => Box::new(
                 scorer::Pipeline::new(n)
                     .named("fastest")
+                    .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
+            ),
+        },
+        BalancingStrategy::PreciseCacheAware => match &stats.kv_cache {
+            Some(source) => Box::new(
+                scorer::Pipeline::new(n)
+                    .named("precise_cache_aware")
+                    .with(Box::new(scorer::PreciseKvScorer::new(source.clone())), 1.0)
+                    .with(Box::new(scorer::LeastLoadScorer::new(n)), 0.25),
+            ),
+            None => Box::new(
+                scorer::Pipeline::new(n)
+                    .named("precise_cache_aware")
+                    .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
+            ),
+        },
+        BalancingStrategy::LmcacheAware => match &stats.lmcache {
+            Some(source) => Box::new(
+                scorer::Pipeline::new(n)
+                    .named("lmcache_aware")
+                    .with(Box::new(scorer::LmCacheScorer::new(source.clone())), 1.0)
+                    .with(Box::new(scorer::LeastLoadScorer::new(n)), 0.25),
+            ),
+            None => Box::new(
+                scorer::Pipeline::new(n)
+                    .named("lmcache_aware")
                     .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
             ),
         },
@@ -451,6 +485,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: Some("user-1"),
             prompt: None,
+            token_ids: None,
         };
         let a = lb.pick(&ctx, &[]).unwrap();
         let b = lb.pick(&ctx, &[]).unwrap();
@@ -464,6 +499,7 @@ mod tests {
         let ctx = RouteContext {
             session_key: None,
             prompt: Some("a long shared system prompt followed by a question"),
+            token_ids: None,
         };
         let first = lb.pick(&ctx, &[]).unwrap();
         lb.observe(first, &ctx);

@@ -78,6 +78,15 @@ api_key_env = "OLLAMA_API_KEY"
 name = "vllm-1"
 kind = "openai_compatible"
 api_base = "http://localhost:8001"
+# [providers.kv_events]
+# endpoint = "tcp://localhost:5557"
+# topic = "kv-events"
+# max_blocks = 1000000
+# stale_secs = 30
+# [providers.lmcache]
+# endpoint = "http://localhost:9000/v1/occupancy"
+# refresh_secs = 2
+# stale_secs = 10
 # OpenAI-compatible providers default to `system_only`: developer instructions
 # become system instructions, preserving their order. Override only when the
 # configured model template explicitly supports developer messages.
