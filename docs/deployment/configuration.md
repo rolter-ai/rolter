@@ -83,7 +83,8 @@ list, respectively; none invokes a model.
   - `env` (string, optional) — environment variable to read the key from
   - `weight` (u32, default `1`) — relative selection weight
 - `api_key_env` (string, optional) — env var to read the key from
-- `egress_proxy` (string, optional) — HTTP/HTTPS/SOCKS5 outbound proxy
+- `egress_proxy` (string, optional) — legacy single HTTP/HTTPS/SOCKS5 outbound proxy; treated as a one-element pool
+- `egress_proxies` (string[], optional) — round-robin HTTP, HTTPS, SOCKS5, or SOCKS5H proxy pool. A connect/tunnel failure retries the next member; three consecutive failures quarantine a member for 30 seconds. Authenticated proxy URLs must be supplied as whole-value environment references such as `"${PROVIDER_PROXY_EU}"`, keeping credentials out of config snapshots and database/API output
 - `ca_bundles` (string[], optional) — provider-specific replacement for global `[tls].ca_bundles`; `[]` explicitly selects public roots only
 - `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
 - `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.

@@ -12,11 +12,12 @@ mod translation;
 pub use translation::{Protocol, TranslatedStream, TranslationPlan};
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::Duration;
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use reqwest::{Client, Method, Proxy, Response};
+use reqwest::{Client, Method, Proxy, RequestBuilder, Response};
 use rolter_core::{Error, ProviderConfig, ProviderKind, Result, TimeoutConfig};
 
 /// Forwards requests to upstream providers using pooled, reused HTTP clients.
@@ -27,6 +28,25 @@ pub struct Forwarder {
     connect_timeout: Option<Duration>,
     /// time-to-response-headers bound applied around each `send()` (0 disables)
     request_timeout: Option<Duration>,
+    next_proxy: AtomicUsize,
+    proxy_health: DashMap<String, ProxyHealth>,
+}
+
+#[derive(Default)]
+struct ProxyHealth {
+    successes: AtomicU64,
+    failures: AtomicU64,
+    consecutive_failures: AtomicU64,
+    quarantine_until_ms: AtomicU64,
+}
+
+/// Redacted per-pool-member counters suitable for Prometheus export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyMetric {
+    pub proxy: String,
+    pub successes: u64,
+    pub failures: u64,
+    pub quarantined: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -58,17 +78,27 @@ impl Forwarder {
             configured: DashMap::new(),
             connect_timeout,
             request_timeout,
+            next_proxy: AtomicUsize::new(0),
+            proxy_health: DashMap::new(),
         }
     }
 
     /// Return the pooled client matching this provider's proxy and trust roots.
     pub fn client_for(&self, provider: &ProviderConfig) -> Result<Client> {
+        let proxies = self.proxy_candidates(provider)?;
+        let proxy = proxies
+            .get(self.next_proxy.fetch_add(1, Relaxed) % proxies.len().max(1))
+            .map(|(_, url)| url.as_str());
+        self.client_for_proxy(provider, proxy)
+    }
+
+    fn client_for_proxy(&self, provider: &ProviderConfig, proxy: Option<&str>) -> Result<Client> {
         let ca_bundles = provider.ca_bundles.clone().unwrap_or_default();
-        if provider.egress_proxy.is_none() && ca_bundles.is_empty() {
+        if proxy.is_none() && ca_bundles.is_empty() {
             return Ok(self.default.clone());
         }
         let key = ClientKey {
-            proxy: provider.egress_proxy.clone(),
+            proxy: proxy.map(str::to_string),
             ca_bundles,
         };
         if let Some(client) = self.configured.get(&key) {
@@ -76,6 +106,124 @@ impl Forwarder {
         }
         let client = build_client(key.proxy.as_deref(), &key.ca_bundles, self.connect_timeout)?;
         Ok(self.configured.entry(key).or_insert(client).clone())
+    }
+
+    fn proxy_candidates(&self, provider: &ProviderConfig) -> Result<Vec<(String, String)>> {
+        provider
+            .egress_proxy_pool()
+            .into_iter()
+            .enumerate()
+            .map(|(index, reference)| {
+                let id = if reference.starts_with("${") {
+                    reference.to_string()
+                } else {
+                    format!("proxy-{index}")
+                };
+                let url = if let Some(name) = reference
+                    .strip_prefix("${")
+                    .and_then(|value| value.strip_suffix('}'))
+                {
+                    std::env::var(name).map_err(|_| {
+                        Error::Config(format!(
+                            "provider '{}' egress proxy environment variable {name} is unset",
+                            provider.name
+                        ))
+                    })?
+                } else {
+                    reference.to_string()
+                };
+                Ok((id, url))
+            })
+            .collect()
+    }
+
+    /// Snapshot redacted success/failure/quarantine counters for every proxy
+    /// member observed by this process.
+    pub fn proxy_metrics(&self) -> Vec<ProxyMetric> {
+        let now = epoch_millis();
+        self.proxy_health
+            .iter()
+            .map(|entry| ProxyMetric {
+                proxy: entry.key().clone(),
+                successes: entry.successes.load(Relaxed),
+                failures: entry.failures.load(Relaxed),
+                quarantined: entry.quarantine_until_ms.load(Relaxed) > now,
+            })
+            .collect()
+    }
+
+    async fn send_with_proxy_retry(
+        &self,
+        provider: &ProviderConfig,
+        build: impl Fn(Client) -> RequestBuilder,
+    ) -> Result<Response> {
+        let mut candidates = self.proxy_candidates(provider)?;
+        if candidates.is_empty() {
+            let client = self.client_for_proxy(provider, None)?;
+            return self.await_send(build(client).send()).await;
+        }
+        let start = self.next_proxy.fetch_add(1, Relaxed) % candidates.len();
+        candidates.rotate_left(start);
+        let now = epoch_millis();
+        let has_available = candidates.iter().any(|(id, _)| {
+            self.proxy_health
+                .get(id)
+                .map(|h| h.quarantine_until_ms.load(Relaxed) <= now)
+                .unwrap_or(true)
+        });
+        let mut last_error = None;
+        for (id, url) in candidates {
+            let health = self.proxy_health.entry(id).or_default();
+            if has_available && health.quarantine_until_ms.load(Relaxed) > now {
+                continue;
+            }
+            let client = self.client_for_proxy(provider, Some(&url))?;
+            let result = match self.request_timeout {
+                Some(limit) => match tokio::time::timeout(limit, build(client).send()).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        health.failures.fetch_add(1, Relaxed);
+                        let consecutive = health.consecutive_failures.fetch_add(1, Relaxed) + 1;
+                        if consecutive >= 3 {
+                            health
+                                .quarantine_until_ms
+                                .store(now.saturating_add(30_000), Relaxed);
+                        }
+                        last_error = Some(format!(
+                            "upstream request timed out after {}s",
+                            limit.as_secs()
+                        ));
+                        continue;
+                    }
+                },
+                None => build(client).send().await,
+            };
+            match result {
+                Ok(response) => {
+                    health.successes.fetch_add(1, Relaxed);
+                    health.consecutive_failures.store(0, Relaxed);
+                    health.quarantine_until_ms.store(0, Relaxed);
+                    return Ok(response);
+                }
+                Err(error) => {
+                    health.failures.fetch_add(1, Relaxed);
+                    let consecutive = health.consecutive_failures.fetch_add(1, Relaxed) + 1;
+                    if consecutive >= 3 {
+                        health
+                            .quarantine_until_ms
+                            .store(now.saturating_add(30_000), Relaxed);
+                    }
+                    let retryable = error.is_connect() || error.is_timeout();
+                    last_error = Some(error.to_string());
+                    if !retryable {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(Error::Upstream(last_error.unwrap_or_else(|| {
+            "all egress proxies are quarantined".to_string()
+        })))
     }
 
     /// Drop configured pools after a validated snapshot reload. The next
@@ -122,44 +270,28 @@ impl Forwarder {
         let url = provider_url(provider, translation.upstream_path(path));
         let body = translation.translate_request(body)?;
         let body = maybe_rewrite_model(body, upstream_model);
-        let client = self.client_for(provider)?;
-        let mut req = client
-            .request(Method::POST, &url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
-        match provider.kind {
-            ProviderKind::Anthropic => {
-                if let Some(key) = api_key {
-                    req = req.header("x-api-key", key);
+        self.send_with_proxy_retry(provider, |client| {
+            let mut req = apply_provider_auth(
+                client
+                    .request(Method::POST, &url)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json"),
+                provider,
+                api_key,
+            );
+            if provider.kind == ProviderKind::Openrouter {
+                if let Ok(referer) = std::env::var("OPENROUTER_HTTP_REFERER") {
+                    req = req.header("HTTP-Referer", referer);
                 }
-                req = req.header("anthropic-version", "2023-06-01");
-            }
-            ProviderKind::AzureOpenai => {
-                if let Some(key) = api_key {
-                    req = req.header("api-key", key);
-                }
-            }
-            _ => {
-                if let Some(key) = api_key {
-                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
+                if let Ok(title) = std::env::var("OPENROUTER_X_TITLE") {
+                    req = req.header("X-Title", title);
                 }
             }
-        }
-        if provider.kind == ProviderKind::Openrouter {
-            if let Ok(referer) = std::env::var("OPENROUTER_HTTP_REFERER") {
-                req = req.header("HTTP-Referer", referer);
+            for (name, value) in passthrough_headers {
+                req = req.header(*name, *value);
             }
-            if let Ok(title) = std::env::var("OPENROUTER_X_TITLE") {
-                req = req.header("X-Title", title);
-            }
-        }
-        // propagate the caller's trace context verbatim (nothing when empty)
-        for (name, value) in passthrough_headers {
-            req = req.header(*name, *value);
-        }
-        let send = req.body(body).send();
-        // bound time-to-response-headers only; the body stream is untouched so
-        // long SSE responses are never cut short
-        self.await_send(send).await
+            req.body(body.clone())
+        })
+        .await
     }
 
     /// Forward a raw request body verbatim under an explicit `content_type`.
@@ -185,33 +317,20 @@ impl Forwarder {
             )));
         }
         let url = provider_url(provider, path);
-        let client = self.client_for(provider)?;
-        let mut req = client
-            .request(Method::POST, &url)
-            .header(reqwest::header::CONTENT_TYPE, content_type.to_string());
-        match provider.kind {
-            ProviderKind::Anthropic => {
-                if let Some(key) = api_key {
-                    req = req.header("x-api-key", key);
-                }
-                req = req.header("anthropic-version", "2023-06-01");
+        self.send_with_proxy_retry(provider, |client| {
+            let mut req = apply_provider_auth(
+                client
+                    .request(Method::POST, &url)
+                    .header(reqwest::header::CONTENT_TYPE, content_type),
+                provider,
+                api_key,
+            );
+            for (name, value) in passthrough_headers {
+                req = req.header(*name, *value);
             }
-            ProviderKind::AzureOpenai => {
-                if let Some(key) = api_key {
-                    req = req.header("api-key", key);
-                }
-            }
-            _ => {
-                if let Some(key) = api_key {
-                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
-                }
-            }
-        }
-        for (name, value) in passthrough_headers {
-            req = req.header(*name, *value);
-        }
-        let send = req.body(body).send();
-        self.await_send(send).await
+            req.body(body.clone())
+        })
+        .await
     }
 
     /// Forward a model-less OpenAI Responses lifecycle operation. The caller
@@ -226,30 +345,15 @@ impl Forwarder {
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
         let url = provider_url(provider, path);
-        let client = self.client_for(provider)?;
-        let mut req = client.request(method, &url);
-        match provider.kind {
-            ProviderKind::Anthropic => {
-                if let Some(key) = api_key {
-                    req = req.header("x-api-key", key);
-                }
-                req = req.header("anthropic-version", "2023-06-01");
+        self.send_with_proxy_retry(provider, |client| {
+            let mut req =
+                apply_provider_auth(client.request(method.clone(), &url), provider, api_key);
+            for (name, value) in passthrough_headers {
+                req = req.header(*name, *value);
             }
-            ProviderKind::AzureOpenai => {
-                if let Some(key) = api_key {
-                    req = req.header("api-key", key);
-                }
-            }
-            _ => {
-                if let Some(key) = api_key {
-                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
-                }
-            }
-        }
-        for (name, value) in passthrough_headers {
-            req = req.header(*name, *value);
-        }
-        self.await_send(req.send()).await
+            req
+        })
+        .await
     }
 
     /// Await an upstream send under the configured time-to-headers budget. The
@@ -267,6 +371,41 @@ impl Forwarder {
                 ))),
             },
             None => send.await.map_err(|e| Error::Upstream(e.to_string())),
+        }
+    }
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn apply_provider_auth(
+    mut request: RequestBuilder,
+    provider: &ProviderConfig,
+    api_key: Option<&str>,
+) -> RequestBuilder {
+    match provider.kind {
+        ProviderKind::Anthropic => {
+            if let Some(key) = api_key {
+                request = request.header("x-api-key", key);
+            }
+            request.header("anthropic-version", "2023-06-01")
+        }
+        ProviderKind::AzureOpenai => {
+            if let Some(key) = api_key {
+                request = request.header("api-key", key);
+            }
+            request
+        }
+        _ => {
+            if let Some(key) = api_key {
+                request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
+            }
+            request
         }
     }
 }
@@ -414,6 +553,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            egress_proxies: Vec::new(),
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
@@ -547,6 +687,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_pool_retries_connect_failure_on_next_member() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+        let mut provider = provider(ProviderKind::Openai, "http://upstream.invalid".into());
+        provider.egress_proxies = vec![
+            "http://127.0.0.1:1".to_string(),
+            format!("http://{proxy_addr}"),
+        ];
+        let forwarder = Forwarder::new();
+        let response = forwarder
+            .forward_json(
+                &provider,
+                "/v1/chat/completions",
+                Bytes::from_static(br#"{"model":"test"}"#),
+                Some("key"),
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let head = capture.await.unwrap();
+        assert!(
+            head.starts_with("post "),
+            "unexpected proxy request: {head:?}"
+        );
+        assert!(head.contains("/v1/chat/completions"));
+        let metrics = forwarder.proxy_metrics();
+        assert!(metrics
+            .iter()
+            .any(|m| m.proxy == "proxy-0" && m.failures == 1));
+        assert!(metrics
+            .iter()
+            .any(|m| m.proxy == "proxy-1" && m.successes == 1));
+    }
+
+    #[tokio::test]
     async fn request_timeout_fires_on_a_silent_upstream() {
         // a listener that accepts connections but never writes a response,
         // so only the request timeout can unblock the forward
@@ -573,6 +751,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             egress_proxy: None,
+            egress_proxies: Vec::new(),
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,

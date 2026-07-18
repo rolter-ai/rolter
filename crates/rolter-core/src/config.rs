@@ -263,6 +263,12 @@ pub struct ProviderConfig {
     /// optional outbound egress proxy url (http/https/socks5)
     #[serde(default)]
     pub egress_proxy: Option<String>,
+    /// outbound egress proxy pool. Entries rotate round-robin; a legacy
+    /// `egress_proxy` is prepended as a one-element pool when this is empty.
+    /// Use `${ENV_VAR}` for authenticated proxy URLs so credentials never
+    /// appear in serialized configuration or database rows.
+    #[serde(default)]
+    pub egress_proxies: Vec<String>,
     /// provider-specific PEM CA bundles; when set, replaces `[tls].ca_bundles`
     #[serde(default)]
     pub ca_bundles: Option<Vec<PathBuf>>,
@@ -325,6 +331,16 @@ impl ApiKeyConfig {
 }
 
 impl ProviderConfig {
+    /// Configured proxy references in rotation order. The legacy singular
+    /// field remains a backwards-compatible one-element pool.
+    pub fn egress_proxy_pool(&self) -> Vec<&str> {
+        if self.egress_proxies.is_empty() {
+            self.egress_proxy.iter().map(String::as_str).collect()
+        } else {
+            self.egress_proxies.iter().map(String::as_str).collect()
+        }
+    }
+
     /// Resolve the configured role semantics for an upstream model.
     pub fn role_profile_for(&self, model: Option<&str>) -> RoleProfile {
         model
@@ -1481,10 +1497,10 @@ impl GatewayConfig {
                     ));
                 }
             }
-            if let Some(proxy) = &provider.egress_proxy {
-                if !is_proxy_url(proxy) {
+            for proxy in provider.egress_proxy_pool() {
+                if !is_proxy_reference(proxy) {
                     problems.push(format!(
-                        "provider '{}' has an invalid egress_proxy '{}' (expected http(s)/socks5(h) url)",
+                        "provider '{}' has an invalid egress_proxy/egress_proxies entry '{}' (expected http(s)/socks5(h) URL or a whole-value ${{ENV_VAR}} reference without inline credentials)",
                         provider.name, proxy
                     ));
                 }
@@ -1633,6 +1649,24 @@ fn is_proxy_url(s: &str) -> bool {
     false
 }
 
+fn is_proxy_reference(s: &str) -> bool {
+    if let Some(name) = s.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        return !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    }
+    if !is_proxy_url(s) {
+        return false;
+    }
+    let authority = s.split_once("://").map(|(_, v)| v).unwrap_or_default();
+    !authority
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .contains('@')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1670,6 +1704,7 @@ mod tests {
             api_key: Some("legacy".to_string()),
             api_key_env: None,
             egress_proxy: None,
+            egress_proxies: Vec::new(),
             ca_bundles: None,
             api_keys,
             also_track_via_llm_call: false,
@@ -2312,6 +2347,29 @@ mod tests {
         assert!(!is_http_url("ftp://x"));
         assert!(is_proxy_url("socks5h://proxy:1080"));
         assert!(!is_proxy_url("proxy:1080"));
+    }
+
+    #[test]
+    fn proxy_references_require_env_for_credentials() {
+        assert!(is_proxy_reference("${PROVIDER_PROXY_EU}"));
+        assert!(is_proxy_reference("socks5h://proxy.internal:1080"));
+        assert!(!is_proxy_reference("${lowercase}"));
+        assert!(!is_proxy_reference("http://user:secret@proxy:3128"));
+    }
+
+    #[test]
+    fn legacy_proxy_is_a_one_element_pool() {
+        let mut provider = provider_with_keys(Vec::new());
+        provider.egress_proxy = Some("http://legacy:3128".to_string());
+        assert_eq!(provider.egress_proxy_pool(), vec!["http://legacy:3128"]);
+        provider.egress_proxies = vec![
+            "http://first:3128".to_string(),
+            "socks5h://second:1080".to_string(),
+        ];
+        assert_eq!(
+            provider.egress_proxy_pool(),
+            vec!["http://first:3128", "socks5h://second:1080"]
+        );
     }
 
     #[test]

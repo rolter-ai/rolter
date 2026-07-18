@@ -166,7 +166,7 @@ pub struct ProviderRepo<'a>(pub &'a PgPool);
 impl ProviderRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -177,7 +177,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -197,11 +197,12 @@ impl ProviderRepo<'_> {
         api_base: &str,
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
+        egress_proxies: &[String],
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy)
-             values ($1, $2, $3, $4, $5, $6, $7)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies)
+             values ($1, $2, $3, $4, $5, $6, $7, $8)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -210,6 +211,7 @@ impl ProviderRepo<'_> {
         .bind(api_base)
         .bind(api_key_env)
         .bind(egress_proxy)
+        .bind(serde_json::json!(egress_proxies))
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -229,6 +231,7 @@ impl ProviderRepo<'_> {
         api_base: Option<&str>,
         api_key_env: Option<Option<&str>>,
         egress_proxy: Option<Option<&str>>,
+        egress_proxies: Option<&[String]>,
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
@@ -236,9 +239,10 @@ impl ProviderRepo<'_> {
                  kind = coalesce($3, kind),
                  api_base = coalesce($4, api_base),
                  api_key_env = case when $5 then $6 else api_key_env end,
-                 egress_proxy = case when $7 then $8 else egress_proxy end
+                 egress_proxy = case when $7 then $8 else egress_proxy end,
+                 egress_proxies = case when $9 then $10 else egress_proxies end
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -248,6 +252,8 @@ impl ProviderRepo<'_> {
         .bind(api_key_env.flatten())
         .bind(egress_proxy.is_some())
         .bind(egress_proxy.flatten())
+        .bind(egress_proxies.is_some())
+        .bind(egress_proxies.map(|v| serde_json::json!(v)))
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -1159,6 +1165,7 @@ mod tests {
                 "https://api.openai.com",
                 Some("OPENAI_API_KEY"),
                 None,
+                &[],
             )
             .await
             .unwrap();

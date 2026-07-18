@@ -30,10 +30,30 @@ pub async fn healthz() -> &'static str {
 
 /// Prometheus metrics endpoint.
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.render(),
-    )
+    let mut body = state.metrics.render();
+    body.push_str("# HELP rolter_egress_proxy_requests_total upstream requests by proxy pool member and outcome\n");
+    body.push_str("# TYPE rolter_egress_proxy_requests_total counter\n");
+    body.push_str("# HELP rolter_egress_proxy_quarantined whether a proxy pool member is temporarily quarantined\n");
+    body.push_str("# TYPE rolter_egress_proxy_quarantined gauge\n");
+    for proxy in state.forwarder.proxy_metrics() {
+        let label = proxy.proxy.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = writeln!(
+            body,
+            "rolter_egress_proxy_requests_total{{proxy=\"{label}\",outcome=\"success\"}} {}",
+            proxy.successes
+        );
+        let _ = writeln!(
+            body,
+            "rolter_egress_proxy_requests_total{{proxy=\"{label}\",outcome=\"failure\"}} {}",
+            proxy.failures
+        );
+        let _ = writeln!(
+            body,
+            "rolter_egress_proxy_quarantined{{proxy=\"{label}\"}} {}",
+            u8::from(proxy.quarantined)
+        );
+    }
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
 /// OpenAI-compatible model listing built from configured routes, filtered to

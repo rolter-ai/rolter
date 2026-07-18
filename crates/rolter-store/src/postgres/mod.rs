@@ -50,6 +50,7 @@ struct ProviderRow {
     api_base: String,
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
+    egress_proxies: serde_json::Value,
     /// sealed runtime credential from `provider_keys`, when one is stored
     ciphertext: Option<Vec<u8>>,
     nonce: Option<Vec<u8>>,
@@ -101,6 +102,7 @@ impl ProviderRow {
             api_key,
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
+            egress_proxies: serde_json::from_value(row.egress_proxies).unwrap_or_default(),
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
@@ -193,7 +195,7 @@ impl PostgresConfigStore {
 
     async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
-            "select p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
+            "select p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy, p.egress_proxies,
                     pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id

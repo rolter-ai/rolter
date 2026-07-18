@@ -31,7 +31,8 @@ name = "openai"
 kind = "openai"
 api_base = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
-# egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
+# egress_proxy = "http://corp-proxy:3128"   # legacy one-element proxy pool
+# egress_proxies = ["${PROVIDER_PROXY_EU}", "socks5h://proxy-us:1080"]
 # ca_bundles = ["/etc/rolter/ca/openai.pem"] # optional provider override
 
 [[providers]]
