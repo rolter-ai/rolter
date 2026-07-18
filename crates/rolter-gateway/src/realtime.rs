@@ -148,6 +148,10 @@ struct SelectedSession {
     target: String,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "realtime setup needs distinct borrowed routing and session inputs"
+)]
 async fn connect_selected(
     state: &AppState,
     snap: &Snapshot,
