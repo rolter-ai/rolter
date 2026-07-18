@@ -167,6 +167,123 @@ impl TranslationPlan {
     }
 }
 
+/// Normalize Rolter's portable top-level `cache_control` into Anthropic's
+/// native breakpoint markers. The portable shape is:
+/// `{ "enabled": true, "ttl": "5m", "breakpoints": ["system", "tools", "messages"] }`.
+/// Existing provider-native nested controls are left untouched. Providers whose
+/// configured wire protocol is not Anthropic Messages reject the portable
+/// control explicitly rather than accepting it and silently doing nothing.
+pub fn normalize_prompt_cache_control(body: Bytes, provider: ProviderKind) -> Result<Bytes> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
+        return Ok(body);
+    };
+    let Some(control) = value
+        .as_object_mut()
+        .and_then(|object| object.remove("cache_control"))
+    else {
+        return Ok(body);
+    };
+    if provider != ProviderKind::Anthropic {
+        return Err(Error::Config(format!(
+            "prompt_cache_unsupported: provider kind '{provider:?}' does not use the Anthropic Messages protocol"
+        )));
+    }
+    let enabled = control
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !enabled {
+        return serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
+            Error::Config(format!("prompt_cache: failed to encode request: {err}"))
+        });
+    }
+    let mut marker = json!({"type": "ephemeral"});
+    if let Some(ttl) = control.get("ttl").and_then(Value::as_str) {
+        if !matches!(ttl, "5m" | "1h") {
+            return Err(Error::Config(
+                "prompt_cache: ttl must be '5m' or '1h'".to_string(),
+            ));
+        }
+        marker["ttl"] = Value::String(ttl.to_string());
+    }
+    let breakpoints = control
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec!["system"]);
+    for breakpoint in breakpoints {
+        match breakpoint {
+            "system" => mark_last_content(&mut value, "system", &marker),
+            "tools" => mark_last_item(&mut value, "tools", &marker),
+            "messages" => mark_last_message_content(&mut value, &marker),
+            other => {
+                return Err(Error::Config(format!(
+                    "prompt_cache: unsupported breakpoint '{other}' (use system|tools|messages)"
+                )));
+            }
+        }
+    }
+    serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .map_err(|err| Error::Config(format!("prompt_cache: failed to encode request: {err}")))
+}
+
+fn mark_last_item(value: &mut Value, field: &str, marker: &Value) {
+    let Some(item) = value
+        .get_mut(field)
+        .and_then(Value::as_array_mut)
+        .and_then(|items| items.last_mut())
+    else {
+        return;
+    };
+    if item.get("cache_control").is_none() {
+        item["cache_control"] = marker.clone();
+    }
+}
+
+fn mark_last_content(value: &mut Value, field: &str, marker: &Value) {
+    let Some(content) = value.get_mut(field) else {
+        return;
+    };
+    match content {
+        Value::Array(items) => {
+            if let Some(item) = items.last_mut() {
+                if item.get("cache_control").is_none() {
+                    item["cache_control"] = marker.clone();
+                }
+            }
+        }
+        Value::String(text) => {
+            *content = json!([{"type": "text", "text": text, "cache_control": marker}]);
+        }
+        _ => {}
+    }
+}
+
+fn mark_last_message_content(value: &mut Value, marker: &Value) {
+    let Some(message) = value
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .and_then(|messages| messages.last_mut())
+    else {
+        return;
+    };
+    match message.get_mut("content") {
+        Some(Value::Array(parts)) => {
+            if let Some(part) = parts.last_mut() {
+                if part.get("cache_control").is_none() {
+                    part["cache_control"] = marker.clone();
+                }
+            }
+        }
+        Some(Value::String(text)) => {
+            let text = text.clone();
+            message["content"] = json!([{"type": "text", "text": text, "cache_control": marker}]);
+        }
+        _ => {}
+    }
+}
+
 fn validate_instruction_roles(
     value: &Value,
     protocol: Protocol,
@@ -1306,5 +1423,29 @@ mod tests {
         assert!(text.contains("chat.completion.chunk"));
         assert!(text.contains("\"content\":\"hi\""));
         assert!(text.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn portable_prompt_cache_marks_anthropic_breakpoints() {
+        let body = Bytes::from_static(
+            br#"{"system":"rules","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup"}],"cache_control":{"enabled":true,"ttl":"5m","breakpoints":["system","tools","messages"]}}"#,
+        );
+        let value: Value = serde_json::from_slice(
+            &normalize_prompt_cache_control(body, ProviderKind::Anthropic).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(value["tools"][0]["cache_control"]["ttl"], "5m");
+        assert_eq!(
+            value["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+    }
+
+    #[test]
+    fn portable_prompt_cache_rejects_openai_compatible_providers() {
+        let body = Bytes::from_static(br#"{"cache_control":{"enabled":true}}"#);
+        let err = normalize_prompt_cache_control(body, ProviderKind::Bedrock).unwrap_err();
+        assert!(err.to_string().contains("prompt_cache_unsupported"));
     }
 }

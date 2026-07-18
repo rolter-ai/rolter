@@ -88,6 +88,14 @@ pub async fn realtime(
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
+    if let Some(key) = &virtual_key {
+        if !super::handlers::key_allows_route(key, entry) {
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "no provider on this route is allowed for this key",
+            );
+        }
+    }
     let Some(session_guard) = state
         .realtime_sessions
         .acquire(snap.realtime.max_connections)
@@ -114,6 +122,7 @@ pub async fn realtime(
         &context,
         &headers,
         session_guard,
+        virtual_key.as_ref(),
     )
     .await
     {
@@ -147,8 +156,9 @@ async fn connect_selected(
     context: &RouteContext<'_>,
     headers: &HeaderMap,
     session_guard: SessionGuard,
+    key_meta: Option<&crate::state::KeyMeta>,
 ) -> Result<SelectedSession, String> {
-    let candidates = realtime_candidates(state, snap, entry, model, context);
+    let candidates = realtime_candidates(state, snap, entry, model, context, key_meta);
     let mut last_error = "no target selected".to_string();
 
     for candidate in candidates {
@@ -203,6 +213,7 @@ fn realtime_candidates<'a>(
     entry: &'a crate::state::RouteEntry,
     model: &str,
     context: &RouteContext<'_>,
+    key_meta: Option<&crate::state::KeyMeta>,
 ) -> Vec<(&'a rolter_core::Target, String, usize)> {
     if !entry.route.has_variants() {
         let mut loads = state.loads.snapshot(model, entry.route.targets.len());
@@ -223,6 +234,7 @@ fn realtime_candidates<'a>(
             &state.breaker,
             model,
             snap.cooldown.enabled(),
+            key_meta,
         ) {
             entry.balancer.observe(index, context);
             tried.push(index);
@@ -253,15 +265,23 @@ fn realtime_candidates<'a>(
             .copied()
             .filter(|&index| {
                 let target = &variant.targets[index];
-                (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
+                key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+                    && (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
                     && state.health.is_healthy(&target.provider)
                     && state.breaker.allows(&namespace, index)
             })
             .collect();
         // preserve the HTTP route's fail-open behaviour when all candidates
         // are temporarily unavailable
+        let allowed: Vec<_> = indexes
+            .iter()
+            .copied()
+            .filter(|&index| {
+                key_meta.is_none_or(|key| key.provider_allowed(&variant.targets[index].provider))
+            })
+            .collect();
         for index in if available.is_empty() {
-            &indexes
+            &allowed
         } else {
             &available
         } {

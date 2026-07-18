@@ -269,6 +269,7 @@ impl Forwarder {
         );
         let url = provider_url(provider, translation.upstream_path(path));
         let body = translation.translate_request(body)?;
+        let body = translation::normalize_prompt_cache_control(body, provider.kind)?;
         let body = maybe_rewrite_model(body, upstream_model);
         self.send_with_proxy_retry(provider, |client| {
             let mut req = apply_provider_auth(

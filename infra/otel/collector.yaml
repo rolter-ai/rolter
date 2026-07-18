@@ -1,0 +1,57 @@
+# Development-friendly OpenTelemetry Collector for a local rolter deployment.
+#
+# Start it alongside `docker/docker-compose.yml`:
+#   docker run --rm --network rolter_default -p 4317:4317 -p 4318:4318 -p 8889:8889 \
+#     -v "$PWD/infra/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+#     otel/opentelemetry-collector-contrib:latest
+#
+# Then set `OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317` on a
+# host-run rolter, or `http://otel-collector:4317` when it shares the network.
+# Replace the debug exporter with your vendor's OTLP exporter before production.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: rolter-gateway
+          static_configs:
+            - targets: [gateway:4000]
+        # Add vLLM, SGLang, or TGI target addresses here when they are present.
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  batch:
+
+exporters:
+  debug:
+    verbosity: basic
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [debug, prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

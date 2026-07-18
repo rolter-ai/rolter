@@ -487,7 +487,7 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where project_id = $1 order by created_at",
         )
         .bind(project_id)
@@ -498,7 +498,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where key_hash = $1",
         )
         .bind(key_hash)
@@ -509,7 +509,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at
              from virtual_keys where id = $1",
         )
         .bind(id)
@@ -527,19 +527,21 @@ impl VirtualKeyRepo<'_> {
         key_prefix: &str,
         name: Option<&str>,
         models: &[String],
+        providers: &[String],
         cache_enabled: Option<bool>,
         created_by: Option<Uuid>,
     ) -> Result<VirtualKey> {
         sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, cache_enabled, created_by)
-             values ($1, $2, $3, $4, $5, $6, $7)
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, providers, cache_enabled, created_by)
+             values ($1, $2, $3, $4, $5, $6, $7, $8)
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(project_id)
         .bind(key_hash)
         .bind(key_prefix)
         .bind(name)
         .bind(models)
+        .bind(providers)
         .bind(cache_enabled)
         .bind(created_by)
         .fetch_one(self.0)
@@ -569,7 +571,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(disabled)
@@ -584,10 +586,25 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set cache_enabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, disabled, expires_at, cache_enabled, created_by, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at",
         )
         .bind(id)
         .bind(cache_enabled)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+    }
+
+    /// Replace the key's provider allow-list. An empty list restores the
+    /// permissive default while leaving the model allow-list unchanged.
+    pub async fn set_providers(&self, id: Uuid, providers: &[String]) -> Result<VirtualKey> {
+        sqlx::query_as(
+            "update virtual_keys set providers = $2 where id = $1
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, created_at",
+        )
+        .bind(id)
+        .bind(providers)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -1197,6 +1214,7 @@ mod tests {
                 "sk-abc",
                 Some("ci key"),
                 &["gpt-4o".to_string()],
+                &[],
                 None,
                 None,
             )

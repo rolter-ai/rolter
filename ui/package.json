@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
@@ -22,12 +24,15 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@storybook/addon-essentials": "8.6.18",
+    "@storybook/react-vite": "8.6.18",
     "@tailwindcss/postcss": "^4.3.2",
     "@types/bun": "^1.1.13",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.3",
     "postcss": "^8.5.19",
+    "storybook": "8.6.18",
     "tailwindcss": "^4.3.2",
     "typescript": "^7.0.2",
     "vite": "^8.1.4"

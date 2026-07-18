@@ -196,6 +196,8 @@ export interface InvocationRow {
   status: number | string;
   stream: number | string;
   cache_hit: number | string;
+  cache_read_tokens: number | string;
+  cache_write_tokens: number | string;
   prompt_tokens: number | string;
   completion_tokens: number | string;
   total_tokens: number | string;
@@ -203,6 +205,8 @@ export interface InvocationRow {
   latency_ms: number | string;
   ttft_ms: number | string;
   error: string;
+  request_payload?: string;
+  response_payload?: string;
 }
 
 export interface InvocationsQuery extends AnalyticsWindow {

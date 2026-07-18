@@ -36,4 +36,4 @@ ENV ROLTER_CONFIG=/app/rolter.toml \
     ROLTER_UI_DIR=/app/ui/dist \
     RUST_LOG=info
 EXPOSE 4000 4001
-CMD ["/usr/local/bin/rolter-gateway", "--config", "/app/rolter.toml"]
+CMD ["/usr/local/bin/rolter", "easy-up", "--config", "/app/rolter.toml", "--ui-dir", "/app/ui/dist"]

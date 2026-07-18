@@ -20,12 +20,14 @@ import {
 } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
 import {
   createVirtualKey,
   deleteVirtualKey,
   fetchVirtualKeys,
+  setVirtualKeyCache,
   setVirtualKeyDisabled,
   type CreatedVirtualKey,
   type VirtualKeyRow,
@@ -50,6 +52,12 @@ export default function Keys() {
   const toggleDisabled = useMutation({
     mutationFn: ({ id, disabled }: { id: string; disabled: boolean }) =>
       setVirtualKeyDisabled(id, disabled),
+    onSuccess: invalidate,
+  });
+
+  const setCache = useMutation({
+    mutationFn: ({ id, cache }: { id: string; cache: boolean | null }) =>
+      setVirtualKeyCache(id, cache),
     onSuccess: invalidate,
   });
 
@@ -119,6 +127,23 @@ export default function Keys() {
                   <Badge tone="neutral">all models</Badge>
                 )}
               </div>
+              <Field
+                label="Response cache"
+                hint="The global cache switch must also be enabled."
+              >
+                <Select
+                  aria-label={`Response cache policy for ${key.name ?? key.key_prefix}`}
+                  value={cacheMode(key.cache_enabled)}
+                  disabled={setCache.isPending}
+                  onChange={(event) =>
+                    setCache.mutate({ id: key.id, cache: parseCacheMode(event.target.value) })
+                  }
+                >
+                  <option value="inherit">Inherit route setting</option>
+                  <option value="off">Off</option>
+                  <option value="on">On</option>
+                </Select>
+              </Field>
               <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
                 <span>
                   {key.expires_at
@@ -200,11 +225,13 @@ function AddKeyDialog({
 }) {
   const [name, setName] = React.useState("");
   const [modelsText, setModelsText] = React.useState("");
+  const [cache, setCache] = React.useState<"inherit" | "off" | "on">("inherit");
 
   React.useEffect(() => {
     if (open) {
       setName("");
       setModelsText("");
+      setCache("inherit");
     }
   }, [open]);
 
@@ -216,6 +243,7 @@ function AddKeyDialog({
           .split(",")
           .map((m) => m.trim())
           .filter(Boolean),
+        cache: parseCacheMode(cache),
       }),
     onSuccess: (key) => {
       onOpenChange(false);
@@ -238,6 +266,16 @@ function AddKeyDialog({
             onChange={(e) => setName(e.target.value)}
             placeholder="backend service"
           />
+        </Field>
+        <Field
+          label="Response cache"
+          hint="Inherit uses the route setting; the deployment-wide cache switch still applies."
+        >
+          <Select value={cache} onChange={(event) => setCache(event.target.value as typeof cache)}>
+            <option value="inherit">Inherit route setting</option>
+            <option value="off">Off</option>
+            <option value="on">On</option>
+          </Select>
         </Field>
         <Field
           label="Model allow-list (optional)"
@@ -263,6 +301,18 @@ function AddKeyDialog({
       </DialogFooter>
     </Dialog>
   );
+}
+
+function cacheMode(cache: boolean | null | undefined): "inherit" | "off" | "on" {
+  if (cache === true) return "on";
+  if (cache === false) return "off";
+  return "inherit";
+}
+
+function parseCacheMode(value: string): boolean | null {
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return null;
 }
 
 // shows the plaintext secret exactly once, right after creation; state is

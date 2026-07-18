@@ -6,8 +6,9 @@ use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use rolter_balancer::{build_with_stats, LoadBalancer, TargetStats};
 use rolter_core::{
-    BudgetConfig, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, ModelPriceConfig,
-    ModelRoute, ProviderConfig, RateLimitConfig, RealtimeConfig, RetryConfig, Target,
+    BudgetConfig, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, LoggingConfig,
+    ModelPriceConfig, ModelRoute, ProviderConfig, RateLimitConfig, RealtimeConfig, RetryConfig,
+    Target,
 };
 use rolter_proxy::Forwarder;
 
@@ -41,6 +42,8 @@ pub struct KeyMeta {
     pub team_id: String,
     pub project_id: String,
     pub models: Vec<String>,
+    /// provider allow-list; an empty list permits every provider on the route
+    pub providers: Vec<String>,
     pub disabled: bool,
     pub expires_at: Option<DateTime<Utc>>,
     /// per-key response-cache override; `None` inherits the route decision,
@@ -53,6 +56,10 @@ impl KeyMeta {
     /// Whether the key may authenticate at `now`: not disabled and not expired.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
+    }
+
+    pub fn provider_allowed(&self, provider: &str) -> bool {
+        self.providers.is_empty() || self.providers.iter().any(|name| name == provider)
     }
 }
 
@@ -88,6 +95,8 @@ pub struct Snapshot {
     /// global response-cache policy (master switch + default TTL + namespace);
     /// per-route opt-in lives on each route's `cache` field
     pub cache: CacheConfig,
+    /// live raw-payload capture settings; the writer still remains asynchronous
+    pub logging: LoggingConfig,
     /// guardrails for long-lived WebSocket Realtime sessions
     pub realtime: RealtimeConfig,
 }
@@ -229,6 +238,7 @@ impl Snapshot {
                 KeyMeta {
                     tenant_key: digest,
                     models: k.models.clone(),
+                    providers: k.providers.clone(),
                     disabled: k.disabled,
                     expires_at: k.expires_at,
                     cache_override: k.cache,
@@ -247,6 +257,7 @@ impl Snapshot {
                     team_id: k.team_id.clone(),
                     project_id: k.project_id.clone(),
                     models: k.models.clone(),
+                    providers: k.providers.clone(),
                     disabled: k.disabled,
                     expires_at: k.expires_at,
                     cache_override: k.cache,
@@ -267,6 +278,7 @@ impl Snapshot {
             cooldown: config.cooldown.clone(),
             health: config.health.clone(),
             cache: config.cache.clone(),
+            logging: config.logging.clone(),
             realtime: config.realtime.clone(),
         }
     }

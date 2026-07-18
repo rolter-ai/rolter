@@ -4,50 +4,39 @@ sidebarTitle: "Quickstart"
 description: "Follow these steps to install Rolter, configure your first provider, start the gateway, and send a chat completions request in under five minutes."
 ---
 
-The fastest way to try Rolter is with Docker Compose — it starts the gateway alongside all supporting services with a single command. If you prefer a binary install, see the [Installation guide](/installation). By the end of this guide you'll have a running gateway and a verified response from your first AI request.
+The fastest way to try Rolter is the published Docker image — it starts the gateway, dashboard, and built-in `fake-llm` without a provider account. If you prefer a binary install, see the [Installation guide](/installation). By the end of this guide you'll have a running gateway and a verified response from your first AI request.
 
 <Steps>
   <Step title="Install Rolter">
-    Docker Compose is the recommended path for a first-time setup. Make sure you have [Docker](https://docs.docker.com/get-docker/) installed, then clone the repository.
+    Make sure you have [Docker](https://docs.docker.com/get-docker/) installed, then pull the image.
 
     ```bash
-    git clone https://github.com/ormeilu/rolter.git
-    cd rolter
+    docker pull ghcr.io/rolter-ai/rolter:latest
     ```
 
     <Tip>
       Prefer a local binary? The [Installation page](/installation) covers `cargo install` and `uv tool install rolter` as alternatives.
     </Tip>
   </Step>
-  <Step title="Create your config file">
-    Rolter ships with an annotated example configuration. Copy it and open it in your editor — the only value you must set before starting is your provider API key.
+  <Step title="Start Rolter">
+    Start the zero-config local stack.
+
+    ```bash
+    docker run --rm -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest
+    ```
+
+    The default single-container command is `rolter easy-up`: gateway on port 4000 and the dashboard on port 4001. It also includes the deterministic `fake-llm` route, so no provider credential or config file is needed for the first request.
+
+  </Step>
+  <Step title="Use a real provider (optional)">
+    Mount an annotated config file and provide a provider key when you are ready to route real traffic:
 
     ```bash
     cp rolter.example.toml rolter.toml
-    ```
-
-    The example config already defines routes for `gpt-4o`, `claude`, and a local vLLM pool. At a minimum, export the environment variable that your chosen provider's entry references:
-
-    ```bash
-    # for OpenAI
-    export OPENAI_API_KEY=sk-...
-    
-    # for Anthropic
-    export ANTHROPIC_API_KEY=sk-ant-...
-    ```
-
-    Your `rolter.toml` references these via `api_key_env` — the key is never stored in the config file itself.
-
-    <Note>
-      The example config includes a pre-configured virtual key `sk-rolter-dev` so you can start testing immediately. For any environment beyond local development, replace it with a strong, randomly generated value.
-    </Note>
-  </Step>
-  <Step title="Start the gateway">
-    Bring up the full stack — gateway, control plane, Postgres, Redis, and ClickHouse — with one command:
-
-    ```bash
-    cp .env.example .env   # add OPENAI_API_KEY and any other provider keys here
-    docker compose -f docker/docker-compose.yml up -d
+    docker run --rm -p 4000:4000 -p 4001:4001 \
+      -e OPENAI_API_KEY \
+      -v "$PWD/rolter.toml:/app/rolter.toml" \
+      ghcr.io/rolter-ai/rolter:latest
     ```
 
     Once the containers are running:
@@ -55,26 +44,19 @@ The fastest way to try Rolter is with Docker Compose — it starts the gateway a
     - **Gateway** (data plane): [http://localhost:4000](http://localhost:4000)
     - **Control plane \+ dashboard**: [http://localhost:4001](http://localhost:4001)
 
-    You can tail the gateway logs to confirm it has loaded your config:
-
-    ```bash
-    docker compose -f docker/docker-compose.yml logs -f gateway
-    ```
-
     <Tip>
-      Prefer to run without Docker? Use `rolter gateway --config rolter.toml` (or `rolter easy-up` for gateway + control + UI in one process) after exporting your provider API key. From a source checkout that's `cargo run -p rolter -- gateway --config rolter.toml`. See the [Installation page](/installation) for details.
+      Need Postgres, Redis, ClickHouse, and separate gateway/control processes? Use the full Compose deployment: `docker compose -f docker/docker-compose.yml up -d`.
     </Tip>
   </Step>
   <Step title="Send a chat completions request">
-    With the gateway up, send a request using the virtual key from your config. The `model` field matches the route name you defined in `rolter.toml` — Rolter takes care of rewriting it to the upstream model ID.
+    With the gateway up, call the built-in `fake-llm` model. It needs no API key and is intended for smoke tests and local development.
 
     <CodeGroup>
 
     ```bash cURL
     curl -s http://localhost:4000/v1/chat/completions \
-      -H "Authorization: Bearer sk-rolter-dev" \
       -H "Content-Type: application/json" \
-      -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+      -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
     ```
 
     ```python Python (OpenAI SDK)
@@ -82,11 +64,11 @@ The fastest way to try Rolter is with Docker Compose — it starts the gateway a
     
     client = OpenAI(
         base_url="http://localhost:4000/v1",
-        api_key="sk-rolter-dev",
+        api_key="unused",
     )
     
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="fake-llm",
         messages=[{"role": "user", "content": "Hello!"}],
     )
     print(response.choices[0].message.content)
@@ -94,9 +76,8 @@ The fastest way to try Rolter is with Docker Compose — it starts the gateway a
 
     ```bash cURL (Anthropic)
     curl -s http://localhost:4000/v1/messages \
-      -H "x-api-key: sk-rolter-dev" \
       -H "Content-Type: application/json" \
-      -d '{"model":"claude","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}'
+      -d '{"model":"fake-llm","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}'
     ```
 
     </CodeGroup>
@@ -108,14 +89,13 @@ The fastest way to try Rolter is with Docker Compose — it starts the gateway a
     </Info>
   </Step>
   <Step title="Verify with the models endpoint">
-    Confirm the gateway is healthy and listing your configured routes:
+    Confirm the gateway is healthy and listing its built-in route:
 
     ```bash
-    curl -s http://localhost:4000/v1/models \
-      -H "Authorization: Bearer sk-rolter-dev"
+    curl -s http://localhost:4000/v1/models
     ```
 
-    The response will list the public model names you defined in `rolter.toml` — `gpt-4o`, `claude`, `llama`, and any others you added.
+    The response includes `fake-llm`. When you mount `rolter.toml`, it will also list the public model names you configure.
 
     You can also hit the liveness endpoint at any time without a key:
 
