@@ -90,6 +90,30 @@ flowchart LR
   GW -->|async batched logs| CH[("ClickHouse")]
 ```
 
+## Inspirations & Acknowledgments
+
+rolter stands on the shoulders of great open-source projects and research. See our [inspiration issues](https://github.com/rolter-ai/rolter/labels/inspiration) for detailed analysis of each project.
+
+### Gateway & Load Balancing
+
+- **[LiteLLM](https://github.com/BerriAI/litellm)** — proxy feature breadth, provider coverage (100+), config/DB model split, virtual keys, budget controls, spend tracking
+- **[Bifrost](https://github.com/maximhq/bifrost)** — high-performance Go gateway, weighted key selection (~10ns), multi-provider failover, plugin/middleware system, hierarchical budgets, semantic caching; published perf target (~11µs latency at 5k RPS)
+- **[TensorZero](https://github.com/tensorzero/tensorzero)** — Rust LLMOps gateway, sub-1ms p99 latency target at 10k+ QPS, observability patterns, OTLP traces + Prometheus, rate limiting with granular scopes
+- **[llm-d](https://github.com/llm-d/llm-d)** — cache-aware routing, prefix/KV-cache affinity, inference-phase scheduling, predicted-latency scheduling (40% TTFT/ITL reduction); highest-signal reference for `rolter-balancer` crate
+- **[LLMGateway](https://github.com/theopenco/llmgateway)** — cost tracking, analytics dashboard UX, performance analytics, provider key management, self-host story (Docker + Postgres + Redis)
+- **[Archestra](https://github.com/archestra-ai/archestra)** — dynamic model routing, MCP gateway, enterprise auth (OIDC, SAML, Okta, Entra), SSO + RBAC, tool-call safety guardrails
+
+### Infrastructure & Frameworks
+
+- **[vLLM](https://github.com/vllm-project/vllm)** — KV-cache-aware replica pooling and prefill/decode scheduling
+- **[Axum](https://github.com/tokio-rs/axum)** — high-performance Rust web framework
+- **[Tokio](https://tokio.rs)** — async runtime foundation
+- **[shadcn/ui](https://ui.shadcn.com)** — component library for the dashboard UI
+
+### API Standards
+
+- **[OpenAI](https://openai.com)** and **[Anthropic](https://www.anthropic.com)** — API compatibility targets and standards
+
 ## Documentation
 
 - [Quickstart](user-docs/quickstart.mdx) and [Installation](user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
