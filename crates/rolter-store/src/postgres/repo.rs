@@ -5,6 +5,7 @@
 //! strategy parsing) is left to callers; see [`super::PostgresConfigStore`]
 //! for the read path the gateway uses.
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -1101,6 +1102,39 @@ impl SessionRepo<'_> {
 
 pub struct AuditLogRepo<'a>(pub &'a PgPool);
 
+/// The immutable boundary for a stable keyset page. Audit records are ordered
+/// by `(at desc, id desc)` so records written after a page is read do not shift
+/// its older results.
+#[derive(Debug, Clone, Copy)]
+pub struct AuditLogCursor {
+    pub at: DateTime<Utc>,
+    pub id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum AuditLogDirection {
+    #[default]
+    Next,
+    Previous,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuditLogFilter {
+    pub actor_user_id: Option<Uuid>,
+    pub action: Option<String>,
+    pub target_type: Option<String>,
+    pub start_at: Option<DateTime<Utc>>,
+    pub end_at: Option<DateTime<Utc>>,
+    pub cursor: Option<AuditLogCursor>,
+    pub direction: AuditLogDirection,
+}
+
+#[derive(Debug)]
+pub struct AuditLogPage {
+    pub entries: Vec<AuditLogEntry>,
+    pub has_more: bool,
+}
+
 /// Global ingress policy. The encrypted secret remains write-only; callers
 /// receive only whether a managed dashboard credential is configured.
 pub struct SecuritySettingsRepo<'a>(pub &'a PgPool);
@@ -1198,6 +1232,88 @@ impl AuditLogRepo<'_> {
         .bind(org_id)
         .bind(limit)
         .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Query one cursor page. `Previous` scans newer records in ascending
+    /// order, then reverses them before returning so every response remains
+    /// newest-first to API clients.
+    pub async fn list_page(
+        &self,
+        org_id: Uuid,
+        filter: &AuditLogFilter,
+        limit: i64,
+    ) -> Result<AuditLogPage> {
+        let query = match filter.direction {
+            AuditLogDirection::Next => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where org_id = $1
+                   and ($2::uuid is null or actor_user_id = $2)
+                   and ($3::text is null or action = $3)
+                   and ($4::text is null or target_type = $4)
+                   and ($5::timestamptz is null or at >= $5)
+                   and ($6::timestamptz is null or at <= $6)
+                   and ($7::timestamptz is null or (at, id) < ($7, $8))
+                 order by at desc, id desc limit $9"
+            }
+            AuditLogDirection::Previous => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where org_id = $1
+                   and ($2::uuid is null or actor_user_id = $2)
+                   and ($3::text is null or action = $3)
+                   and ($4::text is null or target_type = $4)
+                   and ($5::timestamptz is null or at >= $5)
+                   and ($6::timestamptz is null or at <= $6)
+                   and ($7::timestamptz is null or (at, id) > ($7, $8))
+                 order by at asc, id asc limit $9"
+            }
+        };
+        let mut entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+            .bind(org_id)
+            .bind(filter.actor_user_id)
+            .bind(filter.action.as_deref())
+            .bind(filter.target_type.as_deref())
+            .bind(filter.start_at)
+            .bind(filter.end_at)
+            .bind(filter.cursor.map(|cursor| cursor.at))
+            .bind(filter.cursor.map(|cursor| cursor.id))
+            .bind(limit + 1)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)?;
+        let has_more = entries.len() as i64 > limit;
+        if has_more {
+            entries.pop();
+        }
+        if matches!(filter.direction, AuditLogDirection::Previous) {
+            entries.reverse();
+        }
+        Ok(AuditLogPage { entries, has_more })
+    }
+
+    /// Count matching records without applying a cursor. Callers opt in to
+    /// this extra query because a precise total is not needed for normal
+    /// next/previous navigation.
+    pub async fn count(&self, org_id: Uuid, filter: &AuditLogFilter) -> Result<i64> {
+        sqlx::query_scalar(
+            "select count(*) from audit_log
+             where org_id = $1
+               and ($2::uuid is null or actor_user_id = $2)
+               and ($3::text is null or action = $3)
+               and ($4::text is null or target_type = $4)
+               and ($5::timestamptz is null or at >= $5)
+               and ($6::timestamptz is null or at <= $6)",
+        )
+        .bind(org_id)
+        .bind(filter.actor_user_id)
+        .bind(filter.action.as_deref())
+        .bind(filter.target_type.as_deref())
+        .bind(filter.start_at)
+        .bind(filter.end_at)
+        .fetch_one(self.0)
         .await
         .map_err(store_err)
     }
@@ -1348,5 +1464,87 @@ mod tests {
         // deletes cascade top-down; exercise the not-found error path too
         orgs.delete(org.id).await.unwrap();
         assert!(matches!(orgs.get(org.id).await, Err(Error::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn audit_log_keyset_pages_filter_without_shifting_boundaries() {
+        if std::env::var("ROLTER_TEST_DATABASE_URL").is_err() {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        }
+        let pool = fresh_pool().await;
+        let org = OrgRepo(&pool).create("audit", "audit").await.unwrap();
+        let actor = UserRepo(&pool)
+            .create("audit@example.com", None, false)
+            .await
+            .unwrap();
+        let repo = AuditLogRepo(&pool);
+        let now = Utc::now();
+        for (offset, action) in [
+            (3, "route.create"),
+            (2, "route.create"),
+            (1, "route.delete"),
+        ] {
+            let entry = repo
+                .create(
+                    Some(org.id),
+                    Some(actor.id),
+                    action,
+                    Some("route"),
+                    Some(Uuid::new_v4()),
+                    None,
+                )
+                .await
+                .unwrap();
+            sqlx::query("update audit_log set at = $2 where id = $1")
+                .bind(entry.id)
+                .bind(now - chrono::Duration::seconds(offset))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let filter = AuditLogFilter {
+            actor_user_id: Some(actor.id),
+            action: Some("route.create".to_string()),
+            target_type: Some("route".to_string()),
+            ..Default::default()
+        };
+        let first = repo.list_page(org.id, &filter, 1).await.unwrap();
+        assert_eq!(first.entries.len(), 1);
+        assert!(first.has_more);
+        let boundary = first.entries[0].clone();
+        let second = repo
+            .list_page(
+                org.id,
+                &AuditLogFilter {
+                    cursor: Some(AuditLogCursor {
+                        at: boundary.at,
+                        id: boundary.id,
+                    }),
+                    ..filter.clone()
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.entries.len(), 1);
+        assert_ne!(second.entries[0].id, boundary.id);
+        let previous = repo
+            .list_page(
+                org.id,
+                &AuditLogFilter {
+                    cursor: Some(AuditLogCursor {
+                        at: second.entries[0].at,
+                        id: second.entries[0].id,
+                    }),
+                    direction: AuditLogDirection::Previous,
+                    ..filter.clone()
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(previous.entries[0].id, boundary.id);
+        assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
     }
 }
