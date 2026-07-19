@@ -187,6 +187,22 @@ pub struct AuditLogEntry {
     pub at: DateTime<Utc>,
 }
 
+/// Global control-plane security settings. Managed dashboard credentials are
+/// encrypted separately and intentionally never appear on this DTO.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SecuritySettings {
+    pub virtual_key_required: bool,
+    pub allow_direct_provider_keys: bool,
+    pub allowed_origins: Vec<String>,
+    pub allowed_headers: Vec<String>,
+    pub required_headers: serde_json::Value,
+    pub auth_bypass_routes: Vec<String>,
+    pub dashboard_auth_enabled: bool,
+    pub dashboard_credential_ref: Option<String>,
+    pub dashboard_secret_configured: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// a login session. `token_hash` is the peppered digest of the opaque bearer
 /// token handed to the client; the plaintext token is never stored
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

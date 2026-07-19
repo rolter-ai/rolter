@@ -12,7 +12,7 @@ use rolter_core::{Error, Result};
 
 use super::models::{
     AuditLogEntry, Budget, Membership, ModelPrice, Org, OwnedVirtualKey, Project, Provider,
-    RateLimit, Route, RouteTarget, Session, Team, User, VirtualKey,
+    RateLimit, Route, RouteTarget, SecuritySettings, Session, Team, User, VirtualKey,
 };
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -1086,6 +1086,68 @@ impl SessionRepo<'_> {
 }
 
 pub struct AuditLogRepo<'a>(pub &'a PgPool);
+
+/// Global ingress policy. The encrypted secret remains write-only; callers
+/// receive only whether a managed dashboard credential is configured.
+pub struct SecuritySettingsRepo<'a>(pub &'a PgPool);
+
+impl SecuritySettingsRepo<'_> {
+    pub async fn get(&self) -> Result<SecuritySettings> {
+        sqlx::query_as(
+            "select virtual_key_required, allow_direct_provider_keys, allowed_origins, allowed_headers, \
+                    required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
+                    dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at \
+             from security_settings where id = true",
+        )
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update(
+        &self,
+        virtual_key_required: bool,
+        allow_direct_provider_keys: bool,
+        allowed_origins: &[String],
+        allowed_headers: &[String],
+        required_headers: serde_json::Value,
+        auth_bypass_routes: &[String],
+        dashboard_auth_enabled: bool,
+        dashboard_credential_ref: Option<&str>,
+        dashboard_secret: Option<(&[u8], &[u8])>,
+    ) -> Result<SecuritySettings> {
+        let (ciphertext, nonce) = match dashboard_secret {
+            Some((ciphertext, nonce)) => (Some(ciphertext), Some(nonce)),
+            None => (None, None),
+        };
+        sqlx::query_as(
+            "update security_settings set \
+                virtual_key_required = $1, allow_direct_provider_keys = $2, allowed_origins = $3, \
+                allowed_headers = $4, required_headers = $5, auth_bypass_routes = $6, \
+                dashboard_auth_enabled = $7, dashboard_credential_ref = $8, \
+                dashboard_credential_ciphertext = coalesce($9, dashboard_credential_ciphertext), \
+                dashboard_credential_nonce = coalesce($10, dashboard_credential_nonce), updated_at = now() \
+             where id = true \
+             returning virtual_key_required, allow_direct_provider_keys, allowed_origins, allowed_headers, \
+                       required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
+                       dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at",
+        )
+        .bind(virtual_key_required)
+        .bind(allow_direct_provider_keys)
+        .bind(allowed_origins)
+        .bind(allowed_headers)
+        .bind(required_headers)
+        .bind(auth_bypass_routes)
+        .bind(dashboard_auth_enabled)
+        .bind(dashboard_credential_ref)
+        .bind(ciphertext)
+        .bind(nonce)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+}
 
 impl AuditLogRepo<'_> {
     #[allow(clippy::too_many_arguments)]
