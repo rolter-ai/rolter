@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -5,58 +6,122 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  fetchSecuritySettings,
+  updateSecuritySettings,
+  type SecuritySettingsDto,
+} from "@/lib/api";
 
-interface SecurityState {
+interface FormState {
   authEnabled: boolean;
-  adminUser: string;
-  adminPass: string;
+  credentialRef: string;
+  managedSecret: string;
   enforceVk: boolean;
   allowDirect: boolean;
   allowedOrigins: string;
   allowedHeaders: string;
   requiredHeaders: string;
-  whitelistedRoutes: string;
+  bypassRoutes: string;
 }
 
-const DEFAULTS: SecurityState = {
-  authEnabled: true,
-  adminUser: "",
-  adminPass: "",
-  enforceVk: true,
-  allowDirect: false,
-  allowedOrigins: "",
-  allowedHeaders: "",
-  requiredHeaders: "",
-  whitelistedRoutes: "",
+const splitList = (value: string) =>
+  value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+const parseRequiredHeaders = (value: string): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  for (const pair of splitList(value)) {
+    const idx = pair.indexOf(":");
+    if (idx > 0) {
+      headers[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+    }
+  }
+  return headers;
 };
 
-// security settings from the design prototype. the control plane has no
-// security-settings API yet — the form is fully rendered but saves locally
-// only, labelled as preview.
-export default function Security() {
-  const [sec, setSec] = React.useState<SecurityState>(DEFAULTS);
-  const [dirty, setDirty] = React.useState(false);
-  const [saved, setSaved] = React.useState(false);
+const fromDto = (dto: SecuritySettingsDto): FormState => ({
+  authEnabled: dto.dashboard_auth_enabled,
+  credentialRef: dto.dashboard_credential_ref ?? "",
+  managedSecret: "",
+  enforceVk: dto.virtual_key_required,
+  allowDirect: dto.allow_direct_provider_keys,
+  allowedOrigins: dto.allowed_origins.join(", "),
+  allowedHeaders: dto.allowed_headers.join(", "),
+  requiredHeaders: Object.entries(
+    (dto.required_headers ?? {}) as Record<string, string>,
+  )
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(", "),
+  bypassRoutes: dto.auth_bypass_routes.join(", "),
+});
 
-  const set = (patch: Partial<SecurityState>) => {
-    setSec((s) => ({ ...s, ...patch }));
-    setDirty(true);
+// global gateway security policy, persisted via /api/v1/security-settings
+// (superadmin only). dashboard secret is write-only: the server seals it and
+// reports only whether one is configured.
+export default function Security() {
+  const queryClient = useQueryClient();
+  const settings = useQuery({
+    queryKey: ["security-settings"],
+    queryFn: fetchSecuritySettings,
+    retry: false,
+  });
+
+  const [form, setForm] = React.useState<FormState | null>(null);
+  const [saved, setSaved] = React.useState(false);
+  React.useEffect(() => {
+    if (settings.data && form === null) {
+      setForm(fromDto(settings.data));
+    }
+  }, [settings.data, form]);
+
+  const save = useMutation({
+    mutationFn: (f: FormState) =>
+      updateSecuritySettings({
+        virtual_key_required: f.enforceVk,
+        allow_direct_provider_keys: f.allowDirect,
+        allowed_origins: splitList(f.allowedOrigins),
+        allowed_headers: splitList(f.allowedHeaders),
+        required_headers: parseRequiredHeaders(f.requiredHeaders),
+        auth_bypass_routes: splitList(f.bypassRoutes),
+        dashboard_auth_enabled: f.authEnabled,
+        dashboard_credential_ref: f.credentialRef.trim() || null,
+        ...(f.managedSecret.trim()
+          ? { managed_dashboard_secret: f.managedSecret }
+          : {}),
+      }),
+    onSuccess: (dto) => {
+      queryClient.setQueryData(["security-settings"], dto);
+      setForm(fromDto(dto));
+      setSaved(true);
+    },
+  });
+
+  if (settings.isLoading) {
+    return (
+      <p className="p-[22px] text-sm text-muted-foreground">Loading…</p>
+    );
+  }
+  if (settings.isError) {
+    return (
+      <p className="p-[22px] text-sm text-muted-foreground">
+        Security settings need superadmin access:{" "}
+        {(settings.error as Error).message}
+      </p>
+    );
+  }
+  if (!form) return null;
+
+  const set = (patch: Partial<FormState>) => {
+    setForm((f) => (f ? { ...f, ...patch } : f));
     setSaved(false);
   };
-
-  const disabledAuth = !sec.authEnabled;
+  const disabledAuth = !form.authEnabled;
+  const secretConfigured = settings.data?.dashboard_secret_configured ?? false;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <div className="flex items-center gap-2">
-        <Badge tone="warning" className="font-mono text-[10px] uppercase">
-          preview — not yet persisted
-        </Badge>
-        <span className="text-xs text-muted-foreground">
-          Backend security-settings API pending; changes stay in this session.
-        </span>
-      </div>
-
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
@@ -65,33 +130,38 @@ export default function Security() {
               <Badge tone="info">BETA</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Set up authentication credentials to protect your dashboard. Once configured, use
-              the generated token for all admin API calls.
+              Require a credential to open the dashboard. Provide either an external
+              secret-manager reference or a managed secret stored encrypted.
             </p>
           </div>
-          <Switch checked={sec.authEnabled} onCheckedChange={(v) => set({ authEnabled: v })} />
+          <Switch checked={form.authEnabled} onCheckedChange={(v) => set({ authEnabled: v })} />
         </div>
         <div className="flex flex-col gap-1.5" style={{ opacity: disabledAuth ? 0.55 : 1 }}>
-          <label className="text-xs font-medium text-[color:var(--text-secondary)]">Username</label>
+          <label className="text-xs font-medium text-[color:var(--text-secondary)]">
+            Credential reference
+          </label>
           <Input
-            value={sec.adminUser}
+            value={form.credentialRef}
             disabled={disabledAuth}
-            placeholder="Enter admin username or env.VAR_NAME"
-            onChange={(e) => set({ adminUser: e.target.value })}
+            placeholder="vault://secrets/rolter-dashboard"
+            onChange={(e) => set({ credentialRef: e.target.value })}
           />
         </div>
         <div className="flex flex-col gap-1.5" style={{ opacity: disabledAuth ? 0.55 : 1 }}>
-          <label className="text-xs font-medium text-[color:var(--text-secondary)]">Password</label>
+          <label className="text-xs font-medium text-[color:var(--text-secondary)]">
+            Managed secret
+          </label>
           <Input
             type="password"
-            value={sec.adminPass}
+            value={form.managedSecret}
             disabled={disabledAuth}
-            placeholder="Enter admin password or env.VAR_NAME"
-            onChange={(e) => set({ adminPass: e.target.value })}
+            placeholder={
+              secretConfigured ? "configured — enter to replace" : "Enter a secret to store"
+            }
+            onChange={(e) => set({ managedSecret: e.target.value })}
           />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-            Use at least 12 characters with uppercase, lowercase, number, and special character.
-            Env var references are accepted.
+            Write-only: the secret is encrypted server-side and never shown again.
           </span>
         </div>
       </section>
@@ -99,59 +169,58 @@ export default function Security() {
       <ToggleCard
         title="Enforce Virtual Keys on Inference"
         desc="Require a virtual key for all inference requests."
-        checked={sec.enforceVk}
+        checked={form.enforceVk}
         onChange={(v) => set({ enforceVk: v })}
       />
       <ToggleCard
         title="Allow Direct API Keys"
         desc="When enabled, callers can pass a provider API key directly in the Authorization header, bypassing the registered key pool."
-        checked={sec.allowDirect}
+        checked={form.allowDirect}
         onChange={(v) => set({ allowDirect: v })}
       />
 
       <TextCard
         title="Allowed Origins"
-        desc="Comma-separated list of allowed origins for CORS and WebSocket connections. Localhost origins are always allowed. Wildcards are supported for subdomains (e.g. https://*.example.com) or use “*” to allow all origins."
-        value={sec.allowedOrigins}
-        placeholder="https://app.example.com, https://*.example.com, *"
+        desc="Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly."
+        value={form.allowedOrigins}
+        placeholder="https://app.example.com, https://console.example.com"
         onChange={(v) => set({ allowedOrigins: v })}
       />
       <TextCard
         title="Allowed Headers"
         desc="Comma-separated list of allowed headers for CORS."
-        value={sec.allowedHeaders}
+        value={form.allowedHeaders}
         placeholder="X-Stainless-Timeout"
         onChange={(v) => set({ allowedHeaders: v })}
       />
       <TextCard
         title="Required Headers"
-        desc="Comma-separated list of headers that must be present on every request. Requests missing any of these headers are rejected with a 400 error."
-        value={sec.requiredHeaders}
-        placeholder="X-Tenant-ID, X-Custom-Header"
+        desc="Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected."
+        value={form.requiredHeaders}
+        placeholder="X-Tenant-ID: acme, X-Custom-Header: value"
         onChange={(v) => set({ requiredHeaders: v })}
       />
       <TextCard
-        title="Whitelisted Routes"
-        desc="Comma-separated list of routes that bypass the auth middleware. System routes like /health and the login endpoints are always whitelisted."
-        value={sec.whitelistedRoutes}
-        placeholder="/api/custom-webhook, /api/public-endpoint"
-        onChange={(v) => set({ whitelistedRoutes: v })}
+        title="Auth Bypass Routes"
+        desc="Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open."
+        value={form.bypassRoutes}
+        placeholder="/v1/models, /v1/ping"
+        onChange={(v) => set({ bypassRoutes: v })}
       />
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
+        {save.isError && (
+          <span className="text-xs text-destructive">
+            {(save.error as Error).message}
+          </span>
+        )}
         {saved && (
           <span className="text-xs text-[color:var(--status-success)]">
             Security settings updated.
           </span>
         )}
-        <Button
-          disabled={!dirty}
-          onClick={() => {
-            setDirty(false);
-            setSaved(true);
-          }}
-        >
-          Save Changes
+        <Button disabled={save.isPending} onClick={() => save.mutate(form)}>
+          {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
       </div>
     </div>

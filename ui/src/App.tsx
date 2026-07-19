@@ -9,8 +9,11 @@ import { logout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
 import Account from "@/pages/Account";
+import { AlertChannels, AlertHistory, AlertRules } from "@/pages/Alerting";
 import AuditLog from "@/pages/AuditLog";
+import ComplexityRouter from "@/pages/ComplexityRouter";
 import Config from "@/pages/Config";
+import Connectors from "@/pages/Connectors";
 import Dashboard from "@/pages/Dashboard";
 import Health from "@/pages/Health";
 import Keys from "@/pages/Keys";
@@ -18,6 +21,7 @@ import Limits from "@/pages/Limits";
 import Login from "@/pages/Login";
 import Logs from "@/pages/Logs";
 import McpCatalog from "@/pages/McpCatalog";
+import McpLogs from "@/pages/McpLogs";
 import Models from "@/pages/Models";
 import Playground from "@/pages/Playground";
 import Pricing from "@/pages/Pricing";
@@ -35,12 +39,18 @@ const SCREENS: Record<string, React.ReactNode> = {
   playground: <Playground />,
   dashboard: <Dashboard />,
   logs: <Logs />,
+  "mcp-logs": <McpLogs />,
+  connectors: <Connectors />,
   "model-catalog": <Models />,
   providers: <Providers />,
   budgets: <Limits />,
   "routing-rules": <RoutingRules />,
+  "complexity-router": <ComplexityRouter />,
   "circuit-breaker": <Health />,
   "pricing-overrides": <Pricing />,
+  "alerting-channels": <AlertChannels />,
+  "alerting-rules": <AlertRules />,
+  "alerting-history": <AlertHistory />,
   "virtual-keys": <Keys />,
   "gov-users": <Users />,
   "gov-teams": <Teams />,

@@ -927,11 +927,386 @@ export interface AuditLogEntry {
   at: string;
 }
 
-export function fetchAuditLog(
+export interface AuditLogPage {
+  items: AuditLogEntry[];
+  next_cursor: string | null;
+  previous_cursor: string | null;
+  has_next: boolean;
+  has_previous: boolean;
+  total?: number;
+}
+
+export interface AuditLogQuery {
+  limit?: number;
+  cursor?: string;
+  direction?: "next" | "previous";
+  actor?: string;
+  action?: string;
+  target_type?: string;
+  from?: string;
+  to?: string;
+  include_total?: boolean;
+}
+
+export function fetchAuditLogPage(
   orgId: string,
-  limit = 100,
-): Promise<AuditLogEntry[]> {
-  return getJson<AuditLogEntry[]>(
-    `/api/v1/orgs/${orgId}/audit-log?limit=${limit}`,
+  query: AuditLogQuery = {},
+): Promise<AuditLogPage> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return getJson<AuditLogPage>(
+    `/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// security settings (superadmin-only global gateway policy)
+
+export interface SecuritySettingsDto {
+  virtual_key_required: boolean;
+  allow_direct_provider_keys: boolean;
+  allowed_origins: string[];
+  allowed_headers: string[];
+  required_headers: Record<string, string>;
+  auth_bypass_routes: string[];
+  dashboard_auth_enabled: boolean;
+  dashboard_credential_ref: string | null;
+  dashboard_secret_configured: boolean;
+  updated_at: string;
+}
+
+export interface UpdateSecuritySettingsInput {
+  virtual_key_required: boolean;
+  allow_direct_provider_keys: boolean;
+  allowed_origins: string[];
+  allowed_headers: string[];
+  required_headers: Record<string, string>;
+  auth_bypass_routes: string[];
+  dashboard_auth_enabled: boolean;
+  dashboard_credential_ref?: string | null;
+  /// write-only; sealed server-side, never echoed back
+  managed_dashboard_secret?: string;
+}
+
+export function fetchSecuritySettings(): Promise<SecuritySettingsDto> {
+  return getJson<SecuritySettingsDto>("/api/v1/security-settings");
+}
+
+export function updateSecuritySettings(
+  input: UpdateSecuritySettingsInput,
+): Promise<SecuritySettingsDto> {
+  return sendJson<SecuritySettingsDto>("PUT", "/api/v1/security-settings", input);
+}
+
+// ---------------------------------------------------------------------------
+// alerting: channels, rules, notification history
+
+export const ALERT_SIGNALS = [
+  "error_rate",
+  "p95_latency_ms",
+  "spend_velocity",
+  "request_volume",
+  "provider_health_flaps",
+] as const;
+
+export interface AlertChannelRow {
+  id: string;
+  name: string;
+  kind: string;
+  endpoint: string;
+  enabled: boolean;
+  secret_configured: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertChannelInput {
+  name: string;
+  endpoint: string;
+  enabled: boolean;
+  managed_secret?: string;
+}
+
+export interface AlertRuleRow {
+  id: string;
+  name: string;
+  signal: string;
+  threshold: number;
+  window_secs: number;
+  channel_id: string | null;
+  enabled: boolean;
+  state: string;
+  last_value: number | null;
+  last_evaluated_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleInput {
+  name: string;
+  signal: string;
+  threshold: number;
+  window_secs: number;
+  channel_id?: string | null;
+  enabled: boolean;
+}
+
+export interface AlertNotificationRow {
+  id: string;
+  rule_id: string;
+  channel_id: string | null;
+  state: string;
+  delivery_status: string;
+  detail: string | null;
+  sent_at: string;
+}
+
+export function fetchAlertChannels(): Promise<AlertChannelRow[]> {
+  return getJson<AlertChannelRow[]>("/api/v1/alert-channels");
+}
+
+export function createAlertChannel(
+  input: AlertChannelInput,
+): Promise<AlertChannelRow> {
+  return sendJson<AlertChannelRow>("POST", "/api/v1/alert-channels", input);
+}
+
+export function updateAlertChannel(
+  id: string,
+  input: AlertChannelInput,
+): Promise<AlertChannelRow> {
+  return sendJson<AlertChannelRow>("PUT", `/api/v1/alert-channels/${id}`, input);
+}
+
+export function deleteAlertChannel(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/alert-channels/${id}`);
+}
+
+export function fetchAlertRules(): Promise<AlertRuleRow[]> {
+  return getJson<AlertRuleRow[]>("/api/v1/alert-rules");
+}
+
+export function createAlertRule(input: AlertRuleInput): Promise<AlertRuleRow> {
+  return sendJson<AlertRuleRow>("POST", "/api/v1/alert-rules", input);
+}
+
+export function updateAlertRule(
+  id: string,
+  input: AlertRuleInput,
+): Promise<AlertRuleRow> {
+  return sendJson<AlertRuleRow>("PUT", `/api/v1/alert-rules/${id}`, input);
+}
+
+export function deleteAlertRule(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/alert-rules/${id}`);
+}
+
+export function evaluateAlertRule(
+  id: string,
+): Promise<{ rule: AlertRuleRow; notified: boolean }> {
+  return sendJson<{ rule: AlertRuleRow; notified: boolean }>(
+    "POST",
+    `/api/v1/alert-rules/${id}/evaluate`,
+  );
+}
+
+export function fetchAlertHistory(
+  limit = 100,
+  ruleId?: string,
+): Promise<AlertNotificationRow[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (ruleId) params.set("rule_id", ruleId);
+  return getJson<AlertNotificationRow[]>(
+    `/api/v1/alert-notifications?${params}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// observability connectors (OTLP log shipping)
+
+export interface ConnectorRow {
+  id: string;
+  name: string;
+  kind: string;
+  endpoint: string;
+  enabled: boolean;
+  sampling_rate: number;
+  auth_secret_ref: string | null;
+  auth_secret_configured: boolean;
+  health_status: string;
+  health_checked_at: string | null;
+  health_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectorInput {
+  name: string;
+  kind: "otlp_http";
+  endpoint: string;
+  enabled: boolean;
+  sampling_rate: number;
+  auth_secret_ref?: string | null;
+  /// write-only bearer token, sealed before persistence
+  managed_auth_secret?: string;
+}
+
+export function fetchConnectors(): Promise<ConnectorRow[]> {
+  return getJson<ConnectorRow[]>("/api/v1/connectors");
+}
+
+export function createConnector(input: ConnectorInput): Promise<ConnectorRow> {
+  return sendJson<ConnectorRow>("POST", "/api/v1/connectors", input);
+}
+
+export function updateConnector(
+  id: string,
+  input: ConnectorInput,
+): Promise<ConnectorRow> {
+  return sendJson<ConnectorRow>("PUT", `/api/v1/connectors/${id}`, input);
+}
+
+export function deleteConnector(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/connectors/${id}`);
+}
+
+export function testConnector(id: string): Promise<{
+  delivered: boolean;
+  health_status: string;
+  health_checked_at: string;
+}> {
+  return sendJson<{
+    delivered: boolean;
+    health_status: string;
+    health_checked_at: string;
+  }>("POST", `/api/v1/connectors/${id}/test`);
+}
+
+// ---------------------------------------------------------------------------
+// mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
+
+export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse"] as const;
+export const MCP_STATUSES = [
+  "success",
+  "error",
+  "timeout",
+  "auth_denied",
+  "transport_error",
+] as const;
+
+export interface McpLogRow {
+  ts: string;
+  event_id: string;
+  server: string;
+  tool: string;
+  transport: string;
+  status: string;
+  latency_ms: number;
+  org_id: string;
+  team_id: string;
+  project_id: string;
+  virtual_key_id: string;
+  user_id: string;
+  request_id: string;
+  trace_id: string;
+  error: string | null;
+}
+
+export interface McpLogDetail extends McpLogRow {
+  arguments: string | null;
+  result: string | null;
+}
+
+export interface McpLogsQuery extends AnalyticsWindow {
+  server?: string;
+  tool?: string;
+  transport?: string;
+  status?: string;
+  key?: string;
+  user?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface McpSummaryRow {
+  calls: string | number;
+  failures: string | number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+}
+
+export function fetchMcpLogs(
+  query: McpLogsQuery = {},
+): Promise<{ data: McpLogRow[]; next_cursor: string | null }> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return getAnalytics<{ data: McpLogRow[]; next_cursor: string | null }>(
+    `/api/v1/mcp/logs${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMcpSummary(
+  window: AnalyticsWindow = {},
+): Promise<McpSummaryRow | undefined> {
+  return getAnalytics<{ data: McpSummaryRow[] }>(
+    `/api/v1/mcp/logs/summary${windowParams(window)}`,
+  ).then((r) => r.data[0]);
+}
+
+export function fetchMcpLogDetail(eventId: string): Promise<McpLogDetail> {
+  return getAnalytics<McpLogDetail>(
+    `/api/v1/mcp/logs/${encodeURIComponent(eventId)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// complexity routing policy (stored in route params, validated server-side)
+
+export interface ComplexityTier {
+  name: string;
+  /// inclusive byte ceiling; null marks the final catch-all tier
+  max_input_bytes: number | null;
+  route: string;
+}
+
+export interface ComplexityPolicy {
+  tiers: ComplexityTier[];
+}
+
+export function fetchRouteComplexity(
+  routeId: string,
+): Promise<ComplexityPolicy> {
+  return getJson<ComplexityPolicy>(`/api/v1/routes/${routeId}/complexity`);
+}
+
+export function setRouteComplexity(
+  routeId: string,
+  policy: ComplexityPolicy,
+): Promise<RouteRow> {
+  return sendJson<RouteRow>(
+    "PUT",
+    `/api/v1/routes/${routeId}/complexity`,
+    policy,
+  );
+}
+
+// advanced per-route model configuration (base_url, pricing, limits, headers…)
+export function setRouteAdvanced(
+  routeId: string,
+  advanced: Record<string, unknown>,
+): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${routeId}/advanced`, {
+    advanced,
+  });
 }

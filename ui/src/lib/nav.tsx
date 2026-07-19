@@ -234,6 +234,12 @@ export const BUILT = new Set([
   "api-keys",
   "security",
   "rbac",
+  "mcp-logs",
+  "connectors",
+  "complexity-router",
+  "alerting-channels",
+  "alerting-rules",
+  "alerting-history",
 ]);
 
 // every navigable leaf key (parents with children are toggles, not screens)
