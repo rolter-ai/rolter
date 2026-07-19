@@ -61,6 +61,8 @@ pub struct Route {
     pub params: serde_json::Value,
     /// override policy (jsonb `{mode, allow, deny}`); mirrors config `[routes.param_policy]`
     pub param_policy: serde_json::Value,
+    /// catalog metadata and per-model execution policy; mirrors `[routes.advanced]`
+    pub advanced: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 

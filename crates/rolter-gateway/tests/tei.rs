@@ -48,6 +48,7 @@ fn config(addr: SocketAddr, api_key: Option<&str>) -> GatewayConfig {
         }],
         params: Default::default(),
         param_policy: Default::default(),
+        advanced: Default::default(),
         cache: None,
         variants: Default::default(),
     });
