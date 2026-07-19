@@ -61,6 +61,8 @@ impl ClickHouseClient {
     /// Persist one already-sanitized MCP tool-call event. The table and insert
     /// statement are fixed here rather than supplied by a caller, so event
     /// metadata can never alter ClickHouse SQL.
+    // only reachable via the postgres-gated mcp_logs router
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     pub(crate) async fn insert_mcp_tool_call(&self, event: &Value) -> anyhow::Result<()> {
         let response = self
             .client
