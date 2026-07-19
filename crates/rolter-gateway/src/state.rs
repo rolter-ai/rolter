@@ -318,6 +318,7 @@ impl Snapshot {
             targets: vec![target],
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
         };
@@ -651,6 +652,7 @@ mod tests {
             targets: vec![target("vLLM SPB", Some("real-model"))],
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
         });

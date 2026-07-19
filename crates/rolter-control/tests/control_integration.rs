@@ -156,6 +156,25 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     .await;
     let route_id = route["id"].as_str().expect("route id");
 
+    let advanced = client
+        .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+        .json(&json!({
+            "advanced": {
+                "model_type": "chat",
+                "capabilities": ["tools", "vision"],
+                "description": "managed model",
+                "base_url": "https://models.example/v1",
+                "pricing": {"image_per_unit": 0.04},
+                "limits": {"output_tokens": 2048, "timeout_secs": 30},
+                "headers": {"x-model-region": "eu"},
+                "locked_headers": ["x-model-region"]
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(advanced.status().is_success());
+
     post(
         &client,
         format!("{base}/api/v1/routes/{route_id}/targets"),
@@ -187,6 +206,12 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
         routes.iter().any(|r| r["model"] == "gpt-4o"),
         "route missing from snapshot: {snap}"
     );
+    let route = routes
+        .iter()
+        .find(|r| r["model"] == "gpt-4o")
+        .expect("route in snapshot");
+    assert_eq!(route["advanced"]["limits"]["output_tokens"], 2048);
+    assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
 /// Provider credentials posted to the API must be sealed at rest, decrypted

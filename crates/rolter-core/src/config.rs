@@ -525,6 +525,89 @@ pub struct Target {
     pub weight: u32,
 }
 
+/// Extra settings attached to one public model route. These are deliberately
+/// separate from [`ProviderConfig`]: a provider owns credentials and shared
+/// transport defaults, while a model may need a narrower policy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct AdvancedModelConfig {
+    /// provider/model family selected in the catalog (for example `chat` or `embedding`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// model-specific upstream base URL; never carries credentials
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelUsagePricing>,
+    #[serde(default)]
+    pub limits: ModelLimits,
+    #[serde(default)]
+    pub insecure_tls: bool,
+    /// provider-specific JSON settings that are safe to expose in snapshots
+    #[serde(default)]
+    pub additional_fields: HashMap<String, serde_json::Value>,
+    /// headers injected into calls for this model; secrets must remain in
+    /// provider credentials, not this configuration.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// request headers callers may not replace for this route
+    #[serde(default)]
+    pub locked_headers: Vec<String>,
+    #[serde(default)]
+    pub visibility: ModelVisibility,
+}
+
+/// Prices whose unit is not a token. Token rates remain in [`ModelPriceConfig`]
+/// so cost accounting never mistakes image or audio pricing for token pricing.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ModelUsagePricing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_per_unit: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_per_minute: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_per_minute: Option<f64>,
+}
+
+/// Per-model request ceilings. `None` inherits the gateway/provider setting.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ModelLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+}
+
+/// Catalog visibility restrictions attached to a route. Gateway key/team
+/// identity is sufficient for key and team checks; user restrictions are
+/// retained for control-plane authorization.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ModelVisibility {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_role: Option<String>,
+    #[serde(default)]
+    pub allowed_team_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_key_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<String>,
+}
+
 fn default_weight() -> u32 {
     1
 }
@@ -548,6 +631,9 @@ pub struct ModelRoute {
     /// whether callers may override the admin defaults in [`ModelRoute::params`]
     #[serde(default)]
     pub param_policy: ParamPolicy,
+    /// catalog metadata and model-scoped execution policy
+    #[serde(default)]
+    pub advanced: AdvancedModelConfig,
     /// optional weighted variants for A/B, canary, and key-split traffic. When
     /// present, a request samples one variant by weight (the primary) and falls
     /// back to the remaining variants in declared order; `targets`/`strategy`
@@ -1929,9 +2015,39 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
             param_policy: policy,
+            advanced: Default::default(),
             cache: None,
             variants: vec![],
         }
+    }
+
+    #[test]
+    fn advanced_model_configuration_roundtrips() {
+        let route: ModelRoute = serde_json::from_value(serde_json::json!({
+            "model": "vision",
+            "targets": [],
+            "advanced": {
+                "model_type": "image",
+                "capabilities": ["vision"],
+                "base_url": "https://models.example/v1",
+                "pricing": {"image_per_unit": 0.04},
+                "limits": {"output_tokens": 2048},
+                "headers": {"x-model-region": "eu"},
+                "locked_headers": ["x-model-region"],
+                "visibility": {"allowed_key_ids": ["key-1"]}
+            }
+        }))
+        .unwrap();
+        assert_eq!(route.advanced.model_type.as_deref(), Some("image"));
+        assert_eq!(route.advanced.limits.output_tokens, Some(2048));
+        assert_eq!(
+            route.advanced.pricing.as_ref().unwrap().image_per_unit,
+            Some(0.04)
+        );
+        assert_eq!(
+            serde_json::to_value(route).unwrap()["advanced"]["headers"]["x-model-region"],
+            "eu"
+        );
     }
 
     fn variant(name: &str, weight: u32) -> Variant {

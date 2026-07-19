@@ -123,6 +123,7 @@ struct RouteRow {
     strategy: String,
     params: serde_json::Value,
     param_policy: serde_json::Value,
+    advanced: serde_json::Value,
 }
 
 #[derive(FromRow)]
@@ -216,7 +217,7 @@ impl PostgresConfigStore {
 
     async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
         let route_rows: Vec<RouteRow> = sqlx::query_as(
-            "select id, model, strategy, params, param_policy
+            "select id, model, strategy, params, param_policy, advanced
              from routes where enabled order by model",
         )
         .fetch_all(&self.pool)
@@ -249,12 +250,14 @@ impl PostgresConfigStore {
                 // default rather than failing the whole config load
                 let params = serde_json::from_value(r.params).unwrap_or_default();
                 let param_policy = serde_json::from_value(r.param_policy).unwrap_or_default();
+                let advanced = serde_json::from_value(r.advanced).unwrap_or_default();
                 Ok(ModelRoute {
                     model: r.model,
                     strategy,
                     targets,
                     params,
                     param_policy,
+                    advanced,
                     // db-backed variants land with their own store follow-up
                     variants: Default::default(),
                     // response-cache opt-in is config-only for now; a db-backed

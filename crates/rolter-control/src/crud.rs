@@ -7,7 +7,7 @@
 //! the [`rolter_store::ConfigStore`] trait exposes.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header::HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use rolter_auth::Role;
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::Error;
+use rolter_core::{AdvancedModelConfig, Error};
 use rolter_store::postgres::models::{
     AuditLogEntry, Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route,
     RouteTarget, Team, User, VirtualKey,
@@ -63,6 +63,7 @@ pub fn router() -> Router<ControlState> {
             put(set_route_enabled).delete(delete_route),
         )
         .route("/api/v1/routes/{id}/params", put(set_route_params))
+        .route("/api/v1/routes/{id}/advanced", put(set_route_advanced))
         .route(
             "/api/v1/routes/{route_id}/targets",
             get(list_route_targets).post(create_route_target),
@@ -908,6 +909,129 @@ fn normalize_json_object(value: serde_json::Value, field: &str) -> ApiResult<ser
             "{field} must be a json object"
         )))),
     }
+}
+
+#[derive(Deserialize)]
+struct SetRouteAdvanced {
+    #[serde(default)]
+    advanced: serde_json::Value,
+}
+
+fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
+    if let Some(base_url) = &advanced.base_url {
+        let url = reqwest::Url::parse(base_url).map_err(|_| {
+            ApiError::Core(Error::Config(
+                "base_url must be an absolute http(s) URL".to_string(),
+            ))
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(ApiError::Core(Error::Config(
+                "base_url must be an absolute http(s) URL".to_string(),
+            )));
+        }
+    }
+    for (field, value) in [
+        (
+            "cache_write_per_mtok",
+            advanced
+                .pricing
+                .as_ref()
+                .and_then(|p| p.cache_write_per_mtok),
+        ),
+        (
+            "image_per_unit",
+            advanced.pricing.as_ref().and_then(|p| p.image_per_unit),
+        ),
+        (
+            "audio_input_per_minute",
+            advanced
+                .pricing
+                .as_ref()
+                .and_then(|p| p.audio_input_per_minute),
+        ),
+        (
+            "audio_output_per_minute",
+            advanced
+                .pricing
+                .as_ref()
+                .and_then(|p| p.audio_output_per_minute),
+        ),
+    ] {
+        if value.is_some_and(|price| !price.is_finite() || price < 0.0) {
+            return Err(ApiError::Core(Error::Config(format!(
+                "{field} must be a finite non-negative number"
+            ))));
+        }
+    }
+    for (field, value) in [
+        ("rpm", advanced.limits.rpm),
+        ("tpm", advanced.limits.tpm),
+        ("concurrency", advanced.limits.concurrency),
+        ("timeout_secs", advanced.limits.timeout_secs),
+        ("retries", advanced.limits.retries),
+        ("context_window", advanced.limits.context_window),
+        ("output_tokens", advanced.limits.output_tokens),
+    ] {
+        if value.is_some_and(|limit| limit == 0 || limit > 10_000_000) {
+            return Err(ApiError::Core(Error::Config(format!(
+                "{field} must be between 1 and 10000000"
+            ))));
+        }
+    }
+    for name in advanced
+        .headers
+        .keys()
+        .chain(advanced.locked_headers.iter())
+    {
+        HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| ApiError::Core(Error::Config(format!("invalid header name '{name}'"))))?;
+    }
+    for id in advanced
+        .visibility
+        .allowed_team_ids
+        .iter()
+        .chain(advanced.visibility.allowed_key_ids.iter())
+        .chain(advanced.visibility.allowed_user_ids.iter())
+    {
+        Uuid::parse_str(id).map_err(|_| {
+            ApiError::Core(Error::Config(format!(
+                "invalid scoped access reference '{id}'"
+            )))
+        })?;
+    }
+    Ok(())
+}
+
+async fn set_route_advanced(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetRouteAdvanced>,
+) -> ApiResult<Json<Route>> {
+    let org_id = authorize_route(&state, &principal, id).await?;
+    let advanced_value = normalize_json_object(body.advanced, "advanced")?;
+    let advanced: AdvancedModelConfig =
+        serde_json::from_value(advanced_value.clone()).map_err(|err| {
+            ApiError::Core(Error::Config(format!(
+                "invalid advanced model configuration: {err}"
+            )))
+        })?;
+    validate_advanced(&advanced)?;
+    let row = RouteRepo(pool(&state))
+        .set_advanced(id, &advanced_value)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_advanced",
+        "route",
+        id,
+        serde_json::json!({"advanced": advanced_value}),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 async fn delete_route(
@@ -1970,5 +2094,22 @@ mod user_tests {
         assert!(Argon2::default()
             .verify_password(b"longenough", &parsed)
             .is_ok());
+    }
+
+    #[test]
+    fn advanced_model_validation_rejects_unsafe_values() {
+        let mut advanced = AdvancedModelConfig::default();
+        advanced.base_url = Some("ftp://models.example".to_string());
+        assert!(is_config_err(validate_advanced(&advanced)));
+
+        advanced.base_url = Some("https://models.example/v1".to_string());
+        advanced
+            .headers
+            .insert("bad header".to_string(), "x".to_string());
+        assert!(is_config_err(validate_advanced(&advanced)));
+
+        advanced.headers.clear();
+        advanced.limits.output_tokens = Some(0);
+        assert!(is_config_err(validate_advanced(&advanced)));
     }
 }

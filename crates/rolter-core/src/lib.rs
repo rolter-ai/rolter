@@ -9,10 +9,11 @@ pub mod slug;
 pub mod telemetry;
 
 pub use config::{
-    ApiKeyConfig, BackpressurePolicy, BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod,
-    BudgetScope, CacheConfig, CooldownConfig, GatewayConfig, HealthConfig, KvEventsConfig,
-    LmCacheConfig, LoggingConfig, MetricsScrapeConfig, ModelPriceConfig, ModelRoute, OverrideMode,
-    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderKind, QueueConfig, RateLimitConfig,
+    AdvancedModelConfig, ApiKeyConfig, BackpressurePolicy, BalancingStrategy, BreakerConfig,
+    BudgetConfig, BudgetPeriod, BudgetScope, CacheConfig, CooldownConfig, GatewayConfig,
+    HealthConfig, KvEventsConfig, LmCacheConfig, LoggingConfig, MetricsScrapeConfig, ModelLimits,
+    ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode, ParamPolicy,
+    PayloadCaptureConfig, ProviderConfig, ProviderKind, QueueConfig, RateLimitConfig,
     RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache, SemanticCacheConfig,
     ServerConfig, Target, TimeoutConfig, TlsConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
     RESERVED_PATHS,

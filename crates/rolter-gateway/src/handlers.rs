@@ -82,7 +82,11 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut data: Vec<Value> = snap
         .routes
         .iter()
-        .filter(|(_, entry)| vk.as_ref().is_none_or(|key| key_allows_route(key, entry)))
+        .filter(|(_, entry)| {
+            vk.as_ref().is_none_or(|key| {
+                key_allows_route(key, entry) && model_visible_to(Some(key), entry)
+            })
+        })
         .map(|(model, _)| model.clone())
         .chain(builtin)
         .filter(|m| {
@@ -147,6 +151,27 @@ pub(crate) fn key_allows_route(key: &KeyMeta, entry: &crate::state::RouteEntry) 
                 .flat_map(|variant| variant.targets.iter()),
         )
         .any(|target| key.provider_allowed(&target.provider))
+}
+
+/// Enforce the part of model visibility that is available on the gateway
+/// request path. User restrictions remain a control-plane authorization
+/// concern because a virtual key intentionally carries no user identity.
+pub(crate) fn model_visible_to(key: Option<&KeyMeta>, entry: &crate::state::RouteEntry) -> bool {
+    let visibility = &entry.route.advanced.visibility;
+    if visibility.allowed_team_ids.is_empty()
+        && visibility.allowed_key_ids.is_empty()
+        && visibility.allowed_user_ids.is_empty()
+    {
+        return true;
+    }
+    let Some(key) = key else {
+        return false;
+    };
+    visibility
+        .allowed_team_ids
+        .iter()
+        .any(|id| id == &key.team_id)
+        || visibility.allowed_key_ids.iter().any(|id| id == &key.id)
 }
 
 pub async fn chat_completions(
@@ -683,6 +708,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
+    if !model_visible_to(vk.as_ref(), entry) {
+        return crate::error::ApiError::new(
+            StatusCode::FORBIDDEN,
+            "model is not visible to this key",
+        )
+        .with_code("model_not_allowed")
+        .with_param("model")
+        .into_response();
+    }
     if let Some(key) = &vk {
         if !key_allows_route(key, entry) {
             return crate::error::ApiError::new(
@@ -692,6 +726,24 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .with_code("provider_not_allowed")
             .with_param("model")
             .into_response();
+        }
+    }
+
+    if let Some(max_output) = entry.route.advanced.limits.output_tokens {
+        for field in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
+            if parsed
+                .get(field)
+                .and_then(Value::as_u64)
+                .is_some_and(|value| value > u64::from(max_output))
+            {
+                return crate::error::ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("{field} exceeds this model's output token limit of {max_output}"),
+                )
+                .with_code("max_tokens_exceeded")
+                .with_param(field)
+                .into_response();
+            }
         }
     }
 
@@ -2391,6 +2443,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![Target {
@@ -2404,6 +2457,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![Target {
@@ -2678,6 +2732,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             targets: Vec::new(),
             variants: vec![rolter_core::Variant {
@@ -2730,6 +2785,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             targets: Vec::new(),
             variants: vec![
@@ -2766,6 +2822,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![
@@ -2820,6 +2877,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![
@@ -2862,6 +2920,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![
@@ -2904,6 +2963,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             cache: None,
             variants: Default::default(),
             targets: vec![
@@ -2958,6 +3018,7 @@ mod tests {
             ],
             params: Default::default(),
             param_policy: Default::default(),
+            advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
         };
@@ -3007,5 +3068,31 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn model_visibility_allows_only_the_configured_key_or_team() {
+        let mut config = config_with_keys();
+        config.routes[0]
+            .advanced
+            .visibility
+            .allowed_key_ids
+            .push("allowed-key".to_string());
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        assert!(model_visible_to(
+            Some(&KeyMeta {
+                id: "allowed-key".to_string(),
+                ..Default::default()
+            }),
+            entry
+        ));
+        assert!(!model_visible_to(
+            Some(&KeyMeta {
+                id: "other-key".to_string(),
+                ..Default::default()
+            }),
+            entry
+        ));
     }
 }

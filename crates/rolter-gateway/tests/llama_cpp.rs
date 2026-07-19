@@ -52,6 +52,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
         }],
         params: Default::default(),
         param_policy: Default::default(),
+        advanced: Default::default(),
         cache: None,
         variants: Default::default(),
     });

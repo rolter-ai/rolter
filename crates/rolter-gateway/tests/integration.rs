@@ -99,6 +99,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         targets,
         params: Default::default(),
         param_policy: Default::default(),
+        advanced: Default::default(),
         cache: None,
         variants: Default::default(),
     });
@@ -252,6 +253,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         }],
         params: Default::default(),
         param_policy: Default::default(),
+        advanced: Default::default(),
         cache: None,
         variants: Default::default(),
     });
@@ -1165,6 +1167,77 @@ async fn response_carries_routing_decision_headers() {
 }
 
 #[tokio::test]
+async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
+    async fn openai_response() -> Json<Value> {
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"pong"}}]}))
+    }
+    async fn anthropic_response() -> Json<Value> {
+        Json(json!({"id":"msg_1","type":"message","content":[{"type":"text","text":"pong"}]}))
+    }
+
+    let fast = serve(
+        Router::new()
+            .route("/v1/chat/completions", post(openai_response))
+            .route("/v1/messages", post(anthropic_response)),
+    )
+    .await;
+    let capable = serve(
+        Router::new()
+            .route("/v1/chat/completions", post(openai_response))
+            .route("/v1/messages", post(anthropic_response)),
+    )
+    .await;
+    let mut config = config_for("router", vec![("fast", fast), ("capable", capable)]);
+    config.routes[0].params.insert(
+        "_rolter_complexity".to_string(),
+        json!({"tiers": [
+            {"name": "simple", "max_input_bytes": 512, "route": "fast-route"},
+            {"name": "complex", "route": "capable-route"}
+        ]}),
+    );
+    for (model, provider) in [("fast-route", "fast"), ("capable-route", "capable")] {
+        config.routes.push(ModelRoute {
+            model: model.to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![Target {
+                provider: provider.to_string(),
+                model: None,
+                weight: 1,
+            }],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+        });
+    }
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let short = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "router", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(short.status(), 200);
+    assert_eq!(short.headers()["x-rolter-provider"], "fast");
+
+    let long = client
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({
+            "model": "router",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "x".repeat(1024)}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(long.status(), 200);
+    assert_eq!(long.headers()["x-rolter-provider"], "capable");
+}
+
+#[tokio::test]
 async fn streaming_request_passes_through_sse() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
     let gw = serve_gateway(&config_for("test-model", vec![("up", upstream)])).await;
@@ -1810,6 +1883,7 @@ async fn variant_routing_fails_over_to_next_variant() {
         targets: Default::default(),
         params: Default::default(),
         param_policy: Default::default(),
+        advanced: Default::default(),
         cache: None,
         // heavily weight the failing variant as primary so failover is exercised
         variants: vec![
