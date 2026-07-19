@@ -138,6 +138,25 @@
     }
   }
 
+  /* breathing status dot (gateway-healthy pill, live-stream markers) */
+  .rl-pulse {
+    animation: rl-pulse 2s ease-in-out infinite;
+  }
+  @keyframes rl-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rl-pulse {
+      animation: none;
+    }
+  }
+
   /* overlay entrances (side sheet + scrim) */
   .rl-fade-in {
     animation: rl-fade-in 0.15s ease;
@@ -168,13 +187,25 @@
     }
   }
 
-  /* single deliberate вышивка cross-stitch rule for banners / empty states */
+  /* вышивка — folkloric cross-stitch ornament from the DS: 10px checkerboard
+     of two offset 45° gradients. use in only one or two places per screen */
   .vyshivka-rule {
-    height: 3px;
-    background-image: repeating-linear-gradient(
-      90deg,
-      var(--red-folk) 0 4px,
-      transparent 4px 8px
-    );
+    height: 10px;
+    width: 100%;
+    background-image:
+      linear-gradient(45deg, var(--red-folk) 25%, transparent 25%, transparent 75%, var(--red-folk) 75%),
+      linear-gradient(45deg, var(--red-folk) 25%, transparent 25%, transparent 75%, var(--red-folk) 75%);
+    background-size: 10px 10px;
+    background-position: 0 0, 5px 5px;
+    opacity: 0.9;
+  }
+
+  /* quieter dotted variant for dividers */
+  .vyshivka-dots {
+    height: 8px;
+    width: 100%;
+    background-image: radial-gradient(var(--red-folk) 40%, transparent 42%);
+    background-size: 8px 8px;
+    opacity: 0.8;
   }
 }

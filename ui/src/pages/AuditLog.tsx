@@ -2,18 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, type TableColumn } from "@/components/ui/table";
-import { fetchAuditLog, type AuditLogEntry } from "@/lib/api";
+import { fetchAuditLogPage, type AuditLogEntry } from "@/lib/api";
 import { useScope } from "@/lib/scope";
-
-const AUDIT_LOG_QUERY_KEY = ["audit-log"];
-
-// pull a wide window so client-side filtering has something to work with;
-// the backend clamps this to 500 and does no filtering of its own
-const FETCH_LIMIT = 500;
 
 const PAGE_SIZE = 25;
 
@@ -24,20 +19,61 @@ const RANGES = [
   { label: "All", hours: null },
 ] as const;
 
+// well-known audited actions for the filter dropdown; the API filters
+// server-side so the list doesn't depend on the current page
+const ACTIONS = [
+  "provider.create",
+  "provider.update",
+  "provider.delete",
+  "route.create",
+  "route.delete",
+  "route.set_params",
+  "route.set_complexity",
+  "route.set_advanced",
+  "virtual_key.create",
+  "virtual_key.delete",
+  "user.invite",
+  "user.update",
+  "user.delete",
+  "membership.create",
+  "membership.delete",
+  "budget.create",
+  "budget.delete",
+  "security.settings.update",
+] as const;
+
+const TARGET_TYPES = [
+  "provider",
+  "route",
+  "route_target",
+  "virtual_key",
+  "user",
+  "membership",
+  "rate_limit",
+  "budget",
+  "model_price",
+  "security_settings",
+] as const;
+
 // dashboard route that owns each audited resource type, for the link-out
 // column; scope-level types (org/team/project) have no dedicated page
 const TARGET_PATH: Record<string, string> = {
   provider: "/providers",
-  route: "/config",
-  route_target: "/config",
-  virtual_key: "/keys",
-  user: "/users",
-  membership: "/users",
-  rate_limit: "/limits",
-  budget: "/limits",
-  model_price: "/pricing",
+  route: "/routing-rules",
+  route_target: "/routing-rules",
+  virtual_key: "/virtual-keys",
+  user: "/gov-users",
+  membership: "/gov-users",
+  rate_limit: "/budgets",
+  budget: "/budgets",
+  model_price: "/pricing-overrides",
+  security_settings: "/security",
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// server-side paginated, filtered audit log: action/target/actor/time-range
+// filters map to query params, pagination walks the keyset cursor
 export default function AuditLog() {
   const scope = useScope();
   const [expanded, setExpanded] = React.useState<string | null>(null);
@@ -46,59 +82,44 @@ export default function AuditLog() {
   const [action, setAction] = React.useState("");
   const [target, setTarget] = React.useState("");
   const [rangeIdx, setRangeIdx] = React.useState(3);
-  const [page, setPage] = React.useState(0);
+  const [cursors, setCursors] = React.useState<string[]>([]);
+  const cursor = cursors[cursors.length - 1];
 
-  const entries = useQuery({
-    queryKey: [...AUDIT_LOG_QUERY_KEY, scope.orgId],
-    queryFn: () => fetchAuditLog(scope.orgId as string, FETCH_LIMIT),
+  const from = React.useMemo(() => {
+    const hours = RANGES[rangeIdx].hours;
+    return hours != null
+      ? new Date(Date.now() - hours * 3_600_000).toISOString()
+      : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeIdx, cursor]);
+
+  const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
+
+  const page = useQuery({
+    queryKey: ["audit-log", scope.orgId, action, target, actorParam, rangeIdx, cursor],
+    queryFn: () =>
+      fetchAuditLogPage(scope.orgId as string, {
+        limit: PAGE_SIZE,
+        cursor,
+        action: action || undefined,
+        target_type: target || undefined,
+        actor: actorParam,
+        from,
+        include_total: !cursor,
+      }),
     enabled: !!scope.orgId,
   });
 
-  const rows = React.useMemo(() => entries.data ?? [], [entries.data]);
-
-  // distinct actions/targets present in the data, for the filter dropdowns
-  const actions = React.useMemo(
-    () => Array.from(new Set(rows.map((r) => r.action))).sort(),
-    [rows],
-  );
-  const targets = React.useMemo(
-    () =>
-      Array.from(
-        new Set(rows.map((r) => r.target_type).filter((t): t is string => !!t)),
-      ).sort(),
-    [rows],
-  );
-
-  const filtered = React.useMemo(() => {
-    const actorQ = actor.trim().toLowerCase();
-    const since =
-      RANGES[rangeIdx].hours != null
-        ? Date.now() - RANGES[rangeIdx].hours * 60 * 60 * 1000
-        : null;
-    return rows.filter((r) => {
-      if (action && r.action !== action) return false;
-      if (target && r.target_type !== target) return false;
-      if (
-        actorQ &&
-        !(r.actor_user_id ?? "system").toLowerCase().includes(actorQ)
-      )
-        return false;
-      if (since != null && new Date(r.at).getTime() < since) return false;
-      return true;
-    });
-  }, [rows, actor, action, target, rangeIdx]);
-
   // reset to the first page whenever the filter set changes
   React.useEffect(() => {
-    setPage(0);
-  }, [actor, action, target, rangeIdx]);
+    setCursors([]);
+  }, [action, target, actorParam, rangeIdx]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const clampedPage = Math.min(page, pageCount - 1);
-  const paged = filtered.slice(
-    clampedPage * PAGE_SIZE,
-    clampedPage * PAGE_SIZE + PAGE_SIZE,
-  );
+  const rows = page.data?.items ?? [];
+  const [total, setTotal] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (page.data?.total !== undefined) setTotal(page.data.total);
+  }, [page.data]);
 
   const columns: TableColumn<AuditLogEntry>[] = [
     {
@@ -161,17 +182,12 @@ export default function AuditLog() {
   ];
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Audit Log</h1>
-        <p className="text-sm text-muted-foreground">
-          Admin, CRUD, and auth actions recorded for this org.
+    <PageBody>
+      {page.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {page.error && (
+        <p className="text-sm text-destructive">
+          Failed to load audit log: {(page.error as Error).message}
         </p>
-      </div>
-
-      {entries.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {entries.error && (
-        <p className="text-sm text-destructive">Failed to load audit log.</p>
       )}
       {!scope.isLoading && !scope.error && !scope.orgId && (
         <p className="text-sm text-muted-foreground">
@@ -183,30 +199,30 @@ export default function AuditLog() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             <Input
-              className="w-40"
-              placeholder="Filter actor…"
+              className="w-[280px] font-mono text-xs"
+              placeholder="Actor user id (full UUID)…"
               value={actor}
               onChange={(e) => setActor(e.target.value)}
             />
             <Select
-              className="w-44"
+              className="w-52"
               value={action}
               onChange={(e) => setAction(e.target.value)}
             >
               <option value="">All actions</option>
-              {actions.map((a) => (
+              {ACTIONS.map((a) => (
                 <option key={a} value={a}>
                   {a}
                 </option>
               ))}
             </Select>
             <Select
-              className="w-40"
+              className="w-44"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
             >
               <option value="">All targets</option>
-              {targets.map((t) => (
+              {TARGET_TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>
@@ -232,37 +248,38 @@ export default function AuditLog() {
 
           <Table
             columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
-            data={paged as unknown as Record<string, unknown>[]}
+            data={rows as unknown as Record<string, unknown>[]}
             rowKey="id"
           />
 
-          {filtered.length === 0 && !entries.isLoading && (
+          {rows.length === 0 && page.isSuccess && (
             <p className="text-sm text-muted-foreground">
               No entries match these filters.
             </p>
           )}
 
-          {filtered.length > 0 && (
+          {(rows.length > 0 || cursors.length > 0) && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                {clampedPage * PAGE_SIZE + 1}–
-                {Math.min((clampedPage + 1) * PAGE_SIZE, filtered.length)} of{" "}
-                {filtered.length}
-                {rows.length >= FETCH_LIMIT && " (latest 500)"}
+                page {cursors.length + 1}
+                {total != null && ` · ${total} total`}
               </span>
               <div className="flex gap-1">
                 <button
                   type="button"
-                  disabled={clampedPage === 0}
-                  onClick={() => setPage(clampedPage - 1)}
+                  disabled={cursors.length === 0}
+                  onClick={() => setCursors((c) => c.slice(0, -1))}
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground disabled:opacity-40"
                 >
                   Prev
                 </button>
                 <button
                   type="button"
-                  disabled={clampedPage >= pageCount - 1}
-                  onClick={() => setPage(clampedPage + 1)}
+                  disabled={!page.data?.has_next || !page.data.next_cursor}
+                  onClick={() =>
+                    page.data?.next_cursor &&
+                    setCursors((c) => [...c, page.data.next_cursor as string])
+                  }
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground disabled:opacity-40"
                 >
                   Next
@@ -273,15 +290,11 @@ export default function AuditLog() {
 
           {expanded && (
             <pre className="max-h-64 overflow-auto rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs">
-              {JSON.stringify(
-                filtered.find((e) => e.id === expanded)?.detail,
-                null,
-                2,
-              )}
+              {JSON.stringify(rows.find((e) => e.id === expanded)?.detail, null, 2)}
             </pre>
           )}
         </>
       )}
-    </div>
+    </PageBody>
   );
 }
