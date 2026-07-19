@@ -14,6 +14,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use rolter_balancer::complexity::POLICY_PARAM;
 use rolter_balancer::RouteContext;
 
 use crate::budgets::{ScopeIds, SpendRecorder};
@@ -693,7 +694,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     } else {
         snap.resolve_pinned(&model)
     };
-    let entry = match snap.routes.get(&model).or(pinned.as_ref()) {
+    let mut entry = match snap.routes.get(&model).or(pinned.as_ref()) {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -705,6 +706,32 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .into_response()
         }
     };
+    // The policy consumes only the request's already-bounded byte count. Its
+    // ordered tier selection never retains prompt text. If an operator removes
+    // a tier route or a key cannot access it, preserve the requested route and
+    // expose that safe fallback in bounded telemetry.
+    if let Some((tier, tier_route)) =
+        rolter_balancer::complexity::ComplexityPolicy::from_params(&entry.route.params)
+            .ok()
+            .flatten()
+            .and_then(|policy| policy.select(body.len()).cloned())
+            .map(|tier| (tier.name, tier.route))
+    {
+        let selected = snap.routes.get(&tier_route).filter(|candidate| {
+            (!candidate.route.targets.is_empty() || candidate.route.has_variants())
+                && vk
+                    .as_ref()
+                    .is_none_or(|key| key_allows_route(key, candidate))
+                && model_visible_to(vk.as_ref(), candidate)
+        });
+        let fallback = selected.is_none();
+        if let Some(candidate) = selected {
+            entry = candidate;
+        }
+        state
+            .metrics
+            .observe_complexity(&model, &tier, &entry.route.model, fallback);
+    }
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
@@ -750,11 +777,22 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // inject the admin's per-model param defaults (temperature, max_tokens, ...)
     // before forwarding; caller values survive only where the override policy
     // permits. falls back to the untouched body if re-serialization fails
-    let forward_body = if entry.route.params.is_empty() {
+    let effective_model = entry.route.model.clone();
+    let rewrite_model = effective_model != model;
+    let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
+    let forward_body = if !has_forward_params && !rewrite_model {
         body.clone()
     } else {
         let mut injected = parsed.clone();
+        if rewrite_model {
+            if let Some(object) = injected.as_object_mut() {
+                object.insert("model".to_string(), Value::String(effective_model.clone()));
+            }
+        }
         entry.route.apply_params(&mut injected);
+        if let Some(object) = injected.as_object_mut() {
+            object.remove(POLICY_PARAM);
+        }
         serde_json::to_vec(&injected)
             .map(Bytes::from)
             .unwrap_or_else(|_| body.clone())
@@ -788,7 +826,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     );
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
-    let price = snap.prices.get(&model).cloned();
+    let price = snap.prices.get(&effective_model).cloned();
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
     let prompt = std::str::from_utf8(&body).ok();
