@@ -20,6 +20,8 @@ mod proxy;
 #[cfg(feature = "postgres")]
 mod rbac;
 #[cfg(feature = "postgres")]
+mod security;
+#[cfg(feature = "postgres")]
 pub mod seed;
 
 use std::net::SocketAddr;
@@ -247,7 +249,8 @@ fn build_app(state: ControlState) -> Router {
         api = api
             .merge(auth::router())
             .merge(crud::router())
-            .merge(me::router());
+            .merge(me::router())
+            .merge(security::router());
     }
 
     // the snapshot endpoint carries decrypted provider credentials, so it stays
