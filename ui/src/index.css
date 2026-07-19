@@ -138,6 +138,36 @@
     }
   }
 
+  /* overlay entrances (side sheet + scrim) */
+  .rl-fade-in {
+    animation: rl-fade-in 0.15s ease;
+  }
+  .rl-sheet-in {
+    animation: rl-sheet-in 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  @keyframes rl-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes rl-sheet-in {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rl-fade-in,
+    .rl-sheet-in {
+      animation: none;
+    }
+  }
+
   /* single deliberate вышивка cross-stitch rule for banners / empty states */
   .vyshivka-rule {
     height: 3px;
