@@ -11,6 +11,7 @@ use axum::http::{header::HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -24,9 +25,9 @@ use rolter_store::postgres::models::{
     RouteTarget, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    AuditLogRepo, BudgetRepo, MembershipRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
-    ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo,
-    TeamRepo, UserRepo, VirtualKeyRepo,
+    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, MembershipRepo,
+    ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
+    RouteTargetRepo, SessionRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::rbac::{authorize, require_superadmin, Principal, ScopeChain};
@@ -239,15 +240,143 @@ async fn list_audit_log(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
     Query(query): Query<AuditLogQuery>,
-) -> ApiResult<Json<Vec<AuditLogEntry>>> {
+) -> ApiResult<Json<AuditLogPageResponse>> {
     authorize(&state, &principal, ScopeChain::org(org_id), Role::Admin).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    Ok(Json(AuditLogRepo(pool(&state)).list(org_id, limit).await?))
+    let direction = query.direction.unwrap_or_default();
+    let filter = AuditLogFilter {
+        actor_user_id: query.actor,
+        action: normalized_filter(query.action, "action")?,
+        target_type: normalized_filter(query.target_type, "target_type")?,
+        start_at: query.start_at,
+        end_at: query.end_at,
+        cursor: query
+            .cursor
+            .as_deref()
+            .map(parse_audit_cursor)
+            .transpose()?,
+        direction: direction.into(),
+    };
+    if filter
+        .start_at
+        .is_some_and(|start| filter.end_at.is_some_and(|end| start > end))
+    {
+        return Err(ApiError::Core(Error::Config(
+            "start_at must be before or equal to end_at".to_string(),
+        )));
+    }
+    let page = AuditLogRepo(pool(&state))
+        .list_page(org_id, &filter, limit)
+        .await?;
+    let has_next = match direction {
+        AuditLogQueryDirection::Next => page.has_more,
+        AuditLogQueryDirection::Previous => !page.entries.is_empty(),
+    };
+    let has_previous = match direction {
+        AuditLogQueryDirection::Next => filter.cursor.is_some(),
+        AuditLogQueryDirection::Previous => page.has_more,
+    };
+    let next_cursor = has_next
+        .then(|| page.entries.last().map(encode_audit_cursor))
+        .flatten();
+    let previous_cursor = has_previous
+        .then(|| page.entries.first().map(encode_audit_cursor))
+        .flatten();
+    let total = if query.include_total {
+        Some(AuditLogRepo(pool(&state)).count(org_id, &filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(AuditLogPageResponse {
+        items: page.entries,
+        next_cursor,
+        previous_cursor,
+        has_next,
+        has_previous,
+        total,
+    }))
 }
 
 #[derive(Deserialize)]
 struct AuditLogQuery {
     limit: Option<i64>,
+    #[serde(alias = "actor_user_id")]
+    actor: Option<Uuid>,
+    action: Option<String>,
+    target_type: Option<String>,
+    #[serde(alias = "from")]
+    start_at: Option<DateTime<Utc>>,
+    #[serde(alias = "to")]
+    end_at: Option<DateTime<Utc>>,
+    cursor: Option<String>,
+    direction: Option<AuditLogQueryDirection>,
+    #[serde(default)]
+    include_total: bool,
+}
+
+#[derive(Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum AuditLogQueryDirection {
+    #[default]
+    Next,
+    Previous,
+}
+
+impl From<AuditLogQueryDirection> for AuditLogDirection {
+    fn from(direction: AuditLogQueryDirection) -> Self {
+        match direction {
+            AuditLogQueryDirection::Next => Self::Next,
+            AuditLogQueryDirection::Previous => Self::Previous,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AuditLogPageResponse {
+    items: Vec<AuditLogEntry>,
+    next_cursor: Option<String>,
+    previous_cursor: Option<String>,
+    has_next: bool,
+    has_previous: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<i64>,
+}
+
+fn normalized_filter(value: Option<String>, field: &str) -> ApiResult<Option<String>> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.len() > 256 || value.chars().any(char::is_control) {
+                return Err(ApiError::Core(Error::Config(format!(
+                    "{field} must be 1-256 visible characters"
+                ))));
+            }
+            Ok(value)
+        })
+        .transpose()
+}
+
+fn parse_audit_cursor(cursor: &str) -> ApiResult<AuditLogCursor> {
+    let (at, id) = cursor.rsplit_once('|').ok_or_else(|| {
+        ApiError::Core(Error::Config(
+            "cursor must contain timestamp and id".to_string(),
+        ))
+    })?;
+    let at = DateTime::parse_from_rfc3339(at)
+        .map_err(|_| ApiError::Core(Error::Config("cursor has an invalid timestamp".to_string())))?
+        .with_timezone(&Utc);
+    let id = Uuid::parse_str(id)
+        .map_err(|_| ApiError::Core(Error::Config("cursor has an invalid id".to_string())))?;
+    Ok(AuditLogCursor { at, id })
+}
+
+fn encode_audit_cursor(entry: &AuditLogEntry) -> String {
+    format!(
+        "{}|{}",
+        entry.at.to_rfc3339_opts(SecondsFormat::Nanos, true),
+        entry.id
+    )
 }
 
 /// Reject a mutation that collides with a bootstrap-config-owned resource.
@@ -2095,7 +2224,6 @@ mod user_tests {
             .verify_password(b"longenough", &parsed)
             .is_ok());
     }
-
     #[test]
     fn advanced_model_validation_rejects_unsafe_values() {
         let mut advanced = AdvancedModelConfig::default();
@@ -2111,5 +2239,32 @@ mod user_tests {
         advanced.headers.clear();
         advanced.limits.output_tokens = Some(0);
         assert!(is_config_err(validate_advanced(&advanced)));
+    }
+
+    #[test]
+    fn audit_cursor_roundtrips_and_rejects_malformed_values() {
+        let entry = AuditLogEntry {
+            id: Uuid::nil(),
+            org_id: None,
+            actor_user_id: None,
+            action: "route.create".to_string(),
+            target_type: Some("route".to_string()),
+            target_id: None,
+            detail: None,
+            at: Utc::now(),
+        };
+        let cursor = encode_audit_cursor(&entry);
+        let parsed = parse_audit_cursor(&cursor).unwrap();
+        assert_eq!(parsed.id, entry.id);
+        assert_eq!(parsed.at, entry.at);
+        assert!(is_config_err(parse_audit_cursor("bad")));
+    }
+
+    #[test]
+    fn audit_filter_rejects_control_characters() {
+        assert!(is_config_err(normalized_filter(
+            Some("route\ncreate".to_string()),
+            "action"
+        )));
     }
 }
