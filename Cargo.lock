@@ -2329,6 +2329,8 @@ dependencies = [
  "parking_lot",
  "rand 0.10.2",
  "rolter-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2345,6 +2347,7 @@ dependencies = [
  "redis",
  "reqwest 0.12.28",
  "rolter-auth",
+ "rolter-balancer",
  "rolter-core",
  "rolter-store",
  "serde",

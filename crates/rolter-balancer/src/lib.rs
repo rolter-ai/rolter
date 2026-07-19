@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use rand::RngExt;
 use rolter_core::BalancingStrategy;
 
+pub mod complexity;
 pub mod scorer;
 pub mod trie;
 use trie::Trie;

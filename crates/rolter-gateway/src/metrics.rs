@@ -146,6 +146,9 @@ pub struct Metrics {
     by_target: DashMap<(String, String), TargetStats>,
     /// per-variant request tally for A/B attribution, keyed by (model, variant)
     by_variant: DashMap<(String, String), AtomicU64>,
+    /// complexity-policy selections keyed by (requested model, tier, selected
+    /// route, outcome). Every label is configuration-bounded (16 tiers/route).
+    by_complexity: DashMap<(String, String, String, String), AtomicU64>,
 }
 
 impl Metrics {
@@ -186,6 +189,31 @@ impl Metrics {
         }
         self.by_variant
             .entry((model.to_string(), variant.to_string()))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Record an opt-in complexity-routing decision. `fallback` means the
+    /// selected tier route was unavailable or not permitted, so the request
+    /// kept its originally requested route.
+    pub fn observe_complexity(
+        &self,
+        model: &str,
+        tier: &str,
+        route: &str,
+        fallback: bool,
+    ) {
+        self.by_complexity
+            .entry((
+                model.to_string(),
+                tier.to_string(),
+                route.to_string(),
+                if fallback {
+                    "fallback".to_string()
+                } else {
+                    "selected".to_string()
+                },
+            ))
             .or_default()
             .fetch_add(1, Relaxed);
     }
@@ -456,7 +484,34 @@ impl Metrics {
         );
         self.render_target_counters(&mut out);
         self.render_variant_counters(&mut out);
+        self.render_complexity_counters(&mut out);
         out
+    }
+
+    /// Append one series per configured tier decision. These counters combine
+    /// with existing request latency/cost telemetry to show policy impact
+    /// without retaining prompt content.
+    fn render_complexity_counters(&self, out: &mut String) {
+        let name = "rolter_complexity_route_requests_total";
+        let _ = writeln!(
+            out,
+            "# HELP {name} complexity routing decisions by requested model, tier, selected route and outcome"
+        );
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_complexity.iter() {
+            let (model, tier, route, outcome) = entry.key();
+            let (model, tier, route, outcome) = (
+                escape_label(model),
+                escape_label(tier),
+                escape_label(route),
+                escape_label(outcome),
+            );
+            let _ = writeln!(
+                out,
+                "{name}{{model=\"{model}\",tier=\"{tier}\",route=\"{route}\",outcome=\"{outcome}\"}} {}",
+                entry.value().load(Relaxed)
+            );
+        }
     }
 
     /// Append the per-variant request counter, one `{model,variant}` series per
@@ -634,5 +689,21 @@ mod tests {
         assert!(out.contains("rolter_variant_requests_total{model=\"chat\",variant=\"control\"} 2"));
         assert!(out.contains("rolter_variant_requests_total{model=\"chat\",variant=\"canary\"} 1"));
         assert!(!out.contains("model=\"gpt-4o\""));
+    }
+
+    #[test]
+    fn complexity_counter_distinguishes_selected_and_fallback_routes() {
+        let metrics = Metrics::default();
+        metrics.observe_complexity("router", "complex", "capable-route", false);
+        metrics.observe_complexity("router", "complex", "router", true);
+        let out = metrics.render();
+
+        assert!(out.contains("# TYPE rolter_complexity_route_requests_total counter"));
+        assert!(out.contains(
+            "rolter_complexity_route_requests_total{model=\"router\",tier=\"complex\",route=\"capable-route\",outcome=\"selected\"} 1"
+        ));
+        assert!(out.contains(
+            "rolter_complexity_route_requests_total{model=\"router\",tier=\"complex\",route=\"router\",outcome=\"fallback\"} 1"
+        ));
     }
 }
