@@ -21,26 +21,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { CopyButton } from "@/components/CopyButton";
-import { Field } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { ParamsEditor, type ParamsEditorResult } from "@/components/ParamsEditor";
-import { AddProviderDialog } from "@/pages/Providers";
+import { ModelSheet, type ModelSheetMode } from "@/components/ModelSheet";
 import {
-  createRoute,
-  createRouteTarget,
   deleteModel,
-  deleteRoute,
-  deleteRouteTarget,
   fetchModels,
   fetchProviders,
   fetchRoutes,
-  fetchRouteTargets,
   setRouteEnabled,
-  STRATEGIES,
-  updateRouteParams,
   type EffectiveModelDto,
   type ProviderRow,
   type RouteRow,
@@ -98,8 +86,12 @@ export default function Models() {
     onSuccess: invalidate,
   });
 
-  const [addOpen, setAddOpen] = React.useState(false);
-  const [editModel, setEditModel] = React.useState<RouteRow | null>(null);
+  // one unified add/edit/view slide-over sheet replaces the old thin dialogs
+  const [sheet, setSheet] = React.useState<{
+    mode: ModelSheetMode;
+    route?: RouteRow | null;
+    configModel?: EffectiveModelDto | null;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<EffectiveModelDto | null>(
     null,
   );
@@ -118,7 +110,7 @@ export default function Models() {
         {tab === "routes" ? (
           <Button
             size="sm"
-            onClick={() => setAddOpen(true)}
+            onClick={() => setSheet({ mode: "add" })}
             disabled={scopeBlocked || !scope.projectId}
           >
             <Plus className="h-4 w-4" />
@@ -191,13 +183,21 @@ export default function Models() {
                     ? "edit the config file and restart to change this model"
                     : "db-managed"}
                 </p>
-                {!isConfigOwned && (
+                {isConfigOwned ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSheet({ mode: "view", configModel: entry })}
+                  >
+                    View
+                  </Button>
+                ) : (
                   <div className="flex shrink-0 gap-1">
                     <Button
                       size="sm"
                       variant="outline"
                       disabled={!route}
-                      onClick={() => route && setEditModel(route)}
+                      onClick={() => route && setSheet({ mode: "edit", route })}
                     >
                       Edit
                     </Button>
@@ -218,24 +218,17 @@ export default function Models() {
         </>
       )}
 
-      {scope.projectId && (
-        <AddModelDialog
-          open={addOpen}
-          onOpenChange={setAddOpen}
-          projectId={scope.projectId}
-          orgId={scope.orgId ?? null}
-          providers={providers.data ?? []}
-          onProvidersChanged={() =>
-            queryClient.invalidateQueries({ queryKey: ["providers", scope.orgId] })
-          }
-          onDone={invalidate}
-        />
-      )}
-
-      <EditModelDialog
-        route={editModel}
-        onOpenChange={(open) => !open && setEditModel(null)}
+      <ModelSheet
+        open={!!sheet}
+        mode={sheet?.mode ?? "add"}
+        onOpenChange={(open) => !open && setSheet(null)}
+        projectId={scope.projectId ?? null}
+        orgId={scope.orgId ?? null}
         providers={providers.data ?? []}
+        route={sheet?.route ?? null}
+        configModel={sheet?.configModel ?? null}
+        models={models.data ?? []}
+        routes={routes.data ?? []}
         onDone={invalidate}
       />
 
@@ -272,419 +265,6 @@ export default function Models() {
         </DialogFooter>
       </Dialog>
     </div>
-  );
-}
-
-function AddModelDialog({
-  open,
-  onOpenChange,
-  projectId,
-  orgId,
-  providers,
-  onProvidersChanged,
-  onDone,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  projectId: string;
-  orgId: string | null;
-  providers: ProviderRow[];
-  onProvidersChanged: () => void;
-  onDone: () => void;
-}) {
-  const [model, setModel] = React.useState("");
-  const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
-  const [providerId, setProviderId] = React.useState("");
-  const [upstreamModel, setUpstreamModel] = React.useState("");
-  const [weight, setWeight] = React.useState("1");
-  const [newProviderOpen, setNewProviderOpen] = React.useState(false);
-  // latest serialized params/policy reported by the ParamsEditor, or an error
-  // while a row is mid-edit. seeded empty; only persisted when non-empty
-  const [paramsResult, setParamsResult] = React.useState<ParamsEditorResult>({
-    ok: true,
-    value: { params: {}, paramPolicy: {} },
-  });
-
-  React.useEffect(() => {
-    if (open) {
-      setModel("");
-      setStrategy(STRATEGIES[0]);
-      setProviderId(providers[0]?.id ?? "");
-      setUpstreamModel("");
-      setWeight("1");
-      setParamsResult({ ok: true, value: { params: {}, paramPolicy: {} } });
-    }
-  }, [open, providers]);
-
-  const selectedProvider = providers.find((p) => p.id === providerId) ?? null;
-  // the resolvable provider-slug/model address for the picked binding: the
-  // upstream model (or the public model name when left blank) under the
-  // provider's slug. this is exactly what a client can send as `model`
-  const address =
-    selectedProvider && (upstreamModel.trim() || model.trim())
-      ? `${selectedProvider.slug}/${upstreamModel.trim() || model.trim()}`
-      : null;
-
-  // create-then-attach-target: two calls against the control api since a
-  // route and its first target are separate resources. multi-target add on
-  // creation is deferred — add further targets via edit after creation
-  const create = useMutation({
-    mutationFn: async () => {
-      const route = await createRoute(projectId, { model, strategy });
-      if (providerId) {
-        await createRouteTarget(route.id, {
-          provider_id: providerId,
-          upstream_model: upstreamModel || undefined,
-          weight: Number(weight) || 1,
-        });
-      }
-      // persist admin default params only when the operator set any, so a
-      // bare route isn't burdened with an empty params write
-      if (paramsResult.ok && Object.keys(paramsResult.value.params).length > 0) {
-        await updateRouteParams(
-          route.id,
-          paramsResult.value.params,
-          paramsResult.value.paramPolicy,
-        );
-      }
-      return route;
-    },
-    onSuccess: () => {
-      onDone();
-      onOpenChange(false);
-    },
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>Add model</DialogTitle>
-        <DialogDescription>
-          Creates a DB-owned route. Add more targets after creation from Edit.
-        </DialogDescription>
-      </DialogHeader>
-      <div className="space-y-3">
-        <Field
-          label="Model name"
-          info="The public model name clients send as `model` (e.g. gpt-4o). rolter routes requests for this name to the targets below."
-        >
-          <Input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="gpt-4o"
-          />
-        </Field>
-        <Field
-          label="Strategy"
-          info="How requests spread across this route's targets. round_robin cycles evenly; weighted honours per-target weight; cache_aware/consistent_hash favour affinity; power_of_two picks the lighter of two random targets."
-        >
-          <Select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-            {STRATEGIES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field
-          label="Target provider"
-          info="The upstream provider that actually serves this model. Pick 'none' to create a routing entry now and attach targets later from Edit."
-          hint={providers.length ? undefined : "no providers configured for this org yet"}
-        >
-          <div className="flex items-center gap-1">
-            <Select
-              value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
-              className="flex-1"
-            >
-              <option value="">none (create route only)</option>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.kind})
-                </option>
-              ))}
-            </Select>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!orgId}
-              title={orgId ? "Add a new provider" : "no org selected"}
-              onClick={() => setNewProviderOpen(true)}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              New
-            </Button>
-          </div>
-        </Field>
-        {providerId && (
-          <>
-            <Field
-              label="Upstream model (optional)"
-              info="The model name sent to the provider, if it differs from the public name. Leave blank to forward the public name unchanged."
-            >
-              <Input
-                value={upstreamModel}
-                onChange={(e) => setUpstreamModel(e.target.value)}
-                placeholder="defaults to the public model name"
-              />
-            </Field>
-            <Field
-              label="Weight"
-              info="Relative share of traffic for this target under weighted strategies. Higher = more traffic. Ignored by non-weighted strategies. Default 1."
-            >
-              <Input
-                type="number"
-                min={1}
-                value={weight}
-                onChange={(e) => setWeight(e.target.value)}
-              />
-            </Field>
-            {address && (
-              <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5">
-                <span className="text-xs text-muted-foreground">Address</span>
-                <span className="truncate font-mono text-xs">{address}</span>
-                <CopyButton
-                  value={address}
-                  label="Copy provider-slug/model address"
-                  className="ml-auto h-6 px-1.5"
-                />
-              </div>
-            )}
-          </>
-        )}
-        {orgId && (
-          <AddProviderDialog
-            open={newProviderOpen}
-            onOpenChange={setNewProviderOpen}
-            orgId={orgId}
-            onDone={(created) => {
-              onProvidersChanged();
-              // select the freshly created provider so the binding continues
-              setProviderId(created.id);
-            }}
-          />
-        )}
-        <ParamsEditor variant="create" onChange={setParamsResult} />
-        {!paramsResult.ok && (
-          <p className="text-xs text-destructive">{paramsResult.error}</p>
-        )}
-        {create.isError && (
-          <p className="text-xs text-destructive">{(create.error as Error).message}</p>
-        )}
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button
-          disabled={!model.trim() || create.isPending || !paramsResult.ok}
-          onClick={() => create.mutate()}
-        >
-          Create
-        </Button>
-      </DialogFooter>
-    </Dialog>
-  );
-}
-
-function EditModelDialog({
-  route,
-  onOpenChange,
-  providers,
-  onDone,
-}: {
-  route: RouteRow | null;
-  onOpenChange: (open: boolean) => void;
-  providers: ProviderRow[];
-  onDone: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const open = !!route;
-
-  const targets = useQuery({
-    queryKey: ["route-targets", route?.id],
-    queryFn: () => fetchRouteTargets(route!.id),
-    enabled: open,
-  });
-
-  const [providerId, setProviderId] = React.useState("");
-  const [upstreamModel, setUpstreamModel] = React.useState("");
-  const [weight, setWeight] = React.useState("1");
-
-  React.useEffect(() => {
-    if (open) {
-      setProviderId(providers[0]?.id ?? "");
-      setUpstreamModel("");
-      setWeight("1");
-    }
-  }, [open, providers]);
-
-  const invalidateTargets = () => {
-    queryClient.invalidateQueries({ queryKey: ["route-targets", route?.id] });
-    onDone();
-  };
-
-  const addTarget = useMutation({
-    mutationFn: () =>
-      createRouteTarget(route!.id, {
-        provider_id: providerId,
-        upstream_model: upstreamModel || undefined,
-        weight: Number(weight) || 1,
-      }),
-    onSuccess: () => {
-      setUpstreamModel("");
-      setWeight("1");
-      invalidateTargets();
-    },
-  });
-
-  const removeTarget = useMutation({
-    mutationFn: (id: string) => deleteRouteTarget(id),
-    onSuccess: invalidateTargets,
-  });
-
-  const removeRoute = useMutation({
-    mutationFn: () => deleteRoute(route!.id),
-    onSuccess: () => {
-      invalidateTargets();
-      onOpenChange(false);
-    },
-  });
-
-  const saveParams = useMutation({
-    mutationFn: (input: {
-      params: Record<string, unknown>;
-      paramPolicy: Record<string, unknown>;
-    }) => updateRouteParams(route!.id, input.params, input.paramPolicy),
-    onSuccess: invalidateTargets,
-  });
-
-  const providerName = (id: string) =>
-    providers.find((p) => p.id === id)?.name ?? id;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>Edit {route?.model}</DialogTitle>
-        <DialogDescription>
-          Manage targets for this route. Strategy changes aren't wired up yet — add
-          a new route with the desired strategy if you need to change it.
-        </DialogDescription>
-      </DialogHeader>
-
-      <div className="space-y-3">
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium leading-none">Targets</p>
-          {targets.isLoading && (
-            <p className="text-xs text-muted-foreground">Loading…</p>
-          )}
-          {targets.data?.length === 0 && (
-            <p className="text-xs text-muted-foreground">No targets yet.</p>
-          )}
-          <div className="space-y-1">
-            {targets.data?.map((t) => (
-              <div
-                key={t.id}
-                className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted px-2 py-1.5 text-xs"
-              >
-                <span className="truncate font-mono">
-                  {providerName(t.provider_id)}
-                  {t.upstream_model ? ` → ${t.upstream_model}` : ""} (w{t.weight})
-                </span>
-                <button
-                  type="button"
-                  aria-label="Remove target"
-                  onClick={() => removeTarget.mutate(t.id)}
-                  className="shrink-0 text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-2 rounded-md border border-dashed border-border p-3">
-          <Field
-            label="Provider"
-            info="The upstream provider that serves this target. Add more targets to load-balance one model across providers."
-          >
-            <Select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.kind})
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field
-            label="Upstream model (optional)"
-            info="The model name sent to this provider, if it differs from the public name. Leave blank to forward the public name unchanged."
-          >
-            <Input
-              value={upstreamModel}
-              onChange={(e) => setUpstreamModel(e.target.value)}
-            />
-          </Field>
-          <Field
-            label="Weight"
-            info="Relative share of traffic for this target under weighted strategies. Higher = more traffic. Default 1."
-          >
-            <Input
-              type="number"
-              min={1}
-              value={weight}
-              onChange={(e) => setWeight(e.target.value)}
-            />
-          </Field>
-          {addTarget.isError && (
-            <p className="text-xs text-destructive">
-              {(addTarget.error as Error).message}
-            </p>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!providerId || addTarget.isPending}
-            onClick={() => addTarget.mutate()}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add target
-          </Button>
-        </div>
-        {route && (
-          <ParamsEditor
-            params={route.params}
-            paramPolicy={route.param_policy}
-            saving={saveParams.isPending}
-            error={saveParams.isError ? (saveParams.error as Error).message : null}
-            onSave={(v) =>
-              saveParams.mutate({ params: v.params, paramPolicy: v.paramPolicy })
-            }
-          />
-        )}
-
-        {removeRoute.isError && (
-          <p className="text-xs text-destructive">
-            {(removeRoute.error as Error).message}
-          </p>
-        )}
-      </div>
-
-      <DialogFooter>
-        <Button
-          variant="destructive"
-          disabled={removeRoute.isPending}
-          onClick={() => removeRoute.mutate()}
-        >
-          Delete route
-        </Button>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Close
-        </Button>
-      </DialogFooter>
-    </Dialog>
   );
 }
 
