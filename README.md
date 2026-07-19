@@ -92,16 +92,16 @@ flowchart LR
 
 ## Inspirations & Acknowledgments
 
-rolter stands on the shoulders of great open-source projects and research:
+rolter stands on the shoulders of great open-source projects and research. See our [inspiration issues](https://github.com/rolter-ai/rolter/labels/inspiration) for detailed analysis of each project.
 
 ### Gateway & Load Balancing
 
-- **[LiteLLM](https://github.com/BerriAI/litellm)** — gateway and load balancer patterns, config/DB model split, virtual keys, budget controls
-- **[Bifrost](https://github.com/maximhq/bifrost)** — high-performance Go gateway, weighted key selection, multi-provider failover, plugin system
-- **[TensorZero](https://github.com/tensorzero/tensorzero)** — Rust LLMOps gateway, sub-1ms p99 latency target, observability patterns
-- **[llm-d](https://github.com/llm-d/llm-d)** — cache-aware routing, prefix/KV-cache affinity, inference-phase scheduling
-- **[LLMGateway](https://github.com/theopenco/llmgateway)** — cost tracking, analytics dashboard, provider key management UX
-- **[Archestra](https://github.com/archestra-ai/archestra)** — dynamic model routing, virtual keys, enterprise auth patterns (OIDC, SAML)
+- **[LiteLLM](https://github.com/BerriAI/litellm)** — proxy feature breadth, provider coverage (100+), config/DB model split, virtual keys, budget controls, spend tracking
+- **[Bifrost](https://github.com/maximhq/bifrost)** — high-performance Go gateway, weighted key selection (~10ns), multi-provider failover, plugin/middleware system, hierarchical budgets, semantic caching; published perf target (~11µs latency at 5k RPS)
+- **[TensorZero](https://github.com/tensorzero/tensorzero)** — Rust LLMOps gateway, sub-1ms p99 latency target at 10k+ QPS, observability patterns, OTLP traces + Prometheus, rate limiting with granular scopes
+- **[llm-d](https://github.com/llm-d/llm-d)** — cache-aware routing, prefix/KV-cache affinity, inference-phase scheduling, predicted-latency scheduling (40% TTFT/ITL reduction); highest-signal reference for `rolter-balancer` crate
+- **[LLMGateway](https://github.com/theopenco/llmgateway)** — cost tracking, analytics dashboard UX, performance analytics, provider key management, self-host story (Docker + Postgres + Redis)
+- **[Archestra](https://github.com/archestra-ai/archestra)** — dynamic model routing, MCP gateway, enterprise auth (OIDC, SAML, Okta, Entra), SSO + RBAC, tool-call safety guardrails
 
 ### Infrastructure & Frameworks
 
