@@ -8,6 +8,8 @@
 //! The binary is a thin wrapper over [`run`]; the unified `rolter` launcher
 //! reuses the same entrypoint as its `control` subcommand.
 
+#[cfg(feature = "postgres")]
+mod alerting;
 mod analytics;
 #[cfg(feature = "postgres")]
 mod auth;
@@ -246,7 +248,9 @@ fn build_app(state: ControlState) -> Router {
     // admin token) is preserved inside the `Principal` extractor.
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
+        alerting::start_evaluator(state.clone());
         api = api
+            .merge(alerting::router())
             .merge(auth::router())
             .merge(crud::router())
             .merge(me::router())
