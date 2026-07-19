@@ -90,6 +90,30 @@ flowchart LR
   GW -->|async batched logs| CH[("ClickHouse")]
 ```
 
+## Inspirations & Acknowledgments
+
+rolter stands on the shoulders of great open-source projects and research:
+
+### Gateway & Load Balancing
+
+- **[LiteLLM](https://github.com/BerriAI/litellm)** — gateway and load balancer patterns, config/DB model split, virtual keys, budget controls
+- **[Bifrost](https://github.com/maximhq/bifrost)** — high-performance Go gateway, weighted key selection, multi-provider failover, plugin system
+- **[TensorZero](https://github.com/tensorzero/tensorzero)** — Rust LLMOps gateway, sub-1ms p99 latency target, observability patterns
+- **[llm-d](https://github.com/llm-d/llm-d)** — cache-aware routing, prefix/KV-cache affinity, inference-phase scheduling
+- **[LLMGateway](https://github.com/theopenco/llmgateway)** — cost tracking, analytics dashboard, provider key management UX
+- **[Archestra](https://github.com/archestra-ai/archestra)** — dynamic model routing, virtual keys, enterprise auth patterns (OIDC, SAML)
+
+### Infrastructure & Frameworks
+
+- **[vLLM](https://github.com/vllm-project/vllm)** — KV-cache-aware replica pooling and prefill/decode scheduling
+- **[Axum](https://github.com/tokio-rs/axum)** — high-performance Rust web framework
+- **[Tokio](https://tokio.rs)** — async runtime foundation
+- **[shadcn/ui](https://ui.shadcn.com)** — component library for the dashboard UI
+
+### API Standards
+
+- **[OpenAI](https://openai.com)** and **[Anthropic](https://www.anthropic.com)** — API compatibility targets and standards
+
 ## Documentation
 
 - [Quickstart](user-docs/quickstart.mdx) and [Installation](user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
