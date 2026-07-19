@@ -22,7 +22,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { PageHeader } from "@/components/ui/page-header";
 import { ScatterPlot, type ScatterPoint } from "@/components/ui/scatter-plot";
 import { Select } from "@/components/ui/select";
 import { StatusRow } from "@/components/ui/status-row";
@@ -767,11 +766,7 @@ export default function Playground() {
   const models = useModelNames();
 
   return (
-    <div className="flex flex-col gap-5">
-      <PageHeader
-        title="Playground"
-        description="Try any model the gateway proxies — chat, embeddings, image, audio, realtime."
-      />
+    <div className="flex flex-col gap-5 p-[22px]">
       <KeyBar />
       <Tabs
         value={mode}

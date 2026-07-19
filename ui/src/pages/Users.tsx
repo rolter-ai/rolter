@@ -1,16 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, X } from "lucide-react";
+import { Ban, Pencil, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  ListHeader,
+  ListRow,
+  ListTable,
+  PageBody,
+  RowIconButton,
+  SearchInput,
+} from "@/components/screen";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogDescription,
@@ -24,7 +24,6 @@ import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   createMembership,
-  deleteMembership,
   deleteUser,
   fetchMemberships,
   fetchUsers,
@@ -68,8 +67,10 @@ export default function Users() {
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
+  const [search, setSearch] = React.useState("");
+  const [statusTab, setStatusTab] = React.useState<"all" | "active" | "deactivated">("all");
 
-  // group role grants by user for per-card rendering
+  // group role grants by user for per-row rendering
   const byUser = React.useMemo(() => {
     const map = new Map<string, MembershipRow[]>();
     for (const m of memberships.data ?? []) {
@@ -80,18 +81,58 @@ export default function Users() {
     return map;
   }, [memberships.data]);
 
+  const toggleActive = useMutation({
+    mutationFn: (user: UserRow) =>
+      updateUser(user.id, { deactivated: !user.deactivated_at ? true : false }),
+    onSuccess: invalidate,
+  });
+
+  const q = search.trim().toLowerCase();
+  const rows = (users.data ?? []).filter((u) => {
+    const active = !u.deactivated_at;
+    if (statusTab === "active" && !active) return false;
+    if (statusTab === "deactivated" && active) return false;
+    return !q || u.email.toLowerCase().includes(q);
+  });
+
+  const counts = {
+    all: users.data?.length ?? 0,
+    active: (users.data ?? []).filter((u) => !u.deactivated_at).length,
+    deactivated: (users.data ?? []).filter((u) => !!u.deactivated_at).length,
+  };
+
+  const GRID = "1.7fr 1.4fr 110px 1fr 110px";
+  const AVATARS = ["#c0392b", "#2e7d5b", "#3d6fb4", "#8e5aa8", "#b8860b", "#6b7280"];
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Users &amp; teams</h1>
-          <p className="text-sm text-muted-foreground">
-            Accounts and role assignments for the current org. Invite users,
-            grant roles at org/team/project scope, and deactivate or remove
-            accounts.
-          </p>
+    <PageBody>
+      <div className="flex items-center gap-3">
+        <SearchInput
+          placeholder="Search users"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="flex gap-0.5">
+          {(["all", "active", "deactivated"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setStatusTab(t)}
+              className={
+                "border-b-2 px-3 py-[7px] text-sm capitalize transition-colors " +
+                (statusTab === t
+                  ? "border-[color:var(--red-folk)] text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground")
+              }
+            >
+              {t}{" "}
+              <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
+                {counts[t]}
+              </span>
+            </button>
+          ))}
         </div>
-        <Button size="sm" onClick={() => setInviteOpen(true)} disabled={!orgId}>
+        <Button className="ml-auto" onClick={() => setInviteOpen(true)} disabled={!orgId}>
           <Plus className="h-4 w-4" />
           Invite user
         </Button>
@@ -105,28 +146,86 @@ export default function Users() {
       {(users.error || memberships.error) && (
         <p className="text-sm text-destructive">Failed to load users.</p>
       )}
-      {orgId && users.isLoading && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      )}
-      {orgId && !users.isLoading && users.data?.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No users in this org yet. Invite one to get started.
-        </p>
-      )}
+      {orgId && users.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {users.data?.map((user) => (
-          <UserCard
-            key={user.id}
-            user={user}
-            grants={byUser.get(user.id) ?? []}
-            teams={scope.teams}
-            onEdit={() => setEditUser(user)}
-            onAddRole={() => setRoleUser(user)}
-            onChanged={invalidate}
-          />
-        ))}
-      </div>
+      <ListTable>
+        <ListHeader grid={GRID}>
+          <span>User</span>
+          <span>Roles</span>
+          <span>Status</span>
+          <span>Created</span>
+          <span />
+        </ListHeader>
+        {rows.map((user, i) => {
+          const active = !user.deactivated_at;
+          const grants = byUser.get(user.id) ?? [];
+          const initials = user.email.slice(0, 2).toUpperCase();
+          return (
+            <ListRow key={user.id} grid={GRID} style={{ opacity: active ? 1 : 0.55 }}>
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span
+                  className="flex h-8 w-8 flex-none items-center justify-center rounded-full font-mono text-[11px] font-semibold text-white"
+                  style={{ background: AVATARS[i % AVATARS.length] }}
+                >
+                  {initials}
+                </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-mono text-sm">{user.email}</span>
+                    {user.is_superadmin && (
+                      <span className="flex-none rounded-[3px] border border-[color:var(--red-folk)] px-1 text-[9px] uppercase tracking-[0.06em] text-[color:var(--red-folk)]">
+                        super
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="min-w-0 truncate text-[11px] text-[color:var(--text-subtle)]">
+                {grants.length === 0
+                  ? "no roles"
+                  : grants.map((g) => `${g.role}@${scopeLabel(g, scope.teams)}`).join(" · ")}
+              </div>
+              <div>
+                <span
+                  className="inline-flex items-center gap-[5px] rounded-full px-[9px] py-0.5 text-[11px] font-semibold capitalize"
+                  style={{
+                    color: active ? "var(--status-success)" : "var(--status-danger)",
+                    background: active ? "rgba(22,163,74,.14)" : "rgba(229,57,53,.14)",
+                  }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ background: "currentColor" }}
+                  />
+                  {active ? "active" : "blocked"}
+                </span>
+              </div>
+              <span className="font-mono text-xs text-muted-foreground">
+                {user.created_at?.slice(0, 10)}
+              </span>
+              <div className="flex justify-end gap-[5px]">
+                <RowIconButton title="Grant role" onClick={() => setRoleUser(user)}>
+                  <Plus className="h-3.5 w-3.5" />
+                </RowIconButton>
+                <RowIconButton title="Edit user" onClick={() => setEditUser(user)}>
+                  <Pencil className="h-3.5 w-3.5" />
+                </RowIconButton>
+                <RowIconButton
+                  danger={active}
+                  title={active ? "Deactivate user" : "Reactivate user"}
+                  disabled={toggleActive.isPending}
+                  onClick={() => toggleActive.mutate(user)}
+                >
+                  <Ban className="h-3.5 w-3.5" />
+                </RowIconButton>
+              </div>
+            </ListRow>
+          );
+        })}
+        {orgId && !users.isLoading && rows.length === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-muted-foreground">No users match.</p>
+        )}
+      </ListTable>
 
       {orgId && (
         <InviteUserDialog
@@ -153,9 +252,10 @@ export default function Users() {
           onDone={invalidate}
         />
       )}
-    </div>
+    </PageBody>
   );
 }
+
 
 // render a membership's scope compactly, resolving team names where the scope
 // is a team in the current org; projects fall back to a short id
@@ -166,102 +266,6 @@ function scopeLabel(m: MembershipRow, teams: TeamRow[]): string {
     return team ? `team:${team.name}` : `team:${m.team_id.slice(0, 8)}`;
   }
   return "org";
-}
-
-function UserCard({
-  user,
-  grants,
-  teams,
-  onEdit,
-  onAddRole,
-  onChanged,
-}: {
-  user: UserRow;
-  grants: MembershipRow[];
-  teams: TeamRow[];
-  onEdit: () => void;
-  onAddRole: () => void;
-  onChanged: () => void;
-}) {
-  const active = !user.deactivated_at;
-
-  const toggleActive = useMutation({
-    mutationFn: () => updateUser(user.id, { deactivated: active }),
-    onSuccess: onChanged,
-  });
-
-  const revokeRole = useMutation({
-    mutationFn: (id: string) => deleteMembership(id),
-    onSuccess: onChanged,
-  });
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-sm" title={user.email}>
-            {user.email}
-          </span>
-          <div className="flex shrink-0 items-center gap-1">
-            {user.is_superadmin && <Badge tone="accent">superadmin</Badge>}
-            <Badge tone={active ? "success" : "danger"}>
-              {active ? "active" : "deactivated"}
-            </Badge>
-          </div>
-        </CardTitle>
-        <CardDescription>
-          {grants.length === 0
-            ? "No roles in this org."
-            : `${grants.length} role${grants.length === 1 ? "" : "s"} in this org`}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {grants.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {grants.map((m) => (
-              <span
-                key={m.id}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-1.5 py-0.5 text-xs"
-              >
-                <span className="font-medium">{m.role}</span>
-                <span className="text-muted-foreground">
-                  @{scopeLabel(m, teams)}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Revoke ${m.role} at ${scopeLabel(m, teams)}`}
-                  className="text-muted-foreground transition-colors hover:text-destructive"
-                  disabled={revokeRole.isPending}
-                  onClick={() => revokeRole.mutate(m.id)}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="flex items-center justify-between gap-2">
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Switch
-              checked={active}
-              disabled={toggleActive.isPending}
-              onCheckedChange={() => toggleActive.mutate()}
-            />
-            Active
-          </label>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={onAddRole}>
-              <Plus className="h-3.5 w-3.5" />
-              Role
-            </Button>
-            <Button size="sm" variant="outline" onClick={onEdit}>
-              Edit
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }
 
 function InviteUserDialog({

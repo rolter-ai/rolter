@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -161,13 +162,7 @@ export default function AuditLog() {
   ];
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Audit Log</h1>
-        <p className="text-sm text-muted-foreground">
-          Admin, CRUD, and auth actions recorded for this org.
-        </p>
-      </div>
+    <PageBody>
 
       {entries.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {entries.error && (
@@ -282,6 +277,6 @@ export default function AuditLog() {
           )}
         </>
       )}
-    </div>
+    </PageBody>
   );
 }

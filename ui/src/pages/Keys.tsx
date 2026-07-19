@@ -2,15 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { CopyButton } from "@/components/CopyButton";
+import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogDescription,
@@ -69,26 +64,49 @@ export default function Keys() {
   const [addOpen, setAddOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<VirtualKeyRow | null>(null);
   const [created, setCreated] = React.useState<CreatedVirtualKey | null>(null);
+  const [search, setSearch] = React.useState("");
 
   const scopeBlocked = !scope.isLoading && !!scope.error;
 
+  const q = search.trim().toLowerCase();
+  const rows = (keys.data ?? []).filter(
+    (k) => !q || (k.name ?? "").toLowerCase().includes(q) || k.key_prefix.includes(q),
+  );
+
+  const exportCsv = () => {
+    const lines = [
+      "name,key_prefix,models,disabled,expires_at",
+      ...rows.map((k) =>
+        [k.name ?? "", k.key_prefix, k.models.join("|"), k.disabled, k.expires_at ?? ""].join(","),
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "virtual-keys.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const GRID = "1.3fr 1.2fr 1.8fr 1.3fr 66px 40px";
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Virtual keys</h1>
-          <p className="text-sm text-muted-foreground">
-            API keys clients use to call rolter, scoped to a project.
-          </p>
+    <PageBody>
+      <div className="flex items-center gap-3">
+        <SearchInput
+          placeholder="Search by name…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" onClick={exportCsv}>
+            Export CSV
+          </Button>
+          <Button onClick={() => setAddOpen(true)} disabled={scopeBlocked || !scope.projectId}>
+            <Plus className="h-4 w-4" />
+            Add Virtual Key
+          </Button>
         </div>
-        <Button
-          size="sm"
-          onClick={() => setAddOpen(true)}
-          disabled={scopeBlocked || !scope.projectId}
-        >
-          <Plus className="h-4 w-4" />
-          Create key
-        </Button>
       </div>
 
       {keys.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -101,66 +119,81 @@ export default function Keys() {
         </p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {keys.data?.map((key) => (
-          <Card key={key.id}>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between gap-2">
-                <span className="truncate">{key.name ?? "unnamed key"}</span>
-                <Switch
-                  checked={!key.disabled}
-                  disabled={toggleDisabled.isPending}
-                  onCheckedChange={(enabled) =>
-                    toggleDisabled.mutate({ id: key.id, disabled: !enabled })
-                  }
-                />
-              </CardTitle>
-              <CardDescription className="font-mono">
+      <ListTable>
+        <ListHeader grid={GRID}>
+          <span>Name</span>
+          <span>Key</span>
+          <span>Models</span>
+          <span>Cache</span>
+          <span>Status</span>
+          <span />
+        </ListHeader>
+        {rows.map((key) => (
+          <ListRow key={key.id} grid={GRID} style={{ opacity: key.disabled ? 0.55 : 1 }}>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">{key.name ?? "unnamed key"}</div>
+              <div className="truncate text-[0.6875rem] text-muted-foreground">
+                {key.expires_at
+                  ? `expires ${new Date(key.expires_at).toLocaleDateString()}`
+                  : "no expiry"}
+              </div>
+            </div>
+            <div className="flex min-w-0 items-center gap-0.5">
+              <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
                 {key.key_prefix}…
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <div className="flex flex-wrap gap-1.5">
-                {key.models.length ? (
-                  key.models.map((model) => <Tag key={model}>{model}</Tag>)
-                ) : (
-                  <Badge tone="neutral">all models</Badge>
-                )}
-              </div>
-              <Field
-                label="Response cache"
-                hint="The global cache switch must also be enabled."
-              >
-                <Select
-                  aria-label={`Response cache policy for ${key.name ?? key.key_prefix}`}
-                  value={cacheMode(key.cache_enabled)}
-                  disabled={setCache.isPending}
-                  onChange={(event) =>
-                    setCache.mutate({ id: key.id, cache: parseCacheMode(event.target.value) })
-                  }
-                >
-                  <option value="inherit">Inherit route setting</option>
-                  <option value="off">Off</option>
-                  <option value="on">On</option>
-                </Select>
-              </Field>
-              <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
-                <span>
-                  {key.expires_at
-                    ? `expires ${new Date(key.expires_at).toLocaleDateString()}`
-                    : "no expiry"}
+              </code>
+              <CopyButton value={key.key_prefix} label="Copy key prefix" className="h-6 px-1" />
+            </div>
+            <div className="flex min-w-0 flex-wrap gap-1 overflow-hidden">
+              {key.models.length ? (
+                key.models.slice(0, 3).map((model) => <Tag key={model}>{model}</Tag>)
+              ) : (
+                <Badge tone="neutral">all models</Badge>
+              )}
+              {key.models.length > 3 && (
+                <span className="font-mono text-[10px] text-[color:var(--text-subtle)]">
+                  +{key.models.length - 3}
                 </span>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => setDeleteTarget(key)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+              )}
+            </div>
+            <Select
+              aria-label={`Response cache policy for ${key.name ?? key.key_prefix}`}
+              className="h-8 text-xs"
+              value={cacheMode(key.cache_enabled)}
+              disabled={setCache.isPending}
+              onChange={(event) =>
+                setCache.mutate({ id: key.id, cache: parseCacheMode(event.target.value) })
+              }
+            >
+              <option value="inherit">inherit</option>
+              <option value="off">off</option>
+              <option value="on">on</option>
+            </Select>
+            <Switch
+              checked={!key.disabled}
+              disabled={toggleDisabled.isPending}
+              onCheckedChange={(enabled) =>
+                toggleDisabled.mutate({ id: key.id, disabled: !enabled })
+              }
+            />
+            <button
+              type="button"
+              title="Delete key"
+              onClick={() => setDeleteTarget(key)}
+              className="flex justify-self-end rounded-[6px] p-1 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)]"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </ListRow>
         ))}
+        {!keys.isLoading && rows.length === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-muted-foreground">No keys match.</p>
+        )}
+      </ListTable>
+      <div className="flex items-center justify-between px-0.5 text-xs text-muted-foreground">
+        <span>
+          {rows.length} of {keys.data?.length ?? 0} keys
+        </span>
       </div>
 
       {scope.projectId && (
@@ -208,7 +241,7 @@ export default function Keys() {
       </Dialog>
 
       <CreatedKeyDialog created={created} onOpenChange={(open) => !open && setCreated(null)} />
-    </div>
+    </PageBody>
   );
 }
 

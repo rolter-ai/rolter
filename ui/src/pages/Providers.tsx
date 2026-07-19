@@ -2,15 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogDescription,
@@ -55,20 +49,31 @@ export default function Providers() {
   const [addOpen, setAddOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<ProviderRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
+  const [search, setSearch] = React.useState("");
 
   const scopeBlocked = !scope.isLoading && !!scope.error;
 
+  const q = search.trim().toLowerCase();
+  const rows = (providers.data ?? []).filter(
+    (p) =>
+      !q ||
+      p.name.toLowerCase().includes(q) ||
+      p.kind.toLowerCase().includes(q) ||
+      p.slug.toLowerCase().includes(q),
+  );
+
+  const GRID = "1fr 1.1fr 2fr 1fr 1fr 108px";
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Providers</h1>
-          <p className="text-sm text-muted-foreground">
-            Upstream LLM providers configured for this org.
-          </p>
-        </div>
+    <PageBody>
+      <div className="flex items-center gap-3">
+        <SearchInput
+          placeholder="Search providers"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <Button
-          size="sm"
+          className="ml-auto"
           onClick={() => setAddOpen(true)}
           disabled={scopeBlocked || !scope.orgId}
         >
@@ -92,54 +97,63 @@ export default function Providers() {
         </p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {providers.data?.map((provider) => (
-          <Card key={provider.id}>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between gap-2">
-                <span className="truncate">{provider.name}</span>
-                <Badge tone="outline">{provider.kind}</Badge>
-              </CardTitle>
-              <CardDescription className="truncate font-mono">
-                {provider.api_base}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <div className="flex items-center gap-1">
-                <Badge tone="outline" className="font-mono">
-                  {provider.slug}
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  address models as{" "}
-                  <span className="font-mono">{provider.slug}/&lt;model&gt;</span>
-                </span>
-                <CopyButton
-                  value={`${provider.slug}/`}
-                  label="Copy address prefix"
-                  className="ml-auto h-6 px-1.5"
-                />
-              </div>
-              {provider.egress_proxy && (
-                <p className="truncate text-xs text-muted-foreground">
-                  egress proxy: {provider.egress_proxy}
-                </p>
-              )}
-              <div className="flex items-center justify-end gap-1">
-                <Button size="sm" variant="outline" onClick={() => setEditTarget(provider)}>
-                  Edit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => setDeleteTarget(provider)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+      <ListTable>
+        <ListHeader grid={GRID}>
+          <span>Name</span>
+          <span>Type</span>
+          <span>API base</span>
+          <span>Slug</span>
+          <span>Key env</span>
+          <span />
+        </ListHeader>
+        {rows.map((provider) => (
+          <ListRow key={provider.id} grid={GRID}>
+            <span className="truncate font-mono text-sm">{provider.name}</span>
+            <span>
+              <Badge tone="outline">{provider.kind}</Badge>
+            </span>
+            <span className="truncate font-mono text-xs text-muted-foreground">
+              {provider.api_base}
+            </span>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+                {provider.slug}
+              </span>
+              <CopyButton
+                value={`${provider.slug}/`}
+                label="Copy address prefix"
+                className="h-6 px-1"
+              />
+            </span>
+            <span className="truncate font-mono text-xs text-muted-foreground">
+              {provider.api_key_env || "—"}
+            </span>
+            <div className="flex items-center justify-end gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-[30px]"
+                onClick={() => setEditTarget(provider)}
+              >
+                Edit
+              </Button>
+              <button
+                type="button"
+                title="Delete provider"
+                onClick={() => setDeleteTarget(provider)}
+                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger)]"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </ListRow>
         ))}
-      </div>
+        {!providers.isLoading && rows.length === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+            No providers match.
+          </p>
+        )}
+      </ListTable>
 
       {scope.orgId && (
         <AddProviderDialog
@@ -187,7 +201,7 @@ export default function Providers() {
           </Button>
         </DialogFooter>
       </Dialog>
-    </div>
+    </PageBody>
   );
 }
 

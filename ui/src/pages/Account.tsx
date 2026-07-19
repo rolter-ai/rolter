@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Plus, RotateCw, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -74,17 +75,14 @@ export default function Account() {
   const usageUnavailable = usage.error instanceof AnalyticsUnavailableError;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Account</h1>
-          <p className="text-sm text-muted-foreground">
-            Your personal API keys and usage. Keys you mint here are yours to
-            rotate or revoke.
-          </p>
-        </div>
+    <PageBody>
+      <div className="flex items-center gap-3">
+        <span className="text-sm text-muted-foreground">
+          {keys.data?.length ?? 0} keys · programmatic access to the gateway, yours to rotate or
+          revoke
+        </span>
         <Button
-          size="sm"
+          className="ml-auto"
           onClick={() => setMintOpen(true)}
           disabled={!scope.projectId}
           title={
@@ -94,7 +92,7 @@ export default function Account() {
           }
         >
           <Plus className="h-4 w-4" />
-          New key
+          Generate key
         </Button>
       </div>
 
@@ -111,7 +109,7 @@ export default function Account() {
         </p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
         {keys.data?.map((key) => (
           <KeyCard
             key={key.id}
@@ -181,7 +179,7 @@ export default function Account() {
         minted={minted}
         onOpenChange={(open) => !open && setMinted(null)}
       />
-    </div>
+    </PageBody>
   );
 }
 

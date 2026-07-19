@@ -2,15 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogDescription,
@@ -52,17 +46,13 @@ export default function Pricing() {
   const [deleteTarget, setDeleteTarget] = React.useState<ModelPriceRow | null>(null);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Pricing</h1>
-          <p className="text-sm text-muted-foreground">
-            Per-model token pricing catalog, used for cost accounting. Global —
-            not scoped to an org/project.
-          </p>
-        </div>
+    <PageBody>
+      <div className="flex items-center gap-3">
+        <span className="text-sm text-muted-foreground">
+          {prices.data?.length ?? 0} models · per-million-token pricing · currency set per model
+        </span>
         <Button
-          size="sm"
+          className="ml-auto"
           onClick={() => {
             setEditTarget(null);
             setEditOpen(true);
@@ -81,26 +71,27 @@ export default function Pricing() {
         <p className="text-sm text-muted-foreground">No model prices set yet.</p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
         {prices.data?.map((price) => (
-          <Card key={price.id}>
-            <CardHeader>
-              <CardTitle className="truncate">{price.model}</CardTitle>
-              <CardDescription className="flex flex-wrap items-center gap-1.5">
-                <Badge tone="outline">
-                  in {price.input_per_mtok} {price.currency}/Mtok
+          <div
+            key={price.id}
+            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+          >
+            <div className="truncate font-mono text-sm font-semibold">{price.model}</div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge tone="outline">
+                in {price.input_per_mtok} {price.currency}/Mtok
+              </Badge>
+              <Badge tone="outline">
+                out {price.output_per_mtok} {price.currency}/Mtok
+              </Badge>
+              {price.cached_input_per_mtok && (
+                <Badge tone="neutral">
+                  cached {price.cached_input_per_mtok} {price.currency}/Mtok
                 </Badge>
-                <Badge tone="outline">
-                  out {price.output_per_mtok} {price.currency}/Mtok
-                </Badge>
-                {price.cached_input_per_mtok && (
-                  <Badge tone="neutral">
-                    cached {price.cached_input_per_mtok} {price.currency}/Mtok
-                  </Badge>
-                )}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex justify-end gap-1">
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
               <Button
                 size="sm"
                 variant="outline"
@@ -111,15 +102,16 @@ export default function Pricing() {
               >
                 Edit
               </Button>
-              <Button
-                size="sm"
-                variant="destructive"
+              <button
+                type="button"
+                title="Delete price"
                 onClick={() => setDeleteTarget(price)}
+                className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)]"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </CardContent>
-          </Card>
+              </button>
+            </div>
+          </div>
         ))}
       </div>
 
@@ -165,7 +157,7 @@ export default function Pricing() {
           </Button>
         </DialogFooter>
       </Dialog>
-    </div>
+    </PageBody>
   );
 }
 

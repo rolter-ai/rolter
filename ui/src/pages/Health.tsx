@@ -1,19 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { PageBody } from "@/components/screen";
 import {
   fetchHealthTimeline,
   fetchMttr,
   fetchUptime,
   type TimelineRow,
 } from "@/lib/api";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const SLA = 0.99;
@@ -81,13 +74,12 @@ export default function Health() {
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Provider health</h1>
-        <p className="text-sm text-muted-foreground">
-          Uptime, MTTR and failure timeline per target over the last 7 days (SLA
-          target {pct(SLA)}).
-        </p>
+    <PageBody className="gap-[18px]">
+      <div className="flex items-center gap-3">
+        <span className="text-sm text-muted-foreground">
+          Per-target circuit breakers, uptime, and error-budget burn — last 7 days, SLA target{" "}
+          {pct(SLA)}
+        </span>
       </div>
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {error && (
@@ -100,64 +92,100 @@ export default function Health() {
           No health events recorded yet.
         </p>
       )}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
         {uptime.data?.map((row) => {
           const key = `${row.provider}::${row.target_id}`;
           const breached = row.sla_breached === 1;
           const m = mttrByTarget.get(key);
+          const dot = breached ? "var(--status-danger)" : "var(--status-success)";
           return (
-            <Card key={key}>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-base">{row.target_id}</CardTitle>
-                    <CardDescription>{row.provider}</CardDescription>
-                  </div>
-                  <Badge tone={breached ? "danger" : "success"} dot>
-                    {breached ? "SLA breached" : "Healthy"}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <div className="flex items-baseline justify-between">
+            <div
+              key={key}
+              className="flex flex-col gap-3.5 rounded-[10px] border bg-card p-4"
+              style={{
+                borderColor: breached
+                  ? "color-mix(in srgb, var(--status-danger) 45%, transparent)"
+                  : "var(--border-default)",
+              }}
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="h-2 w-2 flex-none rounded-full" style={{ background: dot }} />
+                <span className="font-mono text-sm font-semibold">{row.target_id}</span>
+                <span className="font-mono text-xs text-[color:var(--text-subtle)]">
+                  {row.provider}
+                </span>
+                <span
+                  className="ml-auto rounded-[6px] px-2 py-[3px] font-mono text-[0.6875rem] uppercase tracking-[0.05em]"
+                  style={{
+                    color: dot,
+                    background: breached ? "rgba(229,57,53,.14)" : "rgba(22,163,74,.14)",
+                  }}
+                >
+                  {breached ? "tripped" : "closed"}
+                </span>
+              </div>
+              <div className="flex items-end gap-3">
+                <div className="flex flex-col gap-px">
                   <span
                     className={cn(
-                      "text-2xl font-semibold",
-                      breached ? "text-destructive" : "",
+                      "font-mono text-2xl font-medium leading-none",
+                      breached && "text-destructive",
                     )}
                   >
                     {pct(row.uptime)}
                   </span>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
                     uptime · {row.events} events
                   </span>
                 </div>
-                <Timeline buckets={timelineByTarget.get(key) ?? []} />
-                <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-                  <div>
-                    <div className="font-medium text-foreground">
-                      {row.errors + row.timeouts}
-                    </div>
-                    failures
+                <div className="min-w-0 flex-1">
+                  <Timeline buckets={timelineByTarget.get(key) ?? []} />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2.5 border-t border-[color:var(--border-subtle)] pt-3">
+                <div>
+                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+                    Failures
                   </div>
-                  <div>
-                    <div className="font-medium text-foreground">
-                      {mttrLabel(m?.mttr_seconds)}
-                    </div>
-                    MTTR{m ? ` · ${m.incidents}×` : ""}
-                  </div>
-                  <div>
-                    <div className="font-medium text-foreground">
-                      {(row.error_budget_burn * 100).toFixed(0)}%
-                    </div>
-                    budget burn
+                  <div className="font-mono text-sm text-[color:var(--text-secondary)]">
+                    {row.errors + row.timeouts}
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+                <div>
+                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+                    MTTR
+                  </div>
+                  <div className="font-mono text-sm text-[color:var(--text-secondary)]">
+                    {mttrLabel(m?.mttr_seconds)}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+                    Incidents
+                  </div>
+                  <div className="font-mono text-sm text-[color:var(--text-secondary)]">
+                    {m?.incidents ?? "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">error budget burn</span>
+                <span
+                  className="ml-auto font-mono text-xs"
+                  style={{
+                    color:
+                      row.error_budget_burn > 1
+                        ? "var(--status-danger)"
+                        : "var(--text-secondary)",
+                  }}
+                >
+                  {(row.error_budget_burn * 100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
           );
         })}
       </div>
-    </div>
+    </PageBody>
   );
 }

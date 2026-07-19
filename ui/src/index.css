@@ -138,6 +138,25 @@
     }
   }
 
+  /* breathing status dot (gateway-healthy pill, live-stream markers) */
+  .rl-pulse {
+    animation: rl-pulse 2s ease-in-out infinite;
+  }
+  @keyframes rl-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rl-pulse {
+      animation: none;
+    }
+  }
+
   /* overlay entrances (side sheet + scrim) */
   .rl-fade-in {
     animation: rl-fade-in 0.15s ease;

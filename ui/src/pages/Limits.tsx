@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,14 +88,7 @@ export default function Limits() {
   const scopeBlocked = !scope.isLoading && !!scope.error;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Limits</h1>
-        <p className="text-sm text-muted-foreground">
-          Spend budgets and rate limits, scoped to an org, team, project, or
-          virtual key.
-        </p>
-      </div>
+    <PageBody className="gap-[22px]">
 
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
@@ -137,9 +131,19 @@ export default function Limits() {
       </Card>
 
       <div className="space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-lg font-medium">Budgets</h2>
-          <Button size="sm" onClick={() => setAddBudgetOpen(true)} disabled={!scopeId}>
+        <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-0.5">
+            <h2 className="text-base font-medium">Budgets</h2>
+            <span className="text-xs text-muted-foreground">
+              Spend caps per org, team, project, or virtual key
+            </span>
+          </div>
+          <Button
+            size="sm"
+            className="ml-auto"
+            onClick={() => setAddBudgetOpen(true)}
+            disabled={!scopeId}
+          >
             <Plus className="h-4 w-4" />
             Add budget
           </Button>
@@ -151,7 +155,7 @@ export default function Limits() {
         {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
           <p className="text-sm text-muted-foreground">No budgets for this scope.</p>
         )}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
           {budgets.data?.map((budget) => (
             <BudgetCard
               key={budget.id}
@@ -164,10 +168,16 @@ export default function Limits() {
       </div>
 
       <div className="space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-lg font-medium">Rate limits</h2>
+        <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-0.5">
+            <h2 className="text-base font-medium">Rate limits</h2>
+            <span className="text-xs text-muted-foreground">
+              Requests- and tokens-per-minute caps per scope
+            </span>
+          </div>
           <Button
             size="sm"
+            className="ml-auto"
             onClick={() => setAddRateLimitOpen(true)}
             disabled={!scopeId}
           >
@@ -186,7 +196,7 @@ export default function Limits() {
             No rate limits for this scope.
           </p>
         )}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
           {rateLimits.data?.map((limit) => (
             <RateLimitCard
               key={limit.id}
@@ -212,7 +222,7 @@ export default function Limits() {
         scopeId={scopeId}
         onDone={invalidateRateLimits}
       />
-    </div>
+    </PageBody>
   );
 }
 
@@ -226,22 +236,27 @@ function BudgetCard({
   deleting: boolean;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-2">
-          <span>${budget.limit_usd}</span>
-          <Badge tone="outline">{budget.period}</Badge>
-        </CardTitle>
-        <CardDescription className="font-mono text-xs">
-          {budget.scope_type}:{budget.scope_id}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex justify-end">
-        <Button size="sm" variant="destructive" disabled={deleting} onClick={onDelete}>
+    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
+      <div className="flex items-center gap-2.5">
+        <span className="font-mono text-xl font-medium">${budget.limit_usd}</span>
+        <Badge tone="outline">{budget.period}</Badge>
+        <button
+          type="button"
+          title="Delete budget"
+          disabled={deleting}
+          onClick={onDelete}
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)]"
+        >
           <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      </CardContent>
-    </Card>
+        </button>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Badge tone="neutral">{budget.scope_type}</Badge>
+        <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+          {budget.scope_id}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -255,25 +270,28 @@ function RateLimitCard({
   deleting: boolean;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {limit.rpm != null && <Badge tone="outline">{limit.rpm} rpm</Badge>}
-          {limit.tpm != null && <Badge tone="outline">{limit.tpm} tpm</Badge>}
-          {limit.rpm == null && limit.tpm == null && (
-            <Badge tone="neutral">no caps</Badge>
-          )}
-        </CardTitle>
-        <CardDescription className="font-mono text-xs">
-          {limit.scope_type}:{limit.scope_id}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex justify-end">
-        <Button size="sm" variant="destructive" disabled={deleting} onClick={onDelete}>
+    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {limit.rpm != null && <Badge tone="outline">{limit.rpm} rpm</Badge>}
+        {limit.tpm != null && <Badge tone="outline">{limit.tpm} tpm</Badge>}
+        {limit.rpm == null && limit.tpm == null && <Badge tone="neutral">no caps</Badge>}
+        <button
+          type="button"
+          title="Delete rate limit"
+          disabled={deleting}
+          onClick={onDelete}
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)]"
+        >
           <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      </CardContent>
-    </Card>
+        </button>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Badge tone="neutral">{limit.scope_type}</Badge>
+        <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+          {limit.scope_id}
+        </span>
+      </div>
+    </div>
   );
 }
 
