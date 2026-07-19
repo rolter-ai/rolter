@@ -63,6 +63,10 @@ pub fn router() -> Router<ControlState> {
             put(set_route_enabled).delete(delete_route),
         )
         .route("/api/v1/routes/{id}/params", put(set_route_params))
+        .route(
+            "/api/v1/routes/{id}/complexity",
+            get(get_route_complexity).put(set_route_complexity),
+        )
         .route("/api/v1/routes/{id}/advanced", put(set_route_advanced))
         .route(
             "/api/v1/routes/{route_id}/targets",
@@ -894,6 +898,81 @@ async fn set_route_params(
         "route",
         id,
         serde_json::json!({"params": params, "param_policy": param_policy}),
+    )
+    .await;
+    Ok(Json(row))
+}
+
+/// Read the policy as a first-class control-plane resource while storing it in
+/// the snapshot-compatible route params JSON.
+async fn get_route_complexity(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    authorize_route(&state, &principal, id).await?;
+    let route = RouteRepo(pool(&state)).get(id).await?;
+    Ok(Json(
+        route
+            .params
+            .get(rolter_balancer::complexity::POLICY_PARAM)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"tiers": []})),
+    ))
+}
+
+/// Validate and persist one bounded policy. It travels in `params` through
+/// `ConfigStore::load` and the existing atomic gateway snapshot; the gateway
+/// reserves this key and removes it before any request is forwarded upstream.
+async fn set_route_complexity(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(value): Json<serde_json::Value>,
+) -> ApiResult<Json<Route>> {
+    let org_id = authorize_route(&state, &principal, id).await?;
+    let policy: rolter_balancer::complexity::ComplexityPolicy = serde_json::from_value(value)
+        .map_err(|error| {
+            ApiError::Core(Error::Config(format!("invalid complexity policy: {error}")))
+        })?;
+    policy
+        .validate_shape()
+        .map_err(|error| ApiError::Core(Error::Config(error)))?;
+    let config = state.store.load().await?;
+    let routes = config
+        .routes
+        .iter()
+        .map(|route| route.model.clone())
+        .collect();
+    policy
+        .validate_routes(&routes)
+        .map_err(|error| ApiError::Core(Error::Config(error)))?;
+
+    let existing = RouteRepo(pool(&state)).get(id).await?;
+    let mut params = normalize_json_object(existing.params, "params")?;
+    let Some(object) = params.as_object_mut() else {
+        return Err(ApiError::Core(Error::Config(
+            "params must be a json object".to_string(),
+        )));
+    };
+    object.insert(
+        rolter_balancer::complexity::POLICY_PARAM.to_string(),
+        serde_json::to_value(&policy).map_err(|error| {
+            ApiError::Core(Error::Config(format!("invalid complexity policy: {error}")))
+        })?,
+    );
+    let row = RouteRepo(pool(&state))
+        .set_params(id, &params, &existing.param_policy)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_complexity",
+        "route",
+        id,
+        serde_json::json!({"complexity": policy}),
     )
     .await;
     Ok(Json(row))
