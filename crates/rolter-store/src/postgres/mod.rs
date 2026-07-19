@@ -299,7 +299,11 @@ impl PostgresConfigStore {
 
     async fn load_model_prices(&self) -> Result<Vec<ModelPriceConfig>> {
         let rows: Vec<ModelPrice> = sqlx::query_as(
-            "select id, model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency, created_at
+            "select id, model, \
+                    input_per_mtok::text as input_per_mtok, \
+                    output_per_mtok::text as output_per_mtok, \
+                    cached_input_per_mtok::text as cached_input_per_mtok, \
+                    currency, created_at \
              from model_prices order by model",
         )
         .fetch_all(&self.pool)
@@ -583,6 +587,38 @@ mod tests {
             Some("gpt-4o-2024-08-06")
         );
         assert_eq!(config.routes[0].targets[0].weight, 2);
+    }
+
+    // regression: the snapshot query must cast numeric price columns to text,
+    // otherwise sqlx fails decoding into String and GET /api/v1/models 500s
+    // as soon as any model_prices row exists
+    #[tokio::test]
+    async fn loads_model_prices_from_db() {
+        let Some(_) = database_url() else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fresh_pool().await;
+
+        sqlx::query(
+            "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
+             values ('gpt-4o', 3, 15, 1.5, 'USD'), ('gpt-4o-mini', 0.15, 0.6, null, 'USD')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        let config = store.load().await.unwrap();
+
+        assert_eq!(config.model_prices.len(), 2);
+        assert_eq!(config.model_prices[0].model, "gpt-4o");
+        assert_eq!(config.model_prices[0].input_per_mtok, 3.0);
+        assert_eq!(config.model_prices[0].output_per_mtok, 15.0);
+        assert_eq!(config.model_prices[0].cached_input_per_mtok, Some(1.5));
+        assert_eq!(config.model_prices[1].model, "gpt-4o-mini");
+        assert_eq!(config.model_prices[1].input_per_mtok, 0.15);
+        assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
     }
 
     #[tokio::test]
