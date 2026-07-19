@@ -12,6 +12,8 @@ mod analytics;
 #[cfg(feature = "postgres")]
 mod auth;
 #[cfg(feature = "postgres")]
+mod connectors;
+#[cfg(feature = "postgres")]
 mod crud;
 mod health;
 #[cfg(feature = "postgres")]
@@ -253,6 +255,7 @@ fn build_app(state: ControlState) -> Router {
             .merge(crud::router())
             .merge(me::router())
             .merge(mcp_logs::router())
+            .merge(connectors::router())
             .merge(security::router());
     }
 
