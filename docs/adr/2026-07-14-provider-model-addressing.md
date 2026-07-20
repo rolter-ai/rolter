@@ -161,33 +161,36 @@ there is no cross-org collision, and `provider-slug/model` always resolves withi
 caller's org (enforced in the query `where org_id = $caller`), so the blast radius of any
 collision is a single org.
 
-**1. Migration backfill (deterministic, reported).** Backfill runs once when the `slug`
-column is added:
+**1. Migration backfill (deterministic).** Shipped in
+`crates/rolter-store/migrations/0014_provider_slug.sql`:
 
-- Process an org's providers in a stable order — `(created_at, id)` ascending — so the
-  result is reproducible and re-runnable.
-- Slugify `name`: lowercase, map every char outside `[a-z0-9]` to `-`, collapse runs of
-  `-`, trim leading/trailing `-`, truncate to 63 chars. Empty result → fall back to
-  `provider-<short-id>`.
-- The **first** claimant of a base slug keeps it bare; each subsequent collision gets the
-  lowest free `-N` suffix (`vllm`, `vllm-2`, `vllm-3`, …), truncating the base so
-  `base-N` still fits 63 chars.
-- Emit a **migration report** (log line per adjusted provider: `org_id, provider_id, name,
-  base_slug, final_slug`) so operators can see exactly what was renamed and reconcile any
-  externally-published address. The migration never fails on a collision — it always
-  converges.
+- Providers are processed per org in a stable order (`id` ascending via
+  `row_number() over (partition by org_id, base order by id)`), so the result is
+  reproducible.
+- Slugify `name`: lowercase, map every run outside `[a-z0-9]` to a single `-`, trim
+  leading/trailing `-`; an empty result falls back to `provider`.
+- The **first** claimant of a base slug keeps it bare (truncated to 63); each subsequent
+  collision gets a `-N` suffix from its row number (`vllm`, `vllm-2`, `vllm-3`, …), the
+  base truncated to 58 chars so `base-N` still fits. The migration never fails on a
+  collision — it always converges.
+- *Follow-up*: emit a migration report (one line per adjusted provider: `org_id,
+  provider_id, name, base_slug, final_slug`) so operators can reconcile any
+  externally-published address.
 
-**2. Runtime creation (validate + suggest, never silently mangle).** When an operator
-creates or renames a provider slug:
+**2. Runtime creation (validate, never silently mangle).** Shipped in
+`crates/rolter-control/src/crud.rs`:
 
-- API validates charset (`^[a-z0-9][a-z0-9-]{0,62}$`) and availability. On conflict it
-  returns **409** with the next free suggestion (`{"error": "slug taken", "suggestion":
-  "vllm-2"}`) rather than auto-appending a suffix behind the operator's back — an address
-  is a contract, so the human picks it explicitly.
-- UI pre-checks availability on blur and pre-fills a slug slugified from the display name,
-  surfacing the suggested alternative inline before submit.
-- Slug is **immutable after creation** (the whole point — it is the stable identity).
-  Changing it is a delete-and-recreate with a new address, not an in-place edit.
+- An explicit `slug` is validated against `^[a-z0-9][a-z0-9-]{0,62}$`; an omitted one is
+  derived from `name` (a name with no ascii alphanumerics requires an explicit slug). A
+  conflict surfaces as the DB unique-violation error — the API never auto-appends a
+  suffix behind the operator's back, because an address is a contract the human picks
+  explicitly.
+- *Follow-up*: map the unique violation to **409** with the next free suggestion
+  (`{"error": "slug taken", "suggestion": "vllm-2"}`), and have the UI pre-check
+  availability before submit.
+- Slug is **immutable by default** (it is the stable identity). An in-place change
+  requires the explicit `allow_slug_change=true` opt-in on update, which warns that the
+  `provider-slug/model` address changes with it.
 
 **3. Deletion & reclaim (explicit, not automatic).** A hard-deleted provider frees its
 slug immediately; the next create may reuse it. This is intentional but load-bearing:
@@ -211,10 +214,11 @@ upstream**. Therefore:
 - **Precedence & slug rules** as proposed above (route-name-first, then first-`/` split;
   slug `^[a-z0-9][a-z0-9-]{0,62}$`, `unique(org_id, slug)`, immutable by default).
 - **Collision policy** as in *Slug collision handling* above: slugs are org-scoped
-  (no cross-org collision); migration backfill is deterministic and reported with lowest
-  free `-N` de-dup; runtime creation returns **409 + suggestion** instead of silently
-  suffixing; hard-delete frees a slug immediately, but soft-delete is preferred so a
-  reclaimed slug is an explicit operator action, not a silent re-point.
+  (no cross-org collision); migration backfill is deterministic with `-N` de-dup
+  (shipped in migration `0014`); runtime creation validates and rejects conflicts rather
+  than silently suffixing (409 + suggestion as follow-up); slug changes need the explicit
+  `allow_slug_change` opt-in; hard-delete frees a slug immediately, but soft-delete is
+  preferred so a reclaimed slug is an explicit operator action, not a silent re-point.
 - **Option D (header selector)**: deferred, not part of the initial implementation.
 
 ## Addendum (20 Jul 2026) — provider groups: unifying slugs under one address
@@ -236,6 +240,13 @@ slug namespace with providers (`unique(org_id, slug)` enforced across both), so 
 left segment of `X/model` resolves through a single unified lookup and is never
 ambiguous.
 
+- **Membership**: groups are fully operator-defined — any slug, any member set — and
+  membership is **many-to-many**: one provider may belong to several groups. Overlapping
+  groups are the intended way to express scopes, e.g. `vllm-cluster-msk` (five Moscow
+  instances), `vllm-cluster-nsk` (five Novosibirsk instances), and `vllm-cluster-all`
+  (all ten) — the client picks the scope by address. **No group nesting** (groups of
+  groups) initially: flat membership covers the scoping cases, nesting adds
+  cycle-detection and resolution complexity for little gain; deferred.
 - **Resolution**: precedence unchanged — whole string as route name first, then split on
   first `/`. The left segment is looked up in the unified slug namespace: a provider slug
   pins that provider (as decided above); a **group slug fans out across the group's
