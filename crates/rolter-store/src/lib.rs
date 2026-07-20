@@ -100,6 +100,24 @@ impl ConfigStore for MergedConfigStore {
                 .into_iter()
                 .filter(|r| !self.bootstrap.routes.iter().any(|c| c.model == r.model)),
         );
+        // provider groups: readonly config groups win a slug collision, db groups
+        // extend the effective set (ADR-0022). compare on the effective slug
+        let group_slug = |g: &rolter_core::ProviderGroupConfig| {
+            g.slug
+                .clone()
+                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
+        };
+        let bootstrap_group_slugs: std::collections::HashSet<String> = self
+            .bootstrap
+            .provider_groups
+            .iter()
+            .map(group_slug)
+            .collect();
+        merged.provider_groups.extend(
+            db.provider_groups
+                .into_iter()
+                .filter(|g| !bootstrap_group_slugs.contains(&group_slug(g))),
+        );
         merged.virtual_keys.extend(
             db.virtual_keys
                 .into_iter()
@@ -196,5 +214,37 @@ mod tests {
         store.save(updated).await.unwrap();
         assert_eq!(store.load().await.unwrap().routes.len(), 3);
         assert_eq!(store.current_version().await.unwrap(), 2);
+    }
+
+    fn group(slug: &str) -> rolter_core::ProviderGroupConfig {
+        rolter_core::ProviderGroupConfig {
+            name: slug.to_string(),
+            slug: Some(slug.to_string()),
+            strategy: Default::default(),
+            members: vec![rolter_core::GroupMember {
+                provider: "a".to_string(),
+                model: None,
+                weight: 1,
+            }],
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_store_readonly_group_wins_and_db_groups_extend() {
+        let mut bootstrap = GatewayConfig::default();
+        bootstrap.provider_groups.push(group("vllm-cluster"));
+
+        let mut db = GatewayConfig::default();
+        db.provider_groups.push(group("vllm-cluster")); // collides → dropped
+        db.provider_groups.push(group("vllm-nsk")); // db-only → kept
+
+        let store = MergedConfigStore::new(bootstrap, Arc::new(InMemoryConfigStore::new(db)));
+        let merged = store.load().await.unwrap();
+        let slugs: Vec<_> = merged
+            .provider_groups
+            .iter()
+            .map(|g| g.slug.as_deref().unwrap())
+            .collect();
+        assert_eq!(slugs, vec!["vllm-cluster", "vllm-nsk"]);
     }
 }

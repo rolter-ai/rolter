@@ -7,9 +7,9 @@ pub mod repo;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rolter_core::{
-    BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, Error, GatewayConfig,
-    ModelPriceConfig, ModelRoute, ProviderConfig, ProviderKind, RateLimitConfig, Result, Target,
-    VirtualKeyRecord,
+    BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, Error, GatewayConfig, GroupMember,
+    ModelPriceConfig, ModelRoute, ProviderConfig, ProviderGroupConfig, ProviderKind,
+    RateLimitConfig, Result, Target, VirtualKeyRecord,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
@@ -129,6 +129,22 @@ struct RouteRow {
 #[derive(FromRow)]
 struct TargetRow {
     route_id: Uuid,
+    provider_name: String,
+    upstream_model: Option<String>,
+    weight: i32,
+}
+
+#[derive(FromRow)]
+struct ProviderGroupRow {
+    id: Uuid,
+    name: String,
+    slug: String,
+    strategy: String,
+}
+
+#[derive(FromRow)]
+struct ProviderGroupMemberRow {
+    group_id: Uuid,
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
@@ -263,6 +279,50 @@ impl PostgresConfigStore {
                     // response-cache opt-in is config-only for now; a db-backed
                     // cache policy lands with its own store follow-up
                     cache: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Load provider groups and their members into `ProviderGroupConfig`
+    /// (ADR-0017 addendum, ADR-0022). A member with a null `upstream_model`
+    /// forwards the requested model as-is.
+    async fn load_provider_groups(&self) -> Result<Vec<ProviderGroupConfig>> {
+        let group_rows: Vec<ProviderGroupRow> =
+            sqlx::query_as("select id, name, slug, strategy from provider_groups order by name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+
+        let member_rows: Vec<ProviderGroupMemberRow> = sqlx::query_as(
+            "select m.group_id, p.name as provider_name, m.upstream_model, m.weight
+             from provider_group_members m
+             join providers p on p.id = m.provider_id
+             order by m.position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+
+        group_rows
+            .into_iter()
+            .map(|g| {
+                // validate + map the strategy the same way routes do
+                let strategy = parse_strategy(&g.strategy)?;
+                let members = member_rows
+                    .iter()
+                    .filter(|m| m.group_id == g.id)
+                    .map(|m| GroupMember {
+                        provider: m.provider_name.clone(),
+                        model: m.upstream_model.clone(),
+                        weight: m.weight.max(1) as u32,
+                    })
+                    .collect();
+                Ok(ProviderGroupConfig {
+                    name: g.name,
+                    slug: Some(g.slug),
+                    strategy,
+                    members,
                 })
             })
             .collect()
@@ -411,6 +471,7 @@ impl ConfigStore for PostgresConfigStore {
     async fn load(&self) -> Result<GatewayConfig> {
         let providers = self.load_providers().await?;
         let routes = self.load_routes().await?;
+        let provider_groups = self.load_provider_groups().await?;
         let model_prices = self.load_model_prices().await?;
         let db_virtual_keys = self.load_virtual_keys().await?;
         let budgets = self.load_budgets().await?;
@@ -418,6 +479,7 @@ impl ConfigStore for PostgresConfigStore {
         Ok(GatewayConfig {
             providers,
             routes,
+            provider_groups,
             model_prices,
             db_virtual_keys,
             budgets,

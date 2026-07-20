@@ -76,6 +76,34 @@ pub struct RouteTarget {
     pub created_at: DateTime<Utc>,
 }
 
+/// A provider group: a fleet of providers addressable as `group-slug/model`
+/// (ADR-0017 addendum, ADR-0022). Org-scoped; the slug shares the provider slug
+/// namespace.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderGroup {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    /// stable, URL-safe identity; `unique(org_id, slug)`, immutable by default
+    pub slug: String,
+    /// one of the balancing-strategy keys (`round_robin`, `weighted`, …)
+    pub strategy: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One membership row of a [`ProviderGroup`]. `provider_name` is joined in for
+/// config assembly; `upstream_model` null means passthrough of the requested
+/// model.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderGroupMember {
+    pub group_id: Uuid,
+    pub provider_id: Uuid,
+    pub provider_name: String,
+    pub upstream_model: Option<String>,
+    pub weight: i32,
+    pub position: i32,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: Uuid,
