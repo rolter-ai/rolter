@@ -14,15 +14,26 @@ pub struct GatewayConfig {
     /// outbound TLS trust configuration shared by upstream providers
     #[serde(default)]
     pub tls: TlsConfig,
+    /// effective (readonly) providers: the deprecated top-level `[[providers]]`
+    /// array and the `[providers] readonly = [...]` tier both land here (ADR-0022)
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    /// `[providers] default = [...]`: idempotently seeded into the default DB
+    /// project at startup, then DB-owned and editable (ADR-0022). Never
+    /// config-owned; empty for the deprecated array form
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_defaults: Vec<ProviderConfig>,
     #[serde(default)]
     pub routes: Vec<ModelRoute>,
-    /// provider groups addressable as `group-slug/model` (ADR-0017 addendum):
-    /// unify a fleet of same-kind providers under one slug with a shared
-    /// balancing strategy
+    /// effective (readonly) provider groups addressable as `group-slug/model`
+    /// (ADR-0017 addendum): the deprecated `[[provider_groups]]` array and the
+    /// `[provider_groups] readonly = [...]` tier both land here
     #[serde(default)]
     pub provider_groups: Vec<ProviderGroupConfig>,
+    /// `[provider_groups] default = [...]`: seeded to the DB once, then editable
+    /// (ADR-0022); never config-owned
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_group_defaults: Vec<ProviderGroupConfig>,
     /// Model presets declared in the bootstrap file. `readonly` routes remain
     /// config-owned; `default` routes are a one-time control-plane DB seed.
     #[serde(default)]
@@ -85,6 +96,31 @@ pub struct ModelTiersConfig {
     /// absent, then owned and editable by the database
     #[serde(default, rename = "default")]
     pub defaults: Vec<ModelRoute>,
+}
+
+/// Split a config section value into `(readonly, default)` tiers (ADR-0022). A
+/// section accepts either the deprecated flat array (all entries treated as
+/// `readonly`) or the tiered table `{ readonly = [...], default = [...] }`, so a
+/// single TOML key supports both `[[providers]]` and `[providers]
+/// readonly/default`. Used for providers and provider groups.
+fn split_section<T: serde::de::DeserializeOwned>(v: toml::Value) -> Result<(Vec<T>, Vec<T>)> {
+    match v {
+        toml::Value::Array(_) => Ok((v.try_into()?, Vec::new())),
+        toml::Value::Table(mut table) => {
+            let readonly = match table.remove("readonly") {
+                Some(r) => r.try_into()?,
+                None => Vec::new(),
+            };
+            let defaults = match table.remove("default") {
+                Some(d) => d.try_into()?,
+                None => Vec::new(),
+            };
+            Ok((readonly, defaults))
+        }
+        _ => Err(crate::Error::Config(
+            "expected an array or a { readonly, default } table".to_string(),
+        )),
+    }
 }
 
 /// Outbound TLS trust configuration.
@@ -1633,10 +1669,70 @@ fn default_log_queue_capacity() -> usize {
     10_000
 }
 
+/// Effective slug for a provider: an explicit slug wins, else derive from name.
+fn provider_slug(p: &ProviderConfig) -> String {
+    p.slug
+        .clone()
+        .unwrap_or_else(|| crate::slug::slugify(&p.name))
+}
+
+/// Effective slug for a provider group.
+fn group_slug(g: &ProviderGroupConfig) -> String {
+    g.slug
+        .clone()
+        .unwrap_or_else(|| crate::slug::slugify(&g.name))
+}
+
 impl GatewayConfig {
     /// Parse a configuration from a TOML string.
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        let mut config: Self = toml::from_str(s)?;
+        // pre-extract the tiered sections (providers, provider_groups) from the
+        // raw document so a single key accepts both the deprecated flat array
+        // (`[[providers]]`) and the tiered table (`[providers] readonly/default`,
+        // ADR-0022). the remaining document deserializes normally; the `providers`
+        // / `provider_groups` struct fields default to empty and are set below.
+        let mut doc: toml::Value = toml::from_str(s)?;
+        let mut provider_readonly = Vec::new();
+        let mut provider_defaults = Vec::new();
+        let mut group_readonly = Vec::new();
+        let mut group_defaults = Vec::new();
+        if let Some(table) = doc.as_table_mut() {
+            if let Some(v) = table.remove("providers") {
+                (provider_readonly, provider_defaults) = split_section(v)?;
+            }
+            if let Some(v) = table.remove("provider_groups") {
+                (group_readonly, group_defaults) = split_section(v)?;
+            }
+        }
+        let mut config: Self = doc.try_into()?;
+        config.providers = provider_readonly;
+        config.provider_defaults = provider_defaults;
+        config.provider_groups = group_readonly;
+        config.provider_group_defaults = group_defaults;
+
+        // a default-tier provider/group may not collide with a readonly one: the
+        // readonly entry is immutable and would shadow the seeded DB row (ADR-0022)
+        let readonly_provider_slugs: std::collections::HashSet<String> =
+            config.providers.iter().map(provider_slug).collect();
+        for p in &config.provider_defaults {
+            if readonly_provider_slugs.contains(&provider_slug(p)) {
+                return Err(crate::Error::Config(format!(
+                    "providers.default slug '{}' collides with a readonly provider",
+                    provider_slug(p)
+                )));
+            }
+        }
+        let readonly_group_slugs: std::collections::HashSet<String> =
+            config.provider_groups.iter().map(group_slug).collect();
+        for g in &config.provider_group_defaults {
+            if readonly_group_slugs.contains(&group_slug(g)) {
+                return Err(crate::Error::Config(format!(
+                    "provider_groups.default slug '{}' collides with a readonly group",
+                    group_slug(g)
+                )));
+            }
+        }
+
         let readonly = std::mem::take(&mut config.models.readonly);
         let mut names: std::collections::HashSet<String> = config
             .routes
@@ -2941,5 +3037,114 @@ mod tests {
         assert_eq!(cfg.routes[0].model, "locked");
         assert_eq!(cfg.models.defaults.len(), 1);
         assert_eq!(cfg.models.defaults[0].model, "editable");
+    }
+
+    #[test]
+    fn flat_providers_array_is_all_readonly() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "openai");
+        assert!(cfg.provider_defaults.is_empty());
+    }
+
+    #[test]
+    fn tiered_providers_table_splits_readonly_and_default() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[providers.readonly]]
+            name = "locked"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+
+            [[providers.default]]
+            name = "seeded"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "locked");
+        assert_eq!(cfg.provider_defaults.len(), 1);
+        assert_eq!(cfg.provider_defaults[0].name, "seeded");
+    }
+
+    #[test]
+    fn tiered_provider_groups_table_splits_tiers() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[provider_groups.readonly]]
+            name = "cluster"
+            slug = "cluster"
+            [[provider_groups.readonly.members]]
+            provider = "a"
+
+            [[provider_groups.default]]
+            name = "editable-cluster"
+            slug = "editable-cluster"
+            [[provider_groups.default.members]]
+            provider = "b"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.provider_groups.len(), 1);
+        assert_eq!(cfg.provider_groups[0].slug.as_deref(), Some("cluster"));
+        assert_eq!(cfg.provider_group_defaults.len(), 1);
+        assert_eq!(
+            cfg.provider_group_defaults[0].slug.as_deref(),
+            Some("editable-cluster")
+        );
+    }
+
+    #[test]
+    fn default_provider_colliding_with_readonly_slug_is_rejected() {
+        let err = GatewayConfig::from_toml_str(
+            r#"
+            [[providers.readonly]]
+            name = "vLLM"
+            slug = "vllm"
+            kind = "openai"
+            api_base = "http://a"
+
+            [[providers.default]]
+            name = "other"
+            slug = "vllm"
+            kind = "openai"
+            api_base = "http://b"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("collides with a readonly provider"));
+    }
+
+    #[test]
+    fn default_group_colliding_with_readonly_slug_is_rejected() {
+        let err = GatewayConfig::from_toml_str(
+            r#"
+            [[provider_groups.readonly]]
+            name = "cluster"
+            slug = "vllm-cluster"
+            [[provider_groups.readonly.members]]
+            provider = "a"
+
+            [[provider_groups.default]]
+            name = "dup"
+            slug = "vllm-cluster"
+            [[provider_groups.default.members]]
+            provider = "b"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("collides with a readonly group"));
     }
 }
