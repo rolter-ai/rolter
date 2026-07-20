@@ -311,11 +311,23 @@ mod tests {
     fn session_token_hash_round_trips_and_is_peppered() {
         let (token, hash) = generate_session_token("pepper");
         assert!(token.starts_with("rolter_sess_"));
+        // 12 chars prefix + 64 chars hex (32 bytes) = 76 chars
+        assert_eq!(token.len(), 76);
+        assert!(token["rolter_sess_".len()..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
         // the same token under the same pepper always re-hashes to the
         // stored digest, which is how session lookup matches it
         assert_eq!(rolter_auth::hash_key("pepper", &token), hash);
         // a different pepper yields a different digest, same as virtual keys
         assert_ne!(rolter_auth::hash_key("other", &token), hash);
+    }
+
+    #[test]
+    fn hex_encode_correctness() {
+        let bytes = [0xde, 0xad, 0xbe, 0xef, 0x00, 0xff, 0x01, 0x0a];
+        let encoded = hex_encode(&bytes);
+        assert_eq!(encoded, "deadbeef00ff010a");
     }
 
     #[test]
