@@ -2591,3 +2591,35 @@ mod user_tests {
         )));
     }
 }
+
+#[cfg(test)]
+mod virtual_key_tests {
+    use super::*;
+
+    #[test]
+    fn generates_expected_format() {
+        let pepper = "test_pepper";
+        let (key, hash, prefix) = generate_virtual_key(pepper);
+
+        // Check key format
+        assert!(key.starts_with("sk-rolter-"));
+        // 24 bytes hex encoded = 48 chars. + 10 chars for "sk-rolter-" = 58 chars
+        assert_eq!(key.len(), 58);
+        assert!(key["sk-rolter-".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Check prefix
+        assert_eq!(prefix, key.chars().take(12).collect::<String>());
+        assert_eq!(prefix.len(), 12);
+
+        // Check hash consistency
+        assert_eq!(hash, rolter_auth::hash_key(pepper, &key));
+    }
+
+    #[test]
+    fn distinct_peppers_produce_different_hashes() {
+        let (key1, hash1, _) = generate_virtual_key("pepper_one");
+        let hash2 = rolter_auth::hash_key("pepper_two", &key1);
+
+        assert_ne!(hash1, hash2);
+    }
+}
