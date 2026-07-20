@@ -152,6 +152,57 @@ additive: existing bare-`model` routes keep working.
 4. **`/v1/models`**: list both — existing route ids *and* `provider-slug/model` ids
    (grouped by provider in a follow-up UI), so either address is discoverable.
 
+### Slug collision handling
+
+Slugs are `unique(org_id, slug)`, so the DB is the final arbiter — but "just add a
+unique index" leaves the *behaviour* around collisions unspecified. This section pins it
+down for the three moments a collision can happen. Note first that slugs are **org-scoped**:
+there is no cross-org collision, and `provider-slug/model` always resolves within the
+caller's org (enforced in the query `where org_id = $caller`), so the blast radius of any
+collision is a single org.
+
+**1. Migration backfill (deterministic).** Shipped in
+`crates/rolter-store/migrations/0014_provider_slug.sql`:
+
+- Providers are processed per org in a stable order (`id` ascending via
+  `row_number() over (partition by org_id, base order by id)`), so the result is
+  reproducible.
+- Slugify `name`: lowercase, map every run outside `[a-z0-9]` to a single `-`, trim
+  leading/trailing `-`; an empty result falls back to `provider`.
+- The **first** claimant of a base slug keeps it bare (truncated to 63); each subsequent
+  collision gets a `-N` suffix from its row number (`vllm`, `vllm-2`, `vllm-3`, …), the
+  base truncated to 58 chars so `base-N` still fits. The migration never fails on a
+  collision — it always converges.
+- *Follow-up*: emit a migration report (one line per adjusted provider: `org_id,
+  provider_id, name, base_slug, final_slug`) so operators can reconcile any
+  externally-published address.
+
+**2. Runtime creation (validate, never silently mangle).** Shipped in
+`crates/rolter-control/src/crud.rs`:
+
+- An explicit `slug` is validated against `^[a-z0-9][a-z0-9-]{0,62}$`; an omitted one is
+  derived from `name` (a name with no ascii alphanumerics requires an explicit slug). A
+  conflict surfaces as the DB unique-violation error — the API never auto-appends a
+  suffix behind the operator's back, because an address is a contract the human picks
+  explicitly.
+- *Follow-up*: map the unique violation to **409** with the next free suggestion
+  (`{"error": "slug taken", "suggestion": "vllm-2"}`), and have the UI pre-check
+  availability before submit.
+- Slug is **immutable by default** (it is the stable identity). An in-place change
+  requires the explicit `allow_slug_change=true` opt-in on update, which warns that the
+  `provider-slug/model` address changes with it.
+
+**3. Deletion & reclaim (explicit, not automatic).** A hard-deleted provider frees its
+slug immediately; the next create may reuse it. This is intentional but load-bearing:
+reusing `openai` after deleting the old `openai` repoints that address to a **new
+upstream**. Therefore:
+
+- Prefer **soft-delete** for providers that ever served traffic, so a freed slug is not
+  silently re-pointed; a reused slug is then an explicit operator action on a
+  tombstoned name.
+- Reclaim is a **new identity**, never a restore — document that `provider-slug/model`
+  after reclaim may resolve to different weights/base_url than before.
+
 ## Decision (14 Jul 2026)
 
 - **Adopt Option B, coexisting** with named routes. `provider-slug/model` resolves to a
@@ -162,18 +213,80 @@ additive: existing bare-`model` routes keep working.
   pool, cooldowns, and any same-model targets stay in rotation.
 - **Precedence & slug rules** as proposed above (route-name-first, then first-`/` split;
   slug `^[a-z0-9][a-z0-9-]{0,62}$`, `unique(org_id, slug)`, immutable by default).
+- **Collision policy** as in *Slug collision handling* above: slugs are org-scoped
+  (no cross-org collision); migration backfill is deterministic with `-N` de-dup
+  (shipped in migration `0014`); runtime creation validates and rejects conflicts rather
+  than silently suffixing (409 + suggestion as follow-up); slug changes need the explicit
+  `allow_slug_change` opt-in; hard-delete frees a slug immediately, but soft-delete is
+  preferred so a reclaimed slug is an explicit operator action, not a silent re-point.
 - **Option D (header selector)**: deferred, not part of the initial implementation.
+
+## Addendum (20 Jul 2026) — provider groups: unifying slugs under one address
+
+### Problem
+
+Per-provider slugs alone push fleet operators the wrong way. Run ten vLLM instances
+(distinct `base_url` + credentials each) and you get ten providers — `vllm-1` …
+`vllm-10` — where pinning any single one is the *opposite* of what the operator wants.
+Named routes can unify them, but a route binds **one public model name** to targets, so a
+cluster serving 30 models needs 30 hand-made routes. LiteLLM's "model group / alias"
+answers the per-model case; nothing answers "this whole fleet, all of its models, one
+address".
+
+### Decision
+
+Introduce **provider groups** — an org-scoped, named set of providers that shares the
+slug namespace with providers (`unique(org_id, slug)` enforced across both), so the
+left segment of `X/model` resolves through a single unified lookup and is never
+ambiguous.
+
+- **Membership**: groups are fully operator-defined — any slug, any member set — and
+  membership is **many-to-many**: one provider may belong to several groups. Overlapping
+  groups are the intended way to express scopes, e.g. `vllm-cluster-msk` (five Moscow
+  instances), `vllm-cluster-nsk` (five Novosibirsk instances), and `vllm-cluster-all`
+  (all ten) — the client picks the scope by address. **No group nesting** (groups of
+  groups) initially: flat membership covers the scoping cases, nesting adds
+  cycle-detection and resolution complexity for little gain; deferred.
+- **Resolution**: precedence unchanged — whole string as route name first, then split on
+  first `/`. The left segment is looked up in the unified slug namespace: a provider slug
+  pins that provider (as decided above); a **group slug fans out across the group's
+  members**, balanced with the group's configured strategy (any
+  `rolter_balancer::LoadBalancer`), honoring per-member weight, each member's key pool,
+  and cooldowns.
+- **Model handling**: default is **passthrough** — the right segment is forwarded
+  unchanged as the upstream model (the homogeneous-cluster case: every member serves the
+  same model set). An optional per-member `upstream_model` rewrite covers heterogeneous
+  groups, mirroring `route_targets`.
+- **Credentials**: unchanged. Clients authenticate with a rolter virtual key; member
+  credentials stay per provider. A group gives *one address, one client key, N upstreams
+  with N distinct upstream creds* — which is the unification the fleet operator actually
+  needs.
+- **Relation to routes**: a group is effectively a wildcard route family
+  (`vllm-cluster/*`) without creating a route per model. Named routes remain the
+  curated-alias layer for cherry-picked public names; groups cover fleets.
+- **`/v1/models`**: group addresses are listed as the deduplicated union of member-served
+  models (`vllm-cluster/qwen3`, `vllm-cluster/llama4`, …) alongside provider-slug and
+  route ids.
+- **Collision interplay**: groups also soften the collision pressure from the section
+  above — individual instances can carry mundane slugs (`vllm-msk-1`), while the group
+  owns the meaningful address (`vllm-cluster`, or even `vllm`).
 
 ## Proposed follow-up implementation issues
 
 1. **store**: add immutable `slug` to providers — migration, `unique(org_id, slug)`,
-   backfill, CRUD wiring. (relates to ROL-81)
+   deterministic reported backfill with `-N` de-dup, 409+suggestion on create-conflict,
+   soft-delete-preferred reclaim, CRUD wiring. (relates to ROL-81, see *Slug collision
+   handling*)
 2. **proxy/gateway**: `provider-slug/model` parsing + resolution with the precedence rule
    and provider pinning; interaction with `maybe_rewrite_model`/`upstream_model`; tests.
 3. **gateway**: extend `/v1/models` to surface `provider-slug/model` ids.
 4. **ui**: model-management surfaces the `provider-slug/model` address; inline
    add-provider flow. (relates to ROL-222)
 5. *(optional)* **proxy**: `x-rolter-provider` header selector (Option D).
+6. **store/gateway/ui**: provider groups — `provider_groups` entity (slug in the unified
+   namespace, strategy, members with weights), `group-slug/model` resolution with
+   passthrough + per-member rewrite, `/v1/models` union listing, group CRUD/UI.
+   (see *Addendum: provider groups*)
 
 ## Sources
 
