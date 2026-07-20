@@ -217,6 +217,49 @@ upstream**. Therefore:
   reclaimed slug is an explicit operator action, not a silent re-point.
 - **Option D (header selector)**: deferred, not part of the initial implementation.
 
+## Addendum (20 Jul 2026) — provider groups: unifying slugs under one address
+
+### Problem
+
+Per-provider slugs alone push fleet operators the wrong way. Run ten vLLM instances
+(distinct `base_url` + credentials each) and you get ten providers — `vllm-1` …
+`vllm-10` — where pinning any single one is the *opposite* of what the operator wants.
+Named routes can unify them, but a route binds **one public model name** to targets, so a
+cluster serving 30 models needs 30 hand-made routes. LiteLLM's "model group / alias"
+answers the per-model case; nothing answers "this whole fleet, all of its models, one
+address".
+
+### Decision
+
+Introduce **provider groups** — an org-scoped, named set of providers that shares the
+slug namespace with providers (`unique(org_id, slug)` enforced across both), so the
+left segment of `X/model` resolves through a single unified lookup and is never
+ambiguous.
+
+- **Resolution**: precedence unchanged — whole string as route name first, then split on
+  first `/`. The left segment is looked up in the unified slug namespace: a provider slug
+  pins that provider (as decided above); a **group slug fans out across the group's
+  members**, balanced with the group's configured strategy (any
+  `rolter_balancer::LoadBalancer`), honoring per-member weight, each member's key pool,
+  and cooldowns.
+- **Model handling**: default is **passthrough** — the right segment is forwarded
+  unchanged as the upstream model (the homogeneous-cluster case: every member serves the
+  same model set). An optional per-member `upstream_model` rewrite covers heterogeneous
+  groups, mirroring `route_targets`.
+- **Credentials**: unchanged. Clients authenticate with a rolter virtual key; member
+  credentials stay per provider. A group gives *one address, one client key, N upstreams
+  with N distinct upstream creds* — which is the unification the fleet operator actually
+  needs.
+- **Relation to routes**: a group is effectively a wildcard route family
+  (`vllm-cluster/*`) without creating a route per model. Named routes remain the
+  curated-alias layer for cherry-picked public names; groups cover fleets.
+- **`/v1/models`**: group addresses are listed as the deduplicated union of member-served
+  models (`vllm-cluster/qwen3`, `vllm-cluster/llama4`, …) alongside provider-slug and
+  route ids.
+- **Collision interplay**: groups also soften the collision pressure from the section
+  above — individual instances can carry mundane slugs (`vllm-msk-1`), while the group
+  owns the meaningful address (`vllm-cluster`, or even `vllm`).
+
 ## Proposed follow-up implementation issues
 
 1. **store**: add immutable `slug` to providers — migration, `unique(org_id, slug)`,
@@ -229,6 +272,10 @@ upstream**. Therefore:
 4. **ui**: model-management surfaces the `provider-slug/model` address; inline
    add-provider flow. (relates to ROL-222)
 5. *(optional)* **proxy**: `x-rolter-provider` header selector (Option D).
+6. **store/gateway/ui**: provider groups — `provider_groups` entity (slug in the unified
+   namespace, strategy, members with weights), `group-slug/model` resolution with
+   passthrough + per-member rewrite, `/v1/models` union listing, group CRUD/UI.
+   (see *Addendum: provider groups*)
 
 ## Sources
 
