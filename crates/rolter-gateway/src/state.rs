@@ -71,6 +71,11 @@ pub struct Snapshot {
     /// (ADR-0017). A provider without an explicit slug is indexed under one
     /// derived from its name so TOML-configured deployments get addressing too
     pub providers_by_slug: HashMap<String, String>,
+    /// group slug -> provider group, for `group-slug/model` addressing (ADR-0017
+    /// addendum). Shares the slug namespace with `providers_by_slug`; a group
+    /// whose slug collides with a provider slug is dropped so the provider wins
+    /// deterministically
+    pub groups_by_slug: HashMap<String, rolter_core::ProviderGroupConfig>,
     pub routes: HashMap<String, RouteEntry>,
     /// virtual keys indexed by their peppered digest ([`rolter_auth::hash_key`]),
     /// never by plaintext — merges config-defined and database-defined keys
@@ -152,6 +157,24 @@ impl Snapshot {
                     .entry(slug)
                     .or_insert_with(|| p.name.clone());
             }
+        }
+        // index provider groups by slug for `group-slug/model` addressing
+        // (ADR-0017 addendum). the slug shares the provider namespace: a group
+        // whose slug collides with a provider slug is skipped so the provider
+        // wins deterministically. empty groups are dropped — they never route.
+        let mut groups_by_slug: HashMap<String, rolter_core::ProviderGroupConfig> = HashMap::new();
+        for g in &config.provider_groups {
+            let slug = g
+                .slug
+                .clone()
+                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
+            if !rolter_core::slug::is_valid_slug(&slug)
+                || g.members.is_empty()
+                || providers_by_slug.contains_key(&slug)
+            {
+                continue;
+            }
+            groups_by_slug.entry(slug).or_insert_with(|| g.clone());
         }
         let prices: HashMap<String, ModelPriceConfig> = config
             .model_prices
@@ -267,6 +290,7 @@ impl Snapshot {
         Self {
             providers,
             providers_by_slug,
+            groups_by_slug,
             routes,
             keys,
             pepper,
@@ -299,34 +323,69 @@ impl Snapshot {
         if upstream.is_empty() {
             return None;
         }
-        let provider_name = self.providers_by_slug.get(slug)?;
-        let target = Target {
-            provider: provider_name.clone(),
-            model: Some(upstream.to_string()),
-            weight: 1,
-        };
+        // a provider slug pins a single provider; a group slug fans out across
+        // the group's members. the two share a namespace, so at most one hits.
+        if let Some(provider_name) = self.providers_by_slug.get(slug) {
+            let target = Target {
+                provider: provider_name.clone(),
+                model: Some(upstream.to_string()),
+                weight: 1,
+            };
+            let strategy = rolter_core::BalancingStrategy::default();
+            return Some(self.synthetic_route(model, strategy, vec![target]));
+        }
+        if let Some(group) = self.groups_by_slug.get(slug) {
+            // one target per member; each rewrites to its own upstream model
+            // when set, otherwise forwards the requested model as-is (passthrough)
+            let targets: Vec<Target> = group
+                .members
+                .iter()
+                .map(|m| Target {
+                    provider: m.provider.clone(),
+                    model: Some(m.model.clone().unwrap_or_else(|| upstream.to_string())),
+                    weight: m.weight,
+                })
+                .collect();
+            if targets.is_empty() {
+                return None;
+            }
+            return Some(self.synthetic_route(model, group.strategy, targets));
+        }
+        None
+    }
+
+    /// Build a synthetic single-pool [`RouteEntry`] for an addressed model
+    /// (`provider-slug/model` or `group-slug/model`). The pinned entry runs
+    /// through the same classic-pool machinery — key pools, cooldowns, circuit
+    /// breaker — as a configured route, but is not registered in `routes`.
+    fn synthetic_route(
+        &self,
+        model: &str,
+        strategy: rolter_core::BalancingStrategy,
+        targets: Vec<Target>,
+    ) -> RouteEntry {
+        let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
-            cost_per_mtok: target_costs(std::slice::from_ref(&target), model, &self.prices),
+            cost_per_mtok: target_costs(&targets, model, &self.prices),
             latency: None,
             ..Default::default()
         };
-        let strategy = rolter_core::BalancingStrategy::default();
-        let balancer = build_with_stats(strategy, &[target.weight], &stats);
+        let balancer = build_with_stats(strategy, &weights, &stats);
         let route = ModelRoute {
             model: model.to_string(),
             strategy,
-            targets: vec![target],
+            targets,
             params: Default::default(),
             param_policy: Default::default(),
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
         };
-        Some(RouteEntry {
+        RouteEntry {
             route,
             balancer,
             variant_balancers: Vec::new(),
-        })
+        }
     }
 }
 
@@ -703,6 +762,90 @@ mod tests {
         // the route name containing '/' is a real route; the handler tries this
         // map before ever calling resolve_pinned, so the named route wins
         assert!(snap.routes.contains_key("vllm-spb/named-route"));
+    }
+
+    fn group_snapshot() -> Snapshot {
+        use rolter_core::{GroupMember, ProviderGroupConfig};
+        let mut config = GatewayConfig::default();
+        config.providers.push(provider_cfg("vllm msk 1", None));
+        config.providers.push(provider_cfg("vllm msk 2", None));
+        // a group unifying both instances under one slug, passthrough models
+        config.provider_groups.push(ProviderGroupConfig {
+            name: "vLLM Cluster MSK".to_string(),
+            slug: Some("vllm-cluster-msk".to_string()),
+            strategy: rolter_core::BalancingStrategy::Weighted,
+            members: vec![
+                GroupMember {
+                    provider: "vllm msk 1".to_string(),
+                    model: None,
+                    weight: 3,
+                },
+                GroupMember {
+                    provider: "vllm msk 2".to_string(),
+                    model: Some("qwen3-awq".to_string()),
+                    weight: 1,
+                },
+            ],
+        });
+        // a group whose slug collides with a provider slug is dropped
+        config.provider_groups.push(ProviderGroupConfig {
+            name: "collision".to_string(),
+            slug: Some("vllm-msk-1".to_string()),
+            strategy: Default::default(),
+            members: vec![GroupMember {
+                provider: "vllm msk 1".to_string(),
+                model: None,
+                weight: 1,
+            }],
+        });
+        // an empty group never routes
+        config.provider_groups.push(ProviderGroupConfig {
+            name: "empty".to_string(),
+            slug: Some("empty-group".to_string()),
+            strategy: Default::default(),
+            members: Vec::new(),
+        });
+        Snapshot::build(&config, &crate::load::LoadTracker::new())
+    }
+
+    #[test]
+    fn group_fans_out_across_members_with_passthrough_and_rewrite() {
+        let snap = group_snapshot();
+        let entry = snap
+            .resolve_pinned("vllm-cluster-msk/qwen3")
+            .expect("resolves");
+        assert_eq!(entry.route.targets.len(), 2);
+        // member without a rewrite forwards the requested model verbatim
+        let m1 = &entry.route.targets[0];
+        assert_eq!(m1.provider, "vllm msk 1");
+        assert_eq!(m1.model.as_deref(), Some("qwen3"));
+        assert_eq!(m1.weight, 3);
+        // member with an explicit rewrite forwards its own upstream model
+        let m2 = &entry.route.targets[1];
+        assert_eq!(m2.provider, "vllm msk 2");
+        assert_eq!(m2.model.as_deref(), Some("qwen3-awq"));
+        assert_eq!(
+            entry.route.strategy,
+            rolter_core::BalancingStrategy::Weighted
+        );
+    }
+
+    #[test]
+    fn provider_slug_wins_a_collision_with_a_group_slug() {
+        let snap = group_snapshot();
+        // `vllm-msk-1` is a derived provider slug; the colliding group is dropped,
+        // so the address pins the single provider (one target), not the group
+        let entry = snap.resolve_pinned("vllm-msk-1/m").expect("resolves");
+        assert_eq!(entry.route.targets.len(), 1);
+        assert_eq!(entry.route.targets[0].provider, "vllm msk 1");
+        assert!(!snap.groups_by_slug.contains_key("vllm-msk-1"));
+    }
+
+    #[test]
+    fn empty_group_is_not_indexed() {
+        let snap = group_snapshot();
+        assert!(!snap.groups_by_slug.contains_key("empty-group"));
+        assert!(snap.resolve_pinned("empty-group/m").is_none());
     }
 
     #[test]

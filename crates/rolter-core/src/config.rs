@@ -18,6 +18,11 @@ pub struct GatewayConfig {
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub routes: Vec<ModelRoute>,
+    /// provider groups addressable as `group-slug/model` (ADR-0017 addendum):
+    /// unify a fleet of same-kind providers under one slug with a shared
+    /// balancing strategy
+    #[serde(default)]
+    pub provider_groups: Vec<ProviderGroupConfig>,
     /// Model presets declared in the bootstrap file. `readonly` routes remain
     /// config-owned; `default` routes are a one-time control-plane DB seed.
     #[serde(default)]
@@ -511,6 +516,43 @@ pub enum BalancingStrategy {
     PreciseCacheAware,
     /// LMCache controller occupancy and cache-availability routing
     LmcacheAware,
+}
+
+/// A named set of providers addressable as `group-slug/model` (ADR-0017
+/// addendum). A request that resolves to a group **pins the group** and fans
+/// out across its members with `strategy`; each member forwards to a provider,
+/// optionally rewriting the upstream model (the default is passthrough of the
+/// requested model name). The `slug` shares the provider slug namespace, so a
+/// left segment resolves to at most one of {provider, group} — providers win a
+/// tie deterministically.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProviderGroupConfig {
+    /// display name
+    pub name: String,
+    /// stable, URL-safe identity; when absent it is derived from `name` via
+    /// [`crate::slug::slugify`], mirroring [`ProviderConfig::slug`]
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub strategy: BalancingStrategy,
+    /// member providers this group fans out across; an empty group never
+    /// resolves (there is nothing to route to)
+    #[serde(default)]
+    pub members: Vec<GroupMember>,
+}
+
+/// One member of a [`ProviderGroupConfig`]: a provider plus optional upstream
+/// model rewrite and balancing weight.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GroupMember {
+    /// name of the [`ProviderConfig`] this member forwards to
+    pub provider: String,
+    /// upstream model id; if absent the requested model name (the right segment
+    /// of `group-slug/model`) is forwarded as-is (passthrough)
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_weight")]
+    pub weight: u32,
 }
 
 /// A single upstream target within a route.

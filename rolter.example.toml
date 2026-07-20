@@ -195,6 +195,25 @@ weight = 1
 # provider = "anthropic"
 # model = "claude-sonnet-4-20250514"
 
+# --- provider groups: unify a fleet under one address (ADR-0017 addendum) ---
+# run several same-kind providers (e.g. self-hosted vLLM boxes with distinct
+# base_urls/creds) and address them all as `group-slug/model`. a request pins
+# the group and fans out across its members with `strategy`, honoring each
+# member's own credentials, key pool, and cooldowns. the slug shares the
+# provider slug namespace (a provider slug wins a tie), and membership is
+# many-to-many, so overlapping scopes work (msk / nsk / all).
+# [[provider_groups]]
+# name = "vLLM Cluster MSK"
+# slug = "vllm-cluster-msk"    # optional; derived from name when omitted
+# strategy = "weighted"
+# [[provider_groups.members]]
+# provider = "vllm-msk-1"      # provider name; forwards the requested model as-is
+# weight = 3
+# [[provider_groups.members]]
+# provider = "vllm-msk-2"
+# model = "qwen3-awq"          # optional upstream rewrite; omit for passthrough
+# weight = 1
+
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
 
