@@ -366,6 +366,9 @@ async fn build_store(
         let pool = rolter_store::postgres::connect(database_url).await?;
         rolter_store::postgres::run_migrations(&pool).await?;
         if let Some(config) = bootstrap.as_ref() {
+            // providers first: a models.default target may reference a provider
+            // that providers.default just seeded
+            seed_default_providers(&pool, config).await?;
             seed_default_models(&pool, config).await?;
         }
         let db_store: Arc<dyn ConfigStore> =
@@ -459,6 +462,102 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
     Ok(())
 }
 
+/// Resolve the bootstrap `default/default/default` `(project_id, org_id)`, or
+/// `None` when it has not been created yet (a deployment without `rolter-seed`
+/// is left untouched rather than guessing a tenant).
+#[cfg(feature = "postgres")]
+async fn default_project(pool: &sqlx::PgPool) -> anyhow::Result<Option<(uuid::Uuid, uuid::Uuid)>> {
+    Ok(sqlx::query_as(
+        "select p.id, o.id from projects p \
+         join teams t on t.id = p.team_id \
+         join orgs o on o.id = t.org_id \
+         where o.slug = 'default' and t.name = 'default' and p.name = 'default' \
+         limit 1",
+    )
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// The database `kind` string for a [`rolter_core::ProviderKind`], matching the
+/// values decoded in `rolter_store::postgres`.
+#[cfg(feature = "postgres")]
+fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
+    use rolter_core::ProviderKind::*;
+    match kind {
+        Openai => "openai",
+        Anthropic => "anthropic",
+        OpenaiCompatible => "openai_compatible",
+        Ollama => "ollama",
+        OllamaCloud => "ollama_cloud",
+        LlamaCpp => "llama_cpp",
+        Openrouter => "openrouter",
+        Tei => "tei",
+        AzureOpenai => "azure_openai",
+        Bedrock => "bedrock",
+        Vertex => "vertex",
+    }
+}
+
+/// Seed editable `[providers.default]` providers exactly once (ADR-0022). Like
+/// `seed_default_models`, defaults target the bootstrap `default/default/default`
+/// org; an existing provider with the same slug or name is never overwritten.
+/// Seeded providers are DB-owned and editable — not config-owned.
+#[cfg(feature = "postgres")]
+async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
+    if config.provider_defaults.is_empty() {
+        return Ok(());
+    }
+    let Some((_project_id, org_id)) = default_project(pool).await? else {
+        tracing::warn!(
+            "providers.default was not seeded: create the default org/team/project first with rolter-seed"
+        );
+        return Ok(());
+    };
+    let repo = rolter_store::postgres::repo::ProviderRepo(pool);
+    let keys = rolter_store::postgres::repo::ProviderKeyRepo(pool);
+    let existing = repo.list(org_id).await?;
+    for provider in &config.provider_defaults {
+        let slug = provider
+            .slug
+            .clone()
+            .unwrap_or_else(|| rolter_core::slug::slugify(&provider.name));
+        if existing
+            .iter()
+            .any(|p| p.name == provider.name || p.slug == slug)
+        {
+            continue;
+        }
+        let row = repo
+            .create(
+                org_id,
+                &provider.name,
+                &slug,
+                provider_kind_str(&provider.kind),
+                &provider.api_base,
+                provider.api_key_env.as_deref(),
+                provider.egress_proxy.as_deref(),
+                &provider.egress_proxies,
+            )
+            .await?;
+        // seal an inline api_key at rest; api_key_env stays a plaintext var name
+        if let Some(api_key) = provider.api_key.as_deref() {
+            use rolter_store::postgres::crypto::{Kek, KEK_ENV};
+            match Kek::from_env() {
+                Some(kek) => {
+                    let (ciphertext, nonce) = kek.encrypt(api_key)?;
+                    keys.set(row.id, &ciphertext, &nonce).await?;
+                }
+                None => tracing::warn!(
+                    provider = %provider.name,
+                    "providers.default inline api_key not sealed: {KEK_ENV} is unset; set api_key_env or the KEK"
+                ),
+            }
+        }
+        tracing::info!(provider = %provider.name, %slug, "seeded editable default provider");
+    }
+    Ok(())
+}
+
 #[cfg(not(feature = "postgres"))]
 async fn build_store(
     _args: &Args,
@@ -541,6 +640,31 @@ async fn get_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn provider_kind_str_covers_every_kind_and_matches_the_decoder() {
+        use rolter_core::ProviderKind::*;
+        // each variant maps to the exact string rolter_store decodes back
+        for kind in [
+            Openai,
+            Anthropic,
+            OpenaiCompatible,
+            Ollama,
+            OllamaCloud,
+            LlamaCpp,
+            Openrouter,
+            Tei,
+            AzureOpenai,
+            Bedrock,
+            Vertex,
+        ] {
+            let s = provider_kind_str(&kind);
+            assert!(!s.is_empty());
+        }
+        assert_eq!(provider_kind_str(&OpenaiCompatible), "openai_compatible");
+        assert_eq!(provider_kind_str(&AzureOpenai), "azure_openai");
+    }
 
     fn state_with_token(token: Option<&str>) -> ControlState {
         ControlState {
