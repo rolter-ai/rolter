@@ -21,11 +21,11 @@ async fn fresh_app() -> axum::Router {
         .await
         .expect("connect");
     // wipe the schema (including sqlx bookkeeping) so every run migrates fresh
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .expect("reset schema");
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .expect("recreate schema");
