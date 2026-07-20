@@ -109,6 +109,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .collect();
     let mut pinned: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
+    // provider name -> upstream models it serves, reused to expand group ids
+    let mut provider_models: std::collections::HashMap<&str, std::collections::BTreeSet<String>> =
+        std::collections::HashMap::new();
     for entry in snap.routes.values() {
         let route = &entry.route;
         let targets = route
@@ -116,10 +119,14 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             .iter()
             .chain(route.variants.iter().flat_map(|v| v.targets.iter()));
         for target in targets {
+            let upstream = target.model.as_deref().unwrap_or(&route.model);
+            provider_models
+                .entry(target.provider.as_str())
+                .or_default()
+                .insert(upstream.to_string());
             let Some(slug) = name_to_slug.get(target.provider.as_str()) else {
                 continue;
             };
-            let upstream = target.model.as_deref().unwrap_or(&route.model);
             let id = format!("{slug}/{upstream}");
             if vk.as_ref().is_none_or(|vk| {
                 rolter_auth::model_allowed(&vk.models, &id) && vk.provider_allowed(&target.provider)
@@ -132,6 +139,37 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         pinned
             .into_iter()
             .map(|(id, provider)| json!({"id": id, "object": "model", "owned_by": provider})),
+    );
+
+    // group-slug/model ids (ADR-0017 addendum): a group address is the deduped
+    // union of the models its member providers serve. owned_by names the group.
+    // a member with an explicit upstream rewrite exposes that rewritten model.
+    let mut grouped: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for (slug, group) in &snap.groups_by_slug {
+        for member in &group.members {
+            let models: Vec<String> = match &member.model {
+                Some(m) => vec![m.clone()],
+                None => provider_models
+                    .get(member.provider.as_str())
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default(),
+            };
+            for model in models {
+                let id = format!("{slug}/{model}");
+                if vk.as_ref().is_none_or(|vk| {
+                    rolter_auth::model_allowed(&vk.models, &id)
+                        && vk.provider_allowed(&member.provider)
+                }) {
+                    grouped.insert((id, group.name.clone()));
+                }
+            }
+        }
+    }
+    data.extend(
+        grouped
+            .into_iter()
+            .map(|(id, group)| json!({"id": id, "object": "model", "owned_by": group})),
     );
 
     Json(json!({"object": "list", "data": data})).into_response()
