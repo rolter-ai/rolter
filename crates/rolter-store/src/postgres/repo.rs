@@ -13,7 +13,8 @@ use rolter_core::{Error, Result};
 
 use super::models::{
     AuditLogEntry, Budget, Membership, ModelPrice, Org, OwnedVirtualKey, Project, Provider,
-    RateLimit, Route, RouteTarget, SecuritySettings, Session, Team, User, VirtualKey,
+    ProviderGroup, ProviderGroupMember, RateLimit, Route, RouteTarget, SecuritySettings, Session,
+    Team, User, VirtualKey,
 };
 
 fn store_err(err: sqlx::Error) -> Error {
@@ -1316,6 +1317,146 @@ impl AuditLogRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+}
+
+/// Provider groups and their membership (ADR-0017 addendum, ADR-0022). A group
+/// is org-scoped; its slug shares the provider slug namespace. Members are
+/// stored in `provider_group_members`; `set_members` replaces the membership
+/// atomically so the group and its members stay consistent.
+pub struct ProviderGroupRepo<'a>(pub &'a PgPool);
+
+impl ProviderGroupRepo<'_> {
+    pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, strategy, created_at
+             from provider_groups where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, strategy, created_at
+             from provider_groups where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("provider group {id}")))
+    }
+
+    pub async fn create(
+        &self,
+        org_id: Uuid,
+        name: &str,
+        slug: &str,
+        strategy: &str,
+    ) -> Result<ProviderGroup> {
+        sqlx::query_as(
+            "insert into provider_groups (org_id, name, slug, strategy)
+             values ($1, $2, $3, $4)
+             returning id, org_id, name, slug, strategy, created_at",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(slug)
+        .bind(strategy)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Update the mutable fields of a group. `None` leaves a field unchanged;
+    /// `slug` is immutable by default (the control API gates any change).
+    pub async fn update(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        slug: Option<&str>,
+        strategy: Option<&str>,
+    ) -> Result<ProviderGroup> {
+        sqlx::query_as(
+            "update provider_groups set
+                 name = coalesce($2, name),
+                 slug = coalesce($3, slug),
+                 strategy = coalesce($4, strategy)
+             where id = $1
+             returning id, org_id, name, slug, strategy, created_at",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(slug)
+        .bind(strategy)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("provider group {id}")))
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from provider_groups where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("provider group {id}")));
+        }
+        Ok(())
+    }
+
+    /// List a group's members with the provider name joined in, ordered by
+    /// `position` for a stable fan-out.
+    pub async fn members(&self, group_id: Uuid) -> Result<Vec<ProviderGroupMember>> {
+        sqlx::query_as(
+            "select m.group_id, m.provider_id, p.name as provider_name,
+                    m.upstream_model, m.weight, m.position
+             from provider_group_members m
+             join providers p on p.id = m.provider_id
+             where m.group_id = $1
+             order by m.position, p.name",
+        )
+        .bind(group_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Replace a group's membership atomically. Each tuple is
+    /// `(provider_id, upstream_model, weight)`; `position` is the tuple index.
+    pub async fn set_members(
+        &self,
+        group_id: Uuid,
+        members: &[(Uuid, Option<String>, i32)],
+    ) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from provider_group_members where group_id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for (position, (provider_id, upstream_model, weight)) in members.iter().enumerate() {
+            sqlx::query(
+                "insert into provider_group_members
+                     (group_id, provider_id, upstream_model, weight, position)
+                 values ($1, $2, $3, $4, $5)",
+            )
+            .bind(group_id)
+            .bind(provider_id)
+            .bind(upstream_model.as_deref())
+            .bind(weight)
+            .bind(position as i32)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(())
     }
 }
 
