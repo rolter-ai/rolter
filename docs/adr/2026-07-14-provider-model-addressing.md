@@ -152,6 +152,54 @@ additive: existing bare-`model` routes keep working.
 4. **`/v1/models`**: list both — existing route ids *and* `provider-slug/model` ids
    (grouped by provider in a follow-up UI), so either address is discoverable.
 
+### Slug collision handling
+
+Slugs are `unique(org_id, slug)`, so the DB is the final arbiter — but "just add a
+unique index" leaves the *behaviour* around collisions unspecified. This section pins it
+down for the three moments a collision can happen. Note first that slugs are **org-scoped**:
+there is no cross-org collision, and `provider-slug/model` always resolves within the
+caller's org (enforced in the query `where org_id = $caller`), so the blast radius of any
+collision is a single org.
+
+**1. Migration backfill (deterministic, reported).** Backfill runs once when the `slug`
+column is added:
+
+- Process an org's providers in a stable order — `(created_at, id)` ascending — so the
+  result is reproducible and re-runnable.
+- Slugify `name`: lowercase, map every char outside `[a-z0-9]` to `-`, collapse runs of
+  `-`, trim leading/trailing `-`, truncate to 63 chars. Empty result → fall back to
+  `provider-<short-id>`.
+- The **first** claimant of a base slug keeps it bare; each subsequent collision gets the
+  lowest free `-N` suffix (`vllm`, `vllm-2`, `vllm-3`, …), truncating the base so
+  `base-N` still fits 63 chars.
+- Emit a **migration report** (log line per adjusted provider: `org_id, provider_id, name,
+  base_slug, final_slug`) so operators can see exactly what was renamed and reconcile any
+  externally-published address. The migration never fails on a collision — it always
+  converges.
+
+**2. Runtime creation (validate + suggest, never silently mangle).** When an operator
+creates or renames a provider slug:
+
+- API validates charset (`^[a-z0-9][a-z0-9-]{0,62}$`) and availability. On conflict it
+  returns **409** with the next free suggestion (`{"error": "slug taken", "suggestion":
+  "vllm-2"}`) rather than auto-appending a suffix behind the operator's back — an address
+  is a contract, so the human picks it explicitly.
+- UI pre-checks availability on blur and pre-fills a slug slugified from the display name,
+  surfacing the suggested alternative inline before submit.
+- Slug is **immutable after creation** (the whole point — it is the stable identity).
+  Changing it is a delete-and-recreate with a new address, not an in-place edit.
+
+**3. Deletion & reclaim (explicit, not automatic).** A hard-deleted provider frees its
+slug immediately; the next create may reuse it. This is intentional but load-bearing:
+reusing `openai` after deleting the old `openai` repoints that address to a **new
+upstream**. Therefore:
+
+- Prefer **soft-delete** for providers that ever served traffic, so a freed slug is not
+  silently re-pointed; a reused slug is then an explicit operator action on a
+  tombstoned name.
+- Reclaim is a **new identity**, never a restore — document that `provider-slug/model`
+  after reclaim may resolve to different weights/base_url than before.
+
 ## Decision (14 Jul 2026)
 
 - **Adopt Option B, coexisting** with named routes. `provider-slug/model` resolves to a
@@ -162,12 +210,19 @@ additive: existing bare-`model` routes keep working.
   pool, cooldowns, and any same-model targets stay in rotation.
 - **Precedence & slug rules** as proposed above (route-name-first, then first-`/` split;
   slug `^[a-z0-9][a-z0-9-]{0,62}$`, `unique(org_id, slug)`, immutable by default).
+- **Collision policy** as in *Slug collision handling* above: slugs are org-scoped
+  (no cross-org collision); migration backfill is deterministic and reported with lowest
+  free `-N` de-dup; runtime creation returns **409 + suggestion** instead of silently
+  suffixing; hard-delete frees a slug immediately, but soft-delete is preferred so a
+  reclaimed slug is an explicit operator action, not a silent re-point.
 - **Option D (header selector)**: deferred, not part of the initial implementation.
 
 ## Proposed follow-up implementation issues
 
 1. **store**: add immutable `slug` to providers — migration, `unique(org_id, slug)`,
-   backfill, CRUD wiring. (relates to ROL-81)
+   deterministic reported backfill with `-N` de-dup, 409+suggestion on create-conflict,
+   soft-delete-preferred reclaim, CRUD wiring. (relates to ROL-81, see *Slug collision
+   handling*)
 2. **proxy/gateway**: `provider-slug/model` parsing + resolution with the precedence rule
    and provider pinning; interaction with `maybe_rewrite_model`/`upstream_model`; tests.
 3. **gateway**: extend `/v1/models` to surface `provider-slug/model` ids.
