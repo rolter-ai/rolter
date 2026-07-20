@@ -72,6 +72,7 @@ export const NAV: NavDef[] = [
     children: [
       { key: "model-catalog", label: "Model Catalog", icon: <LayoutGrid /> },
       { key: "providers", label: "Model Providers", icon: <Boxes /> },
+      { key: "provider-groups", label: "Provider Groups", icon: <Layers /> },
       { key: "budgets", label: "Budgets & Limits", icon: <Wallet /> },
       { key: "routing-rules", label: "Routing Rules", icon: <Split /> },
       { key: "complexity-router", label: "Complexity Router", icon: <ArrowLeftRight /> },
@@ -167,6 +168,7 @@ export const META: Record<string, [string, string]> = {
   "logs-settings": ["Logs Settings", "Retention, sampling, and PII redaction for request logs."],
   "model-catalog": ["Model Catalog", "Every model reachable through Rolter, grouped by provider."],
   providers: ["Model Providers", "Configure upstream providers, keys, weights, and network settings."],
+  "provider-groups": ["Provider Groups", "Unify a fleet of providers behind one group-slug/model address and balancing strategy."],
   budgets: ["Budgets & Limits", "Per-model spend caps, rate limits, and token budgets."],
   "routing-rules": ["Routing Rules", "Weighted, cache-aware, and fallback routing across providers."],
   "complexity-router": ["Complexity Router", "Route by prompt complexity tier to balance cost and quality."],
@@ -220,6 +222,7 @@ export const BUILT = new Set([
   "dashboard",
   "logs",
   "providers",
+  "provider-groups",
   "model-catalog",
   "virtual-keys",
   "budgets",

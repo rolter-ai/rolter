@@ -25,6 +25,7 @@ import McpLogs from "@/pages/McpLogs";
 import Models from "@/pages/Models";
 import Playground from "@/pages/Playground";
 import Pricing from "@/pages/Pricing";
+import ProviderGroups from "@/pages/ProviderGroups";
 import Providers from "@/pages/Providers";
 import Rbac from "@/pages/Rbac";
 import RoutingRules from "@/pages/RoutingRules";
@@ -43,6 +44,7 @@ const SCREENS: Record<string, React.ReactNode> = {
   connectors: <Connectors />,
   "model-catalog": <Models />,
   providers: <Providers />,
+  "provider-groups": <ProviderGroups />,
   budgets: <Limits />,
   "routing-rules": <RoutingRules />,
   "complexity-router": <ComplexityRouter />,
