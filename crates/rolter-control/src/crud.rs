@@ -21,13 +21,13 @@ use rolter_auth::Role;
 use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::{AdvancedModelConfig, Error};
 use rolter_store::postgres::models::{
-    AuditLogEntry, Budget, Membership, ModelPrice, Org, Project, Provider, RateLimit, Route,
-    RouteTarget, Team, User, VirtualKey,
+    AuditLogEntry, Budget, Membership, ModelPrice, Org, Project, Provider, ProviderGroup,
+    ProviderGroupMember, RateLimit, Route, RouteTarget, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, MembershipRepo,
-    ModelPriceRepo, OrgRepo, ProjectRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
-    RouteTargetRepo, SessionRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    ModelPriceRepo, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
+    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::rbac::{authorize, require_superadmin, Principal, ScopeChain};
@@ -54,6 +54,14 @@ pub fn router() -> Router<ControlState> {
         .route(
             "/api/v1/providers/{id}",
             put(update_provider).delete(delete_provider),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/provider-groups",
+            get(list_provider_groups).post(create_provider_group),
+        )
+        .route(
+            "/api/v1/provider-groups/{id}",
+            put(update_provider_group).delete(delete_provider_group),
         )
         .route(
             "/api/v1/projects/{project_id}/routes",
@@ -890,6 +898,214 @@ async fn delete_provider(
         "provider",
         id,
         serde_json::json!({"name": existing.name}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --- provider groups (ADR-0017 addendum, ADR-0022) ---
+
+/// A provider group with its resolved membership, as the API returns it.
+#[derive(Serialize)]
+struct ProviderGroupView {
+    #[serde(flatten)]
+    group: ProviderGroup,
+    members: Vec<ProviderGroupMember>,
+}
+
+#[derive(Deserialize)]
+struct GroupMemberInput {
+    provider_id: Uuid,
+    /// upstream model rewrite; omit for passthrough of the requested model
+    #[serde(default)]
+    upstream_model: Option<String>,
+    #[serde(default = "default_member_weight")]
+    weight: i32,
+}
+
+fn default_member_weight() -> i32 {
+    1
+}
+
+fn to_member_tuples(members: &[GroupMemberInput]) -> Vec<(Uuid, Option<String>, i32)> {
+    members
+        .iter()
+        .map(|m| {
+            (
+                m.provider_id,
+                m.upstream_model.clone().filter(|s| !s.trim().is_empty()),
+                m.weight.max(1),
+            )
+        })
+        .collect()
+}
+
+fn validate_strategy(strategy: &str) -> ApiResult<()> {
+    if !STRATEGIES.contains(&strategy) {
+        return Err(ApiError::Core(Error::Config(format!(
+            "strategy must be one of {STRATEGIES:?}"
+        ))));
+    }
+    Ok(())
+}
+
+/// Reject a mutation against a readonly (config-owned) group slug (ADR-0022).
+fn require_group_not_config_owned(state: &ControlState, slug: &str) -> ApiResult<()> {
+    if state.config_owned.groups.contains(slug) {
+        return Err(ApiError::Core(Error::Config(format!(
+            "provider group '{slug}' is config-owned and cannot be modified via the API"
+        ))));
+    }
+    Ok(())
+}
+
+async fn view_of(state: &ControlState, group: ProviderGroup) -> ApiResult<ProviderGroupView> {
+    let members = ProviderGroupRepo(pool(state)).members(group.id).await?;
+    Ok(ProviderGroupView { group, members })
+}
+
+async fn list_provider_groups(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<ProviderGroupView>>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Viewer).await?;
+    let groups = ProviderGroupRepo(pool(&state)).list(org_id).await?;
+    let mut views = Vec::with_capacity(groups.len());
+    for group in groups {
+        views.push(view_of(&state, group).await?);
+    }
+    Ok(Json(views))
+}
+
+#[derive(Deserialize)]
+struct CreateProviderGroup {
+    name: String,
+    /// stable URL-safe identity; derived from `name` when omitted
+    slug: Option<String>,
+    #[serde(default = "default_strategy")]
+    strategy: String,
+    #[serde(default)]
+    members: Vec<GroupMemberInput>,
+}
+
+async fn create_provider_group(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+    Json(body): Json<CreateProviderGroup>,
+) -> ApiResult<Json<ProviderGroupView>> {
+    authorize(&state, &principal, ScopeChain::org(org_id), Role::Admin).await?;
+    require_non_empty(&body.name, "name")?;
+    validate_strategy(&body.strategy)?;
+    let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
+    // a readonly config group with this slug shadows any DB row — refuse early
+    require_group_not_config_owned(&state, &slug)?;
+    let repo = ProviderGroupRepo(pool(&state));
+    let group = repo
+        .create(org_id, &body.name, &slug, &body.strategy)
+        .await?;
+    repo.set_members(group.id, &to_member_tuples(&body.members))
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(org_id),
+        "provider_group.create",
+        "provider_group",
+        group.id,
+        serde_json::json!({"name": group.name, "slug": group.slug, "strategy": group.strategy}),
+    )
+    .await;
+    Ok(Json(view_of(&state, group).await?))
+}
+
+#[derive(Deserialize)]
+struct UpdateProviderGroup {
+    name: Option<String>,
+    slug: Option<String>,
+    #[serde(default)]
+    allow_slug_change: bool,
+    strategy: Option<String>,
+    /// when present, replaces the entire membership; omit to leave unchanged
+    members: Option<Vec<GroupMemberInput>>,
+}
+
+async fn update_provider_group(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateProviderGroup>,
+) -> ApiResult<Json<ProviderGroupView>> {
+    let repo = ProviderGroupRepo(pool(&state));
+    let existing = repo.get(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(existing.org_id),
+        Role::Admin,
+    )
+    .await?;
+    require_group_not_config_owned(&state, &existing.slug)?;
+    if let Some(name) = &body.name {
+        require_non_empty(name, "name")?;
+    }
+    if let Some(strategy) = &body.strategy {
+        validate_strategy(strategy)?;
+    }
+    let slug_change =
+        resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
+    let group = repo
+        .update(
+            id,
+            body.name.as_deref(),
+            slug_change.as_deref(),
+            body.strategy.as_deref(),
+        )
+        .await?;
+    if let Some(members) = &body.members {
+        repo.set_members(id, &to_member_tuples(members)).await?;
+    }
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(existing.org_id),
+        "provider_group.update",
+        "provider_group",
+        id,
+        serde_json::json!({"slug": group.slug}),
+    )
+    .await;
+    Ok(Json(view_of(&state, group).await?))
+}
+
+async fn delete_provider_group(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let repo = ProviderGroupRepo(pool(&state));
+    let existing = repo.get(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(existing.org_id),
+        Role::Admin,
+    )
+    .await?;
+    require_group_not_config_owned(&state, &existing.slug)?;
+    repo.delete(id).await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(existing.org_id),
+        "provider_group.delete",
+        "provider_group",
+        id,
+        serde_json::json!({"name": existing.name, "slug": existing.slug}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -2252,6 +2468,34 @@ mod slug_tests {
             "openai",
             true
         )));
+    }
+
+    #[test]
+    fn validate_strategy_accepts_known_and_rejects_unknown() {
+        assert!(validate_strategy("weighted").is_ok());
+        assert!(validate_strategy("round_robin").is_ok());
+        assert!(is_config_err(validate_strategy("nonsense")));
+    }
+
+    #[test]
+    fn member_tuples_clamp_weight_and_drop_empty_upstream() {
+        let id = Uuid::nil();
+        let input = vec![
+            GroupMemberInput {
+                provider_id: id,
+                upstream_model: Some("  ".to_string()),
+                weight: 0,
+            },
+            GroupMemberInput {
+                provider_id: id,
+                upstream_model: Some("qwen3".to_string()),
+                weight: 5,
+            },
+        ];
+        let tuples = to_member_tuples(&input);
+        // blank upstream_model becomes passthrough (None); zero weight clamps to 1
+        assert_eq!(tuples[0], (id, None, 1));
+        assert_eq!(tuples[1], (id, Some("qwen3".to_string()), 5));
     }
 }
 

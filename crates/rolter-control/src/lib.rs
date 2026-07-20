@@ -100,10 +100,8 @@ pub struct Args {
 struct ConfigOwned {
     providers: std::collections::HashSet<String>,
     models: std::collections::HashSet<String>,
-    /// readonly provider-group slugs; the CRUD API will reject mutations against
-    /// these (ADR-0022). default-tier groups are DB-owned and absent here.
-    /// unused until provider-group CRUD lands (#577)
-    #[allow(dead_code)]
+    /// readonly provider-group slugs; the CRUD API rejects mutations against
+    /// these (ADR-0022). default-tier groups are DB-owned and absent here
     groups: std::collections::HashSet<String>,
 }
 
@@ -366,9 +364,10 @@ async fn build_store(
         let pool = rolter_store::postgres::connect(database_url).await?;
         rolter_store::postgres::run_migrations(&pool).await?;
         if let Some(config) = bootstrap.as_ref() {
-            // providers first: a models.default target may reference a provider
-            // that providers.default just seeded
+            // providers first: a models.default target or a provider_groups.default
+            // member may reference a provider that providers.default just seeded
             seed_default_providers(&pool, config).await?;
+            seed_default_provider_groups(&pool, config).await?;
             seed_default_models(&pool, config).await?;
         }
         let db_store: Arc<dyn ConfigStore> =
@@ -556,6 +555,81 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
         tracing::info!(provider = %provider.name, %slug, "seeded editable default provider");
     }
     Ok(())
+}
+
+/// Seed editable `[provider_groups.default]` groups exactly once (ADR-0022).
+/// Like the other default seeds, groups target the bootstrap default org and an
+/// existing group with the same slug is never overwritten. A member referencing
+/// a provider that is not DB-owned is skipped with a warning. Runs after the
+/// provider seed so a group member can reference a just-seeded provider.
+#[cfg(feature = "postgres")]
+async fn seed_default_provider_groups(
+    pool: &sqlx::PgPool,
+    config: &GatewayConfig,
+) -> anyhow::Result<()> {
+    if config.provider_group_defaults.is_empty() {
+        return Ok(());
+    }
+    let Some((_project_id, org_id)) = default_project(pool).await? else {
+        tracing::warn!(
+            "provider_groups.default was not seeded: create the default org/team/project first with rolter-seed"
+        );
+        return Ok(());
+    };
+    let groups = rolter_store::postgres::repo::ProviderGroupRepo(pool);
+    let providers = rolter_store::postgres::repo::ProviderRepo(pool)
+        .list(org_id)
+        .await?;
+    let existing = groups.list(org_id).await?;
+    for group in &config.provider_group_defaults {
+        let slug = group
+            .slug
+            .clone()
+            .unwrap_or_else(|| rolter_core::slug::slugify(&group.name));
+        if existing.iter().any(|g| g.slug == slug) {
+            continue;
+        }
+        let strategy = balancing_strategy_str(group.strategy);
+        let created = groups.create(org_id, &group.name, &slug, strategy).await?;
+        let mut members = Vec::with_capacity(group.members.len());
+        for member in &group.members {
+            match providers.iter().find(|p| p.name == member.provider) {
+                Some(provider) => members.push((
+                    provider.id,
+                    member.model.clone(),
+                    member.weight.max(1) as i32,
+                )),
+                None => tracing::warn!(
+                    group = %group.name,
+                    provider = %member.provider,
+                    "provider_groups.default member skipped: provider is not DB-owned"
+                ),
+            }
+        }
+        groups.set_members(created.id, &members).await?;
+        tracing::info!(group = %group.name, %slug, "seeded editable default provider group");
+    }
+    Ok(())
+}
+
+/// The database `strategy` string for a [`rolter_core::BalancingStrategy`],
+/// matching the values `rolter_store::postgres::parse_strategy` decodes.
+#[cfg(feature = "postgres")]
+fn balancing_strategy_str(strategy: rolter_core::BalancingStrategy) -> &'static str {
+    use rolter_core::BalancingStrategy::*;
+    match strategy {
+        RoundRobin => "round_robin",
+        Random => "random",
+        PowerOfTwo => "power_of_two",
+        ConsistentHash => "consistent_hash",
+        CacheAware => "cache_aware",
+        Weighted => "weighted",
+        Pipeline => "pipeline",
+        Cheapest => "cheapest",
+        Fastest => "fastest",
+        PreciseCacheAware => "precise_cache_aware",
+        LmcacheAware => "lmcache_aware",
+    }
 }
 
 #[cfg(not(feature = "postgres"))]
