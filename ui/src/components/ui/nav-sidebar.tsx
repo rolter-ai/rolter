@@ -43,6 +43,11 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
   activeKey?: string;
   onNavigate?: (key: string) => void;
   user?: NavUser;
+  /* when provided, the user block becomes a menu trigger: clicking it opens a
+     popover above the block rendering this content (scope switcher, account,
+     sign out). `close` dismisses the popover. takes precedence over
+     user.onClick. */
+  userMenu?: (close: () => void) => React.ReactNode;
   /* bifrost-style extras — all optional so existing call sites keep working */
   searchable?: boolean;
   collapsible?: boolean;
@@ -69,6 +74,7 @@ export function NavSidebar({
   activeKey,
   onNavigate,
   user,
+  userMenu,
   searchable,
   collapsible,
   defaultCollapsed,
@@ -81,6 +87,22 @@ export function NavSidebar({
   const [query, setQuery] = React.useState("");
   // parents stay open once toggled; the one holding the active child opens itself
   const [open, setOpen] = React.useState<Record<string, boolean>>({});
+  const [userOpen, setUserOpen] = React.useState(false);
+  const userRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!userOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (userRef.current && !userRef.current.contains(e.target as Node)) setUserOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setUserOpen(false);
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [userOpen]);
 
   // the search box is hidden while collapsed, so the filter must not apply
   const q = collapsed ? "" : query.trim().toLowerCase();
@@ -164,6 +186,21 @@ export function NavSidebar({
         )}
       </div>
 
+      {/* when collapsed, the expand toggle sits at the top (mirroring the
+          collapse toggle's position) above the first nav item, set off by a
+          separator */}
+      {collapsible && collapsed && (
+        <div className="flex flex-col items-center border-b border-[color:var(--border-subtle)] pb-3">
+          <button
+            title="Expand sidebar"
+            onClick={() => setCollapsed(false)}
+            className="rounded-md p-1.5 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {searchable && !collapsed && (
         <label className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 transition-colors focus-within:border-[color:var(--border-default)]">
           <Search className="h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]" />
@@ -203,7 +240,7 @@ export function NavSidebar({
         })}
       </div>
 
-      {(footerLinks?.length || version || (collapsible && collapsed)) && (
+      {(footerLinks?.length || version) && (
         <div className={cn("flex flex-col gap-1.5", collapsed && "items-center")}>
           <div className={cn("flex items-center gap-1 px-1", collapsed && "flex-col px-0")}>
             {footerLinks?.map((l) =>
@@ -229,15 +266,6 @@ export function NavSidebar({
                 </button>
               ),
             )}
-            {collapsible && collapsed && (
-              <button
-                title="Expand sidebar"
-                onClick={() => setCollapsed(false)}
-                className="rounded-md p-1.5 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <PanelLeftOpen className="h-4 w-4" />
-              </button>
-            )}
             {version && !collapsed && (
               <span className="ml-auto pr-1 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
                 {version}
@@ -248,15 +276,31 @@ export function NavSidebar({
       )}
 
       {user && (
-        <div className={cn("mt-auto flex flex-col gap-1.5", collapsed && "items-center")}>
+        <div
+          ref={userRef}
+          className={cn("relative mt-auto flex flex-col gap-1.5", collapsed && "items-center")}
+        >
+          {userMenu && userOpen && (
+            <div
+              className={cn(
+                "absolute bottom-[calc(100%+6px)] z-40 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] py-1.5 shadow-lg",
+                collapsed ? "left-0 w-[260px]" : "inset-x-0",
+              )}
+            >
+              {userMenu(() => setUserOpen(false))}
+            </div>
+          )}
           <button
-            onClick={user.onClick}
+            onClick={() => (userMenu ? setUserOpen((v) => !v) : user.onClick?.())}
+            aria-haspopup={userMenu ? "menu" : undefined}
+            aria-expanded={userMenu ? userOpen : undefined}
             title={collapsed && typeof user.name === "string" ? user.name : undefined}
             className={cn(
               "flex items-center gap-2 rounded-md transition-colors",
               collapsed
                 ? "justify-center p-0.5 hover:bg-muted"
                 : "border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 hover:border-[color:var(--border-default)]",
+              userOpen && !collapsed && "border-[color:var(--border-default)]",
             )}
           >
             <span className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-full bg-[color:var(--red-folk)] text-xs font-semibold text-white">

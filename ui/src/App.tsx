@@ -1,13 +1,15 @@
-import { Bug } from "lucide-react";
+import { Bug, KeyRound, LogOut } from "lucide-react";
 import * as React from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
+import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { NavSidebar, type NavGroup, type NavItem } from "@/components/ui/nav-sidebar";
 import { BUILT, META, NAV, leafKeys, type NavDef } from "@/lib/nav";
 import { logout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
+import { cn } from "@/lib/utils";
 import Account from "@/pages/Account";
 import { AlertChannels, AlertHistory, AlertRules } from "@/pages/Alerting";
 import AuditLog from "@/pages/AuditLog";
@@ -106,6 +108,35 @@ function toNavItem(def: NavDef): NavItem {
   };
 }
 
+function MenuRow({
+  icon,
+  onClick,
+  danger,
+  children,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-[color:var(--surface-hover)] [&>svg]:h-4 [&>svg]:w-4 [&>svg]:flex-none",
+        danger
+          ? "text-[color:var(--text-secondary)] hover:text-[color:var(--status-danger)]"
+          : "text-foreground",
+      )}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
 function Screen({ screen }: { screen: string }) {
   const [title, subtitle] = META[screen] ?? [screen, ""];
   return (
@@ -173,6 +204,48 @@ export default function App() {
           initials,
           onClick: handleSignOut,
         }}
+        userMenu={(close) => (
+          <div>
+            <div className="flex items-center gap-2 px-3 pb-2 pt-1">
+              <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-[color:var(--red-folk)] text-xs font-semibold text-white">
+                {initials}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-foreground">{email}</p>
+                <p className="truncate text-[0.6875rem] text-muted-foreground">
+                  {orgName ? `Admin · ${orgName}` : "Admin"}
+                </p>
+              </div>
+            </div>
+            <div className="border-t border-[color:var(--border-subtle)] py-1.5">
+              <p className="px-3 pb-1 text-[0.625rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
+                Scope
+              </p>
+              <ScopeSwitcher />
+            </div>
+            <div className="border-t border-[color:var(--border-subtle)] pt-1">
+              <MenuRow
+                icon={<KeyRound />}
+                onClick={() => {
+                  navigate("/api-keys");
+                  close();
+                }}
+              >
+                Account &amp; API keys
+              </MenuRow>
+              <MenuRow
+                icon={<LogOut />}
+                danger
+                onClick={() => {
+                  close();
+                  handleSignOut();
+                }}
+              >
+                Sign out
+              </MenuRow>
+            </div>
+          </div>
+        )}
       />
       <main className="min-w-0 flex-1 overflow-hidden border-l border-[color:var(--border-subtle)] bg-background">
         {redirect != null ? (
