@@ -64,3 +64,6 @@ Accepted. Run semantic lookup only after an exact miss, embed through an explici
 
 ## ADR-0021 — [External cache telemetry for routing](2026-07-18-external-cache-telemetry-routing.md)
 Accepted. Extend ADR-0007 with opt-in vLLM KV-event and LMCache occupancy scorers whose network I/O runs in background tasks. Consequence: exact/capacity-aware routing stays allocation-light and fail-open; stale or untrusted telemetry becomes neutral and least-load selection remains available.
+
+## ADR-0022 — [Uniform config-vs-DB tiering for models, providers, and provider groups](2026-07-20-config-db-entity-tiering.md)
+Accepted. Give models, providers, and provider groups the same two-tier config wrapper over the DB (CRUD) tier: `readonly` entries are immutable and config-owned; `default` entries are seeded into the default project once at startup and then owned/editable via API/UI; pure DB rows come from CRUD. readonly wins resolution; a `default` colliding with a readonly key is a load-time error. Top-level `[[routes]]`/`[[providers]]`/`[[provider_groups]]` stay as deprecated readonly aliases for back-compat. Consequence: providers gain a seed-then-edit story and provider groups gain a full DB lifecycle (new tables/repos/seed/CRUD, tracked as follow-up PRs); the model tiering pattern is reused rather than reinvented per entity.
