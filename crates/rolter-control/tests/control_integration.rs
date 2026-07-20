@@ -225,11 +225,11 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
 
     let url = database_url().unwrap();
     let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .unwrap();
@@ -357,11 +357,11 @@ async fn admin_token_guards_crud_and_snapshot() {
     skip_without_db!();
     let url = database_url().unwrap();
     let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .unwrap();
@@ -405,11 +405,11 @@ async fn login_me_logout_round_trip() {
     skip_without_db!();
     let url = database_url().unwrap();
     let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .unwrap();
@@ -518,11 +518,11 @@ async fn expired_session_is_rejected() {
     skip_without_db!();
     let url = database_url().unwrap();
     let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .unwrap();
@@ -626,11 +626,11 @@ async fn rbac_enforced_on_every_mutation() {
     skip_without_db!();
     let url = database_url().unwrap();
     let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade")
+    sqlx::query("drop schema if exists public cascade")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("create schema public")
+    sqlx::query("create schema if not exists public")
         .execute(&pool)
         .await
         .unwrap();
