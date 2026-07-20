@@ -100,13 +100,30 @@ pub struct Args {
 struct ConfigOwned {
     providers: std::collections::HashSet<String>,
     models: std::collections::HashSet<String>,
+    /// readonly provider-group slugs; the CRUD API will reject mutations against
+    /// these (ADR-0022). default-tier groups are DB-owned and absent here.
+    /// unused until provider-group CRUD lands (#577)
+    #[allow(dead_code)]
+    groups: std::collections::HashSet<String>,
 }
 
 impl ConfigOwned {
     fn from_config(config: &GatewayConfig) -> Self {
+        // config.providers / config.routes / config.provider_groups hold only the
+        // readonly (effective) tier; the default tiers are seeded to the DB and
+        // are deliberately editable, so they must not be tracked as config-owned
         Self {
             providers: config.providers.iter().map(|p| p.name.clone()).collect(),
             models: config.routes.iter().map(|r| r.model.clone()).collect(),
+            groups: config
+                .provider_groups
+                .iter()
+                .map(|g| {
+                    g.slug
+                        .clone()
+                        .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
+                })
+                .collect(),
         }
     }
 }

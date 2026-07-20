@@ -25,6 +25,13 @@ port = 4000
 # ca_bundles = ["/etc/rolter/ca/private-root.pem"]
 
 # --- providers: where rolter can forward to ---
+#
+# two config tiers (ADR-0022), same shape for [providers] and [provider_groups]:
+#   [[providers.readonly]]  immutable, config-owned, rejected by the CRUD API
+#   [[providers.default]]   seeded into the DB once at startup, then editable
+#                           via the API/UI (not config-owned)
+# the bare [[providers]] array below is a deprecated alias for the readonly tier
+# and is treated as all-readonly; new configs should prefer the explicit tiers.
 
 [[providers]]
 name = "openai"
