@@ -6,6 +6,7 @@
 #![cfg(feature = "postgres")]
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::{json, Value};
 
@@ -13,22 +14,56 @@ fn database_url() -> Option<String> {
     std::env::var("ROLTER_TEST_DATABASE_URL").ok()
 }
 
-/// Connect, reset `public` to a clean slate, and return a control-plane app
-/// router (migrations applied by `test_app`).
-async fn fresh_app() -> axum::Router {
+/// Monotonic sequence for per-test schema names, keeping concurrently-running
+/// tests off a shared schema (plain `cargo test` — e.g. the coverage job —
+/// runs them as threads in one process, so a shared `public` races on DDL).
+static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Isolated schema name unique to this process and call, safe to interpolate
+/// (only ascii digits and underscores).
+fn unique_schema() -> String {
+    let n = SCHEMA_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("test_{}_{}", std::process::id(), n)
+}
+
+/// Return `url` with the connection pinned to `schema` via `search_path`, so
+/// migrations and queries land in the isolated schema rather than `public`.
+fn with_search_path(url: &str, schema: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    // percent-encode the space and `=` inside the libpq options string
+    format!("{url}{sep}options=-c%20search_path%3D{schema}")
+}
+
+/// Create a fresh isolated schema and return a pool pinned to it. Tests that
+/// only need a router use [`fresh_app`]; those that also query the store
+/// directly build the router from this pool themselves.
+async fn fresh_pool() -> sqlx::PgPool {
     let url = database_url().expect("ROLTER_TEST_DATABASE_URL checked by caller");
-    let pool = rolter_store::postgres::connect(&url)
+    let schema = unique_schema();
+
+    // (re)create the isolated schema over a default-search_path connection
+    let admin = rolter_store::postgres::connect(&url)
         .await
         .expect("connect");
-    // wipe the schema (including sqlx bookkeeping) so every run migrates fresh
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
+    sqlx::query(&format!("drop schema if exists {schema} cascade"))
+        .execute(&admin)
         .await
         .expect("reset schema");
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
+    sqlx::query(&format!("create schema {schema}"))
+        .execute(&admin)
         .await
         .expect("recreate schema");
+    admin.close().await;
+
+    // app pool scoped to the isolated schema so migrations run there
+    rolter_store::postgres::connect(&with_search_path(&url, &schema))
+        .await
+        .expect("connect scoped")
+}
+
+/// Isolated schema + control-plane app router (migrations applied by `test_app`).
+async fn fresh_app() -> axum::Router {
+    let pool = fresh_pool().await;
     rolter_control::test_app(pool).await.expect("build app")
 }
 
@@ -223,16 +258,7 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", "integration-test-kek");
 
-    let url = database_url().unwrap();
-    let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -355,16 +381,7 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
 #[tokio::test]
 async fn admin_token_guards_crud_and_snapshot() {
     skip_without_db!();
-    let url = database_url().unwrap();
-    let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let pool = fresh_pool().await;
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -403,16 +420,7 @@ async fn admin_token_guards_crud_and_snapshot() {
 #[tokio::test]
 async fn login_me_logout_round_trip() {
     skip_without_db!();
-    let url = database_url().unwrap();
-    let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -516,16 +524,7 @@ async fn login_me_logout_round_trip() {
 #[tokio::test]
 async fn expired_session_is_rejected() {
     skip_without_db!();
-    let url = database_url().unwrap();
-    let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -624,16 +623,7 @@ async fn seed_session(pool: &sqlx::PgPool, user_id: uuid::Uuid, suffix: &str) ->
 #[tokio::test]
 async fn rbac_enforced_on_every_mutation() {
     skip_without_db!();
-    let url = database_url().unwrap();
-    let pool = rolter_store::postgres::connect(&url).await.unwrap();
-    sqlx::query("drop schema if exists public cascade")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("create schema if not exists public")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let pool = fresh_pool().await;
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
