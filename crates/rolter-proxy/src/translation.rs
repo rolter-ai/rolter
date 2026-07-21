@@ -1953,10 +1953,10 @@ mod tests {
         let mut converter = SseConverter::new(plan(Protocol::OpenAiChat, Protocol::GeminiGenerate));
         let mut out = Vec::new();
         out.extend(converter.feed(
-            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hel\"}]}}],\"modelVersion\":\"gemini-2.5-flash\"}\n\n",
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello \"}]}}],\"modelVersion\":\"gemini-2.5-flash\"}\n\n",
         ));
         out.extend(converter.feed(
-            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n",
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"world\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n",
         ));
         out.extend(converter.finish());
         let text = out
@@ -1964,8 +1964,8 @@ mod tests {
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .collect::<String>();
         assert!(text.contains("\"role\":\"assistant\""));
-        assert!(text.contains("\"content\":\"hel\""));
-        assert!(text.contains("\"content\":\"lo\""));
+        assert!(text.contains("\"content\":\"hello \""));
+        assert!(text.contains("\"content\":\"world\""));
         assert!(text.contains("\"finish_reason\":\"stop\""));
         assert!(text.contains("data: [DONE]"));
     }
