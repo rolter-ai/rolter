@@ -293,6 +293,15 @@ pub enum ProviderKind {
     Bedrock,
     /// vertex ai's openai-compatible chat completions api
     Vertex,
+    /// google gemini's openai-compatible api (`/v1beta/openai`)
+    Gemini,
+    /// google gemini's native generateContent api (`/v1beta/models/{model}:generateContent`),
+    /// reached by translating openai/anthropic requests to the gemini wire format
+    GeminiNative,
+    /// mistral's hosted openai-compatible api
+    Mistral,
+    /// groq's hosted openai-compatible api (`/openai/v1`)
+    Groq,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -1915,6 +1924,34 @@ impl GatewayConfig {
                 if provider.api_base.trim_end_matches('/') != "https://openrouter.ai/api/v1" {
                     problems.push(format!(
                         "openrouter provider '{}' api_base must be https://openrouter.ai/api/v1",
+                        provider.name
+                    ));
+                }
+            }
+            // hosted openai-compatible clouds authenticated with an env-sourced
+            // bearer key; enforce the same secret hygiene as openrouter
+            if matches!(
+                provider.kind,
+                ProviderKind::Gemini
+                    | ProviderKind::GeminiNative
+                    | ProviderKind::Mistral
+                    | ProviderKind::Groq
+            ) {
+                let kind = match provider.kind {
+                    ProviderKind::Gemini => "gemini",
+                    ProviderKind::GeminiNative => "gemini_native",
+                    ProviderKind::Mistral => "mistral",
+                    _ => "groq",
+                };
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "{kind} provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "{kind} provider '{}' must source its key from api_key_env",
                         provider.name
                     ));
                 }
