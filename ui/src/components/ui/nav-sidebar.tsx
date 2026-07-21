@@ -167,7 +167,12 @@ export function NavSidebar({
       )}
       {...props}
     >
-      <div className={cn("flex items-center gap-2 px-2 py-1.5", collapsed && "justify-center px-0")}>
+      <div
+        className={cn(
+          "group relative flex items-center gap-2 px-2 py-1.5",
+          collapsed && "justify-center px-0",
+        )}
+      >
         {logoSrc ? <img className="block h-6 w-6 flex-none" src={logoSrc} alt="" /> : null}
         {!collapsed && (
           <span className="font-mono text-lg font-semibold leading-none tracking-[-0.03em] text-foreground">
@@ -184,22 +189,21 @@ export function NavSidebar({
             <PanelLeftClose className="h-4 w-4" />
           </button>
         )}
-      </div>
-
-      {/* when collapsed, the expand toggle sits at the top (mirroring the
-          collapse toggle's position) above the first nav item, set off by a
-          separator */}
-      {collapsible && collapsed && (
-        <div className="flex flex-col items-center border-b border-[color:var(--border-subtle)] pb-3">
+        {/* collapsed: the expand toggle lives inside the logo/header area,
+            hidden by default and revealed only on hover or keyboard focus of
+            the header container. it overlays the centered logo so the rail
+            stays icon-narrow. */}
+        {collapsible && collapsed && (
           <button
             title="Expand sidebar"
+            aria-label="Expand sidebar"
             onClick={() => setCollapsed(false)}
-            className="rounded-md p-1.5 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground"
+            className="absolute inset-0 flex items-center justify-center rounded-md bg-[color:var(--surface-app)] text-[color:var(--text-subtle)] opacity-0 transition-opacity duration-200 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
           >
             <PanelLeftOpen className="h-4 w-4" />
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {searchable && !collapsed && (
         <label className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 transition-colors focus-within:border-[color:var(--border-default)]">
