@@ -1,0 +1,136 @@
+# full-stack e2e topology: datastores + control + gateway (DB-snapshot mode) +
+# a fleet of fake-vLLM engines (llm-d-inference-sim). unlike docker/docker-compose.yml
+# this runs the gateway in snapshot mode (no static rolter.toml) and turns RBAC on
+# by setting ROLTER_ADMIN_TOKEN, so the harness can exercise per-user roles.
+#
+# secrets here are throwaway test values, never real credentials.
+name: rolter-e2e
+
+# the sim and the rolter binaries run on distroless (no shell/wget), so they carry
+# no container healthcheck; the Python harness polls their host-published ports
+# for real readiness (rolter_e2e/stack.py wait_healthy + the smoke's model warmup).
+x-sim: &sim
+  image: ghcr.io/llm-d/llm-d-inference-sim:v0.10.0
+  restart: unless-stopped
+  # deterministic-ish random text; served over the openai + anthropic surfaces
+  command: ["--model", "rolter-dummy", "--port", "8000", "--mode", "random"]
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: rolter
+      POSTGRES_PASSWORD: rolter
+      POSTGRES_DB: rolter
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rolter"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    # ephemeral: no named volume, so every `up` starts from a clean db
+
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    volumes:
+      - ../../clickhouse:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    # the alpine clickhouse HTTP port can bind late; the native client is the
+    # reliable readiness signal.
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # --- fake-vLLM fleet: three engines, later grouped into clusters by the tests ---
+  sim-a: { <<: *sim }
+  sim-b: { <<: *sim }
+  sim-c: { <<: *sim }
+
+  control:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+      args:
+        # control needs its postgres-backed CRUD API + migrations for the e2e
+        # scenarios; the shipping image defaults to no features.
+        CARGO_FEATURES: postgres
+    command: ["rolter-control"]
+    ports:
+      - "4001:4001"
+    environment:
+      RUST_LOG: info
+      ROLTER_DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
+      ROLTER_REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      # run config-less (pure postgres store): the image bakes
+      # ROLTER_CONFIG=/app/rolter.toml, which activates MergedConfigStore — and
+      # that store drops db-created virtual keys from the snapshot (see #623),
+      # so every runtime-minted key would 401 at the gateway. pointing at a
+      # non-existent path makes control skip the bootstrap (Some(path) if
+      # path.exists()) and use the DB as the sole source of truth.
+      ROLTER_CONFIG: /app/e2e-no-bootstrap.toml
+      # RBAC only enforces when an admin token is set; the harness bootstraps as
+      # superadmin with this token, then drives per-role users via session tokens.
+      ROLTER_ADMIN_TOKEN: e2e-superadmin-token
+      # shared with the gateway via the snapshot (control embeds it); virtual keys
+      # are stored/matched by hash_key(pepper, key).
+      ROLTER_KEY_PEPPER: e2e-key-pepper
+      ROLTER_SESSION_PEPPER: e2e-session-pepper
+      # envelope key for provider api_key sealing (AES-256-GCM); base64 32 bytes.
+      # injected by the harness (rolter_e2e/stack.py) so no key material lives in
+      # git; export ROLTER_KEK yourself for a manual `docker compose up`.
+      ROLTER_KEK: ${ROLTER_KEK:?set ROLTER_KEK (the harness sets a throwaway test value)}
+    # control needs postgres+redis at boot; clickhouse only receives async log
+    # writes, so start-order is enough (don't block boot on the CH HTTP port).
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      clickhouse: { condition: service_started }
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+      args:
+        # control needs its postgres-backed CRUD API + migrations for the e2e
+        # scenarios; the shipping image defaults to no features.
+        CARGO_FEATURES: postgres
+    # DB-snapshot mode: no static config, hot-reload from the control plane.
+    command:
+      - rolter-gateway
+      - --snapshot-url
+      - http://control:4001/internal/snapshot
+      - --snapshot-poll-secs
+      - "2"
+      - --redis-url
+      - redis://redis:6379
+      - --admin-url
+      - http://control:4001
+    ports:
+      - "4000:4000"
+    environment:
+      RUST_LOG: info
+      ROLTER_HOST: 0.0.0.0
+      ROLTER_PORT: "4000"
+      # admin token so bootstrap CRUD can be proxied through the gateway port too
+      ROLTER_ADMIN_TOKEN: e2e-superadmin-token
+      # MUST match control: the snapshot carries no pepper, so the gateway hashes
+      # presented virtual keys with its own ROLTER_KEY_PEPPER to match the stored
+      # digest. a mismatch here rejects every key with 401 "invalid api key".
+      ROLTER_KEY_PEPPER: e2e-key-pepper
+    # plain ordering: control has no container healthcheck (distroless), and the
+    # gateway retries its snapshot fetch every 2s until control answers anyway.
+    depends_on:
+      - control

@@ -66,6 +66,7 @@ jobs:
             ci
             deps
             release
+            e2e
           requireScope: false
 
   # CodeQL security analysis, folded into ci-ok so it gates merges without being

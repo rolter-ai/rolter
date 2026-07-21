@@ -36,6 +36,7 @@ export default {
         "ci",
         "deps",
         "release",
+        "e2e",
       ],
     ],
     "subject-case": [2, "always", "lower-case"],

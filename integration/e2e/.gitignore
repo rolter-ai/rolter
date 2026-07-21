@@ -1,0 +1,6 @@
+# uv-managed virtualenv + python caches — uv.lock and .python-version are tracked
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
