@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.10](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.0.9...rolter-store-v0.0.10) - 2026-07-21
+
+### Features
+- *(proxy)* add xai (grok) hosted provider kind ([#600](https://github.com/rolter-ai/rolter/pull/600)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add gemini/mistral/groq + native gemini generateContent kinds ([#598](https://github.com/rolter-ai/rolter/pull/598)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* provider_groups tables, repo, and merge wiring ([#581](https://github.com/rolter-ai/rolter/pull/581)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* paginate and filter audit logs by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist advanced model config by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* implement medium-priority platform enhancements [ROL-65] ([#525](https://github.com/rolter-ai/rolter/pull/525)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add precise and LMCache-aware routing [ROL-54] ([#522](https://github.com/rolter-ai/rolter/pull/522)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add rotating egress proxy pools [ROL-101] ([#520](https://github.com/rolter-ai/rolter/pull/520)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record audit-log writes and surface them in the dashboard ([#500](https://github.com/rolter-ai/rolter/pull/500)) by [@ormeilu](https://github.com/ormeilu)
+
+### Other
+- Merge pull request #553 from rolter-ai/feat/510-alerting-control-plane by [@ormeilu](https://github.com/ormeilu)
+- Merge pull request #549 from rolter-ai/feat/533-security-settings-policy by [@ormeilu](https://github.com/ormeilu)
+- Merge pull request #547 from rolter-ai/feat/532-advanced-model-config by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(control)* isolate integration tests per-schema to fix coverage race ([#604](https://github.com/rolter-ai/rolter/pull/604)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.9](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.0.8...rolter-store-v0.0.9) - 2026-07-15
 
 ### Dependencies

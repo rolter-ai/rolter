@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.10](https://github.com/rolter-ai/rolter/compare/v0.0.9...v0.0.10) - 2026-07-21
+
+### Bug Fixes
+- *(gateway)* gemini_native health probe uses x-goog-api-key ([#602](https://github.com/rolter-ai/rolter/pull/602)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(proxy)* add xai (grok) hosted provider kind ([#600](https://github.com/rolter-ai/rolter/pull/600)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add gemini/mistral/groq + native gemini generateContent kinds ([#598](https://github.com/rolter-ai/rolter/pull/598)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add versioned prompt templates and route decorators ([#594](https://github.com/rolter-ai/rolter/pull/594)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add custom guardrail webhook ([#593](https://github.com/rolter-ai/rolter/pull/593)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add built-in regex guardrails and PII redactor ([#592](https://github.com/rolter-ai/rolter/pull/592)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* resolve group-slug/model provider group addressing ([#572](https://github.com/rolter-ai/rolter/pull/572)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* route requests by bounded complexity tiers by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add complexity routing primitives by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist advanced model config by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* implement medium-priority platform enhancements [ROL-65] ([#525](https://github.com/rolter-ai/rolter/pull/525)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add precise and LMCache-aware routing [ROL-54] ([#522](https://github.com/rolter-ai/rolter/pull/522)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add semantic response cache [ROL-57] ([#521](https://github.com/rolter-ai/rolter/pull/521)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add rotating egress proxy pools [ROL-101] ([#520](https://github.com/rolter-ai/rolter/pull/520)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(gateway)* expand streaming retry and realtime coverage ([#524](https://github.com/rolter-ai/rolter/pull/524)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.9](https://github.com/rolter-ai/rolter/compare/v0.0.8...v0.0.9) - 2026-07-15
 
 ### Features
