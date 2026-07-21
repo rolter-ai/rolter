@@ -193,12 +193,15 @@ fn build_probe_plan(
     if let Some(key) = provider.resolve_api_key() {
         match provider.kind {
             ProviderKind::AzureOpenai => headers.push(("api-key".to_string(), key)),
+            // native gemini authenticates its generativelanguage endpoints with
+            // an api-key header, not a bearer token (unlike the openai-compat
+            // `gemini` shim)
+            ProviderKind::GeminiNative => headers.push(("x-goog-api-key".to_string(), key)),
             ProviderKind::OllamaCloud
             | ProviderKind::Openrouter
             | ProviderKind::Bedrock
             | ProviderKind::Vertex
             | ProviderKind::Gemini
-            | ProviderKind::GeminiNative
             | ProviderKind::Mistral
             | ProviderKind::Groq
             | ProviderKind::Xai => {
@@ -875,6 +878,44 @@ mod tests {
                 assert_eq!(
                     headers,
                     vec![("api-key".to_string(), "azure-secret".to_string())]
+                );
+            }
+            _ => panic!("expected a free probe"),
+        }
+    }
+
+    #[test]
+    fn gemini_native_probe_uses_goog_api_key_header() {
+        let mut p = provider(ProviderKind::GeminiNative);
+        p.api_base = "https://generativelanguage.googleapis.com/v1beta".to_string();
+        p.api_key = Some("gem-secret".to_string());
+        let (plan, _) = build_probe_plan(&p, "/");
+        match plan {
+            ProbePlan::Free { url, headers } => {
+                assert_eq!(
+                    url,
+                    "https://generativelanguage.googleapis.com/v1beta/models"
+                );
+                assert_eq!(
+                    headers,
+                    vec![("x-goog-api-key".to_string(), "gem-secret".to_string())]
+                );
+            }
+            _ => panic!("expected a free probe"),
+        }
+    }
+
+    #[test]
+    fn gemini_compat_probe_stays_on_bearer_auth() {
+        let mut p = provider(ProviderKind::Gemini);
+        p.api_base = "https://generativelanguage.googleapis.com/v1beta/openai".to_string();
+        p.api_key = Some("gem-secret".to_string());
+        let (plan, _) = build_probe_plan(&p, "/");
+        match plan {
+            ProbePlan::Free { headers, .. } => {
+                assert_eq!(
+                    headers,
+                    vec![("authorization".to_string(), "Bearer gem-secret".to_string())]
                 );
             }
             _ => panic!("expected a free probe"),
