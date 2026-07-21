@@ -169,6 +169,7 @@ async fn import_bootstrap_toml(
             ProviderKind::GeminiNative => "gemini_native",
             ProviderKind::Mistral => "mistral",
             ProviderKind::Groq => "groq",
+            ProviderKind::Xai => "xai",
         };
         let existing = providers
             .list(org_id)

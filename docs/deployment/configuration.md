@@ -14,7 +14,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq` | `xai`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
@@ -78,7 +78,8 @@ credentials are sent as bearer tokens. The default active-health probes use
 Azure's model list, Bedrock `ListFoundationModels`, and Vertex's publisher model
 list, respectively; none invokes a model.
 
-Google Gemini, Mistral, and Groq expose hosted OpenAI-compatible APIs. Their
+Google Gemini, Mistral, Groq, and xAI (Grok) expose hosted OpenAI-compatible
+APIs. Their
 `api_base` already carries the version segment, so rolter strips the leading
 `/v1` from the gateway path before appending it. Keys are bearer tokens sourced
 from `api_key_env` (inline keys are rejected); the free health probe lists
@@ -118,6 +119,12 @@ name = "groq"
 kind = "groq"
 api_base = "https://api.groq.com/openai/v1"
 api_key_env = "GROQ_API_KEY"
+
+[[providers]]
+name = "xai"
+kind = "xai"
+api_base = "https://api.x.ai/v1"
+api_key_env = "XAI_API_KEY"
 ```
 
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM

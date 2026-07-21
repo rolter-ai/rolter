@@ -498,6 +498,7 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         GeminiNative => "gemini_native",
         Mistral => "mistral",
         Groq => "groq",
+        Xai => "xai",
     }
 }
 

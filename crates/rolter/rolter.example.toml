@@ -104,6 +104,12 @@ api_key_env = "OPENROUTER_API_KEY"
 # kind = "groq"
 # api_base = "https://api.groq.com/openai/v1"
 # api_key_env = "GROQ_API_KEY"
+#
+# [[providers]]
+# name = "xai"
+# kind = "xai"
+# api_base = "https://api.x.ai/v1"
+# api_key_env = "XAI_API_KEY"
 
 # direct Cloud access requires an environment-sourced bearer key
 [[providers]]

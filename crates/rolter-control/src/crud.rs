@@ -650,7 +650,7 @@ struct CreateProvider {
     egress_proxies: Vec<String>,
 }
 
-const PROVIDER_KINDS: [&str; 15] = [
+const PROVIDER_KINDS: [&str; 16] = [
     "openai",
     "anthropic",
     "openai_compatible",
@@ -666,6 +666,7 @@ const PROVIDER_KINDS: [&str; 15] = [
     "gemini_native",
     "mistral",
     "groq",
+    "xai",
 ];
 
 /// Seal `api_key` with the deployment KEK for at-rest storage. An empty or

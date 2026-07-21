@@ -316,6 +316,7 @@ export const PROVIDER_KINDS = [
   "gemini_native",
   "mistral",
   "groq",
+  "xai",
 ] as const;
 
 export const STRATEGIES = [

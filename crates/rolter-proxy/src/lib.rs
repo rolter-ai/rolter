@@ -268,6 +268,7 @@ impl Forwarder {
                 | ProviderKind::GeminiNative
                 | ProviderKind::Mistral
                 | ProviderKind::Groq
+                | ProviderKind::Xai
         ) && api_key.is_none()
         {
             return Err(Error::Config(format!(
@@ -453,6 +454,7 @@ fn provider_url(provider: &ProviderConfig, path: &str) -> String {
             | ProviderKind::Gemini
             | ProviderKind::Mistral
             | ProviderKind::Groq
+            | ProviderKind::Xai
     ) {
         let suffix = path.strip_prefix("/v1").unwrap_or(path);
         format!("{base}{suffix}")
@@ -988,6 +990,30 @@ mod tests {
         let head = capture.await.unwrap();
         assert!(head.starts_with("post /openai/v1/chat/completions"));
         assert!(head.contains("authorization: bearer groq-secret"));
+    }
+
+    #[tokio::test]
+    async fn xai_strips_v1_and_uses_bearer_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let xai = provider(ProviderKind::Xai, format!("http://{addr}/v1"));
+        fwd.forward_json(
+            &xai,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("xai-secret"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let head = capture.await.unwrap();
+        assert!(head.starts_with("post /v1/chat/completions"));
+        assert!(head.contains("authorization: bearer xai-secret"));
     }
 
     #[tokio::test]

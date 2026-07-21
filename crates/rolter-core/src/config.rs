@@ -302,6 +302,8 @@ pub enum ProviderKind {
     Mistral,
     /// groq's hosted openai-compatible api (`/openai/v1`)
     Groq,
+    /// xai's hosted openai-compatible api for grok models (`/v1`)
+    Xai,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -1936,11 +1938,13 @@ impl GatewayConfig {
                     | ProviderKind::GeminiNative
                     | ProviderKind::Mistral
                     | ProviderKind::Groq
+                    | ProviderKind::Xai
             ) {
                 let kind = match provider.kind {
                     ProviderKind::Gemini => "gemini",
                     ProviderKind::GeminiNative => "gemini_native",
                     ProviderKind::Mistral => "mistral",
+                    ProviderKind::Xai => "xai",
                     _ => "groq",
                 };
                 if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
