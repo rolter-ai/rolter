@@ -1,0 +1,25 @@
+# standalone dev-only e2e harness project — deliberately separate from the root
+# maturin pyproject.toml that packages the shipping wheel (requires-python >=3.9).
+# the harness has no such floor and pins the latest stable cpython via uv.
+[project]
+name = "rolter-e2e"
+version = "0.0.0"
+description = "black-box end-to-end test harness for rolter (docker-compose + fake-vLLM fleet)"
+requires-python = ">=3.13"
+dependencies = [
+  "httpx>=0.28",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "tenacity>=9.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "e2e: full-stack test that requires the docker-compose stack (heavy, gated)",
+]
+
+[tool.uv]
+package = false

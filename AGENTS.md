@@ -38,7 +38,7 @@ This repo uses **Conventional Commits** for commit messages and PR titles. Forma
 ```
 
 - **types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`
-- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`
+- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`, `e2e`
 - subject is imperative, lowercase, ≤ 72 chars, no trailing period
 - breaking changes: add `!` after the scope (`feat(core)!: ...`) and a `BREAKING CHANGE:` footer
 

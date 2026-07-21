@@ -8,7 +8,11 @@ COPY crates ./crates
 # ui/ is a workspace member (rolter-ui marker crate for release-plz changelog
 # tracking); copy its manifest + stub lib so cargo can resolve the workspace
 COPY ui/Cargo.toml ui/changelog.rs ./ui/
-RUN cargo build --release --workspace
+# optional workspace features (empty by default, so the shipping image is
+# unchanged). set CARGO_FEATURES=postgres to build the control plane with its
+# postgres-backed store, CRUD API and migrations (the e2e harness does this).
+ARG CARGO_FEATURES=""
+RUN cargo build --release --workspace ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
 # --- build the ui ---
 FROM oven/bun:1 AS ui-builder

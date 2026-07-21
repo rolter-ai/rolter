@@ -107,6 +107,12 @@ bench-vllm:
 bench-sglang:
     integration/engines/run.sh sglang --bench
 
+# full-stack black-box e2e suite (#613): boots the compose stack + fake-vLLM
+# fleet and drives the real HTTP APIs. heavy — not on the per-PR gate. needs
+# docker + uv (https://docs.astral.sh/uv/).
+e2e:
+    cd integration/e2e && uv run pytest
+
 # supply-chain audit (advisories, bans, licenses, sources)
 deny:
     cargo deny check --config .config/deny.toml
