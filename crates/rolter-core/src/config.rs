@@ -88,6 +88,10 @@ pub struct GatewayConfig {
     /// no external service; disabled by default (ROL-261)
     #[serde(default)]
     pub guardrails: crate::guardrails::GuardrailsConfig,
+    /// custom guardrail webhook: a self-hosted HTTP service consulted before
+    /// proxying, vendor-neutral. Disabled by default (ROL-257)
+    #[serde(default)]
+    pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
 }
 
 /// Two-tier bootstrap model presets for database-backed control planes.
@@ -2083,6 +2087,9 @@ impl GatewayConfig {
         // unbounded pattern fails here at startup/snapshot validation, never on
         // the request path
         problems.append(&mut self.guardrails.validate());
+
+        // validate the custom guardrail webhook (url/timeout/auth) at load time
+        problems.append(&mut self.guardrail_webhook.validate());
 
         if problems.is_empty() {
             Ok(())

@@ -99,6 +99,12 @@ pub struct Metrics {
     pub guardrail_blocks_total: AtomicU64,
     /// individual guardrail redactions applied to request content
     pub guardrail_redactions_total: AtomicU64,
+    /// requests rejected by the custom guardrail webhook
+    pub guardrail_webhook_blocks_total: AtomicU64,
+    /// request bodies transformed by the custom guardrail webhook
+    pub guardrail_webhook_transforms_total: AtomicU64,
+    /// custom-guardrail-webhook calls that failed transport (timeout/connect/non-2xx)
+    pub guardrail_webhook_errors_total: AtomicU64,
     /// requests rejected because their selected provider's queue was full
     pub provider_queue_rejections_total: AtomicU64,
     /// requests that timed out waiting for a provider queue slot
@@ -316,6 +322,27 @@ impl Metrics {
             "rolter_guardrail_redactions_total",
             "guardrail redactions applied to request content",
             self.guardrail_redactions_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_guardrail_webhook_blocks_total",
+            "requests rejected by the custom guardrail webhook",
+            self.guardrail_webhook_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_guardrail_webhook_transforms_total",
+            "request bodies transformed by the custom guardrail webhook",
+            self.guardrail_webhook_transforms_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_guardrail_webhook_errors_total",
+            "custom-guardrail-webhook calls that failed transport",
+            self.guardrail_webhook_errors_total.load(Relaxed),
         );
         metric(
             &mut out,

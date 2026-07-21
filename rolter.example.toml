@@ -419,3 +419,18 @@ disabled = false # revoke without deleting
 # builtin = "payment_card"        # email | phone | api_token | payment_card
 # action = "block"                # reject with an OpenAI-compatible error
 # default_on = true
+
+# Custom guardrail webhook: consult a self-hosted semantic guardrail service
+# (e.g. Guardrails AI, LLM Guard) before proxying. Vendor-neutral; disabled by
+# default. The service returns allow/block/transform/annotate. Secrets are read
+# from the environment at call time, never inlined here.
+# [guardrail_webhook]
+# enabled = true
+# url = "https://guard.internal/check"
+# stage = "pre_call"              # post_call is validated but not yet enforced
+# timeout_ms = 2000
+# max_retries = 0                 # extra attempts on a transient failure
+# failure_mode = "fail_open"      # fail_open | fail_closed
+# max_body_bytes = 65536          # oversized content is sent as a truncated preview
+# auth = { bearer = { token_env = "GUARD_TOKEN" } }
+#                                 # or: { shared_secret = { secret_env = "GUARD_SECRET" } }

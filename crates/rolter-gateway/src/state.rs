@@ -107,6 +107,9 @@ pub struct Snapshot {
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
     /// shared across requests; inert unless enabled (ROL-261)
     pub guardrails: Arc<rolter_core::CompiledGuardrails>,
+    /// custom guardrail webhook config, swapped atomically with the snapshot;
+    /// inert unless enabled (ROL-257)
+    pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -310,6 +313,7 @@ impl Snapshot {
             guardrails: Arc::new(rolter_core::CompiledGuardrails::from_config(
                 &config.guardrails,
             )),
+            guardrail_webhook: config.guardrail_webhook.clone(),
         }
     }
 
