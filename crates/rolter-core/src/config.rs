@@ -92,6 +92,11 @@ pub struct GatewayConfig {
     /// proxying, vendor-neutral. Disabled by default (ROL-257)
     #[serde(default)]
     pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
+    /// centrally-managed, versioned prompt templates and route decorators,
+    /// rendered at admission with structural variable escaping. Disabled by
+    /// default (ROL-256)
+    #[serde(default)]
+    pub prompt_templates: crate::prompt_templates::PromptTemplatesConfig,
 }
 
 /// Two-tier bootstrap model presets for database-backed control planes.
@@ -2090,6 +2095,10 @@ impl GatewayConfig {
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
+
+        // validate prompt templates: unique versions, well-formed variables, and
+        // decorator placeholders that reference only declared variables
+        problems.append(&mut self.prompt_templates.validate());
 
         if problems.is_empty() {
             Ok(())
