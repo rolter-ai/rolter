@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.10](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.9...rolter-control-v0.0.10) - 2026-07-21
+
+### Features
+- *(proxy)* add xai (grok) hosted provider kind ([#600](https://github.com/rolter-ai/rolter/pull/600)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add gemini/mistral/groq + native gemini generateContent kinds ([#598](https://github.com/rolter-ai/rolter/pull/598)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* provider-group CRUD and provider_groups.default seed ([#582](https://github.com/rolter-ai/rolter/pull/582)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* seed providers.default into the DB once at startup ([#580](https://github.com/rolter-ai/rolter/pull/580)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* uniform readonly/default tier wrapper for providers and groups ([#579](https://github.com/rolter-ai/rolter/pull/579)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* ingest MCP tool-call logs ([#557](https://github.com/rolter-ai/rolter/pull/557)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage complexity routing policies by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage complexity routing policies by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist advanced model config by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* implement medium-priority platform enhancements [ROL-65] ([#525](https://github.com/rolter-ai/rolter/pull/525)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add precise and LMCache-aware routing [ROL-54] ([#522](https://github.com/rolter-ai/rolter/pull/522)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* add rotating egress proxy pools [ROL-101] ([#520](https://github.com/rolter-ai/rolter/pull/520)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record audit-log writes and surface them in the dashboard ([#500](https://github.com/rolter-ai/rolter/pull/500)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* reverse-proxy /gw/* to the gateway for the Playground [#493] ([#497](https://github.com/rolter-ai/rolter/pull/497)) by [@ormeilu](https://github.com/ormeilu)
+
+### Other
+- Merge pull request #553 from rolter-ai/feat/510-alerting-control-plane by [@ormeilu](https://github.com/ormeilu)
+- Merge pull request #555 from rolter-ai/feat/536-audit-log-pagination-rebased by [@ormeilu](https://github.com/ormeilu)
+- Merge pull request #554 from rolter-ai/feat/542-complexity-routing-policies by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(control)* isolate integration tests per-schema to fix coverage race ([#604](https://github.com/rolter-ai/rolter/pull/604)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add exact format tests for session token generation ([#589](https://github.com/rolter-ai/rolter/pull/589)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add tests for generate_virtual_key ([#588](https://github.com/rolter-ai/rolter/pull/588)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.9](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.8...rolter-control-v0.0.9) - 2026-07-15
 
 ### Features
