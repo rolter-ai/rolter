@@ -812,6 +812,41 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
     }
 
+    // versioned prompt templates: render the immutable versions active for this
+    // route and inject their decorator messages around the caller's own messages.
+    // variable substitution is structural (values land as inert JSON strings);
+    // an unknown/missing/oversized variable rejects with a client error. runs
+    // before guardrails so any appended user/assistant content is still scanned
+    // (ROL-256).
+    let mut template_applied = false;
+    if snap.prompt_templates.active_for(&entry.route.model) {
+        match crate::prompt_templates::apply(
+            &snap.prompt_templates,
+            &entry.route.model,
+            path,
+            &mut parsed,
+        ) {
+            Ok(report) => {
+                if report.decorations > 0 {
+                    template_applied = true;
+                    state
+                        .metrics
+                        .prompt_template_decorations_total
+                        .fetch_add(report.decorations as u64, Relaxed);
+                }
+            }
+            Err(err) => {
+                state
+                    .metrics
+                    .prompt_template_rejections_total
+                    .fetch_add(1, Relaxed);
+                return crate::error::ApiError::new(StatusCode::BAD_REQUEST, err.message())
+                    .with_code("invalid_prompt_template")
+                    .into_response();
+            }
+        }
+    }
+
     // built-in guardrails: scan request content before proxying. a block rule
     // rejects with an OpenAI-compatible error; redactions rewrite `parsed` in
     // place and force the re-serialized forward path below. never logs raw
@@ -889,24 +924,28 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let effective_model = entry.route.model.clone();
     let rewrite_model = effective_model != model;
     let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
-    let forward_body =
-        if !has_forward_params && !rewrite_model && !guardrail_redacted && !webhook_transformed {
-            body.clone()
-        } else {
-            let mut injected = parsed.clone();
-            if rewrite_model {
-                if let Some(object) = injected.as_object_mut() {
-                    object.insert("model".to_string(), Value::String(effective_model.clone()));
-                }
-            }
-            entry.route.apply_params(&mut injected);
+    let forward_body = if !has_forward_params
+        && !rewrite_model
+        && !guardrail_redacted
+        && !webhook_transformed
+        && !template_applied
+    {
+        body.clone()
+    } else {
+        let mut injected = parsed.clone();
+        if rewrite_model {
             if let Some(object) = injected.as_object_mut() {
-                object.remove(POLICY_PARAM);
+                object.insert("model".to_string(), Value::String(effective_model.clone()));
             }
-            serde_json::to_vec(&injected)
-                .map(Bytes::from)
-                .unwrap_or_else(|_| body.clone())
-        };
+        }
+        entry.route.apply_params(&mut injected);
+        if let Some(object) = injected.as_object_mut() {
+            object.remove(POLICY_PARAM);
+        }
+        serde_json::to_vec(&injected)
+            .map(Bytes::from)
+            .unwrap_or_else(|_| body.clone())
+    };
 
     // capture log fields independent of the chosen target
     let stream = parsed

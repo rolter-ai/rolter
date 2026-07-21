@@ -165,6 +165,11 @@ async fn import_bootstrap_toml(
             ProviderKind::AzureOpenai => "azure_openai",
             ProviderKind::Bedrock => "bedrock",
             ProviderKind::Vertex => "vertex",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::GeminiNative => "gemini_native",
+            ProviderKind::Mistral => "mistral",
+            ProviderKind::Groq => "groq",
+            ProviderKind::Xai => "xai",
         };
         let existing = providers
             .list(org_id)

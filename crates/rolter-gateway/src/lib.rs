@@ -25,6 +25,7 @@ mod logging;
 mod metrics;
 mod multipart;
 mod openapi;
+mod prompt_templates;
 mod queue;
 mod rate_limits;
 mod realtime;

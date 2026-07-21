@@ -92,6 +92,11 @@ pub struct GatewayConfig {
     /// proxying, vendor-neutral. Disabled by default (ROL-257)
     #[serde(default)]
     pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
+    /// centrally-managed, versioned prompt templates and route decorators,
+    /// rendered at admission with structural variable escaping. Disabled by
+    /// default (ROL-256)
+    #[serde(default)]
+    pub prompt_templates: crate::prompt_templates::PromptTemplatesConfig,
 }
 
 /// Two-tier bootstrap model presets for database-backed control planes.
@@ -288,6 +293,17 @@ pub enum ProviderKind {
     Bedrock,
     /// vertex ai's openai-compatible chat completions api
     Vertex,
+    /// google gemini's openai-compatible api (`/v1beta/openai`)
+    Gemini,
+    /// google gemini's native generateContent api (`/v1beta/models/{model}:generateContent`),
+    /// reached by translating openai/anthropic requests to the gemini wire format
+    GeminiNative,
+    /// mistral's hosted openai-compatible api
+    Mistral,
+    /// groq's hosted openai-compatible api (`/openai/v1`)
+    Groq,
+    /// xai's hosted openai-compatible api for grok models (`/v1`)
+    Xai,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -1914,6 +1930,36 @@ impl GatewayConfig {
                     ));
                 }
             }
+            // hosted openai-compatible clouds authenticated with an env-sourced
+            // bearer key; enforce the same secret hygiene as openrouter
+            if matches!(
+                provider.kind,
+                ProviderKind::Gemini
+                    | ProviderKind::GeminiNative
+                    | ProviderKind::Mistral
+                    | ProviderKind::Groq
+                    | ProviderKind::Xai
+            ) {
+                let kind = match provider.kind {
+                    ProviderKind::Gemini => "gemini",
+                    ProviderKind::GeminiNative => "gemini_native",
+                    ProviderKind::Mistral => "mistral",
+                    ProviderKind::Xai => "xai",
+                    _ => "groq",
+                };
+                if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+                    problems.push(format!(
+                        "{kind} provider '{}' requires api_key_env",
+                        provider.name
+                    ));
+                }
+                if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+                    problems.push(format!(
+                        "{kind} provider '{}' must source its key from api_key_env",
+                        provider.name
+                    ));
+                }
+            }
             for proxy in provider.egress_proxy_pool() {
                 if !is_proxy_reference(proxy) {
                     problems.push(format!(
@@ -2090,6 +2136,10 @@ impl GatewayConfig {
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
+
+        // validate prompt templates: unique versions, well-formed variables, and
+        // decorator placeholders that reference only declared variables
+        problems.append(&mut self.prompt_templates.validate());
 
         if problems.is_empty() {
             Ok(())

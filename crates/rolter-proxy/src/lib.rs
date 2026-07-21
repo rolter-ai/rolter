@@ -262,15 +262,41 @@ impl Forwarder {
                 provider.name
             )));
         }
+        if matches!(
+            provider.kind,
+            ProviderKind::Gemini
+                | ProviderKind::GeminiNative
+                | ProviderKind::Mistral
+                | ProviderKind::Groq
+                | ProviderKind::Xai
+        ) && api_key.is_none()
+        {
+            return Err(Error::Config(format!(
+                "hosted provider '{}' requires a resolved api key",
+                provider.name
+            )));
+        }
         let translation = TranslationPlan::resolve(
             path,
             provider.kind,
             provider.role_profile_for(upstream_model),
         );
-        let url = provider_url(provider, translation.upstream_path(path));
+        // gemini native embeds the model + method in the path
+        // (`/models/{model}:generateContent`), so it is derived from the
+        // request rather than the fixed openai/anthropic route path.
+        let url = if translation.is_gemini_generate() {
+            gemini_generate_url(provider, &body, upstream_model)
+        } else {
+            provider_url(provider, translation.upstream_path(path))
+        };
         let body = translation.translate_request(body)?;
         let body = translation::normalize_prompt_cache_control(body, provider.kind)?;
-        let body = maybe_rewrite_model(body, upstream_model);
+        // gemini native takes no top-level `model` field (it is in the url)
+        let body = if translation.is_gemini_generate() {
+            body
+        } else {
+            maybe_rewrite_model(body, upstream_model)
+        };
         self.send_with_proxy_retry(provider, |client| {
             let mut req = apply_provider_auth(
                 client
@@ -402,6 +428,12 @@ fn apply_provider_auth(
             }
             request
         }
+        ProviderKind::GeminiNative => {
+            if let Some(key) = api_key {
+                request = request.header("x-goog-api-key", key);
+            }
+            request
+        }
         _ => {
             if let Some(key) = api_key {
                 request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
@@ -419,11 +451,47 @@ fn provider_url(provider: &ProviderConfig, path: &str) -> String {
             | ProviderKind::AzureOpenai
             | ProviderKind::Bedrock
             | ProviderKind::Vertex
+            | ProviderKind::Gemini
+            | ProviderKind::Mistral
+            | ProviderKind::Groq
+            | ProviderKind::Xai
     ) {
         let suffix = path.strip_prefix("/v1").unwrap_or(path);
         format!("{base}{suffix}")
     } else {
         format!("{base}{path}")
+    }
+}
+
+/// build the gemini native generateContent url from the request. the model is
+/// taken from the configured upstream override, else the request's `model`
+/// field; streaming requests use `:streamGenerateContent?alt=sse`.
+fn gemini_generate_url(
+    provider: &ProviderConfig,
+    body: &Bytes,
+    upstream_model: Option<&str>,
+) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let model = upstream_model
+        .map(str::to_string)
+        .or_else(|| {
+            parsed
+                .as_ref()
+                .and_then(|v| v.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+    let stream = parsed
+        .as_ref()
+        .and_then(|v| v.get("stream"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let base = provider.api_base.trim_end_matches('/');
+    if stream {
+        format!("{base}/models/{model}:streamGenerateContent?alt=sse")
+    } else {
+        format!("{base}/models/{model}:generateContent")
     }
 }
 
@@ -518,6 +586,31 @@ mod tests {
             provider_url(&bedrock, "/v1/chat/completions"),
             "https://bedrock-runtime.us-east-1.amazonaws.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn hosted_openai_compatible_clouds_strip_v1() {
+        let cases = [
+            (
+                ProviderKind::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            ),
+            (
+                ProviderKind::Mistral,
+                "https://api.mistral.ai/v1",
+                "https://api.mistral.ai/v1/chat/completions",
+            ),
+            (
+                ProviderKind::Groq,
+                "https://api.groq.com/openai/v1",
+                "https://api.groq.com/openai/v1/chat/completions",
+            ),
+        ];
+        for (kind, base, expected) in cases {
+            let p = provider(kind, base.to_string());
+            assert_eq!(provider_url(&p, "/v1/chat/completions"), expected);
+        }
     }
 
     /// Accept one connection, capture the raw request head, answer a minimal
@@ -873,6 +966,72 @@ mod tests {
             "post /v1/projects/p/locations/global/endpoints/openapi/chat/completions"
         ));
         assert!(head.contains("authorization: bearer oauth-token"));
+    }
+
+    #[tokio::test]
+    async fn groq_strips_v1_and_uses_bearer_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let groq = provider(ProviderKind::Groq, format!("http://{addr}/openai/v1"));
+        fwd.forward_json(
+            &groq,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("groq-secret"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let head = capture.await.unwrap();
+        assert!(head.starts_with("post /openai/v1/chat/completions"));
+        assert!(head.contains("authorization: bearer groq-secret"));
+    }
+
+    #[tokio::test]
+    async fn xai_strips_v1_and_uses_bearer_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let xai = provider(ProviderKind::Xai, format!("http://{addr}/v1"));
+        fwd.forward_json(
+            &xai,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            Some("xai-secret"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let head = capture.await.unwrap();
+        assert!(head.starts_with("post /v1/chat/completions"));
+        assert!(head.contains("authorization: bearer xai-secret"));
+    }
+
+    #[tokio::test]
+    async fn hosted_cloud_without_key_is_rejected() {
+        let fwd = Forwarder::new();
+        let mistral = provider(ProviderKind::Mistral, "http://127.0.0.1:1".to_string());
+        let err = fwd
+            .forward_json(
+                &mistral,
+                "/v1/chat/completions",
+                Bytes::from_static(b"{}"),
+                None,
+                None,
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
     }
 
     struct TestTlsServer {

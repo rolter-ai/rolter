@@ -99,6 +99,10 @@ pub struct Metrics {
     pub guardrail_blocks_total: AtomicU64,
     /// individual guardrail redactions applied to request content
     pub guardrail_redactions_total: AtomicU64,
+    /// decorator messages injected by prompt templates at admission
+    pub prompt_template_decorations_total: AtomicU64,
+    /// requests rejected for invalid prompt-template variables
+    pub prompt_template_rejections_total: AtomicU64,
     /// requests rejected by the custom guardrail webhook
     pub guardrail_webhook_blocks_total: AtomicU64,
     /// request bodies transformed by the custom guardrail webhook
@@ -322,6 +326,20 @@ impl Metrics {
             "rolter_guardrail_redactions_total",
             "guardrail redactions applied to request content",
             self.guardrail_redactions_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_prompt_template_decorations_total",
+            "decorator messages injected by prompt templates at admission",
+            self.prompt_template_decorations_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_prompt_template_rejections_total",
+            "requests rejected for invalid prompt-template variables",
+            self.prompt_template_rejections_total.load(Relaxed),
         );
         metric(
             &mut out,

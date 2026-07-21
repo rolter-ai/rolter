@@ -14,7 +14,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq` | `xai`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
@@ -77,6 +77,55 @@ Azure credentials are sent in the `api-key` header. Bedrock and Vertex
 credentials are sent as bearer tokens. The default active-health probes use
 Azure's model list, Bedrock `ListFoundationModels`, and Vertex's publisher model
 list, respectively; none invokes a model.
+
+Google Gemini, Mistral, Groq, and xAI (Grok) expose hosted OpenAI-compatible
+APIs. Their
+`api_base` already carries the version segment, so rolter strips the leading
+`/v1` from the gateway path before appending it. Keys are bearer tokens sourced
+from `api_key_env` (inline keys are rejected); the free health probe lists
+`{api_base}/models`.
+
+`gemini_native` targets Gemini's native `generateContent` surface instead of its
+OpenAI-compatible shim. rolter translates OpenAI Chat / Anthropic Messages /
+OpenAI Responses requests into Gemini's `contents`/`parts` wire format and
+converts the response (and SSE stream) back, so clients keep speaking their
+usual protocol. The model and method are embedded in the URL
+(`{api_base}/models/{model}:generateContent`, or `:streamGenerateContent?alt=sse`
+for streaming), the key is sent as `x-goog-api-key`, and `api_base` points at the
+version root with no `/openai` suffix.
+
+```toml
+[[providers]]
+name = "gemini"
+kind = "gemini"
+api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+
+# native generateContent wire format (translated from OpenAI/Anthropic)
+[[providers]]
+name = "gemini-native"
+kind = "gemini_native"
+api_base = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+
+[[providers]]
+name = "mistral"
+kind = "mistral"
+api_base = "https://api.mistral.ai/v1"
+api_key_env = "MISTRAL_API_KEY"
+
+[[providers]]
+name = "groq"
+kind = "groq"
+api_base = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[[providers]]
+name = "xai"
+kind = "xai"
+api_base = "https://api.x.ai/v1"
+api_key_env = "XAI_API_KEY"
+```
 
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
   - `key` (string, optional) — inline key value; prefer `env`
@@ -201,6 +250,59 @@ enabled = true
 url = "https://guard.internal/check"
 failure_mode = "fail_closed"
 auth = { bearer = { token_env = "GUARD_TOKEN" } }
+```
+
+### `[prompt_templates]`
+
+Centrally-managed, versioned prompt templates and deterministic route decorators (ROL-256). Applications reuse approved system instructions through a named template without being granted arbitrary prompt-authoring privileges. Disabled by default; an empty or disabled block adds no hot-path cost.
+
+- `enabled` (bool, default `false`) — master switch
+
+Each `[[prompt_templates.templates]]` entry is one immutable version:
+
+- `id` (string, required) — stable identifier surfaced in safe metadata, never in content logs
+- `version` (u32, required, ≥ 1) — immutable version; the operator lists exactly the versions to activate. `(id, version)` must be unique.
+- `routes` (array of string, default all) — public model names this template applies to; empty means every route
+- `[[prompt_templates.templates.variables]]` — a named variable a decorator may reference as `{{ name }}`:
+  - `name` (string, `[A-Za-z_][A-Za-z0-9_]*`)
+  - `required` (bool, default `false`) — the caller must supply it; mutually exclusive with `default`
+  - `default` (string) — value used when the caller omits it
+- `[[prompt_templates.templates.decorators]]` — a message injected around the caller's own messages:
+  - `role` (string, default `system`) — `system`, `assistant`, or `user`
+  - `position` (string, default `prepend`) — `prepend` (before the caller's messages) or `append` (after), both in declared order
+  - `content` (string) — message text, with optional `{{ variable }}` placeholders
+
+**Variables and escaping.** Callers pass values in a `rolter_template_vars` object on the request body; it is always stripped before forwarding upstream. A caller value overrides the declared default; an unknown variable, a missing required variable, or an oversized value (variable > 4 KiB, rendered message > 16 KiB) is rejected with an `invalid_prompt_template` error. Substitution is **structural**: each rendered message is emitted as a JSON string through the serializer, never string-concatenated into raw JSON, so a variable value can never break out of its string or inject additional messages. Every `{{ placeholder }}` is validated at config-load time to reference a declared variable.
+
+**Surfaces and ordering.** Applied to `/v1/chat/completions`, `/v1/responses`, and Anthropic `/v1/messages`. Prepend decorators wrap before, append after, preserving the caller's own message order and semantics. For Anthropic, `system` decorators fold into the top-level `system` field (joined by blank lines); `assistant`/`user` decorators wrap the `messages` array. Surfaces without a chat message array (e.g. `/v1/completions`) are not decorated. The gateway applies only the configured immutable version from its reload-free snapshot. Applied template id/version and decoration count are recorded in safe metadata; metrics expose `rolter_prompt_template_decorations_total` and `rolter_prompt_template_rejections_total`.
+
+```toml
+[prompt_templates]
+enabled = true
+
+[[prompt_templates.templates]]
+id = "support-preamble"
+version = 3
+routes = ["gpt-4o"]
+
+[[prompt_templates.templates.variables]]
+name = "persona"
+default = "a helpful support assistant"
+
+[[prompt_templates.templates.decorators]]
+role = "system"
+position = "prepend"
+content = "You are {{persona}}. Follow the company policy and be concise."
+```
+
+A caller then supplies variables per request:
+
+```json
+{
+  "model": "gpt-4o",
+  "messages": [{ "role": "user", "content": "hi" }],
+  "rolter_template_vars": { "persona": "a billing specialist" }
+}
 ```
 
 ## Environment variables
