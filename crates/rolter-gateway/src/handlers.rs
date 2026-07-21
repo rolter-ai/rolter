@@ -840,29 +840,73 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
     }
 
+    // custom guardrail webhook: consult a self-hosted service before proxying.
+    // block -> OpenAI-compatible error; transform -> replace the request body;
+    // transport failures resolve per the operator's fail-open/closed choice. only
+    // the assembled envelope is sent; prompt content is never logged here (ROL-257).
+    let mut webhook_transformed = false;
+    if snap.guardrail_webhook.enabled {
+        let tenant = rolter_core::WebhookTenant {
+            org: (!scope.org.is_empty()).then(|| scope.org.clone()),
+            team: (!scope.team.is_empty()).then(|| scope.team.clone()),
+            project: (!scope.project.is_empty()).then(|| scope.project.clone()),
+            key: (!scope.key.is_empty()).then(|| scope.key.clone()),
+        };
+        let webhook_trace = headers
+            .get(crate::trace::REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        match crate::guardrail_webhook::consult_pre_call(
+            &snap.guardrail_webhook,
+            &state.metrics,
+            &model,
+            &entry.route.model,
+            webhook_trace,
+            tenant,
+            &parsed,
+        )
+        .await
+        {
+            crate::guardrail_webhook::WebhookOutcome::Allow => {}
+            crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
+                return crate::error::ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    reason.unwrap_or_else(|| "request blocked by guardrail service".to_string()),
+                )
+                .with_code("guardrail_blocked")
+                .into_response();
+            }
+            crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
+                parsed = content;
+                webhook_transformed = true;
+            }
+        }
+    }
+
     // inject the admin's per-model param defaults (temperature, max_tokens, ...)
     // before forwarding; caller values survive only where the override policy
     // permits. falls back to the untouched body if re-serialization fails
     let effective_model = entry.route.model.clone();
     let rewrite_model = effective_model != model;
     let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
-    let forward_body = if !has_forward_params && !rewrite_model && !guardrail_redacted {
-        body.clone()
-    } else {
-        let mut injected = parsed.clone();
-        if rewrite_model {
-            if let Some(object) = injected.as_object_mut() {
-                object.insert("model".to_string(), Value::String(effective_model.clone()));
+    let forward_body =
+        if !has_forward_params && !rewrite_model && !guardrail_redacted && !webhook_transformed {
+            body.clone()
+        } else {
+            let mut injected = parsed.clone();
+            if rewrite_model {
+                if let Some(object) = injected.as_object_mut() {
+                    object.insert("model".to_string(), Value::String(effective_model.clone()));
+                }
             }
-        }
-        entry.route.apply_params(&mut injected);
-        if let Some(object) = injected.as_object_mut() {
-            object.remove(POLICY_PARAM);
-        }
-        serde_json::to_vec(&injected)
-            .map(Bytes::from)
-            .unwrap_or_else(|_| body.clone())
-    };
+            entry.route.apply_params(&mut injected);
+            if let Some(object) = injected.as_object_mut() {
+                object.remove(POLICY_PARAM);
+            }
+            serde_json::to_vec(&injected)
+                .map(Bytes::from)
+                .unwrap_or_else(|_| body.clone())
+        };
 
     // capture log fields independent of the chosen target
     let stream = parsed

@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod slug;
 pub mod telemetry;
@@ -20,6 +21,10 @@ pub use config::{
     VirtualKeyConfig, VirtualKeyRecord, RESERVED_PATHS,
 };
 pub use error::{Error, Result};
+pub use guardrail_webhook::{
+    FailureMode, GuardrailWebhookConfig, WebhookAuth, WebhookDecision, WebhookRequest,
+    WebhookStage, WebhookTenant,
+};
 pub use guardrails::{
     BuiltinRule, CompiledGuardrails, GuardAction, GuardStage, GuardrailReport, GuardrailRule,
     GuardrailsConfig, ScanOutcome,
