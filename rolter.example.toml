@@ -434,3 +434,23 @@ disabled = false # revoke without deleting
 # max_body_bytes = 65536          # oversized content is sent as a truncated preview
 # auth = { bearer = { token_env = "GUARD_TOKEN" } }
 #                                 # or: { shared_secret = { secret_env = "GUARD_SECRET" } }
+
+# Versioned prompt templates and route decorators. Centrally-managed system
+# instructions applied at admission without granting callers prompt-authoring
+# rights. Disabled by default. Each template is one immutable version; the
+# operator lists exactly the versions to activate. Callers pass variable values
+# in a `rolter_template_vars` object (stripped before forwarding); substitution
+# is structural, so a value can never inject extra message structure.
+# [prompt_templates]
+# enabled = true
+# [[prompt_templates.templates]]
+# id = "support-preamble"
+# version = 3
+# routes = ["gpt-4o"]             # omit for all routes
+# [[prompt_templates.templates.variables]]
+# name = "persona"
+# default = "a helpful support assistant"   # or: required = true
+# [[prompt_templates.templates.decorators]]
+# role = "system"                 # system | assistant | user
+# position = "prepend"            # prepend | append
+# content = "You are {{persona}}. Follow the company policy and be concise."

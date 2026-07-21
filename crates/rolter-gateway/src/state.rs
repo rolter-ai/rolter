@@ -110,6 +110,9 @@ pub struct Snapshot {
     /// custom guardrail webhook config, swapped atomically with the snapshot;
     /// inert unless enabled (ROL-257)
     pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
+    /// versioned prompt templates / route decorators, compiled once per snapshot
+    /// and shared across requests; inert unless enabled (ROL-256)
+    pub prompt_templates: Arc<rolter_core::CompiledTemplates>,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -314,6 +317,9 @@ impl Snapshot {
                 &config.guardrails,
             )),
             guardrail_webhook: config.guardrail_webhook.clone(),
+            prompt_templates: Arc::new(rolter_core::CompiledTemplates::from_config(
+                &config.prompt_templates,
+            )),
         }
     }
 

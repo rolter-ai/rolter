@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod guardrail_webhook;
 pub mod guardrails;
+pub mod prompt_templates;
 pub mod slug;
 pub mod telemetry;
 
@@ -28,6 +29,11 @@ pub use guardrail_webhook::{
 pub use guardrails::{
     BuiltinRule, CompiledGuardrails, GuardAction, GuardStage, GuardrailReport, GuardrailRule,
     GuardrailsConfig, ScanOutcome,
+};
+pub use prompt_templates::{
+    CompiledTemplates, Decorator, DecoratorPosition, DecoratorRole, PromptTemplate,
+    PromptTemplatesConfig, RenderError, RenderedMessage, TemplateReport, TemplateVariable,
+    TEMPLATE_VARS_FIELD,
 };
 
 /// Redis pub/sub channel the control plane publishes config-version bumps
