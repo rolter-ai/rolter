@@ -934,10 +934,13 @@ fn openai_to_gemini(mut v: Value) -> Value {
     };
     let messages = obj
         .remove("messages")
-        .and_then(|v| v.as_array().cloned())
+        .and_then(|v| match v {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
         .unwrap_or_default();
     let mut system_parts = Vec::new();
-    let mut contents = Vec::new();
+    let mut contents = Vec::with_capacity(messages.len());
     for message in messages {
         let role = message
             .get("role")
@@ -1019,7 +1022,10 @@ fn openai_to_gemini(mut v: Value) -> Value {
     }
 
     // tools: OpenAI function tools -> a single functionDeclarations group
-    if let Some(tools) = obj.remove("tools").and_then(|t| t.as_array().cloned()) {
+    if let Some(tools) = obj.remove("tools").and_then(|t| match t {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }) {
         let declarations: Vec<Value> = tools
             .iter()
             .filter_map(|tool| tool.get("function"))
