@@ -42,6 +42,60 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
         .map_err(|err| Error::Store(err.to_string()))
 }
 
+/// Test-only helpers for building isolated, migrated pools. Every test gets its
+/// own schema pinned via `search_path`, so plain `cargo test` (which runs tests
+/// as threads in one process — e.g. the coverage job) never races on a shared
+/// `public` schema during DDL.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use sqlx::PgPool;
+
+    use super::{connect, run_migrations};
+
+    static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
+
+    /// Isolated schema name unique to this process and call, safe to
+    /// interpolate (only ascii digits and underscores).
+    fn unique_schema() -> String {
+        let n = SCHEMA_SEQ.fetch_add(1, Ordering::Relaxed);
+        format!("test_{}_{}", std::process::id(), n)
+    }
+
+    /// `url` with the connection pinned to `schema` via `search_path`, so
+    /// migrations and queries land in the isolated schema rather than `public`.
+    fn with_search_path(url: &str, schema: &str) -> String {
+        let sep = if url.contains('?') { '&' } else { '?' };
+        // percent-encode the space and `=` inside the libpq options string
+        format!("{url}{sep}options=-c%20search_path%3D{schema}")
+    }
+
+    /// Create a fresh isolated schema and return a migrated pool scoped to it.
+    pub(crate) async fn fresh_scoped_pool(url: &str) -> PgPool {
+        let schema = unique_schema();
+
+        // (re)create the isolated schema over a default-search_path connection
+        let admin = connect(url).await.expect("connect");
+        sqlx::query(&format!("drop schema if exists {schema} cascade"))
+            .execute(&admin)
+            .await
+            .expect("reset schema");
+        sqlx::query(&format!("create schema {schema}"))
+            .execute(&admin)
+            .await
+            .expect("create schema");
+        admin.close().await;
+
+        // app pool scoped to the isolated schema so migrations run there
+        let pool = connect(&with_search_path(url, &schema))
+            .await
+            .expect("connect scoped");
+        run_migrations(&pool).await.expect("run migrations");
+        pool
+    }
+}
+
 #[derive(FromRow)]
 struct ProviderRow {
     name: String,
@@ -518,19 +572,7 @@ mod tests {
 
     async fn fresh_pool() -> PgPool {
         let url = database_url().expect("ROLTER_TEST_DATABASE_URL not set; skipping");
-        let pool = connect(&url).await.expect("connect");
-        // drop the whole schema (including sqlx's own _sqlx_migrations bookkeeping
-        // table) so every test run re-applies migrations from a clean slate
-        sqlx::query("drop schema public cascade")
-            .execute(&pool)
-            .await
-            .expect("reset schema");
-        sqlx::query("create schema public")
-            .execute(&pool)
-            .await
-            .expect("recreate schema");
-        run_migrations(&pool).await.expect("run migrations");
-        pool
+        super::test_support::fresh_scoped_pool(&url).await
     }
 
     #[tokio::test]

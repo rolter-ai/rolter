@@ -1467,21 +1467,7 @@ mod tests {
     async fn fresh_pool() -> PgPool {
         let url = std::env::var("ROLTER_TEST_DATABASE_URL")
             .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
-        let pool = super::super::connect(&url).await.expect("connect");
-        // drop the whole schema (including sqlx's own _sqlx_migrations bookkeeping
-        // table) so every test run re-applies migrations from a clean slate
-        sqlx::query("drop schema public cascade")
-            .execute(&pool)
-            .await
-            .expect("reset schema");
-        sqlx::query("create schema public")
-            .execute(&pool)
-            .await
-            .expect("recreate schema");
-        super::super::run_migrations(&pool)
-            .await
-            .expect("run migrations");
-        pool
+        super::super::test_support::fresh_scoped_pool(&url).await
     }
 
     #[tokio::test]
