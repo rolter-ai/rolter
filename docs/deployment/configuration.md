@@ -140,6 +140,44 @@ Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per 
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame
 
+### `[guardrails]`
+
+Built-in, zero-dependency regex guardrails and PII redaction, evaluated inside the gateway with no external service and no network hop. Disabled by default; a disabled or empty block adds no hot-path cost. Complements — never replaces — the custom guardrail webhook (ROL-257) and external PII engines (ROL-258).
+
+- `enabled` (bool, default `false`) — master switch
+- `max_scan_bytes` (usize, default `262144`) — cap on total request text scanned per request; oversized content is forwarded unscanned so work stays bounded
+
+Each `[[guardrails.rules]]` entry:
+
+- `name` (string, required) — stable, unique; surfaced in metrics, never carries match text
+- `builtin` (string) — one of `email`, `phone`, `api_token`, `payment_card`; **or** `pattern` (string) for a custom regex. Set exactly one.
+- `stage` (string, default `pre_call`) — `pre_call` scans request content before proxying. `post_call` is validated but not yet enforced (output/SSE masking is deferred, pending the response-buffering contract).
+- `action` (string, default `annotate`) — `annotate` (count only, forward unchanged), `block` (reject with an OpenAI-compatible `guardrail_blocked` error), or `redact` (replace each match with `replacement`)
+- `replacement` (string) — redaction token; defaults to the built-in entity token (e.g. `[REDACTED:EMAIL]`) or `[REDACTED]`
+- `default_on` (bool, default `false`) — apply without a client opt-in
+- `include_system` (bool, default `false`) — also scan operator-authored `system`/`developer` messages; excluded by default
+
+Patterns use the linear-time (RE2-style) `regex` engine with no catastrophic backtracking, and are compiled under a bounded program size during config validation — an invalid or unbounded pattern fails at startup/snapshot validation, never on the request path. The request path never logs raw matched values; metrics expose `rolter_guardrail_blocks_total` and `rolter_guardrail_redactions_total` only.
+
+Scanned surfaces: OpenAI `/v1/chat/completions` and `/v1/responses` (`messages` + `input`), `/v1/completions` (`prompt`), and Anthropic `/v1/messages` (`system` + `messages`). String, string-array, and typed `text` parts are all covered.
+
+```toml
+[guardrails]
+enabled = true
+
+[[guardrails.rules]]
+name = "email"
+builtin = "email"
+action = "redact"
+default_on = true
+
+[[guardrails.rules]]
+name = "card"
+builtin = "payment_card"
+action = "block"
+default_on = true
+```
+
 ## Environment variables
 
 - `ROLTER_CONFIG`, `ROLTER_HOST`, `ROLTER_PORT` — gateway

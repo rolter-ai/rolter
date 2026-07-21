@@ -15,6 +15,7 @@ mod cache_telemetry;
 mod cooldowns;
 mod error;
 mod fake_llm;
+mod guardrails;
 mod handlers;
 mod health;
 mod health_events;

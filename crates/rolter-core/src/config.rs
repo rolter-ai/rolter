@@ -84,6 +84,10 @@ pub struct GatewayConfig {
     pub realtime: RealtimeConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// built-in regex guardrails and PII redaction, evaluated in the gateway with
+    /// no external service; disabled by default (ROL-261)
+    #[serde(default)]
+    pub guardrails: crate::guardrails::GuardrailsConfig,
 }
 
 /// Two-tier bootstrap model presets for database-backed control planes.
@@ -2074,6 +2078,11 @@ impl GatewayConfig {
                     .to_string(),
             );
         }
+
+        // compile guardrail rules under the safe-regex limits so an invalid or
+        // unbounded pattern fails here at startup/snapshot validation, never on
+        // the request path
+        problems.append(&mut self.guardrails.validate());
 
         if problems.is_empty() {
             Ok(())

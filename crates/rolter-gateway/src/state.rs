@@ -104,6 +104,9 @@ pub struct Snapshot {
     pub logging: LoggingConfig,
     /// guardrails for long-lived WebSocket Realtime sessions
     pub realtime: RealtimeConfig,
+    /// built-in regex guardrails / PII redaction, compiled once per snapshot and
+    /// shared across requests; inert unless enabled (ROL-261)
+    pub guardrails: Arc<rolter_core::CompiledGuardrails>,
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -304,6 +307,9 @@ impl Snapshot {
             cache: config.cache.clone(),
             logging: config.logging.clone(),
             realtime: config.realtime.clone(),
+            guardrails: Arc::new(rolter_core::CompiledGuardrails::from_config(
+                &config.guardrails,
+            )),
         }
     }
 
