@@ -398,3 +398,24 @@ disabled = false # revoke without deleting
 # batch_max = 1000        # flush once a batch reaches this many rows
 # flush_ms = 1000         # also flush a partial batch at least this often
 # queue_capacity = 10000  # rows are dropped (and counted) when this queue is full
+
+# Built-in regex guardrails and PII redaction, evaluated in-gateway with no
+# external service. Disabled by default; a disabled block adds no hot-path cost.
+# Patterns use the linear-time (RE2-style) engine and are compiled with bounded
+# size at config validation, so an invalid/unbounded pattern fails at startup.
+# [guardrails]
+# enabled = true
+# max_scan_bytes = 262144         # cap on request text scanned per request
+# [[guardrails.rules]]
+# name = "email"
+# builtin = "email"               # or: pattern = "<custom regex>"
+# stage = "pre_call"              # post_call is validated but not yet enforced
+# action = "redact"               # annotate | block | redact
+# replacement = "[REDACTED:EMAIL]"  # defaults to the built-in entity token
+# default_on = true               # apply without a client opt-in
+# include_system = false          # also scan system/developer messages
+# [[guardrails.rules]]
+# name = "card"
+# builtin = "payment_card"        # email | phone | api_token | payment_card
+# action = "block"                # reject with an OpenAI-compatible error
+# default_on = true

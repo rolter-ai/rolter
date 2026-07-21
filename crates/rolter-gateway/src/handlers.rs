@@ -627,7 +627,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     state.metrics.requests_total.fetch_add(1, Relaxed);
     let started = Instant::now();
 
-    let parsed: Value = match serde_json::from_slice(&body) {
+    let mut parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(_) => {
             return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "invalid json body")
@@ -812,13 +812,41 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
     }
 
+    // built-in guardrails: scan request content before proxying. a block rule
+    // rejects with an OpenAI-compatible error; redactions rewrite `parsed` in
+    // place and force the re-serialized forward path below. never logs raw
+    // matches — only rule-name/count counters (ROL-261).
+    let mut guardrail_redacted = false;
+    if snap.guardrails.pre_call_active() {
+        match crate::guardrails::apply_input(&snap.guardrails, path, &mut parsed) {
+            Ok(report) => {
+                if report.redactions > 0 {
+                    guardrail_redacted = true;
+                    state
+                        .metrics
+                        .guardrail_redactions_total
+                        .fetch_add(report.redactions as u64, Relaxed);
+                }
+            }
+            Err(rule) => {
+                state.metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
+                return crate::error::ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("request blocked by guardrail '{rule}'"),
+                )
+                .with_code("guardrail_blocked")
+                .into_response();
+            }
+        }
+    }
+
     // inject the admin's per-model param defaults (temperature, max_tokens, ...)
     // before forwarding; caller values survive only where the override policy
     // permits. falls back to the untouched body if re-serialization fails
     let effective_model = entry.route.model.clone();
     let rewrite_model = effective_model != model;
     let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
-    let forward_body = if !has_forward_params && !rewrite_model {
+    let forward_body = if !has_forward_params && !rewrite_model && !guardrail_redacted {
         body.clone()
     } else {
         let mut injected = parsed.clone();

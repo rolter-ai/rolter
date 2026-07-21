@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod guardrails;
 pub mod slug;
 pub mod telemetry;
 
@@ -19,6 +20,10 @@ pub use config::{
     VirtualKeyConfig, VirtualKeyRecord, RESERVED_PATHS,
 };
 pub use error::{Error, Result};
+pub use guardrails::{
+    BuiltinRule, CompiledGuardrails, GuardAction, GuardStage, GuardrailReport, GuardrailRule,
+    GuardrailsConfig, ScanOutcome,
+};
 
 /// Redis pub/sub channel the control plane publishes config-version bumps
 /// on; gateways subscribe to it to trigger an immediate snapshot poll.

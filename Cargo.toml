@@ -37,6 +37,9 @@ hyper = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
+# linear-time (RE2-style) regex engine for built-in guardrails; no catastrophic
+# backtracking, with compile/size limits to bound regex-DoS risk
+regex = "1"
 
 # errors + logging
 thiserror = "2"

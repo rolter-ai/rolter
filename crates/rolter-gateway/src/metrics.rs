@@ -95,6 +95,10 @@ pub struct Metrics {
     pub budget_blocks_total: AtomicU64,
     /// requests rejected because a matching rpm/tpm rate limit was exhausted
     pub rate_limit_blocks_total: AtomicU64,
+    /// requests rejected by a built-in guardrail block rule
+    pub guardrail_blocks_total: AtomicU64,
+    /// individual guardrail redactions applied to request content
+    pub guardrail_redactions_total: AtomicU64,
     /// requests rejected because their selected provider's queue was full
     pub provider_queue_rejections_total: AtomicU64,
     /// requests that timed out waiting for a provider queue slot
@@ -298,6 +302,20 @@ impl Metrics {
             "rolter_rate_limit_blocks_total",
             "requests rejected due to an exhausted rate limit",
             self.rate_limit_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_guardrail_blocks_total",
+            "requests rejected by a built-in guardrail block rule",
+            self.guardrail_blocks_total.load(Relaxed),
+        );
+        metric(
+            &mut out,
+            "counter",
+            "rolter_guardrail_redactions_total",
+            "guardrail redactions applied to request content",
+            self.guardrail_redactions_total.load(Relaxed),
         );
         metric(
             &mut out,
