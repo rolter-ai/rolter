@@ -452,6 +452,83 @@ export function deleteProvider(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/providers/${id}`);
 }
 
+// --- provider groups (ADR-0022): unify a fleet of providers behind one
+// `group-slug/model` address, balanced by a chosen strategy. the CRUD API
+// returns default/DB groups (editable); config-owned readonly groups live only
+// in the gateway snapshot and are refused by mutations with a 4xx.
+
+export interface ProviderGroupMember {
+  group_id: string;
+  provider_id: string;
+  provider_name: string;
+  /** null = passthrough of the requested model */
+  upstream_model?: string | null;
+  weight: number;
+  position: number;
+}
+
+export interface ProviderGroupRow {
+  id: string;
+  org_id: string;
+  name: string;
+  /** stable, URL-safe identity used for `group-slug/model` addressing */
+  slug: string;
+  strategy: string;
+  created_at: string;
+  members: ProviderGroupMember[];
+}
+
+export interface GroupMemberInput {
+  provider_id: string;
+  /** omit/blank for passthrough of the requested model */
+  upstream_model?: string;
+  weight?: number;
+}
+
+export interface CreateProviderGroupInput {
+  name: string;
+  /** omit to derive a slug from the name; immutable after create */
+  slug?: string;
+  strategy: string;
+  members: GroupMemberInput[];
+}
+
+export interface UpdateProviderGroupInput {
+  name?: string;
+  slug?: string;
+  /** required to change the otherwise-immutable slug */
+  allow_slug_change?: boolean;
+  strategy?: string;
+  /** present = replace the whole membership; omit = leave unchanged */
+  members?: GroupMemberInput[];
+}
+
+export function fetchProviderGroups(orgId: string): Promise<ProviderGroupRow[]> {
+  return getJson<ProviderGroupRow[]>(`/api/v1/orgs/${orgId}/provider-groups`);
+}
+
+export function createProviderGroup(
+  orgId: string,
+  input: CreateProviderGroupInput,
+): Promise<ProviderGroupRow> {
+  return sendJson<ProviderGroupRow>(
+    "POST",
+    `/api/v1/orgs/${orgId}/provider-groups`,
+    input,
+  );
+}
+
+export function updateProviderGroup(
+  id: string,
+  input: UpdateProviderGroupInput,
+): Promise<ProviderGroupRow> {
+  return sendJson<ProviderGroupRow>("PUT", `/api/v1/provider-groups/${id}`, input);
+}
+
+export function deleteProviderGroup(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/provider-groups/${id}`);
+}
+
 export interface RouteRow {
   id: string;
   project_id: string;

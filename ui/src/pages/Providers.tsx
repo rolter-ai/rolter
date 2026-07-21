@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
 import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,17 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CopyButton } from "@/components/CopyButton";
-import { Field } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import {
-  createProvider,
-  deleteProvider,
-  fetchProviders,
-  PROVIDER_KINDS,
-  updateProvider,
-  type ProviderRow,
-} from "@/lib/api";
+import { deleteProvider, fetchProviders, type ProviderRow } from "@/lib/api";
 import { useScope } from "@/lib/scope";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
@@ -46,8 +37,10 @@ export default function Providers() {
     onSuccess: invalidate,
   });
 
-  const [addOpen, setAddOpen] = React.useState(false);
-  const [editTarget, setEditTarget] = React.useState<ProviderRow | null>(null);
+  const [sheet, setSheet] = React.useState<{
+    mode: ProviderSheetMode;
+    provider?: ProviderRow | null;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
   const [search, setSearch] = React.useState("");
 
@@ -74,11 +67,10 @@ export default function Providers() {
         />
         <Button
           className="ml-auto"
-          onClick={() => setAddOpen(true)}
+          onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.orgId}
         >
-          <Plus className="h-4 w-4" />
-          Add provider
+          + Add provider
         </Button>
       </div>
 
@@ -133,7 +125,7 @@ export default function Providers() {
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
-                onClick={() => setEditTarget(provider)}
+                onClick={() => setSheet({ mode: "edit", provider })}
               >
                 Edit
               </Button>
@@ -155,18 +147,12 @@ export default function Providers() {
         )}
       </ListTable>
 
-      {scope.orgId && (
-        <AddProviderDialog
-          open={addOpen}
-          onOpenChange={setAddOpen}
-          orgId={scope.orgId}
-          onDone={invalidate}
-        />
-      )}
-
-      <EditProviderDialog
-        provider={editTarget}
-        onOpenChange={(open) => !open && setEditTarget(null)}
+      <ProviderSheet
+        open={!!sheet}
+        mode={sheet?.mode ?? "add"}
+        onOpenChange={(open) => !open && setSheet(null)}
+        orgId={scope.orgId ?? null}
+        provider={sheet?.provider ?? null}
         onDone={invalidate}
       />
 
@@ -202,254 +188,5 @@ export default function Providers() {
         </DialogFooter>
       </Dialog>
     </PageBody>
-  );
-}
-
-export function AddProviderDialog({
-  open,
-  onOpenChange,
-  orgId,
-  onDone,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  orgId: string;
-  onDone: (created: ProviderRow) => void;
-}) {
-  const [name, setName] = React.useState("");
-  const [slug, setSlug] = React.useState("");
-  const [kind, setKind] = React.useState<string>(PROVIDER_KINDS[0]);
-  const [apiBase, setApiBase] = React.useState("");
-  const [apiKey, setApiKey] = React.useState("");
-  const [apiKeyEnv, setApiKeyEnv] = React.useState("");
-  const [egressProxy, setEgressProxy] = React.useState("");
-
-  React.useEffect(() => {
-    if (open) {
-      setName("");
-      setSlug("");
-      setKind(PROVIDER_KINDS[0]);
-      setApiBase("");
-      setApiKey("");
-      setApiKeyEnv("");
-      setEgressProxy("");
-    }
-  }, [open]);
-
-  const create = useMutation({
-    mutationFn: () =>
-      createProvider(orgId, {
-        name,
-        slug: slug.trim() || undefined,
-        kind,
-        api_base: apiBase,
-        api_key: apiKey || undefined,
-        api_key_env: apiKeyEnv || undefined,
-        egress_proxy: egressProxy || undefined,
-      }),
-    onSuccess: (created) => {
-      onDone(created);
-      onOpenChange(false);
-    },
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>Add provider</DialogTitle>
-        <DialogDescription>
-          Providers are scoped to the current org and used as route targets.
-        </DialogDescription>
-      </DialogHeader>
-      <div className="space-y-3">
-        <Field label="Name">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="openai-primary"
-          />
-        </Field>
-        <Field
-          label="Slug (optional)"
-          hint="URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create"
-        >
-          <Input
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-            placeholder="openai-primary"
-            className="font-mono"
-          />
-        </Field>
-        <Field label="Kind">
-          <Select value={kind} onChange={(e) => setKind(e.target.value)}>
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="API base">
-          <Input
-            value={apiBase}
-            onChange={(e) => setApiBase(e.target.value)}
-            placeholder="https://api.openai.com/v1"
-          />
-        </Field>
-        <Field label="API key (optional)" hint="sealed at rest; never displayed again">
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            autoComplete="off"
-          />
-        </Field>
-        <Field label="API key env var (optional)" hint="read from this env var instead">
-          <Input
-            value={apiKeyEnv}
-            onChange={(e) => setApiKeyEnv(e.target.value)}
-            placeholder="OPENAI_API_KEY"
-          />
-        </Field>
-        <Field label="Egress proxy (optional)">
-          <Input
-            value={egressProxy}
-            onChange={(e) => setEgressProxy(e.target.value)}
-            placeholder="http://proxy.internal:8080"
-          />
-        </Field>
-        {create.isError && (
-          <p className="text-xs text-destructive">{(create.error as Error).message}</p>
-        )}
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button
-          disabled={!name.trim() || !apiBase.trim() || create.isPending}
-          onClick={() => create.mutate()}
-        >
-          Create
-        </Button>
-      </DialogFooter>
-    </Dialog>
-  );
-}
-
-function EditProviderDialog({
-  provider,
-  onOpenChange,
-  onDone,
-}: {
-  provider: ProviderRow | null;
-  onOpenChange: (open: boolean) => void;
-  onDone: () => void;
-}) {
-  const open = !!provider;
-
-  const [kind, setKind] = React.useState<string>(PROVIDER_KINDS[0]);
-  const [apiBase, setApiBase] = React.useState("");
-  const [apiKey, setApiKey] = React.useState("");
-  const [apiKeyEnv, setApiKeyEnv] = React.useState("");
-  const [egressProxy, setEgressProxy] = React.useState("");
-
-  React.useEffect(() => {
-    if (open && provider) {
-      setKind(provider.kind);
-      setApiBase(provider.api_base);
-      setApiKey("");
-      setApiKeyEnv(provider.api_key_env ?? "");
-      setEgressProxy(provider.egress_proxy ?? "");
-    }
-  }, [open, provider]);
-
-  // matches the backend's tri-state semantics: omit a field to leave it
-  // unchanged, send "" to clear it, send a value to set/rotate it. api_key
-  // is left out entirely unless the operator typed a new one — we never
-  // pre-fill it, and an empty submit here must not accidentally clear a
-  // credential that's just not being rotated.
-  const save = useMutation({
-    mutationFn: () => {
-      if (!provider) throw new Error("no provider selected");
-      return updateProvider(provider.id, {
-        kind: kind !== provider.kind ? kind : undefined,
-        api_base: apiBase !== provider.api_base ? apiBase : undefined,
-        api_key: apiKey ? apiKey : undefined,
-        api_key_env: apiKeyEnv !== (provider.api_key_env ?? "") ? apiKeyEnv : undefined,
-        egress_proxy:
-          egressProxy !== (provider.egress_proxy ?? "") ? egressProxy : undefined,
-      });
-    },
-    onSuccess: () => {
-      onDone();
-      onOpenChange(false);
-    },
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>Edit {provider?.name}</DialogTitle>
-        <DialogDescription>
-          Leave the API key blank to keep the stored credential unchanged. Clear the
-          env var or egress proxy field to unset it.
-        </DialogDescription>
-      </DialogHeader>
-      <div className="space-y-3">
-        <Field
-          label="Slug"
-          hint="immutable identity for provider-slug/model addressing"
-        >
-          <div className="flex items-center gap-1">
-            <Input value={provider?.slug ?? ""} readOnly disabled className="font-mono" />
-            {provider && (
-              <CopyButton value={`${provider.slug}/`} label="Copy address prefix" />
-            )}
-          </div>
-        </Field>
-        <Field label="Kind">
-          <Select value={kind} onChange={(e) => setKind(e.target.value)}>
-            {PROVIDER_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="API base">
-          <Input value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
-        </Field>
-        <Field
-          label="API key (optional)"
-          hint="blank leaves the stored key unchanged; sealed at rest, never displayed"
-        >
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            autoComplete="off"
-            placeholder="unchanged"
-          />
-        </Field>
-        <Field label="API key env var (optional)">
-          <Input value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} />
-        </Field>
-        <Field label="Egress proxy (optional)">
-          <Input value={egressProxy} onChange={(e) => setEgressProxy(e.target.value)} />
-        </Field>
-        {save.isError && (
-          <p className="text-xs text-destructive">{(save.error as Error).message}</p>
-        )}
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button disabled={!apiBase.trim() || save.isPending} onClick={() => save.mutate()}>
-          Save
-        </Button>
-      </DialogFooter>
-    </Dialog>
   );
 }
