@@ -494,6 +494,10 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         AzureOpenai => "azure_openai",
         Bedrock => "bedrock",
         Vertex => "vertex",
+        Gemini => "gemini",
+        GeminiNative => "gemini_native",
+        Mistral => "mistral",
+        Groq => "groq",
     }
 }
 

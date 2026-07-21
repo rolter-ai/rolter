@@ -14,7 +14,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from
@@ -77,6 +77,48 @@ Azure credentials are sent in the `api-key` header. Bedrock and Vertex
 credentials are sent as bearer tokens. The default active-health probes use
 Azure's model list, Bedrock `ListFoundationModels`, and Vertex's publisher model
 list, respectively; none invokes a model.
+
+Google Gemini, Mistral, and Groq expose hosted OpenAI-compatible APIs. Their
+`api_base` already carries the version segment, so rolter strips the leading
+`/v1` from the gateway path before appending it. Keys are bearer tokens sourced
+from `api_key_env` (inline keys are rejected); the free health probe lists
+`{api_base}/models`.
+
+`gemini_native` targets Gemini's native `generateContent` surface instead of its
+OpenAI-compatible shim. rolter translates OpenAI Chat / Anthropic Messages /
+OpenAI Responses requests into Gemini's `contents`/`parts` wire format and
+converts the response (and SSE stream) back, so clients keep speaking their
+usual protocol. The model and method are embedded in the URL
+(`{api_base}/models/{model}:generateContent`, or `:streamGenerateContent?alt=sse`
+for streaming), the key is sent as `x-goog-api-key`, and `api_base` points at the
+version root with no `/openai` suffix.
+
+```toml
+[[providers]]
+name = "gemini"
+kind = "gemini"
+api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+
+# native generateContent wire format (translated from OpenAI/Anthropic)
+[[providers]]
+name = "gemini-native"
+kind = "gemini_native"
+api_base = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+
+[[providers]]
+name = "mistral"
+kind = "mistral"
+api_base = "https://api.mistral.ai/v1"
+api_key_env = "MISTRAL_API_KEY"
+
+[[providers]]
+name = "groq"
+kind = "groq"
+api_base = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+```
 
 - `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
   - `key` (string, optional) — inline key value; prefer `env`

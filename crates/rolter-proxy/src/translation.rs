@@ -19,6 +19,8 @@ pub enum Protocol {
     OpenAiChat,
     OpenAiResponses,
     AnthropicMessages,
+    /// google gemini native `generateContent` / `streamGenerateContent`
+    GeminiGenerate,
     Passthrough,
 }
 
@@ -28,6 +30,9 @@ enum StreamTranslation {
     AnthropicToOpenAi,
     OpenAiToResponses,
     AnthropicToResponses,
+    GeminiToOpenAi,
+    GeminiToAnthropic,
+    GeminiToResponses,
 }
 
 struct TranslationPair {
@@ -67,6 +72,27 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
         response: openai_response,
         stream: StreamTranslation::OpenAiToAnthropic,
     },
+    TranslationPair {
+        source: Protocol::OpenAiChat,
+        target: Protocol::GeminiGenerate,
+        request: openai_to_gemini,
+        response: gemini_to_openai,
+        stream: StreamTranslation::GeminiToOpenAi,
+    },
+    TranslationPair {
+        source: Protocol::AnthropicMessages,
+        target: Protocol::GeminiGenerate,
+        request: anthropic_to_gemini,
+        response: gemini_to_anthropic,
+        stream: StreamTranslation::GeminiToAnthropic,
+    },
+    TranslationPair {
+        source: Protocol::OpenAiResponses,
+        target: Protocol::GeminiGenerate,
+        request: responses_to_gemini,
+        response: gemini_to_responses,
+        stream: StreamTranslation::GeminiToResponses,
+    },
 ];
 
 fn registered_pair(source: Protocol, target: Protocol) -> Option<&'static TranslationPair> {
@@ -102,6 +128,11 @@ impl TranslationPlan {
             _ => Protocol::Passthrough,
         };
         let upstream = match (client, provider) {
+            // gemini native speaks its own generateContent wire format; any
+            // chat-shaped client dialect is translated to it
+            (Protocol::OpenAiChat, ProviderKind::GeminiNative) => Protocol::GeminiGenerate,
+            (Protocol::AnthropicMessages, ProviderKind::GeminiNative) => Protocol::GeminiGenerate,
+            (Protocol::OpenAiResponses, ProviderKind::GeminiNative) => Protocol::GeminiGenerate,
             (Protocol::OpenAiChat, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::AnthropicMessages, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::AnthropicMessages, _) => Protocol::OpenAiChat,
@@ -126,8 +157,17 @@ impl TranslationPlan {
             Protocol::OpenAiChat => "/v1/chat/completions",
             Protocol::OpenAiResponses => "/v1/responses",
             Protocol::AnthropicMessages => "/v1/messages",
+            // gemini builds its URL from the model + method in the forwarder;
+            // the fixed path is unused for this upstream
+            Protocol::GeminiGenerate => original,
             Protocol::Passthrough => original,
         }
+    }
+
+    /// Whether this plan targets the gemini native generateContent upstream,
+    /// whose URL embeds the model and streaming method rather than a fixed path.
+    pub fn is_gemini_generate(self) -> bool {
+        self.upstream == Protocol::GeminiGenerate
     }
 
     pub fn translate_request(self, body: Bytes) -> Result<Bytes> {
@@ -874,6 +914,271 @@ fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
     }
 }
 
+// --- google gemini native generateContent translation ----------------------
+
+/// Translate an OpenAI Chat Completions request into a Gemini `generateContent`
+/// body. System/developer messages become `systemInstruction`; user/assistant
+/// turns become `contents` with roles `user`/`model`; tool messages become
+/// `functionResponse` parts; OpenAI functions become `tools.functionDeclarations`;
+/// sampling params become `generationConfig`. The `model` and `stream` fields are
+/// dropped here — the forwarder carries the model and streaming method in the URL.
+fn openai_to_gemini(mut v: Value) -> Value {
+    let Some(obj) = v.as_object_mut() else {
+        return v;
+    };
+    let messages = obj
+        .remove("messages")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let mut system_parts = Vec::new();
+    let mut contents = Vec::new();
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        match role {
+            "system" | "developer" => {
+                system_parts.extend(gemini_parts_from_content(message.get("content")));
+            }
+            "tool" => {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": message.get("tool_call_id").cloned().unwrap_or(Value::String("tool".into())),
+                            "response": {"result": content_text(message.get("content"))}
+                        }
+                    }]
+                }));
+            }
+            _ => {
+                let mut parts = gemini_parts_from_content(message.get("content"));
+                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let function = call.get("function").unwrap_or(&Value::Null);
+                        let args = function
+                            .get("arguments")
+                            .and_then(Value::as_str)
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .unwrap_or_else(|| json!({}));
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": function.get("name").cloned().unwrap_or(Value::String(String::new())),
+                                "args": args
+                            }
+                        }));
+                    }
+                }
+                let gemini_role = if role == "assistant" { "model" } else { "user" };
+                contents.push(json!({"role": gemini_role, "parts": parts}));
+            }
+        }
+    }
+
+    let mut out = Map::new();
+    out.insert("contents".into(), Value::Array(contents));
+    if !system_parts.is_empty() {
+        out.insert("systemInstruction".into(), json!({"parts": system_parts}));
+    }
+
+    // generationConfig from OpenAI sampling params
+    let mut gen = Map::new();
+    if let Some(t) = obj.remove("temperature") {
+        gen.insert("temperature".into(), t);
+    }
+    if let Some(p) = obj.remove("top_p") {
+        gen.insert("topP".into(), p);
+    }
+    let max = obj
+        .remove("max_completion_tokens")
+        .or_else(|| obj.remove("max_tokens"));
+    if let Some(max) = max {
+        gen.insert("maxOutputTokens".into(), max);
+    }
+    if let Some(stop) = obj.remove("stop") {
+        gen.insert(
+            "stopSequences".into(),
+            match stop {
+                Value::String(s) => json!([s]),
+                other => other,
+            },
+        );
+    }
+    if let Some(n) = obj.remove("n") {
+        gen.insert("candidateCount".into(), n);
+    }
+    if !gen.is_empty() {
+        out.insert("generationConfig".into(), Value::Object(gen));
+    }
+
+    // tools: OpenAI function tools -> a single functionDeclarations group
+    if let Some(tools) = obj.remove("tools").and_then(|t| t.as_array().cloned()) {
+        let declarations: Vec<Value> = tools
+            .iter()
+            .filter_map(|tool| tool.get("function"))
+            .map(|function| {
+                let mut decl = json!({
+                    "name": function.get("name").cloned().unwrap_or(Value::String(String::new()))
+                });
+                if let Some(description) = function.get("description").filter(|v| !v.is_null()) {
+                    decl["description"] = description.clone();
+                }
+                if let Some(parameters) = function.get("parameters").filter(|v| !v.is_null()) {
+                    decl["parameters"] = parameters.clone();
+                }
+                decl
+            })
+            .collect();
+        if !declarations.is_empty() {
+            out.insert(
+                "tools".into(),
+                json!([{"functionDeclarations": declarations}]),
+            );
+        }
+    }
+    if let Some(choice) = obj.remove("tool_choice") {
+        let mode = match &choice {
+            Value::String(s) if s == "required" => Some("ANY"),
+            Value::String(s) if s == "none" => Some("NONE"),
+            Value::String(s) if s == "auto" => Some("AUTO"),
+            Value::Object(_) => Some("ANY"),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            out.insert(
+                "toolConfig".into(),
+                json!({"functionCallingConfig": {"mode": mode}}),
+            );
+        }
+    }
+
+    Value::Object(out)
+}
+
+fn anthropic_to_gemini(v: Value) -> Value {
+    openai_to_gemini(anthropic_request(v))
+}
+
+fn responses_to_gemini(v: Value) -> Value {
+    openai_to_gemini(responses_request(v))
+}
+
+/// Build Gemini `parts` from an OpenAI message `content` value (string, or an
+/// array of typed parts). Data URLs become `inlineData`; other URLs become
+/// `fileData`.
+fn gemini_parts_from_content(content: Option<&Value>) -> Vec<Value> {
+    match content {
+        Some(Value::String(text)) => vec![json!({"text": text})],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("text") | Some("input_text") => Some(json!({
+                    "text": part.get("text").cloned().unwrap_or(Value::String(String::new()))
+                })),
+                Some("image_url") | Some("input_image") => {
+                    let url = part
+                        .pointer("/image_url/url")
+                        .or_else(|| part.get("image_url"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some(gemini_media_part(url))
+                }
+                _ => None,
+            })
+            .collect(),
+        Some(other) => vec![json!({"text": other.to_string()})],
+        None => Vec::new(),
+    }
+}
+
+fn gemini_media_part(url: &str) -> Value {
+    if let Some((media_type, data)) = data_url(url) {
+        json!({"inlineData": {"mimeType": media_type, "data": data}})
+    } else {
+        json!({"fileData": {"fileUri": url}})
+    }
+}
+
+/// Translate a Gemini `generateContent` response into an OpenAI Chat Completion.
+fn gemini_to_openai(v: Value) -> Value {
+    let candidate = v.pointer("/candidates/0").unwrap_or(&Value::Null);
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for part in candidate
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(t) = part.get("text").and_then(Value::as_str) {
+            text.push_str(t);
+        } else if let Some(function_call) = part.get("functionCall") {
+            let args = function_call
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            calls.push(json!({
+                "id": format!("call_{}", calls.len()),
+                "type": "function",
+                "function": {
+                    "name": function_call.get("name").cloned().unwrap_or(Value::String(String::new())),
+                    "arguments": serde_json::to_string(&args).unwrap_or_else(|_| "{}".into())
+                }
+            }));
+        }
+    }
+    let mut message = json!({
+        "role": "assistant",
+        "content": if text.is_empty() { Value::Null } else { Value::String(text) }
+    });
+    let finish = if calls.is_empty() {
+        gemini_finish(candidate.get("finishReason"))
+    } else {
+        message["tool_calls"] = Value::Array(calls);
+        json!("tool_calls")
+    };
+    let prompt = v
+        .pointer("/usageMetadata/promptTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let completion = v
+        .pointer("/usageMetadata/candidatesTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total = v
+        .pointer("/usageMetadata/totalTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(prompt + completion);
+    json!({
+        "id": "chatcmpl-rolter",
+        "object": "chat.completion",
+        "created": 0,
+        "model": v.get("modelVersion").cloned().unwrap_or(Value::Null),
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
+    })
+}
+
+fn gemini_to_anthropic(v: Value) -> Value {
+    openai_response(gemini_to_openai(v))
+}
+
+fn gemini_to_responses(v: Value) -> Value {
+    responses_from_openai(gemini_to_openai(v))
+}
+
+fn gemini_finish(v: Option<&Value>) -> Value {
+    match v.and_then(Value::as_str) {
+        Some("MAX_TOKENS") => json!("length"),
+        Some("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT") => {
+            json!("content_filter")
+        }
+        Some(_) => json!("stop"),
+        None => Value::Null,
+    }
+}
+
 struct SseConverter {
     plan: TranslationPlan,
     pending: Vec<u8>,
@@ -893,6 +1198,7 @@ struct StreamState {
     response_started: bool,
     response_completed: bool,
     response_usage: Value,
+    gemini_finished: bool,
 }
 
 impl SseConverter {
@@ -945,6 +1251,21 @@ impl SseConverter {
             Some(StreamTranslation::OpenAiToResponses) => self.openai_to_responses(&data),
             Some(StreamTranslation::AnthropicToResponses) => {
                 let chunks = self.anthropic_to_openai(event, &data);
+                chunks
+                    .into_iter()
+                    .flat_map(|chunk| self.openai_to_responses_frame(&chunk))
+                    .collect()
+            }
+            Some(StreamTranslation::GeminiToOpenAi) => self.gemini_to_openai_stream(&data, true),
+            Some(StreamTranslation::GeminiToAnthropic) => {
+                let chunks = self.gemini_to_openai_stream(&data, true);
+                chunks
+                    .into_iter()
+                    .flat_map(|chunk| self.openai_frame_to_anthropic(&chunk))
+                    .collect()
+            }
+            Some(StreamTranslation::GeminiToResponses) => {
+                let chunks = self.gemini_to_openai_stream(&data, true);
                 chunks
                     .into_iter()
                     .flat_map(|chunk| self.openai_to_responses_frame(&chunk))
@@ -1164,6 +1485,102 @@ impl SseConverter {
         out.push(sse(Some("response.output_item.done"), &json!({"type":"response.output_item.done","output_index":0,"item":{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":[]}})));
         out.push(sse(Some("response.completed"), &json!({"type":"response.completed","response":{"id":self.state.id,"object":"response","status":"completed","model":self.state.model,"usage":self.state.response_usage}})));
         out
+    }
+
+    /// convert one gemini `streamGenerateContent` SSE data payload (a full
+    /// GenerateContentResponse) into openai chat.completion.chunk frames.
+    /// gemini has no `[DONE]` sentinel — the last chunk carries `finishReason`,
+    /// so we synthesize the finish chunk (and optional `[DONE]`) from it.
+    fn gemini_to_openai_stream(&mut self, data: &str, emit_done: bool) -> Vec<Bytes> {
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if !self.state.started {
+            self.state.started = true;
+            self.state.id = "chatcmpl-rolter".to_string();
+            self.state.model = v
+                .get("modelVersion")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            out.push(openai_chunk(
+                &self.state,
+                json!({"role":"assistant","content":""}),
+                Value::Null,
+                None,
+            ));
+        }
+        let candidate = v.pointer("/candidates/0").cloned().unwrap_or(Value::Null);
+        for part in candidate
+            .pointer("/content/parts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(t) = part.get("text").and_then(Value::as_str) {
+                out.push(openai_chunk(
+                    &self.state,
+                    json!({"content":t}),
+                    Value::Null,
+                    None,
+                ));
+            } else if let Some(function_call) = part.get("functionCall") {
+                let ti = self.state.next_tool;
+                self.state.next_tool += 1;
+                let args = function_call
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                out.push(openai_chunk(
+                    &self.state,
+                    json!({"tool_calls":[{
+                        "index": ti,
+                        "id": format!("call_{ti}"),
+                        "type": "function",
+                        "function": {
+                            "name": function_call.get("name").cloned().unwrap_or(Value::String(String::new())),
+                            "arguments": serde_json::to_string(&args).unwrap_or_else(|_| "{}".into())
+                        }
+                    }]}),
+                    Value::Null,
+                    None,
+                ));
+            }
+        }
+        if let Some(reason) = candidate.get("finishReason").filter(|r| !r.is_null()) {
+            if self.state.gemini_finished {
+                return out;
+            }
+            self.state.gemini_finished = true;
+            let finish = if self.state.next_tool > 0 {
+                json!("tool_calls")
+            } else {
+                gemini_finish(Some(reason))
+            };
+            let usage = json!({
+                "input_tokens": v.pointer("/usageMetadata/promptTokenCount").cloned().unwrap_or(json!(0)),
+                "output_tokens": v.pointer("/usageMetadata/candidatesTokenCount").cloned().unwrap_or(json!(0)),
+            });
+            out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
+            if emit_done {
+                out.push(Bytes::from_static(b"data: [DONE]\n\n"));
+            }
+        }
+        out
+    }
+
+    /// re-parse an openai chunk frame we just produced and re-emit it as
+    /// anthropic sse — used to chain gemini→openai→anthropic for native clients.
+    fn openai_frame_to_anthropic(&mut self, frame: &Bytes) -> Vec<Bytes> {
+        let text = String::from_utf8_lossy(frame);
+        let data = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.openai_to_anthropic(&data)
     }
 }
 
@@ -1447,5 +1864,131 @@ mod tests {
         let body = Bytes::from_static(br#"{"cache_control":{"enabled":true}}"#);
         let err = normalize_prompt_cache_control(body, ProviderKind::Bedrock).unwrap_err();
         assert!(err.to_string().contains("prompt_cache_unsupported"));
+    }
+
+    #[test]
+    fn gemini_native_resolves_for_openai_client() {
+        let plan = TranslationPlan::resolve(
+            "/v1/chat/completions",
+            ProviderKind::GeminiNative,
+            RoleProfile::Openai,
+        );
+        assert_eq!(plan.upstream, Protocol::GeminiGenerate);
+        assert!(plan.is_gemini_generate());
+    }
+
+    #[test]
+    fn openai_request_becomes_gemini_generate_content() {
+        let body = Bytes::from(serde_json::to_vec(&json!({"model":"gemini-2.5-flash","messages":[
+            {"role":"system","content":"be terse"},
+            {"role":"user","content":"hi"},
+            {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},
+            {"role":"tool","tool_call_id":"call_1","content":"ok"}
+        ],"temperature":0.5,"max_tokens":128,"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":"required"})).unwrap());
+        let out = plan(Protocol::OpenAiChat, Protocol::GeminiGenerate)
+            .translate_request(body)
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["systemInstruction"]["parts"][0]["text"], "be terse");
+        assert_eq!(v["contents"][0]["role"], "user");
+        assert_eq!(v["contents"][0]["parts"][0]["text"], "hi");
+        assert_eq!(v["contents"][1]["role"], "model");
+        assert_eq!(
+            v["contents"][1]["parts"][0]["functionCall"]["name"],
+            "lookup"
+        );
+        assert_eq!(
+            v["contents"][2]["parts"][0]["functionResponse"]["name"],
+            "call_1"
+        );
+        assert_eq!(v["generationConfig"]["temperature"], 0.5);
+        assert_eq!(v["generationConfig"]["maxOutputTokens"], 128);
+        assert_eq!(v["tools"][0]["functionDeclarations"][0]["name"], "lookup");
+        assert_eq!(v["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        // gemini native carries no top-level model/stream fields
+        assert!(v.get("model").is_none());
+    }
+
+    #[test]
+    fn gemini_response_becomes_openai_completion() {
+        let body = Bytes::from(
+            serde_json::to_vec(&json!({
+                "candidates":[{"content":{"parts":[{"text":"hello world"}]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},
+                "modelVersion":"gemini-2.5-flash"
+            }))
+            .unwrap(),
+        );
+        let out =
+            plan(Protocol::OpenAiChat, Protocol::GeminiGenerate).translate_response(body, false);
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["choices"][0]["message"]["content"], "hello world");
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+        assert_eq!(v["usage"]["prompt_tokens"], 5);
+        assert_eq!(v["usage"]["completion_tokens"], 2);
+        assert_eq!(v["model"], "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn gemini_function_call_response_maps_to_tool_calls() {
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":1}}}]},"finishReason":"STOP"}]
+        })).unwrap());
+        let out =
+            plan(Protocol::OpenAiChat, Protocol::GeminiGenerate).translate_response(body, false);
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            v["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "lookup"
+        );
+        assert_eq!(
+            v["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"q\":1}"
+        );
+    }
+
+    #[test]
+    fn gemini_stream_becomes_openai_chunks() {
+        let mut converter = SseConverter::new(plan(Protocol::OpenAiChat, Protocol::GeminiGenerate));
+        let mut out = Vec::new();
+        out.extend(converter.feed(
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hel\"}]}}],\"modelVersion\":\"gemini-2.5-flash\"}\n\n",
+        ));
+        out.extend(converter.feed(
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n",
+        ));
+        out.extend(converter.finish());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect::<String>();
+        assert!(text.contains("\"role\":\"assistant\""));
+        assert!(text.contains("\"content\":\"hel\""));
+        assert!(text.contains("\"content\":\"lo\""));
+        assert!(text.contains("\"finish_reason\":\"stop\""));
+        assert!(text.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn gemini_stream_to_anthropic_emits_message_stop() {
+        let mut converter = SseConverter::new(plan(Protocol::OpenAiChat, Protocol::GeminiGenerate));
+        // client protocol drives the stream selection; use anthropic client
+        let mut converter = {
+            converter.plan.client = Protocol::AnthropicMessages;
+            converter
+        };
+        let mut out = Vec::new();
+        out.extend(converter.feed(
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-flash\"}\n\n",
+        ));
+        out.extend(converter.finish());
+        let text = out
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect::<String>();
+        assert!(text.contains("message_start"));
+        assert!(text.contains("content_block_delta"));
+        assert!(text.contains("message_stop"));
     }
 }

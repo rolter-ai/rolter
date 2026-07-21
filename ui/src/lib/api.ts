@@ -312,6 +312,10 @@ export const PROVIDER_KINDS = [
   "azure_openai",
   "bedrock",
   "vertex",
+  "gemini",
+  "gemini_native",
+  "mistral",
+  "groq",
 ] as const;
 
 export const STRATEGIES = [
