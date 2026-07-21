@@ -512,10 +512,13 @@ fn openai_request(mut v: Value) -> Value {
     };
     let messages = obj
         .remove("messages")
-        .and_then(|v| v.as_array().cloned())
+        .and_then(|v| match v {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
         .unwrap_or_default();
-    let mut system = Vec::new();
-    let mut out = Vec::new();
+    let mut system = Vec::with_capacity(1);
+    let mut out = Vec::with_capacity(messages.len());
     for message in messages {
         let role = message
             .get("role")
@@ -615,15 +618,18 @@ fn anthropic_request(mut v: Value) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
-    let mut messages = Vec::new();
+    let source_messages = obj
+        .remove("messages")
+        .and_then(|v| match v {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut messages = Vec::with_capacity(source_messages.len() + 1);
     if let Some(system) = obj.remove("system") {
         messages.push(json!({"role":"system","content":anthropic_content(Some(&system))}));
     }
-    for message in obj
-        .remove("messages")
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
-    {
+    for message in source_messages {
         let role = message
             .get("role")
             .and_then(Value::as_str)
@@ -928,10 +934,13 @@ fn openai_to_gemini(mut v: Value) -> Value {
     };
     let messages = obj
         .remove("messages")
-        .and_then(|v| v.as_array().cloned())
+        .and_then(|v| match v {
+            Value::Array(a) => Some(a),
+            _ => None,
+        })
         .unwrap_or_default();
     let mut system_parts = Vec::new();
-    let mut contents = Vec::new();
+    let mut contents = Vec::with_capacity(messages.len());
     for message in messages {
         let role = message
             .get("role")
@@ -1013,7 +1022,10 @@ fn openai_to_gemini(mut v: Value) -> Value {
     }
 
     // tools: OpenAI function tools -> a single functionDeclarations group
-    if let Some(tools) = obj.remove("tools").and_then(|t| t.as_array().cloned()) {
+    if let Some(tools) = obj.remove("tools").and_then(|t| match t {
+        Value::Array(a) => Some(a),
+        _ => None,
+    }) {
         let declarations: Vec<Value> = tools
             .iter()
             .filter_map(|tool| tool.get("function"))
