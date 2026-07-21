@@ -79,6 +79,7 @@ impl ProviderRow {
             "gemini_native" => ProviderKind::GeminiNative,
             "mistral" => ProviderKind::Mistral,
             "groq" => ProviderKind::Groq,
+            "xai" => ProviderKind::Xai,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
         let api_key = match (row.ciphertext.as_deref(), row.nonce.as_deref(), kek) {

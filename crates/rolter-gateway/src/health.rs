@@ -45,7 +45,8 @@ fn probe_request(
         | ProviderKind::Gemini
         | ProviderKind::GeminiNative
         | ProviderKind::Mistral
-        | ProviderKind::Groq => (format!("{base}/models"), Vec::new()),
+        | ProviderKind::Groq
+        | ProviderKind::Xai => (format!("{base}/models"), Vec::new()),
         ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
         ProviderKind::AzureOpenai => (format!("{base}/models"), Vec::new()),
         ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
@@ -199,7 +200,8 @@ fn build_probe_plan(
             | ProviderKind::Gemini
             | ProviderKind::GeminiNative
             | ProviderKind::Mistral
-            | ProviderKind::Groq => {
+            | ProviderKind::Groq
+            | ProviderKind::Xai => {
                 headers.push(("authorization".to_string(), format!("Bearer {key}")));
             }
             _ => {}
