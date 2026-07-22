@@ -236,9 +236,22 @@ pub(crate) fn resolve_role(
     best.map(|(_, role)| role)
 }
 
+/// Pure authorization decision for a `User` principal: do `memberships` grant
+/// at least `required` at `chain`? Default-deny — a chain the memberships do not
+/// reach (or too low a role) is `false`. DB-free so the whole `(role, scope,
+/// action)` matrix can be exhaustively unit-tested; [`authorize`] wraps this
+/// with the superadmin short-circuit and the membership fetch.
+fn user_authorized(memberships: &[Membership], chain: ScopeChain, required: Role) -> bool {
+    match resolve_role(memberships, chain.org, chain.team, chain.project) {
+        Some(role) => role_rank(role) >= role_rank(required),
+        None => false,
+    }
+}
+
 /// Require `principal` to hold at least `required` at `chain`. Superadmin (and
-/// therefore open mode) always passes; a `User` is checked via [`resolve_role`]
-/// against their memberships. Maps insufficient authority to `403`.
+/// therefore open mode) always passes; a `User` is checked via
+/// [`user_authorized`] against their memberships. Maps insufficient authority to
+/// `403`.
 pub(crate) async fn authorize(
     state: &ControlState,
     principal: &Principal,
@@ -250,9 +263,10 @@ pub(crate) async fn authorize(
         Principal::User(user) => user,
     };
     let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
-    match resolve_role(&memberships, chain.org, chain.team, chain.project) {
-        Some(role) if role_rank(role) >= role_rank(required) => Ok(()),
-        _ => Err(ApiError::Forbidden),
+    if user_authorized(&memberships, chain, required) {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
     }
 }
 
@@ -402,5 +416,254 @@ mod tests {
     fn role_rank_is_ordered() {
         assert!(role_rank(Role::Admin) > role_rank(Role::Member));
         assert!(role_rank(Role::Member) > role_rank(Role::Viewer));
+    }
+
+    // ------------------------------------------------------------------- //
+    // exhaustive authorization matrix (#621): every (granted, required)    //
+    // pair at every scope, with the accent on the *deny* cases            //
+    // ------------------------------------------------------------------- //
+
+    const ROLES: [Role; 3] = [Role::Viewer, Role::Member, Role::Admin];
+
+    fn role_str(r: Role) -> &'static str {
+        match r {
+            Role::Viewer => "viewer",
+            Role::Member => "member",
+            Role::Admin => "admin",
+        }
+    }
+
+    /// Core invariant: a user is authorized **iff** their granted role at the
+    /// scope ranks at least as high as the required role. Checked for every
+    /// (granted, required) pair at org, team, and project scope — 3×3×3 = 27
+    /// cases, of which the sub-rank pairs are the security-critical denials.
+    #[test]
+    fn grant_authorizes_iff_rank_is_sufficient() {
+        let org = Uuid::new_v4();
+        let team = Uuid::new_v4();
+        let project = Uuid::new_v4();
+        let scopes: [(&str, Membership, ScopeChain); 3] = [
+            (
+                "org",
+                membership(Some(org), None, None, "placeholder"),
+                ScopeChain::org(org),
+            ),
+            (
+                "team",
+                membership(Some(org), Some(team), None, "placeholder"),
+                ScopeChain {
+                    org: Some(org),
+                    team: Some(team),
+                    project: None,
+                },
+            ),
+            (
+                "project",
+                membership(Some(org), Some(team), Some(project), "placeholder"),
+                ScopeChain {
+                    org: Some(org),
+                    team: Some(team),
+                    project: Some(project),
+                },
+            ),
+        ];
+
+        for (scope_name, template, chain) in scopes {
+            for granted in ROLES {
+                let mut m = template.clone();
+                m.role = role_str(granted).to_string();
+                for required in ROLES {
+                    let allowed = user_authorized(std::slice::from_ref(&m), chain, required);
+                    let expected = role_rank(granted) >= role_rank(required);
+                    assert_eq!(
+                        allowed, expected,
+                        "{scope_name}: granted={granted:?} required={required:?} \
+                         → {allowed} (expected {expected})",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Default-deny: with no membership at all, every required role at every
+    /// scope is refused. A regression to default-*allow* would flip these.
+    #[test]
+    fn no_membership_denies_everything() {
+        let org = Uuid::new_v4();
+        let team = Uuid::new_v4();
+        let project = Uuid::new_v4();
+        let chains = [
+            ScopeChain::org(org),
+            ScopeChain {
+                org: Some(org),
+                team: Some(team),
+                project: None,
+            },
+            ScopeChain {
+                org: Some(org),
+                team: Some(team),
+                project: Some(project),
+            },
+        ];
+        for chain in chains {
+            for required in ROLES {
+                assert!(
+                    !user_authorized(&[], chain, required),
+                    "empty memberships must deny required={required:?}",
+                );
+            }
+        }
+    }
+
+    /// Property: no membership whose effective role ranks *below* the required
+    /// role is ever authorized, for any combination of scope grants a user
+    /// might plausibly hold. This is the anti-privilege-escalation guard —
+    /// `resolve_role` must never round a lower grant up.
+    #[test]
+    fn lower_grant_never_escalates() {
+        let org = Uuid::new_v4();
+        let team = Uuid::new_v4();
+        let project = Uuid::new_v4();
+        let chain = ScopeChain {
+            org: Some(org),
+            team: Some(team),
+            project: Some(project),
+        };
+        // enumerate a grant at each of the three levels independently
+        for level in 0..3 {
+            for granted in ROLES {
+                let m = match level {
+                    0 => membership(Some(org), None, None, role_str(granted)),
+                    1 => membership(Some(org), Some(team), None, role_str(granted)),
+                    _ => membership(Some(org), Some(team), Some(project), role_str(granted)),
+                };
+                for required in ROLES {
+                    if role_rank(granted) < role_rank(required) {
+                        assert!(
+                            !user_authorized(std::slice::from_ref(&m), chain, required),
+                            "escalation: level={level} granted={granted:?} \
+                             required={required:?} was allowed",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sibling isolation: an admin grant on team A / project A never authorizes
+    /// team B / project B at any required role.
+    #[test]
+    fn sibling_scopes_are_isolated() {
+        let org = Uuid::new_v4();
+        let team_a = Uuid::new_v4();
+        let team_b = Uuid::new_v4();
+        let project_a = Uuid::new_v4();
+        let project_b = Uuid::new_v4();
+
+        // team-A admin cannot touch team-B
+        let team_grant = vec![membership(Some(org), Some(team_a), None, "admin")];
+        let team_b_chain = ScopeChain {
+            org: Some(org),
+            team: Some(team_b),
+            project: None,
+        };
+        for required in ROLES {
+            assert!(
+                !user_authorized(&team_grant, team_b_chain, required),
+                "team-A admin leaked to team-B for required={required:?}",
+            );
+        }
+
+        // project-A admin cannot touch project-B
+        let proj_grant = vec![membership(
+            Some(org),
+            Some(team_a),
+            Some(project_a),
+            "admin",
+        )];
+        let project_b_chain = ScopeChain {
+            org: Some(org),
+            team: Some(team_b),
+            project: Some(project_b),
+        };
+        for required in ROLES {
+            assert!(
+                !user_authorized(&proj_grant, project_b_chain, required),
+                "project-A admin leaked to project-B for required={required:?}",
+            );
+        }
+    }
+
+    /// Most-specific downgrade actually *reduces* authority: a user who is org
+    /// Admin but only project Viewer can still perform org-Admin actions on the
+    /// org, yet is held to Viewer on that project (no Admin/Member write there).
+    #[test]
+    fn specific_downgrade_reduces_authority_at_that_scope() {
+        let org = Uuid::new_v4();
+        let team = Uuid::new_v4();
+        let project = Uuid::new_v4();
+        let ms = vec![
+            membership(Some(org), None, None, "admin"),
+            membership(Some(org), Some(team), Some(project), "viewer"),
+        ];
+        let org_chain = ScopeChain::org(org);
+        let project_chain = ScopeChain {
+            org: Some(org),
+            team: Some(team),
+            project: Some(project),
+        };
+        // org scope: still Admin
+        assert!(user_authorized(&ms, org_chain, Role::Admin));
+        // project scope: only Viewer — Member/Admin actions denied
+        assert!(user_authorized(&ms, project_chain, Role::Viewer));
+        assert!(!user_authorized(&ms, project_chain, Role::Member));
+        assert!(!user_authorized(&ms, project_chain, Role::Admin));
+    }
+
+    // ------------------------------------------------------------------- //
+    // require_superadmin: global (unscoped) resources                      //
+    // ------------------------------------------------------------------- //
+
+    fn user_with_superadmin(flag: bool) -> User {
+        User {
+            id: Uuid::new_v4(),
+            email: "u@e2e.test".into(),
+            password_hash: None,
+            is_superadmin: flag,
+            deactivated_at: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn require_superadmin_allows_only_superadmin() {
+        assert!(require_superadmin(&Principal::Superadmin).is_ok());
+        // a plain user — even one flagged is_superadmin at the row level is a
+        // `Principal::Superadmin`, so the `User` variant is always non-super
+        let user = Principal::User(user_with_superadmin(false));
+        assert!(matches!(
+            require_superadmin(&user),
+            Err(ApiError::Forbidden)
+        ));
+    }
+
+    // ------------------------------------------------------------------- //
+    // error shape: a denial is 403 + the OpenAI-style JSON envelope        //
+    // ------------------------------------------------------------------- //
+
+    #[tokio::test]
+    async fn forbidden_renders_403_openai_envelope() {
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        let resp = ApiError::Forbidden.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"error": {"message": "insufficient role for this resource"}}),
+        );
     }
 }
