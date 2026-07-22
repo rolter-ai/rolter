@@ -1,0 +1,120 @@
+# static config for the chaos / fault-injection gateway (issue #620).
+#
+# unlike the main e2e stack (docker-compose.e2e.yml) which runs the gateway in
+# DB-snapshot mode with default reliability config, this gateway is driven by a
+# static config tuned for fast, deterministic resilience assertions:
+#   - short request timeout so a slow upstream trips quickly
+#   - short cooldown so a parked target re-admits within the test window
+#   - the per-target circuit breaker enabled with a low threshold
+# every target points at a mock upstream (mock/faulty_upstream.py) whose failure
+# mode is fixed by its FAULT env var. no secrets, no real upstreams.
+
+[server]
+host = "0.0.0.0"
+port = 4000
+
+# extra attempts after the first; a transient failure fails over to a sibling
+[retry]
+max_retries = 2
+base_backoff_ms = 20
+max_backoff_ms = 100
+
+# park a failing target briefly so a healthy sibling absorbs load, but short
+# enough that recovery is observable inside a test
+[cooldown]
+base_secs = 2
+max_secs = 5
+
+# a slow upstream (sleeps 5s) must trip this; keep connect generous
+[timeouts]
+connect_secs = 2
+request_secs = 2
+
+# trip a hard-down target open after a few consecutive failures, probe soon
+[breaker]
+enabled = true
+failure_threshold = 3
+open_secs = 3
+
+# --- mock upstreams: each injects one failure mode ---
+[[providers]]
+name = "healthy"
+kind = "openai_compatible"
+api_base = "http://faulty-ok:9000"
+
+[[providers]]
+name = "bad500"
+kind = "openai_compatible"
+api_base = "http://faulty-500:9000"
+
+[[providers]]
+name = "bad500b"
+kind = "openai_compatible"
+api_base = "http://faulty-500b:9000"
+
+[[providers]]
+name = "bad429"
+kind = "openai_compatible"
+api_base = "http://faulty-429:9000"
+
+[[providers]]
+name = "slow"
+kind = "openai_compatible"
+api_base = "http://faulty-slow:9000"
+
+[[providers]]
+name = "flap"
+kind = "openai_compatible"
+api_base = "http://faulty-flap:9000"
+
+# --- routes: one public model per resilience scenario ---
+
+# a hard-down target ahead of a healthy one: retry + cooldown must fail over
+[[routes]]
+model = "chaos-shed"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "bad500"
+model = "chaos-dummy"
+[[routes.targets]]
+provider = "healthy"
+model = "chaos-dummy"
+
+# every target down: the gateway must return a clean 5xx, never a panic or a 200
+[[routes]]
+model = "chaos-alldown"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "bad500"
+model = "chaos-dummy"
+[[routes.targets]]
+provider = "bad500b"
+model = "chaos-dummy"
+
+# a rate-limited target ahead of a healthy one: honor the cooldown, fail over
+[[routes]]
+model = "chaos-429"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "bad429"
+model = "chaos-dummy"
+[[routes.targets]]
+provider = "healthy"
+model = "chaos-dummy"
+
+# a single slow target: the request must time out cleanly within a bound
+[[routes]]
+model = "chaos-slow"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "slow"
+model = "chaos-dummy"
+
+# a single flapping target: some calls fail, some succeed, and the target is
+# never permanently parked — recovery re-admits it
+[[routes]]
+model = "chaos-flap"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "flap"
+model = "chaos-dummy"

@@ -107,6 +107,9 @@ services:
         # control needs its postgres-backed CRUD API + migrations for the e2e
         # scenarios; the shipping image defaults to no features.
         CARGO_FEATURES: postgres
+    # tag the built image so the opt-in chaos gateway (profile: chaos) can reuse
+    # it instead of triggering a second, identical build
+    image: rolter-e2e-local:latest
     # DB-snapshot mode: no static config, hot-reload from the control plane.
     command:
       - rolter-gateway
@@ -134,3 +137,93 @@ services:
     # gateway retries its snapshot fetch every 2s until control answers anyway.
     depends_on:
       - control
+
+  # ----------------------------------------------------------------------- #
+  # chaos / fault-injection harness (issue #620) — opt-in via `--profile     #
+  # chaos`. a static-config gateway (chaos/rolter-chaos.toml) tuned for fast, #
+  # deterministic resilience assertions, driven against mock upstreams whose  #
+  # failure mode is fixed by their FAULT env var. independent of the control  #
+  # plane / datastores above, so it starts on its own with just this profile. #
+  # ----------------------------------------------------------------------- #
+  faulty-ok:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "ok" }
+    volumes:
+      - ./mock:/mock:ro
+
+  faulty-500:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "500" }
+    volumes:
+      - ./mock:/mock:ro
+
+  faulty-500b:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "500" }
+    volumes:
+      - ./mock:/mock:ro
+
+  faulty-429:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "429" }
+    volumes:
+      - ./mock:/mock:ro
+
+  faulty-slow:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "slow", SLOW_SECS: "5" }
+    volumes:
+      - ./mock:/mock:ro
+
+  faulty-flap:
+    profiles: ["chaos"]
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: ["python", "/mock/faulty_upstream.py"]
+    environment: { FAULT: "flap" }
+    volumes:
+      - ./mock:/mock:ro
+
+  gateway-chaos:
+    profiles: ["chaos"]
+    # reuse the image the main `gateway` service builds (same tag); if built
+    # standalone (`--profile chaos build`) this build block produces it too.
+    image: rolter-e2e-local:latest
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+      args:
+        CARGO_FEATURES: postgres
+    command:
+      - rolter-gateway
+      - --config
+      - /app/rolter-chaos.toml
+    ports:
+      - "4002:4000"
+    environment:
+      RUST_LOG: info,rolter_proxy=debug,rolter_balancer=debug
+    volumes:
+      - ./chaos/rolter-chaos.toml:/app/rolter-chaos.toml:ro
+    depends_on:
+      - faulty-ok
+      - faulty-500
+      - faulty-500b
+      - faulty-429
+      - faulty-slow
+      - faulty-flap
