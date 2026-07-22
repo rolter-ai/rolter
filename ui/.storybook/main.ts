@@ -4,7 +4,9 @@ import { mergeConfig } from "vite";
 
 const config: StorybookConfig = {
   stories: ["../src/**/*.stories.@(ts|tsx)"],
-  addons: ["@storybook/addon-essentials"],
+  // Storybook 10 folds the former "essentials" (controls, actions, viewport,
+  // backgrounds, toolbars) into core; docs is the one still-separate addon.
+  addons: ["@storybook/addon-docs"],
   framework: {
     name: "@storybook/react-vite",
     options: {},

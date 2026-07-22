@@ -8,6 +8,7 @@
     "build": "vite build",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
+    "test-storybook": "test-storybook",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
@@ -24,8 +25,9 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@storybook/addon-essentials": "8.6.18",
+    "@storybook/addon-docs": "10.5.3",
     "@storybook/react-vite": "10.5.3",
+    "@storybook/test-runner": "^0.24.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/bun": "^1.1.13",
     "@types/react": "^19.2.0",
