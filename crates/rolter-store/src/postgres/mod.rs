@@ -445,7 +445,10 @@ impl PostgresConfigStore {
 
     async fn load_budgets(&self) -> Result<Vec<BudgetConfig>> {
         let rows: Vec<Budget> = sqlx::query_as(
-            "select id, scope_type, scope_id, limit_usd, period, created_at
+            // limit_usd is numeric(12,4); decode it as text (Budget.limit_usd is a
+            // String) or sqlx errors and the whole snapshot 500s — freezing every
+            // polling gateway on its last config the moment any budget exists
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, created_at
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -731,6 +734,40 @@ mod tests {
         assert_eq!(config.model_prices[1].model, "gpt-4o-mini");
         assert_eq!(config.model_prices[1].input_per_mtok, 0.15);
         assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
+    }
+
+    // regression: like model_prices, the snapshot query must cast budgets.limit_usd
+    // (numeric) to text — Budget.limit_usd is a String — or store.load() errors and
+    // every polling gateway freezes on its last config the moment any budget exists
+    #[tokio::test]
+    async fn loads_budgets_from_db() {
+        let Some(_) = database_url() else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fresh_pool().await;
+
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('org', $1, 100.5, '30d')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        // must not error decoding the numeric column into Budget.limit_usd (String)
+        let config = store.load().await.unwrap();
+
+        assert_eq!(config.budgets.len(), 1);
+        assert_eq!(config.budgets[0].limit_usd, 100.5);
     }
 
     #[tokio::test]
