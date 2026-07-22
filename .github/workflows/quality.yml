@@ -260,7 +260,7 @@ jobs:
         # serve the static build, wait for it, then run the test-runner against it
         run: |
           python3 -m http.server 6006 --directory storybook-static &
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -sf http://127.0.0.1:6006/index.json >/dev/null && break
             sleep 1
           done
