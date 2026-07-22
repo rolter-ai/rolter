@@ -12,7 +12,37 @@ bun run lint         # typecheck
 bun run storybook    # component workbench on http://localhost:6006
 bun run build-storybook # static Storybook build into storybook-static/
 bun run test-storybook  # run the interaction (play) tests headless
+bun run e2e          # Playwright browser e2e against a running rolter stack
 ```
+
+## Browser e2e (Playwright)
+
+`e2e/` drives the built dashboard through a real browser against a running
+fake-vLLM rolter stack (the `integration/e2e` docker compose), covering the
+critical journeys: login, provider CRUD, virtual-key lifecycle, and a
+mount-without-errors smoke over the built screens.
+
+Bring the stack up first (from the repo root), then run the suite:
+
+```bash
+ROLTER_KEK=$(printf 'rolter-e2e-test-kek-not-secret!!' | base64) \
+  docker compose -f integration/e2e/docker-compose.e2e.yml up -d --wait
+cd ui && bun run e2e        # or: bun run e2e:ui for the Playwright UI
+```
+
+How it works:
+
+- `playwright.config.ts` starts the vite dev server as its `webServer`, which
+  proxies `/api` → control:4001 and `/gw` → gateway:4000 (the ports the compose
+  stack publishes).
+- `e2e/global-setup.ts` seeds a fresh tenant + admin user via the control admin
+  API (`e2e/seed.ts`) and writes an authenticated `storageState` plus a pinned
+  `rolter.scope`, so specs start logged in and scoped to the seeded tenant.
+  `login.spec.ts` exercises the real login form from a clean state.
+
+CI: not part of the default PR gate — the `ui e2e (playwright)` workflow runs on
+demand (`workflow_dispatch`) and nightly, and uploads traces/screenshots on
+failure.
 
 ## Add shadcn components
 

@@ -3,3 +3,12 @@ dist
 *.local
 .env
 .env.*
+
+# storybook static build
+storybook-static
+
+# playwright e2e artifacts + seeded auth state
+/e2e/.auth
+/e2e/.output
+/playwright-report
+/test-results

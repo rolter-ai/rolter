@@ -10,7 +10,9 @@
     "build-storybook": "storybook build",
     "test-storybook": "test-storybook",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -25,6 +27,7 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@storybook/addon-docs": "10.5.3",
     "@storybook/react-vite": "10.5.3",
     "@storybook/test-runner": "^0.24.0",
