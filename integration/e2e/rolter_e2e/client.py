@@ -185,6 +185,34 @@ class ControlClient:
     def revoke_virtual_key(self, key_id: str, *, expect: int | tuple[int, ...] = (200, 204)) -> httpx.Response:
         return self._http.request("DELETE", f"/api/v1/virtual-keys/{key_id}", expect=expect)
 
+    # -- self-service keys (/me) -------------------------------------------
+    def mint_my_key(self, project_id: str, *, models: list[str] | None = None,
+                    name: str | None = None) -> Any:
+        """mint a key the caller owns in a project they belong to (Member+)."""
+        return self._http.json(
+            "POST",
+            f"/api/v1/me/projects/{project_id}/virtual-keys",
+            json={"name": name or _rand("mykey"), "models": models or []},
+            expect=(200, 201),
+        )
+
+    def rotate_my_key(self, key_id: str) -> Any:
+        """rotate an owned key: returns the fresh plaintext; disables the old."""
+        return self._http.json("POST", f"/api/v1/me/virtual-keys/{key_id}/rotate", expect=(200, 201))
+
+    def list_providers(self, org_id: str) -> Any:
+        return self._http.json("GET", f"/api/v1/orgs/{org_id}/providers")
+
+    # -- rate limits --------------------------------------------------------
+    def create_rate_limit(self, scope_type: str, scope_id: str, *, rpm: int | None = None,
+                          tpm: int | None = None) -> Any:
+        payload: dict[str, Any] = {"scope_type": scope_type, "scope_id": scope_id}
+        if rpm is not None:
+            payload["rpm"] = rpm
+        if tpm is not None:
+            payload["tpm"] = tpm
+        return self._http.json("POST", "/api/v1/rate-limits", json=payload, expect=(200, 201))
+
     # -- raw escape hatch (negative tests assert arbitrary status) ----------
     def raw(self, method: str, path: str, *, json: Any = None,
             expect: int | tuple[int, ...] | None = None) -> httpx.Response:
