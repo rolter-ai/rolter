@@ -14,7 +14,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 
 ### `[[providers]]`
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq` | `xai`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from

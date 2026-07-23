@@ -36,21 +36,6 @@ fn probe_request(
         return (format!("{base}{configured_path}"), Vec::new());
     }
     match kind {
-        ProviderKind::Openai
-        | ProviderKind::OpenaiCompatible
-        | ProviderKind::Ollama
-        | ProviderKind::OllamaCloud
-        | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
-        ProviderKind::Openrouter
-        | ProviderKind::Gemini
-        | ProviderKind::GeminiNative
-        | ProviderKind::Mistral
-        | ProviderKind::Groq
-        | ProviderKind::Xai => (format!("{base}/models"), Vec::new()),
-        ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
-        ProviderKind::AzureOpenai => (format!("{base}/models"), Vec::new()),
-        ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
-        ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
         ProviderKind::Anthropic => (
             format!("{base}/v1/models"),
             vec![(
@@ -58,6 +43,15 @@ fn probe_request(
                 ANTHROPIC_VERSION.to_string(),
             )],
         ),
+        ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
+        ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
+        ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
+        ProviderKind::Openai
+        | ProviderKind::OpenaiCompatible
+        | ProviderKind::Ollama
+        | ProviderKind::OllamaCloud
+        | ProviderKind::LlamaCpp => (format!("{base}/v1/models"), Vec::new()),
+        _ => (format!("{base}/models"), Vec::new()),
     }
 }
 
@@ -197,14 +191,10 @@ fn build_probe_plan(
             // an api-key header, not a bearer token (unlike the openai-compat
             // `gemini` shim)
             ProviderKind::GeminiNative => headers.push(("x-goog-api-key".to_string(), key)),
-            ProviderKind::OllamaCloud
-            | ProviderKind::Openrouter
-            | ProviderKind::Bedrock
-            | ProviderKind::Vertex
-            | ProviderKind::Gemini
-            | ProviderKind::Mistral
-            | ProviderKind::Groq
-            | ProviderKind::Xai => {
+            kind if kind.requires_env_api_key()
+                || kind == ProviderKind::Bedrock
+                || kind == ProviderKind::Vertex =>
+            {
                 headers.push(("authorization".to_string(), format!("Bearer {key}")));
             }
             _ => {}

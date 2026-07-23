@@ -99,6 +99,99 @@ pub struct GatewayConfig {
     pub prompt_templates: crate::prompt_templates::PromptTemplatesConfig,
 }
 
+impl ProviderKind {
+    /// whether this provider kind must use `api_key_env` and avoid inline keys
+    pub fn requires_env_api_key(self) -> bool {
+        matches!(
+            self,
+            ProviderKind::OllamaCloud
+                | ProviderKind::Openrouter
+                | ProviderKind::Gemini
+                | ProviderKind::GeminiNative
+                | ProviderKind::Mistral
+                | ProviderKind::Groq
+                | ProviderKind::Xai
+                | ProviderKind::MetaLlamaApi
+                | ProviderKind::Cohere
+                | ProviderKind::Perplexity
+                | ProviderKind::Together
+                | ProviderKind::Fireworks
+                | ProviderKind::Databricks
+                | ProviderKind::AlephAlpha
+                | ProviderKind::Nebius
+                | ProviderKind::Ovhcloud
+                | ProviderKind::Scaleway
+                | ProviderKind::Deepseek
+                | ProviderKind::Qwen
+                | ProviderKind::Zhipu
+                | ProviderKind::Kimi
+                | ProviderKind::Ernie
+                | ProviderKind::Doubao
+                | ProviderKind::Hunyuan
+                | ProviderKind::Yi
+                | ProviderKind::Minimax
+                | ProviderKind::Baichuan
+                | ProviderKind::Gigachat
+                | ProviderKind::YandexGpt
+                | ProviderKind::CloudRu
+                | ProviderKind::MtsAi
+                | ProviderKind::Naver
+                | ProviderKind::Upstage
+                | ProviderKind::Rinna
+                | ProviderKind::Rakuten
+                | ProviderKind::Sarvam
+                | ProviderKind::Krutrim
+                | ProviderKind::Falcon
+        )
+    }
+
+    /// whether `provider_url` should remove the gateway `/v1` prefix
+    pub fn strips_gateway_v1_prefix(self) -> bool {
+        matches!(
+            self,
+            ProviderKind::Openrouter
+                | ProviderKind::AzureOpenai
+                | ProviderKind::Bedrock
+                | ProviderKind::Vertex
+                | ProviderKind::Gemini
+                | ProviderKind::Mistral
+                | ProviderKind::Groq
+                | ProviderKind::Xai
+                | ProviderKind::MetaLlamaApi
+                | ProviderKind::Cohere
+                | ProviderKind::Perplexity
+                | ProviderKind::Together
+                | ProviderKind::Fireworks
+                | ProviderKind::Databricks
+                | ProviderKind::AlephAlpha
+                | ProviderKind::Nebius
+                | ProviderKind::Ovhcloud
+                | ProviderKind::Scaleway
+                | ProviderKind::Deepseek
+                | ProviderKind::Qwen
+                | ProviderKind::Zhipu
+                | ProviderKind::Kimi
+                | ProviderKind::Ernie
+                | ProviderKind::Doubao
+                | ProviderKind::Hunyuan
+                | ProviderKind::Yi
+                | ProviderKind::Minimax
+                | ProviderKind::Baichuan
+                | ProviderKind::Gigachat
+                | ProviderKind::YandexGpt
+                | ProviderKind::CloudRu
+                | ProviderKind::MtsAi
+                | ProviderKind::Naver
+                | ProviderKind::Upstage
+                | ProviderKind::Rinna
+                | ProviderKind::Rakuten
+                | ProviderKind::Sarvam
+                | ProviderKind::Krutrim
+                | ProviderKind::Falcon
+        )
+    }
+}
+
 /// Two-tier bootstrap model presets for database-backed control planes.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ModelTiersConfig {
@@ -304,6 +397,68 @@ pub enum ProviderKind {
     Groq,
     /// xai's hosted openai-compatible api for grok models (`/v1`)
     Xai,
+    /// meta llama api's hosted openai-compatible api
+    MetaLlamaApi,
+    /// cohere's hosted openai-compatible api
+    Cohere,
+    /// perplexity's hosted openai-compatible api
+    Perplexity,
+    /// together ai's hosted openai-compatible api
+    Together,
+    /// fireworks ai's hosted openai-compatible api
+    Fireworks,
+    /// databricks foundation model apis
+    Databricks,
+    /// aleph alpha's hosted openai-compatible api
+    AlephAlpha,
+    /// nebius ai studio's hosted openai-compatible api
+    Nebius,
+    /// ovhcloud ai endpoints openai-compatible api
+    Ovhcloud,
+    /// scaleway generative apis openai-compatible api
+    Scaleway,
+    /// deepseek's hosted openai-compatible api
+    Deepseek,
+    /// alibaba qwen dashscope openai-compatible api
+    Qwen,
+    /// zhipu glm openai-compatible api
+    Zhipu,
+    /// moonshot kimi openai-compatible api
+    Kimi,
+    /// baidu ernie qianfan openai-compatible api
+    Ernie,
+    /// bytedance doubao volcengine openai-compatible api
+    Doubao,
+    /// tencent hunyuan openai-compatible api
+    Hunyuan,
+    /// 01.ai yi openai-compatible api
+    Yi,
+    /// minimax hosted openai-compatible api
+    Minimax,
+    /// baichuan ai hosted openai-compatible api
+    Baichuan,
+    /// sber gigachat hosted openai-compatible api
+    Gigachat,
+    /// yandex gpt studio hosted openai-compatible api
+    YandexGpt,
+    /// cloud.ru foundation models hosted openai-compatible api
+    CloudRu,
+    /// mts ai cotype hosted openai-compatible api
+    MtsAi,
+    /// naver hyperclova x hosted openai-compatible api
+    Naver,
+    /// upstage solar hosted openai-compatible api
+    Upstage,
+    /// rinna hosted openai-compatible api
+    Rinna,
+    /// rakuten ai hosted openai-compatible api
+    Rakuten,
+    /// sarvam ai hosted openai-compatible api
+    Sarvam,
+    /// krutrim ola hosted openai-compatible api
+    Krutrim,
+    /// g42/tii falcon hosted openai-compatible api
+    Falcon,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -1930,22 +2085,50 @@ impl GatewayConfig {
                     ));
                 }
             }
-            // hosted openai-compatible clouds authenticated with an env-sourced
-            // bearer key; enforce the same secret hygiene as openrouter
-            if matches!(
-                provider.kind,
-                ProviderKind::Gemini
-                    | ProviderKind::GeminiNative
-                    | ProviderKind::Mistral
-                    | ProviderKind::Groq
-                    | ProviderKind::Xai
-            ) {
+            // hosted adapters authenticated with an env-sourced key enforce the
+            // same secret hygiene as openrouter
+            if provider.kind.requires_env_api_key()
+                && provider.kind != ProviderKind::Openrouter
+                && provider.kind != ProviderKind::OllamaCloud
+            {
                 let kind = match provider.kind {
                     ProviderKind::Gemini => "gemini",
                     ProviderKind::GeminiNative => "gemini_native",
                     ProviderKind::Mistral => "mistral",
+                    ProviderKind::Groq => "groq",
                     ProviderKind::Xai => "xai",
-                    _ => "groq",
+                    ProviderKind::MetaLlamaApi => "meta_llama_api",
+                    ProviderKind::Cohere => "cohere",
+                    ProviderKind::Perplexity => "perplexity",
+                    ProviderKind::Together => "together",
+                    ProviderKind::Fireworks => "fireworks",
+                    ProviderKind::Databricks => "databricks",
+                    ProviderKind::AlephAlpha => "aleph_alpha",
+                    ProviderKind::Nebius => "nebius",
+                    ProviderKind::Ovhcloud => "ovhcloud",
+                    ProviderKind::Scaleway => "scaleway",
+                    ProviderKind::Deepseek => "deepseek",
+                    ProviderKind::Qwen => "qwen",
+                    ProviderKind::Zhipu => "zhipu",
+                    ProviderKind::Kimi => "kimi",
+                    ProviderKind::Ernie => "ernie",
+                    ProviderKind::Doubao => "doubao",
+                    ProviderKind::Hunyuan => "hunyuan",
+                    ProviderKind::Yi => "yi",
+                    ProviderKind::Minimax => "minimax",
+                    ProviderKind::Baichuan => "baichuan",
+                    ProviderKind::Gigachat => "gigachat",
+                    ProviderKind::YandexGpt => "yandex_gpt",
+                    ProviderKind::CloudRu => "cloud_ru",
+                    ProviderKind::MtsAi => "mts_ai",
+                    ProviderKind::Naver => "naver",
+                    ProviderKind::Upstage => "upstage",
+                    ProviderKind::Rinna => "rinna",
+                    ProviderKind::Rakuten => "rakuten",
+                    ProviderKind::Sarvam => "sarvam",
+                    ProviderKind::Krutrim => "krutrim",
+                    ProviderKind::Falcon => "falcon",
+                    _ => "unknown",
                 };
                 if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
                     problems.push(format!(
