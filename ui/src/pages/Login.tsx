@@ -1,4 +1,4 @@
-import { ArrowRight, Eye, EyeOff } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -93,7 +93,15 @@ export default function Login() {
               disabled={pending}
               className="w-full bg-brand text-white hover:bg-brand-hover"
             >
-              Sign in <ArrowRight className="h-4 w-4" />
+              {pending ? (
+                <>
+                  Signing in... <Loader2 className="h-4 w-4 animate-spin" />
+                </>
+              ) : (
+                <>
+                  Sign in <ArrowRight className="h-4 w-4" />
+                </>
+              )}
             </Button>
           </form>
           <div className="flex flex-col gap-3 border-t border-[color:var(--border-subtle)] pt-5">
