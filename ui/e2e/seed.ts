@@ -2,6 +2,8 @@
 // operator admin token. mirrors integration/e2e bootstrap.new_tenant so the
 // browser tests start from "a fresh tenant with a real login".
 
+import { randomBytes, randomUUID } from "node:crypto";
+
 const CONTROL_URL = process.env.E2E_CONTROL_URL || "http://localhost:4001";
 const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN || "e2e-superadmin-token";
 
@@ -14,8 +16,10 @@ export interface SeededTenant {
   token: string;
 }
 
+// crypto-random, not Math.random — this seeds a real (throwaway) admin login, so
+// the identifiers and password must be unguessable rather than merely unique
 function rand(prefix: string): string {
-  return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${prefix}-${randomUUID().slice(0, 6)}`;
 }
 
 async function api<T>(method: string, path: string, body?: unknown, token = ADMIN_TOKEN): Promise<T> {
@@ -47,7 +51,7 @@ export async function seedTenant(): Promise<SeededTenant> {
   });
 
   const email = `${rand("e2e-admin")}@e2e.test`;
-  const password = `e2e-${Math.random().toString(36).slice(2, 12)}`;
+  const password = `e2e-${randomBytes(12).toString("base64url")}`;
   await api("POST", `/api/v1/orgs/${org.id}/users`, { email, password, role: "admin" });
 
   // real login → session token (no admin token; this is the user's own session)
