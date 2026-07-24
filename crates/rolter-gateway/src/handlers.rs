@@ -1153,7 +1153,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
             }
         }
-        let mut tried: Vec<usize> = Vec::new();
+        let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
         let mut last_provider = String::new();
         let mut last_target = model.clone();
         let mut last_error: Option<String> = None;
@@ -1685,7 +1685,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
             *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
         }
     }
-    let mut tried: Vec<usize> = Vec::new();
+    let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
     let mut last_provider = String::new();
     let mut last_target = model.clone();
     let mut last_error: Option<String> = None;
@@ -1980,7 +1980,8 @@ async fn forward_variants(
     // targets into one ordered candidate list, letting the variant's balancer
     // choose which of its targets leads
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    let mut candidates: Vec<(usize, usize)> =
+        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
     for vi in route.fallback_order(primary) {
         if let Some(v) = route.variants.get(vi) {
             let key = variant_key(model, &v.name);
@@ -2007,7 +2008,7 @@ async fn forward_variants(
         variant: String::new(),
         provider_key_fingerprint: None,
     };
-    let mut tried: Vec<usize> = Vec::new();
+    let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
 
     for attempt in 0..=retry.max_retries {
         // a candidate is skippable when its target is parked, its provider is
