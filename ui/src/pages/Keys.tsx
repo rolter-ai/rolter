@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, Plus, Trash2, Key, Loader2 } from "lucide-react";
 import * as React from "react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -179,15 +180,16 @@ export default function Keys() {
             <button
               type="button"
               title="Delete key"
+              aria-label={`Delete key ${key.name ?? key.key_prefix}`}
               onClick={() => setDeleteTarget(key)}
-              className="flex justify-self-end rounded-[6px] p-1 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)]"
+              className="flex justify-self-end rounded-[6px] p-1 text-[color:var(--status-danger)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           </ListRow>
         ))}
         {!keys.isLoading && rows.length === 0 && (
-          <p className="px-4 py-8 text-center text-sm text-muted-foreground">No keys match.</p>
+          <EmptyState icon={<Key />} title="No keys found" description="Create a virtual key to authenticate your applications." />
         )}
       </ListTable>
       <div className="flex items-center justify-between px-0.5 text-xs text-muted-foreground">
@@ -229,12 +231,14 @@ export default function Keys() {
             variant="destructive"
             disabled={removeKey.isPending}
             onClick={() => {
+
               if (!deleteTarget) return;
               removeKey.mutate(deleteTarget.id, {
                 onSuccess: () => setDeleteTarget(null),
               });
             }}
           >
+            {removeKey.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Delete
           </Button>
         </DialogFooter>
@@ -329,6 +333,7 @@ function AddKeyDialog({
           Cancel
         </Button>
         <Button disabled={create.isPending} onClick={() => create.mutate()}>
+          {create.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Create
         </Button>
       </DialogFooter>
