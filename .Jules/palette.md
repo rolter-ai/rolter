@@ -1,3 +1,3 @@
-## 2023-10-25 - Added Loading State to Login Button
-**Learning:** Adding a small animation during async operations (like logging in) provides immediate visual feedback, significantly improving the perceived responsiveness of the app and preventing user confusion or double-clicking. Utilizing existing icons (`Loader2` from `lucide-react`) combined with Tailwind's `animate-spin` utility ensures consistency without needing custom CSS.
-**Action:** Consistently apply loading states to any primary submit buttons executing asynchronous tasks across the dashboard.
+## 2024-07-24 - Icon-only buttons and loading states
+**Learning:** Found a recurring pattern where icon-only action buttons (like Delete) use `title` but lack `aria-label` and `focus-visible` states, making them difficult to navigate via keyboard and less accessible to screen readers. Also, mutation buttons like 'Create' or 'Delete' often just use `disabled` states without visual feedback (loading spinners).
+**Action:** Always add `aria-label` with context (e.g. "Delete key [name]") and `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring` to raw `<button>` elements. Use inline `<Loader2 className="mr-2 h-4 w-4 animate-spin" />` in submit buttons to provide immediate visual feedback.
