@@ -650,7 +650,7 @@ struct CreateProvider {
     egress_proxies: Vec<String>,
 }
 
-const PROVIDER_KINDS: [&str; 48] = [
+const PROVIDER_KINDS: [&str; 47] = [
     "openai",
     "anthropic",
     "openai_compatible",
