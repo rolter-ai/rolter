@@ -262,14 +262,10 @@ impl Forwarder {
                 provider.name
             )));
         }
-        if matches!(
-            provider.kind,
-            ProviderKind::Gemini
-                | ProviderKind::GeminiNative
-                | ProviderKind::Mistral
-                | ProviderKind::Groq
-                | ProviderKind::Xai
-        ) && api_key.is_none()
+        if provider.kind.requires_env_api_key()
+            && provider.kind != ProviderKind::Openrouter
+            && provider.kind != ProviderKind::OllamaCloud
+            && api_key.is_none()
         {
             return Err(Error::Config(format!(
                 "hosted provider '{}' requires a resolved api key",
@@ -445,17 +441,7 @@ fn apply_provider_auth(
 
 fn provider_url(provider: &ProviderConfig, path: &str) -> String {
     let base = provider.api_base.trim_end_matches('/');
-    if matches!(
-        provider.kind,
-        ProviderKind::Openrouter
-            | ProviderKind::AzureOpenai
-            | ProviderKind::Bedrock
-            | ProviderKind::Vertex
-            | ProviderKind::Gemini
-            | ProviderKind::Mistral
-            | ProviderKind::Groq
-            | ProviderKind::Xai
-    ) {
+    if provider.kind.strips_gateway_v1_prefix() {
         let suffix = path.strip_prefix("/v1").unwrap_or(path);
         format!("{base}{suffix}")
     } else {
