@@ -11,6 +11,7 @@
     "test-storybook": "test-storybook",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
+    "check:i18n": "bun scripts/check-i18n.ts",
     "test": "bun test src",
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui"
@@ -37,9 +38,11 @@
     "@tanstack/react-query": "^5.101.4",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "i18next": "^26.3.6",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-i18next": "^17.0.11",
     "react-router": "^8.3.0",
     "tailwind-merge": "^3.6.0"
   },

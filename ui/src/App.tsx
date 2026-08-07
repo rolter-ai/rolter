@@ -1,11 +1,14 @@
 import { Bug, KeyRound, LogOut } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 
+import { LocalePicker } from "@/components/LocalePicker";
 import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { NavSidebar, type NavGroup, type NavItem } from "@/components/ui/nav-sidebar";
-import { BUILT, META, NAV, leafKeys, type NavDef } from "@/lib/nav";
+import { BUILT, NAV, leafKeys, useScreenMeta, type NavDef } from "@/lib/nav";
 import { logout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
@@ -143,12 +146,12 @@ const GithubIcon = (
   </svg>
 );
 
-function toNavItem(def: NavDef): NavItem {
+function toNavItem(def: NavDef, t: TFunction): NavItem {
   return {
     key: def.key,
-    label: def.label,
+    label: t(`nav.${def.key}`),
     icon: def.icon,
-    children: def.children?.map(toNavItem),
+    children: def.children?.map((child) => toNavItem(child, t)),
   };
 }
 
@@ -182,7 +185,7 @@ function MenuRow({
 }
 
 function Screen({ screen }: { screen: string }) {
-  const [title, subtitle] = META[screen] ?? [screen, ""];
+  const [title, subtitle] = useScreenMeta(screen);
   return (
     // names the screen for every UX event emitted below it (#805), so shared
     // components like EmptyState are instrumented without a prop per screen
@@ -198,6 +201,7 @@ function Screen({ screen }: { screen: string }) {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const { email, token, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -235,7 +239,8 @@ export default function App() {
 
   const redirect = LEGACY[key];
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
-  const navGroups: NavGroup[] = [{ items: NAV.map(toNavItem) }];
+  const navGroups: NavGroup[] = [{ items: NAV.map((def) => toNavItem(def, t)) }];
+  const role = orgName ? t("shell.roleWithOrg", { org: orgName }) : t("shell.role");
   const initials = (email.trim()[0] ?? "?").toUpperCase();
 
   return (
@@ -251,21 +256,22 @@ export default function App() {
         footerLinks={[
           {
             key: "github",
-            title: "GitHub repository",
+            title: t("shell.githubRepo"),
             icon: GithubIcon,
             href: "https://github.com/rolter-ai/rolter",
           },
           {
             key: "bug",
-            title: "Report a bug",
+            title: t("shell.reportBug"),
             icon: <Bug />,
             href: "https://github.com/rolter-ai/rolter/issues/new",
           },
         ]}
+        footerExtra={(collapsed) => <LocalePicker collapsed={collapsed} />}
         version={`v${__APP_VERSION__}`}
         user={{
           name: email,
-          role: orgName ? `Admin · ${orgName}` : "Admin",
+          role,
           initials,
           onClick: handleSignOut,
         }}
@@ -277,14 +283,12 @@ export default function App() {
               </span>
               <div className="min-w-0">
                 <p className="truncate text-xs font-medium text-foreground">{email}</p>
-                <p className="truncate text-[0.6875rem] text-muted-foreground">
-                  {orgName ? `Admin · ${orgName}` : "Admin"}
-                </p>
+                <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
               </div>
             </div>
             <div className="border-t border-[color:var(--border-subtle)] py-1.5">
               <p className="px-3 pb-1 text-[0.625rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
-                Scope
+                {t("shell.scope")}
               </p>
               <ScopeSwitcher />
             </div>
@@ -296,7 +300,7 @@ export default function App() {
                   close();
                 }}
               >
-                Account &amp; API keys
+                {t("shell.accountAndKeys")}
               </MenuRow>
               <MenuRow
                 icon={<LogOut />}
@@ -306,7 +310,7 @@ export default function App() {
                   handleSignOut();
                 }}
               >
-                Sign out
+                {t("shell.signOut")}
               </MenuRow>
             </div>
           </div>

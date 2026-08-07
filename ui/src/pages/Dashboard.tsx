@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import { PageBody } from "@/components/screen";
 import {
@@ -22,11 +23,10 @@ import {
   fetchInvocations,
   type InvocationRow,
 } from "@/lib/api";
+import { useFormat } from "@/lib/i18n/format";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
-const money = (n: number) =>
-  "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const WINDOW = { since: new Date(Date.now() - 86_400_000).toISOString(), bucket: "hour" };
 
@@ -45,6 +45,10 @@ function isUnavailable(err: unknown): boolean {
 // donut, requests-by-provider bars, and a recent-requests mini table. all
 // clickhouse-backed; renders a calm not-configured state when analytics is off.
 export default function Dashboard() {
+  const { t } = useTranslation();
+  // formatting follows the dashboard language, not the browser locale
+  const fmt = useFormat();
+  const money = (n: number) => fmt.currency(n);
   const summary = useQuery({
     queryKey: ["analytics", "summary", "24h"],
     queryFn: () => fetchAnalyticsSummary(WINDOW),
@@ -79,8 +83,8 @@ export default function Dashboard() {
       <PageBody>
         <div className="rounded-lg border border-[color:var(--border-default)]">
           <EmptyState uxTarget="dashboard-analytics"
-            title="Analytics not configured"
-            description="Traffic, spend, and latency appear here once requests flow through the gateway. Set clickhouse_url on the control plane to enable logging."
+            title={t("pages.dashboard.notConfiguredTitle")}
+            description={t("pages.dashboard.notConfiguredBody")}
           />
         </div>
       </PageBody>
@@ -98,7 +102,7 @@ export default function Dashboard() {
   const models = byModel.data ?? [];
   const traffic = models.map((m) => ({ label: m.model, value: num(m.requests) }));
   const totalReq = traffic.reduce((a, t) => a + t.value, 0);
-  const fmtK = (v: number) => (v >= 1000 ? (v / 1000).toFixed(1) + "k" : String(v));
+  const fmtK = (v: number) => (v >= 1000 ? fmt.number(v / 1000, { maximumFractionDigits: 1 }) + "k" : fmt.number(v));
 
   const barMax = Math.max(1, ...models.map((m) => num(m.requests)));
   const bars = [...models]
@@ -126,19 +130,20 @@ export default function Dashboard() {
           Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={104} radius={10} />)
         ) : (
           <>
-            <StatCard label="Requests (24h)" value={requests.toLocaleString()} />
-            <StatCard label="Spend (24h)" value={money(num(s?.cost_usd))} />
+            <StatCard label={t("pages.dashboard.statRequests")} value={fmt.number(requests)} />
+            <StatCard label={t("pages.dashboard.statSpend")} value={money(num(s?.cost_usd))} />
             <StatCard
-              label="Avg latency"
-              value={Math.round(num(s?.avg_latency_ms)).toLocaleString()}
-              unit="ms"
+              label={t("pages.dashboard.statAvgLatency")}
+              value={fmt.number(Math.round(num(s?.avg_latency_ms)))}
+              unit={t("pages.dashboard.colMs")}
             />
             <StatCard
-              label="Error rate"
-              value={errorRate.toFixed(2)}
+              label={t("pages.dashboard.statErrorRate")}
+              value={fmt.number(errorRate, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               unit="%"
               trend={errorRate > 1 ? "up" : "flat"}
-              delta={errors > 0 ? `${errors} errors` : undefined}
+              // russian needs four plural forms here where english needs two
+              delta={errors > 0 ? t("pages.dashboard.errors", { count: errors }) : undefined}
             />
           </>
         )}
@@ -148,17 +153,17 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              Last 24h
+              {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">Spend</CardTitle>
-            <CardDescription>Hourly gateway spend, USD</CardDescription>
+            <CardTitle className="text-base">{t("pages.dashboard.spendTitle")}</CardTitle>
+            <CardDescription>{t("pages.dashboard.spendSub")}</CardDescription>
           </CardHeader>
           <CardContent>
             {series.isLoading ? (
               <Skeleton height={220} />
             ) : spendPoints.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">
-                No requests in this window.
+                {t("pages.dashboard.noRequestsWindow")}
               </p>
             ) : (
               <LineChart
@@ -173,22 +178,24 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              Last 24h
+              {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">Traffic share</CardTitle>
-            <CardDescription>Requests by model</CardDescription>
+            <CardTitle className="text-base">{t("pages.dashboard.trafficTitle")}</CardTitle>
+            <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
           </CardHeader>
           <CardContent>
             {byModel.isLoading ? (
               <Skeleton height={180} />
             ) : traffic.length === 0 ? (
-              <p className="py-16 text-center text-sm text-muted-foreground">No traffic yet.</p>
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                {t("pages.dashboard.noTraffic")}
+              </p>
             ) : (
               <Donut
                 segments={traffic}
                 size={150}
                 centerLabel={fmtK(totalReq)}
-                centerSub="requests"
+                centerSub={t("pages.dashboard.requests")}
               />
             )}
           </CardContent>
@@ -199,13 +206,15 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              Last 24h
+              {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">Requests by model</CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.byModelTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 px-0.5 py-1">
             {bars.length === 0 && (
-              <p className="py-10 text-center text-sm text-muted-foreground">No traffic yet.</p>
+              <p className="py-10 text-center text-sm text-muted-foreground">
+                {t("pages.dashboard.noTraffic")}
+              </p>
             )}
             {bars.map((b) => (
               <div key={b.label} className="flex items-center gap-2.5">
@@ -228,31 +237,31 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              Live
+              {t("pages.dashboard.live")}
             </CardDescription>
-            <CardTitle className="text-base">Recent requests</CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.recentTitle")}</CardTitle>
           </CardHeader>
           <CardContent>
             {recent.isLoading ? (
               <Skeleton height={160} />
             ) : recentRows.length === 0 ? (
               <p className="py-10 text-center text-sm text-muted-foreground">
-                Nothing logged yet.
+                {t("pages.dashboard.nothingLogged")}
               </p>
             ) : (
               <Table
                 rowKey="id"
                 columns={[
-                  { key: "t", header: "Time", mono: true, width: "92px" },
-                  { key: "model", header: "Model", mono: true },
+                  { key: "t", header: t("pages.dashboard.colTime"), mono: true, width: "92px" },
+                  { key: "model", header: t("pages.dashboard.colModel"), mono: true },
                   {
                     key: "status",
-                    header: "Status",
+                    header: t("pages.dashboard.colStatus"),
                     render: (v) => <StatusBadge status={v as number} />,
                   },
                   {
                     key: "lat",
-                    header: "ms",
+                    header: t("pages.dashboard.colMs"),
                     align: "right",
                     mono: true,
                   },

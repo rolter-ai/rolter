@@ -75,7 +75,8 @@ When you change the thing on the left, the entries on the right must change with
 | Added a balancing strategy | implement `rolter_balancer::LoadBalancer` in `crates/rolter-balancer/src/`; wire it into `build()` and `build_with_stats()` (`lib.rs:108`, `:115`); add the `BalancingStrategy` variant in `crates/rolter-core/src/config.rs`; add a migration allowing the new value (see `0019_cache_aware_strategies.sql`); surface it in `ui/src/pages/RoutingRules.tsx`; document it in `docs/architecture/load-balancing.md` |
 | Added a provider / adapter kind | add the `ProviderKind` variant in `crates/rolter-core/src/config.rs`; add dialect handling in `crates/rolter-proxy`; add a migration widening the stored enum (see `0027_provider_adapter_kinds.sql`); update `ui/src/components/ProviderSheet.tsx` and `ui/src/pages/Providers.tsx`; add a row to `rolter.example.toml`; document it under `user-docs/configuration/` |
 | Added a control-plane endpoint module | create `crates/rolter-control/src/<module>.rs` exposing `router()`; `.merge()` it into the router in `lib.rs` (~line 374); add the capability to `CAPABILITIES` in `rbac_matrix.rs` (the `the_matrix_lists_every_capability_exactly_once` test enforces coverage); call it from `ui/src/lib/api.ts`; document it in `user-docs/api/` |
-| Added a dashboard screen | add `ui/src/pages/<Screen>.tsx`; register the route in `ui/src/App.tsx`; add the nav entry in `ui/src/lib/nav.tsx`; add a `.stories.tsx` and run `run-story-tests`; cover empty/loading/error states; add a mock in `ui/src/lib/mock.ts` |
+| Added a dashboard screen | add `ui/src/pages/<Screen>.tsx`; register the route in `ui/src/App.tsx`; add the nav entry in `ui/src/lib/nav.tsx`; add `nav.<key>` and `screens.<key>.title`/`.subtitle` to **every** catalog in `ui/src/lib/i18n/locales/`; add a `.stories.tsx` and run `run-story-tests`; cover empty/loading/error states; add a mock in `ui/src/lib/mock.ts` |
+| Added or re-worded dashboard copy | put the string in `ui/src/lib/i18n/locales/en.json` and translate it in every sibling catalog in the same PR; `bun run check:i18n` is a merge gate. Never hardcode user-facing English in a component — see `docs/development/i18n.md` |
 | Added a table the data plane reads | a `NNNN_*.sql` migration **plus** a `bump_config_version()` trigger migration; extend the store traits in `crates/rolter-store/src/` and the postgres impl; extend the snapshot payload in `crates/rolter-control` and its consumer in `crates/rolter-gateway`; update `docs/architecture/data-model.md` |
 | Added a storage backend | implement the `rolter_store` traits behind a new cargo feature; keep it compiling under `cargo hack check --each-feature`; add the feature to the clippy/test matrix in `.github/workflows/quality.yml` |
 | Changed the gateway HTTP surface | update `crates/rolter-gateway/tests/integration.rs`; keep the OpenAI and Anthropic dialects in sync; update `docs/api/openai-and-anthropic.md` and `user-docs/api/` |
@@ -121,6 +122,14 @@ worktree can hold port 6006 at a time.
 This applies to every state a screen has, empty/loading/error included. Assets
 stay vendored locally — the dashboard must work air-gapped, so no runtime CDN
 fonts or images.
+
+Every user-facing string goes through the i18n catalogs (`en` is the base, `ru`
+ships beside it) — `t("pages.<screen>.<key>")`, never a literal in JSX — and
+numbers, money and dates go through `useFormat()` rather than a bare
+`toLocaleString()`, which silently follows the browser locale instead of the
+dashboard's. `bun run check:i18n` fails on a key that is missing, orphaned,
+empty, short a plural form, or that dropped an interpolation placeholder. See
+`docs/development/i18n.md` for key naming and how to add a locale.
 
 ## Commit & PR conventions
 

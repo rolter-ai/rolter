@@ -1,12 +1,14 @@
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { META } from "@/lib/nav";
+import { useScreenMeta } from "@/lib/nav";
 
 // branded placeholder for nav areas that don't have a real screen yet —
 // mirrors the prototype's stub with the вышивка rule and TODO ribbon
 export default function Stub({ screen }: { screen: string }) {
-  const [title, subtitle] = META[screen] ?? [screen, ""];
+  const { t } = useTranslation();
+  const [title, subtitle] = useScreenMeta(screen);
   return (
     <div className="flex min-h-full items-center justify-center p-10">
       <div className="flex max-w-[460px] flex-col items-center gap-[18px] text-center">
@@ -19,14 +21,14 @@ export default function Stub({ screen }: { screen: string }) {
         </div>
         <div className="vyshivka-rule h-2 w-[140px] opacity-85" />
         <span className="inline-flex items-center rounded-full bg-[color:var(--status-warning)]/10 px-3 py-[5px] font-mono text-xs text-[color:var(--status-warning)]">
-          TODO — we'll come back to this screen
+          {t("stub.todo")}
         </span>
         <div className="mt-0.5 flex gap-2.5">
           <Button
             variant="outline"
             onClick={() => window.open("https://github.com/rolter-ai/rolter", "_blank")}
           >
-            View docs
+            {t("common.viewDocs")}
           </Button>
         </div>
       </div>

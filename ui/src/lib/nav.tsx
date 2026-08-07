@@ -41,180 +41,116 @@ import {
   Waypoints,
 } from "lucide-react";
 import type * as React from "react";
+import { useTranslation } from "react-i18next";
 
 // the control-plane IA, mirrored 1:1 from the design prototype's nav
 // (cp-data.js NAV). key doubles as the route path segment: /<key>.
 export interface NavDef {
+  /* doubles as the route path segment (/<key>) and the catalog key for the
+     sidebar label (`nav.<key>`) and screen header (`screens.<key>.*`) */
   key: string;
-  label: string;
   icon: React.ReactNode;
   children?: NavDef[];
 }
 
 export const NAV: NavDef[] = [
-  { key: "playground", label: "Playground", icon: <Play /> },
+  { key: "playground", icon: <Play /> },
   {
     key: "observability",
-    label: "Observability",
     icon: <Eye />,
     children: [
-      { key: "dashboard", label: "Dashboard", icon: <ChartColumn /> },
-      { key: "logs", label: "LLM Logs", icon: <FileText /> },
-      { key: "mcp-logs", label: "MCP Logs", icon: <Waypoints /> },
-      { key: "connectors", label: "Connectors", icon: <Cable /> },
-      { key: "logs-settings", label: "Logs Settings", icon: <Settings /> },
+      { key: "dashboard", icon: <ChartColumn /> },
+      { key: "logs", icon: <FileText /> },
+      { key: "mcp-logs", icon: <Waypoints /> },
+      { key: "connectors", icon: <Cable /> },
+      { key: "logs-settings", icon: <Settings /> },
     ],
   },
   {
     key: "models",
-    label: "Models",
     icon: <Layers />,
     children: [
-      { key: "model-catalog", label: "Model Catalog", icon: <LayoutGrid /> },
-      { key: "providers", label: "Model Providers", icon: <Boxes /> },
-      { key: "provider-groups", label: "Provider Groups", icon: <Layers /> },
-      { key: "budgets", label: "Budgets & Limits", icon: <Wallet /> },
-      { key: "routing-rules", label: "Routing Rules", icon: <Split /> },
-      { key: "complexity-router", label: "Complexity Router", icon: <ArrowLeftRight /> },
-      { key: "circuit-breaker", label: "Circuit Breaker", icon: <CircuitBoard /> },
-      { key: "pricing-overrides", label: "Pricing Overrides", icon: <SlidersHorizontal /> },
-      { key: "model-settings", label: "Model Settings", icon: <Settings /> },
+      { key: "model-catalog", icon: <LayoutGrid /> },
+      { key: "providers", icon: <Boxes /> },
+      { key: "provider-groups", icon: <Layers /> },
+      { key: "budgets", icon: <Wallet /> },
+      { key: "routing-rules", icon: <Split /> },
+      { key: "complexity-router", icon: <ArrowLeftRight /> },
+      { key: "circuit-breaker", icon: <CircuitBoard /> },
+      { key: "pricing-overrides", icon: <SlidersHorizontal /> },
+      { key: "model-settings", icon: <Settings /> },
     ],
   },
   {
     key: "mcp",
-    label: "MCP Gateway",
     icon: <Waypoints />,
     children: [
-      { key: "mcp-catalog", label: "MCP Catalog", icon: <Grid2x2 /> },
-      { key: "mcp-library", label: "MCP Library", icon: <Boxes /> },
-      { key: "tool-groups", label: "Tool Groups", icon: <Puzzle /> },
-      { key: "auth-sessions", label: "Auth Sessions", icon: <KeyRound /> },
-      { key: "oauth-grants", label: "OAuth Grants", icon: <Shield /> },
-      { key: "mcp-settings", label: "MCP Settings", icon: <Settings /> },
+      { key: "mcp-catalog", icon: <Grid2x2 /> },
+      { key: "mcp-library", icon: <Boxes /> },
+      { key: "tool-groups", icon: <Puzzle /> },
+      { key: "auth-sessions", icon: <KeyRound /> },
+      { key: "oauth-grants", icon: <Shield /> },
+      { key: "mcp-settings", icon: <Settings /> },
     ],
   },
-  { key: "plugins", label: "Plugins", icon: <Puzzle /> },
+  { key: "plugins", icon: <Puzzle /> },
   {
     key: "alerting",
-    label: "Alerting",
     icon: <BellRing />,
     children: [
-      { key: "alerting-channels", label: "Channels", icon: <Megaphone /> },
-      { key: "alerting-rules", label: "Rules", icon: <Gavel /> },
-      { key: "alerting-history", label: "History", icon: <History /> },
+      { key: "alerting-channels", icon: <Megaphone /> },
+      { key: "alerting-rules", icon: <Gavel /> },
+      { key: "alerting-history", icon: <History /> },
     ],
   },
   {
     key: "governance",
-    label: "Governance",
     icon: <Landmark />,
     children: [
-      { key: "virtual-keys", label: "Virtual Keys", icon: <KeyRound /> },
-      { key: "gov-users", label: "Users", icon: <Users /> },
-      { key: "gov-teams", label: "Teams", icon: <Building /> },
-      { key: "business-units", label: "Business Units", icon: <Building2 /> },
-      { key: "customers", label: "Customers", icon: <WalletCards /> },
-      { key: "user-provisioning", label: "User Provisioning", icon: <BookUser /> },
-      { key: "rbac", label: "Roles & Permissions", icon: <UserCheck /> },
-      { key: "access-profiles", label: "Access Profiles", icon: <Shield /> },
-      { key: "audit-logs", label: "Audit Logs", icon: <ScrollText /> },
+      { key: "virtual-keys", icon: <KeyRound /> },
+      { key: "gov-users", icon: <Users /> },
+      { key: "gov-teams", icon: <Building /> },
+      { key: "business-units", icon: <Building2 /> },
+      { key: "customers", icon: <WalletCards /> },
+      { key: "user-provisioning", icon: <BookUser /> },
+      { key: "rbac", icon: <UserCheck /> },
+      { key: "access-profiles", icon: <Shield /> },
+      { key: "audit-logs", icon: <ScrollText /> },
     ],
   },
   {
     key: "guardrails",
-    label: "Guardrails",
     icon: <ShieldCheck />,
     children: [
-      { key: "guardrail-rules", label: "Rules", icon: <Gavel /> },
-      { key: "guardrail-providers", label: "Providers", icon: <Boxes /> },
+      { key: "guardrail-rules", icon: <Gavel /> },
+      { key: "guardrail-providers", icon: <Boxes /> },
     ],
   },
-  { key: "cluster", label: "Cluster Config", icon: <Network /> },
+  { key: "cluster", icon: <Network /> },
   {
     key: "adaptive-routing",
-    label: "Adaptive Routing",
     icon: <Shuffle />,
     children: [
-      { key: "adaptive-dashboard", label: "Dashboard", icon: <ChartColumn /> },
-      { key: "adaptive-settings", label: "Settings", icon: <Settings /> },
+      { key: "adaptive-dashboard", icon: <ChartColumn /> },
+      { key: "adaptive-settings", icon: <Settings /> },
     ],
   },
-  { key: "prompt-repo", label: "Prompt Repository", icon: <FolderGit2 /> },
-  { key: "skills-repo", label: "Skills Repository", icon: <BookOpen /> },
+  { key: "prompt-repo", icon: <FolderGit2 /> },
+  { key: "skills-repo", icon: <BookOpen /> },
   {
     key: "settings",
-    label: "Settings",
     icon: <Settings />,
     children: [
-      { key: "client-settings", label: "Client Settings", icon: <SlidersHorizontal /> },
-      { key: "compatibility", label: "Compatibility", icon: <Plug /> },
-      { key: "caching", label: "Caching", icon: <Database /> },
-      { key: "security", label: "Security", icon: <Shield /> },
-      { key: "api-keys", label: "API Keys", icon: <KeyRound /> },
-      { key: "performance", label: "Performance Tuning", icon: <TrendingUp /> },
-      { key: "feature-flags", label: "Feature Flags", icon: <Flag /> },
+      { key: "client-settings", icon: <SlidersHorizontal /> },
+      { key: "compatibility", icon: <Plug /> },
+      { key: "caching", icon: <Database /> },
+      { key: "security", icon: <Shield /> },
+      { key: "api-keys", icon: <KeyRound /> },
+      { key: "performance", icon: <TrendingUp /> },
+      { key: "feature-flags", icon: <Flag /> },
     ],
   },
 ];
-
-// human title + one-line description per screen (header + stubs)
-export const META: Record<string, [string, string]> = {
-  playground: ["Playground", "Prompt any routed model — chat, embeddings, image, audio, and realtime."],
-  dashboard: ["Dashboard", "Live overview of traffic, spend, latency, and provider health."],
-  logs: ["LLM Logs", "Every request through the gateway, streaming in real time."],
-  "mcp-logs": ["MCP Logs", "Tool-call execution logs across your MCP servers."],
-  connectors: ["Connectors", "Ship logs to Datadog, Langfuse, S3, and other sinks."],
-  "logs-settings": ["Logs Settings", "Retention, sampling, and PII redaction for request logs."],
-  "model-catalog": ["Model Catalog", "Every model reachable through Rolter, grouped by provider."],
-  providers: ["Model Providers", "Configure upstream providers, keys, weights, and network settings."],
-  "provider-groups": ["Provider Groups", "Unify a fleet of providers behind one group-slug/model address and balancing strategy."],
-  budgets: ["Budgets & Limits", "Per-model spend caps, rate limits, and token budgets."],
-  "routing-rules": ["Routing Rules", "Weighted, cache-aware, and fallback routing across providers."],
-  "complexity-router": ["Complexity Router", "Route by prompt complexity tier to balance cost and quality."],
-  "circuit-breaker": ["Circuit Breaker", "Automatic failover when a primary endpoint degrades."],
-  "pricing-overrides": ["Pricing Overrides", "Scoped per-model pricing overrides for accurate cost tracking."],
-  "model-settings": ["Model Settings", "Deployment-wide defaults for sampling parameters and the model."],
-  mcp: ["MCP Gateway", "Expose and govern Model Context Protocol tool servers."],
-  "mcp-catalog": ["MCP Catalog", "Registered MCP tool servers and their exposed tools."],
-  "mcp-library": ["MCP Library", "Install curated MCP servers in one click."],
-  "tool-groups": ["Tool Groups", "Bundle MCP tools into governed groups."],
-  "auth-sessions": ["Auth Sessions", "Token metadata for every MCP OAuth session — never the tokens themselves."],
-  "oauth-grants": ["OAuth Grants", "Consent each user granted an MCP server; revoking one revokes its sessions."],
-  "mcp-settings": ["MCP Settings", "Transport, timeouts, and defaults for the MCP gateway."],
-  plugins: ["Plugins", "Custom request/response plugins in the gateway pipeline."],
-  alerting: ["Alerting", "Channels, rules, and delivery history for operational alerts."],
-  "alerting-channels": ["Channels", "Slack, PagerDuty, email, and webhook destinations."],
-  "alerting-rules": ["Rules", "Threshold and anomaly rules that fire alerts."],
-  "alerting-history": ["Alert History", "Every alert Rolter has delivered."],
-  governance: ["Governance", "Virtual keys, users, teams, customers, and roles."],
-  "virtual-keys": ["Virtual Keys", "Scoped keys with budgets, model access, and rate limits."],
-  "gov-users": ["Users", "People with access to this Rolter workspace."],
-  "gov-teams": ["Teams", "Group users and share budgets and access."],
-  "business-units": ["Business Units", "Roll teams up into cost-attributed business units."],
-  customers: ["Customers", "Attribute usage and spend to your own customers."],
-  "user-provisioning": ["User Provisioning", "SCIM-based user sync and provisioning."],
-  rbac: ["Roles & Permissions", "Fine-grained role-based access control."],
-  "access-profiles": ["Access Profiles", "Reusable permission bundles for roles."],
-  "audit-logs": ["Audit Logs", "Immutable record of every configuration change."],
-  guardrails: ["Guardrails", "Input/output guardrail rules and providers."],
-  "guardrail-rules": ["Guardrail Rules", "Content, PII, and safety checks on traffic."],
-  "guardrail-providers": ["Guardrail Providers", "Connect external guardrail engines."],
-  cluster: ["Cluster Config", "Manage the Rolter cluster, nodes, and replication."],
-  "adaptive-routing": ["Adaptive Routing", "Self-tuning routing based on live performance."],
-  "adaptive-dashboard": ["Adaptive Routing", "Metrics for the adaptive router."],
-  "adaptive-settings": ["Adaptive Routing Settings", "Tune the adaptive routing objective."],
-  "prompt-repo": ["Prompt Repository", "Version-controlled prompts with variables and tests."],
-  "skills-repo": ["Skills Repository", "Reusable agent skills shared across your org."],
-  settings: ["Settings", "Client, caching, security, API keys, and feature flags."],
-  "client-settings": ["Client Settings", "Base URL, forwarded and injected headers, request correlation."],
-  compatibility: ["Compatibility", "OpenAI/Anthropic-compatible conversion settings."],
-  caching: ["Caching", "Direct and semantic response caching."],
-  security: ["Security", "Configure security and access-control settings for the gateway."],
-  "api-keys": ["API Keys", "Gateway API keys for programmatic access."],
-  performance: ["Performance Tuning", "Connection pools, timeouts, and concurrency."],
-  "feature-flags": ["Feature Flags", "Toggle experimental gateway features."],
-};
 
 // screens with a real implementation; everything else renders the branded stub
 export const BUILT = new Set([
@@ -271,4 +207,15 @@ export const BUILT = new Set([
 // every navigable leaf key (parents with children are toggles, not screens)
 export function leafKeys(defs: NavDef[] = NAV): string[] {
   return defs.flatMap((d) => (d.children ? leafKeys(d.children) : [d.key]));
+}
+
+// screen header copy lives in the catalog under `screens.<key>` (#489) rather
+// than in a table here, so it translates with everything else. an unknown key
+// degrades to the key itself, which is what the old META lookup did.
+export function useScreenMeta(screen: string): [title: string, subtitle: string] {
+  const { t } = useTranslation();
+  return [
+    t(`screens.${screen}.title`, { defaultValue: screen }),
+    t(`screens.${screen}.subtitle`, { defaultValue: "" }),
+  ];
 }

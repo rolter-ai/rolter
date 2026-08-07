@@ -1,5 +1,6 @@
 import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,7 @@ import { useAuth } from "@/lib/auth";
 
 // login — one of the two sanctioned places the вышивка thread runs
 export default function Login() {
+  const { t } = useTranslation();
   const { signIn } = useAuth();
   const [email, setEmail] = useState("anya@acme.co");
   const [pw, setPw] = useState("correct-horse");
@@ -59,12 +61,8 @@ export default function Login() {
             </span>
           </div>
           <div className="flex flex-col gap-1">
-            <h1 className="text-xl font-semibold">
-              Sign in to the control plane
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Manage models, keys, routing and usage.
-            </p>
+            <h1 className="text-xl font-semibold">{t("auth.title")}</h1>
+            <p className="text-sm text-muted-foreground">{t("auth.subtitle")}</p>
           </div>
           {showPassword && (
           <form
@@ -75,7 +73,7 @@ export default function Login() {
             }}
           >
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">Email</span>
+              <span className="text-muted-foreground">{t("auth.email")}</span>
               <Input
                 type="email"
                 value={email}
@@ -83,7 +81,7 @@ export default function Login() {
               />
             </label>
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">Password</span>
+              <span className="text-muted-foreground">{t("auth.password")}</span>
               <span className="relative block">
                 <Input
                   type={show ? "text" : "password"}
@@ -94,7 +92,7 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShow((s) => !s)}
-                  aria-label={show ? "Hide password" : "Show password"}
+                  aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
                   className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {show ? (
@@ -112,11 +110,11 @@ export default function Login() {
             >
               {pending ? (
                 <>
-                  Signing in... <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("auth.signingIn")} <Loader2 className="h-4 w-4 animate-spin" />
                 </>
               ) : (
                 <>
-                  Sign in <ArrowRight className="h-4 w-4" />
+                  {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
                 </>
               )}
             </Button>
@@ -137,16 +135,16 @@ export default function Login() {
                 href={p.start_url}
                 className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
-                Continue with {p.name}
+                {t("auth.continueWith", { provider: p.name })}
               </a>
             ))}
             {!showPassword && providers.length === 0 && (
               <span className="text-center text-sm text-muted-foreground">
-                No login method is enabled for this deployment.
+                {t("auth.noMethod")}
               </span>
             )}
             <span className="text-center text-xs text-[color:var(--text-subtle)]">
-              Self-hosted · sessions are local to this deployment.
+              {t("auth.selfHosted")}
             </span>
           </div>
         </div>

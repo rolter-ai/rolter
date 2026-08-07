@@ -32,6 +32,7 @@
 - [Testing](development/testing.md)
 - [Contributing](development/contributing.md)
 - [Parallel development with Worktrunk](development/worktrees.md)
+- [Dashboard localization (i18n)](development/i18n.md)
 - [Commit conventions](development/commit-conventions.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 

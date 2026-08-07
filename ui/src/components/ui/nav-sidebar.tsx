@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronsUpDown, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -53,6 +54,10 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
   collapsible?: boolean;
   defaultCollapsed?: boolean;
   footerLinks?: NavFooterLink[];
+  /* rendered in the footer row after the links and before the version — the
+     locale picker sits here, so it stays on screen whatever the active route.
+     receives the rail state so it can drop its label when collapsed. */
+  footerExtra?: (collapsed: boolean) => React.ReactNode;
   version?: string;
 }
 
@@ -79,10 +84,12 @@ export function NavSidebar({
   collapsible,
   defaultCollapsed,
   footerLinks,
+  footerExtra,
   version,
   className,
   ...props
 }: NavSidebarProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = React.useState(defaultCollapsed ?? false);
   const [query, setQuery] = React.useState("");
   // parents stay open once toggled; the one holding the active child opens itself
@@ -182,7 +189,7 @@ export function NavSidebar({
         )}
         {collapsible && !collapsed && (
           <button
-            title="Collapse sidebar"
+            title={t("shell.collapseSidebar")}
             onClick={() => setCollapsed(true)}
             className="ml-auto rounded-md p-1 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -195,8 +202,8 @@ export function NavSidebar({
             stays icon-narrow. */}
         {collapsible && collapsed && (
           <button
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
+            title={t("shell.expandSidebar")}
+            aria-label={t("shell.expandSidebar")}
             onClick={() => setCollapsed(false)}
             className="absolute inset-0 flex items-center justify-center rounded-md bg-[color:var(--surface-app)] text-[color:var(--text-subtle)] opacity-0 transition-opacity duration-200 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -211,14 +218,14 @@ export function NavSidebar({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search…"
-            aria-label="Search navigation"
+            placeholder={t("common.search")}
+            aria-label={t("shell.searchNav")}
             className="w-full min-w-0 bg-transparent text-sm text-foreground outline-none placeholder:text-[color:var(--text-subtle)]"
           />
           {query && (
             <button
               onClick={() => setQuery("")}
-              title="Clear search"
+              title={t("common.clearSearch")}
               className="-my-1 -mr-1 rounded p-1 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <X className="h-3.5 w-3.5" />
@@ -244,7 +251,7 @@ export function NavSidebar({
         })}
       </div>
 
-      {(footerLinks?.length || version) && (
+      {(footerLinks?.length || footerExtra || version) && (
         <div className={cn("flex flex-col gap-1.5", collapsed && "items-center")}>
           <div className={cn("flex items-center gap-1 px-1", collapsed && "flex-col px-0")}>
             {footerLinks?.map((l) =>
@@ -270,6 +277,7 @@ export function NavSidebar({
                 </button>
               ),
             )}
+            {footerExtra?.(collapsed)}
             {version && !collapsed && (
               <span className="ml-auto pr-1 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
                 {version}

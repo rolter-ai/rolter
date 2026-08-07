@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useQueryClient, useIsFetching } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -9,6 +10,7 @@ import { cn } from "@/lib/utils";
 // recurs under the header on every screen. the org/project scope picker lives
 // in the sidebar user menu, not here.
 export function ScreenHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const isGlobalFetching = useIsFetching() > 0;
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
@@ -34,12 +36,12 @@ export function ScreenHeader({ title, subtitle }: { title: string; subtitle: str
         <div className="ml-auto flex items-center gap-2">
           <span className="inline-flex items-center gap-[7px] rounded-full border border-[color:var(--border-subtle)] px-2.5 py-[5px] font-mono text-xs text-muted-foreground">
             <span className="rl-pulse h-[7px] w-[7px] rounded-full bg-[color:var(--status-success)]" />
-            gateway&nbsp;healthy
+            {t("shell.gatewayHealthy")}
           </span>
           <button
             type="button"
-            title={isRefreshing ? "Refreshing…" : "Refresh"}
-            aria-label={isRefreshing ? "Refreshing data" : "Refresh data"}
+            title={isRefreshing ? t("shell.refreshing") : t("shell.refresh")}
+            aria-label={isRefreshing ? t("shell.refreshingData") : t("shell.refreshData")}
             aria-busy={isRefreshing}
             disabled={isRefreshing}
             onClick={() => void refresh()}

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
 import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
@@ -21,6 +22,7 @@ import { useErrorState, useFormTelemetry, useScreenReady } from "@/lib/ux-react"
 const PROVIDERS_QUERY_KEY = ["providers"];
 
 export default function Providers() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const scope = useScope();
 
@@ -67,7 +69,7 @@ export default function Providers() {
     <PageBody>
       <div className="flex items-center gap-3">
         <SearchInput
-          placeholder="Search providers"
+          placeholder={t("pages.providers.search")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -76,32 +78,32 @@ export default function Providers() {
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.orgId}
         >
-          + Add provider
+          {t("pages.providers.add")}
         </Button>
       </div>
 
-      {providers.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {providers.isLoading && (
+        <p className="text-sm text-muted-foreground">{t("pages.providers.loading")}</p>
+      )}
       {providers.error && (
-        <p className="text-sm text-destructive">Failed to load providers.</p>
+        <p className="text-sm text-destructive">{t("pages.providers.loadFailed")}</p>
       )}
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Add/edit/delete is unavailable: {scope.error}. Read-only view still works.
+          {t("pages.providers.scopeBlocked", { error: scope.error })}
         </p>
       )}
       {!scope.isLoading && !scope.error && !scope.orgId && (
-        <p className="text-sm text-muted-foreground">
-          No org configured yet — pick or create one to manage providers.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("pages.providers.noOrg")}</p>
       )}
 
       <ListTable>
         <ListHeader grid={GRID}>
-          <span>Name</span>
-          <span>Type</span>
-          <span>API base</span>
-          <span>Slug</span>
-          <span>Key env</span>
+          <span>{t("pages.providers.colName")}</span>
+          <span>{t("pages.providers.colType")}</span>
+          <span>{t("pages.providers.colApiBase")}</span>
+          <span>{t("pages.providers.colSlug")}</span>
+          <span>{t("pages.providers.colKeyEnv")}</span>
           <span />
         </ListHeader>
         {rows.map((provider) => (
@@ -119,7 +121,7 @@ export default function Providers() {
               </span>
               <CopyButton
                 value={`${provider.slug}/`}
-                label="Copy address prefix"
+                label={t("pages.providers.copyPrefix")}
                 className="h-6 px-1"
               />
             </span>
@@ -133,12 +135,12 @@ export default function Providers() {
                 className="h-[30px]"
                 onClick={() => setSheet({ mode: "edit", provider })}
               >
-                Edit
+                {t("pages.providers.edit")}
               </Button>
               <button
                 type="button"
-                title="Delete provider"
-                aria-label={`Delete provider ${provider.name}`}
+                title={t("pages.providers.deleteTitle")}
+                aria-label={t("pages.providers.deleteOne", { name: provider.name })}
                 onClick={() => setDeleteTarget(provider)}
                 className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
@@ -149,7 +151,7 @@ export default function Providers() {
         ))}
         {!providers.isLoading && rows.length === 0 && (
           <p className="px-4 py-8 text-center text-sm text-muted-foreground">
-            No providers match.
+            {t("pages.providers.noMatch")}
           </p>
         )}
       </ListTable>
@@ -165,10 +167,13 @@ export default function Providers() {
 
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
-          <DialogTitle>Delete provider</DialogTitle>
+          <DialogTitle>{t("pages.providers.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            <span className="font-mono">{deleteTarget?.name}</span> will stop being
-            usable as a route target. This cannot be undone.
+            <Trans
+              i18nKey="pages.providers.deleteHint"
+              values={{ name: deleteTarget?.name ?? "" }}
+              components={[<span key="name" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removeProvider.isError && (
@@ -178,7 +183,7 @@ export default function Providers() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -196,7 +201,7 @@ export default function Providers() {
             }}
           >
             {removeProvider.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>

@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -28,6 +29,7 @@ type Level = "org" | "team" | "project";
 // org → team → project switcher, persisted to localStorage via useScope.
 // mounted in the app shell sidebar so every page shares one selection.
 export function ScopeSwitcher() {
+  const { t } = useTranslation();
   const scope = useScope();
   const queryClient = useQueryClient();
 
@@ -44,16 +46,14 @@ export function ScopeSwitcher() {
 
   if (scope.isLoading) {
     return (
-      <div className="px-3 py-1 text-xs text-muted-foreground">
-        Loading scope…
-      </div>
+      <div className="px-3 py-1 text-xs text-muted-foreground">{t("scope.loading")}</div>
     );
   }
 
   return (
     <div className="space-y-1.5 px-2">
       <ScopeRow
-        label="Org"
+        level="org"
         value={scope.orgId ?? ""}
         options={scope.orgs.map((o) => ({ id: o.id, name: o.name }))}
         onChange={scope.setOrgId}
@@ -70,7 +70,7 @@ export function ScopeSwitcher() {
         }
       />
       <ScopeRow
-        label="Team"
+        level="team"
         value={scope.teamId ?? ""}
         options={scope.teams.map((t) => ({ id: t.id, name: t.name }))}
         onChange={scope.setTeamId}
@@ -88,7 +88,7 @@ export function ScopeSwitcher() {
         disabled={!scope.orgId}
       />
       <ScopeRow
-        label="Project"
+        level="project"
         value={scope.projectId ?? ""}
         options={scope.projects.map((p) => ({ id: p.id, name: p.name }))}
         onChange={scope.setProjectId}
@@ -136,8 +136,39 @@ export function ScopeSwitcher() {
   );
 }
 
+// every label is looked up by an explicit per-level key: interpolating a noun
+// into "no {{level}}" / "Add {{level}}" cannot be declined correctly in
+// russian (and most inflected languages), so the catalog spells each one out
+const ROW_KEYS: Record<Level, { label: string; empty: string; add: string; remove: string }> = {
+  org: { label: "scope.org", empty: "scope.noOrg", add: "scope.addOrg", remove: "scope.deleteOrg" },
+  team: {
+    label: "scope.team",
+    empty: "scope.noTeam",
+    add: "scope.addTeam",
+    remove: "scope.deleteTeam",
+  },
+  project: {
+    label: "scope.project",
+    empty: "scope.noProject",
+    add: "scope.addProject",
+    remove: "scope.deleteProject",
+  },
+};
+
+const CREATE_KEYS: Record<Level, { title: string; hint: string }> = {
+  org: { title: "scope.newOrg", hint: "scope.newOrgHint" },
+  team: { title: "scope.newTeam", hint: "scope.newTeamHint" },
+  project: { title: "scope.newProject", hint: "scope.newProjectHint" },
+};
+
+const DELETE_KEYS: Record<Level, string> = {
+  org: "scope.deleteOrgTitle",
+  team: "scope.deleteTeamTitle",
+  project: "scope.deleteProjectTitle",
+};
+
 function ScopeRow({
-  label,
+  level,
   value,
   options,
   onChange,
@@ -145,7 +176,7 @@ function ScopeRow({
   onDelete,
   disabled,
 }: {
-  label: string;
+  level: Level;
   value: string;
   options: { id: string; name: string }[];
   onChange: (id: string) => void;
@@ -153,16 +184,18 @@ function ScopeRow({
   onDelete?: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
+  const keys = ROW_KEYS[level];
   return (
     <div className="flex items-center gap-1">
       <Select
-        aria-label={label}
+        aria-label={t(keys.label)}
         value={value}
         disabled={disabled || options.length === 0}
         onChange={(e) => onChange(e.target.value)}
         className="h-7 text-xs"
       >
-        {options.length === 0 && <option value="">no {label.toLowerCase()}</option>}
+        {options.length === 0 && <option value="">{t(keys.empty)}</option>}
         {options.map((o) => (
           <option key={o.id} value={o.id}>
             {o.name}
@@ -172,7 +205,7 @@ function ScopeRow({
       {onAdd && (
         <button
           type="button"
-          aria-label={`Add ${label.toLowerCase()}`}
+          aria-label={t(keys.add)}
           onClick={onAdd}
           className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
@@ -182,7 +215,7 @@ function ScopeRow({
       {onDelete && (
         <button
           type="button"
-          aria-label={`Delete ${label.toLowerCase()}`}
+          aria-label={t(keys.remove)}
           onClick={onDelete}
           className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
@@ -214,6 +247,7 @@ function CreateScopeDialog({
   onOpenChange: (open: boolean) => void;
   onCreated: (level: Level, id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const open = !!level;
 
@@ -232,21 +266,16 @@ function CreateScopeDialog({
     },
   });
 
-  const title =
-    level === "org" ? "New org" : level === "team" ? "New team" : "New project";
+  const title = level ? t(CREATE_KEYS[level].title) : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogHeader>
         <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>
-          {level === "org"
-            ? "Creates an org with a URL-safe slug derived from the name."
-            : `Creates a ${level} under the currently selected ${level === "team" ? "org" : "team"}.`}
-        </DialogDescription>
+        <DialogDescription>{level ? t(CREATE_KEYS[level].hint) : ""}</DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
-        <Field label="Name">
+        <Field label={t("scope.name")}>
           <Input
             autoFocus
             value={name}
@@ -260,10 +289,10 @@ function CreateScopeDialog({
       </div>
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
-          Create
+          {t("common.create")}
         </Button>
       </DialogFooter>
     </Dialog>
@@ -279,6 +308,7 @@ function DeleteScopeDialog({
   onOpenChange: (open: boolean) => void;
   onDeleted: () => void;
 }) {
+  const { t } = useTranslation();
   const remove = useMutation({
     mutationFn: async () => {
       if (!target) return;
@@ -292,11 +322,17 @@ function DeleteScopeDialog({
   return (
     <Dialog open={!!target} onOpenChange={onOpenChange}>
       <DialogHeader>
-        <DialogTitle>Delete {target?.level}</DialogTitle>
+        <DialogTitle>{target ? t(DELETE_KEYS[target.level]) : ""}</DialogTitle>
         <DialogDescription>
-          This removes <span className="font-mono">{target?.name}</span>
-          {target?.level !== "project" ? " and everything under it" : ""}. This
-          cannot be undone.
+          {/* the name is wrapped in <0> inside the catalog so each locale can
+              place it wherever its grammar wants it */}
+          <Trans
+            i18nKey={
+              target && target.level !== "project" ? "scope.deleteCascadeHint" : "scope.deleteHint"
+            }
+            values={{ name: target?.name ?? "" }}
+            components={[<span key="name" className="font-mono" />]}
+          />
         </DialogDescription>
       </DialogHeader>
       {remove.isError && (
@@ -304,14 +340,14 @@ function DeleteScopeDialog({
       )}
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button
           variant="destructive"
           disabled={remove.isPending}
           onClick={() => remove.mutate()}
         >
-          Delete
+          {t("common.delete")}
         </Button>
       </DialogFooter>
     </Dialog>

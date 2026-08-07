@@ -265,6 +265,10 @@ jobs:
           fi
       - name: lint (tsc --noEmit)
         run: bun run lint
+      # every locale must match the en base catalog: a missing key falls back to
+      # english mid-sentence, an orphan is copy nothing renders (#489)
+      - name: i18n catalog parity
+        run: bun run check:i18n
       - name: unit tests (bun test)
         run: bun run test
       - name: build

@@ -1,0 +1,399 @@
+{
+  "common": {
+    "cancel": "Cancel",
+    "create": "Create",
+    "delete": "Delete",
+    "viewDocs": "View docs",
+    "search": "Search…",
+    "clearSearch": "Clear search"
+  },
+  "locale": {
+    "label": "Language",
+    "change": "Change language",
+    "en": "English",
+    "ru": "Русский"
+  },
+  "shell": {
+    "searchNav": "Search navigation",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
+    "githubRepo": "GitHub repository",
+    "reportBug": "Report a bug",
+    "role": "Admin",
+    "roleWithOrg": "Admin · {{org}}",
+    "scope": "Scope",
+    "accountAndKeys": "Account & API keys",
+    "signOut": "Sign out",
+    "gatewayHealthy": "gateway healthy",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing…",
+    "refreshData": "Refresh data",
+    "refreshingData": "Refreshing data"
+  },
+  "stub": {
+    "todo": "TODO — we'll come back to this screen"
+  },
+  "auth": {
+    "title": "Sign in to the control plane",
+    "subtitle": "Manage models, keys, routing and usage.",
+    "email": "Email",
+    "password": "Password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "continueWith": "Continue with {{provider}}",
+    "noMethod": "No login method is enabled for this deployment.",
+    "selfHosted": "Self-hosted · sessions are local to this deployment."
+  },
+  "scope": {
+    "loading": "Loading scope…",
+    "org": "Org",
+    "team": "Team",
+    "project": "Project",
+    "noOrg": "no org",
+    "noTeam": "no team",
+    "noProject": "no project",
+    "addOrg": "Add org",
+    "addTeam": "Add team",
+    "addProject": "Add project",
+    "deleteOrg": "Delete org",
+    "deleteTeam": "Delete team",
+    "deleteProject": "Delete project",
+    "newOrg": "New org",
+    "newTeam": "New team",
+    "newProject": "New project",
+    "name": "Name",
+    "newOrgHint": "Creates an org with a URL-safe slug derived from the name.",
+    "newTeamHint": "Creates a team under the currently selected org.",
+    "newProjectHint": "Creates a project under the currently selected team.",
+    "deleteOrgTitle": "Delete org",
+    "deleteTeamTitle": "Delete team",
+    "deleteProjectTitle": "Delete project",
+    "deleteCascadeHint": "This removes <0>{{name}}</0> and everything under it. This cannot be undone.",
+    "deleteHint": "This removes <0>{{name}}</0>. This cannot be undone."
+  },
+  "nav": {
+    "playground": "Playground",
+    "observability": "Observability",
+    "dashboard": "Dashboard",
+    "logs": "LLM Logs",
+    "mcp-logs": "MCP Logs",
+    "connectors": "Connectors",
+    "logs-settings": "Logs Settings",
+    "models": "Models",
+    "model-catalog": "Model Catalog",
+    "providers": "Model Providers",
+    "provider-groups": "Provider Groups",
+    "budgets": "Budgets & Limits",
+    "routing-rules": "Routing Rules",
+    "complexity-router": "Complexity Router",
+    "circuit-breaker": "Circuit Breaker",
+    "pricing-overrides": "Pricing Overrides",
+    "model-settings": "Model Settings",
+    "mcp": "MCP Gateway",
+    "mcp-catalog": "MCP Catalog",
+    "mcp-library": "MCP Library",
+    "tool-groups": "Tool Groups",
+    "auth-sessions": "Auth Sessions",
+    "oauth-grants": "OAuth Grants",
+    "mcp-settings": "MCP Settings",
+    "plugins": "Plugins",
+    "alerting": "Alerting",
+    "alerting-channels": "Channels",
+    "alerting-rules": "Rules",
+    "alerting-history": "History",
+    "governance": "Governance",
+    "virtual-keys": "Virtual Keys",
+    "gov-users": "Users",
+    "gov-teams": "Teams",
+    "business-units": "Business Units",
+    "customers": "Customers",
+    "user-provisioning": "User Provisioning",
+    "rbac": "Roles & Permissions",
+    "access-profiles": "Access Profiles",
+    "audit-logs": "Audit Logs",
+    "guardrails": "Guardrails",
+    "guardrail-rules": "Rules",
+    "guardrail-providers": "Providers",
+    "cluster": "Cluster Config",
+    "adaptive-routing": "Adaptive Routing",
+    "adaptive-dashboard": "Dashboard",
+    "adaptive-settings": "Settings",
+    "prompt-repo": "Prompt Repository",
+    "skills-repo": "Skills Repository",
+    "settings": "Settings",
+    "client-settings": "Client Settings",
+    "compatibility": "Compatibility",
+    "caching": "Caching",
+    "security": "Security",
+    "api-keys": "API Keys",
+    "performance": "Performance Tuning",
+    "feature-flags": "Feature Flags"
+  },
+  "screens": {
+    "playground": {
+      "title": "Playground",
+      "subtitle": "Prompt any routed model — chat, embeddings, image, audio, and realtime."
+    },
+    "dashboard": {
+      "title": "Dashboard",
+      "subtitle": "Live overview of traffic, spend, latency, and provider health."
+    },
+    "logs": {
+      "title": "LLM Logs",
+      "subtitle": "Every request through the gateway, streaming in real time."
+    },
+    "mcp-logs": {
+      "title": "MCP Logs",
+      "subtitle": "Tool-call execution logs across your MCP servers."
+    },
+    "connectors": {
+      "title": "Connectors",
+      "subtitle": "Ship logs to Datadog, Langfuse, S3, and other sinks."
+    },
+    "logs-settings": {
+      "title": "Logs Settings",
+      "subtitle": "Retention, sampling, and PII redaction for request logs."
+    },
+    "model-catalog": {
+      "title": "Model Catalog",
+      "subtitle": "Every model reachable through Rolter, grouped by provider."
+    },
+    "providers": {
+      "title": "Model Providers",
+      "subtitle": "Configure upstream providers, keys, weights, and network settings."
+    },
+    "provider-groups": {
+      "title": "Provider Groups",
+      "subtitle": "Unify a fleet of providers behind one group-slug/model address and balancing strategy."
+    },
+    "budgets": {
+      "title": "Budgets & Limits",
+      "subtitle": "Per-model spend caps, rate limits, and token budgets."
+    },
+    "routing-rules": {
+      "title": "Routing Rules",
+      "subtitle": "Weighted, cache-aware, and fallback routing across providers."
+    },
+    "complexity-router": {
+      "title": "Complexity Router",
+      "subtitle": "Route by prompt complexity tier to balance cost and quality."
+    },
+    "circuit-breaker": {
+      "title": "Circuit Breaker",
+      "subtitle": "Automatic failover when a primary endpoint degrades."
+    },
+    "pricing-overrides": {
+      "title": "Pricing Overrides",
+      "subtitle": "Scoped per-model pricing overrides for accurate cost tracking."
+    },
+    "model-settings": {
+      "title": "Model Settings",
+      "subtitle": "Deployment-wide defaults for sampling parameters and the model."
+    },
+    "mcp": {
+      "title": "MCP Gateway",
+      "subtitle": "Expose and govern Model Context Protocol tool servers."
+    },
+    "mcp-catalog": {
+      "title": "MCP Catalog",
+      "subtitle": "Registered MCP tool servers and their exposed tools."
+    },
+    "mcp-library": {
+      "title": "MCP Library",
+      "subtitle": "Install curated MCP servers in one click."
+    },
+    "tool-groups": {
+      "title": "Tool Groups",
+      "subtitle": "Bundle MCP tools into governed groups."
+    },
+    "auth-sessions": {
+      "title": "Auth Sessions",
+      "subtitle": "Token metadata for every MCP OAuth session — never the tokens themselves."
+    },
+    "oauth-grants": {
+      "title": "OAuth Grants",
+      "subtitle": "Consent each user granted an MCP server; revoking one revokes its sessions."
+    },
+    "mcp-settings": {
+      "title": "MCP Settings",
+      "subtitle": "Transport, timeouts, and defaults for the MCP gateway."
+    },
+    "plugins": {
+      "title": "Plugins",
+      "subtitle": "Custom request/response plugins in the gateway pipeline."
+    },
+    "alerting": {
+      "title": "Alerting",
+      "subtitle": "Channels, rules, and delivery history for operational alerts."
+    },
+    "alerting-channels": {
+      "title": "Channels",
+      "subtitle": "Slack, PagerDuty, email, and webhook destinations."
+    },
+    "alerting-rules": {
+      "title": "Rules",
+      "subtitle": "Threshold and anomaly rules that fire alerts."
+    },
+    "alerting-history": {
+      "title": "Alert History",
+      "subtitle": "Every alert Rolter has delivered."
+    },
+    "governance": {
+      "title": "Governance",
+      "subtitle": "Virtual keys, users, teams, customers, and roles."
+    },
+    "virtual-keys": {
+      "title": "Virtual Keys",
+      "subtitle": "Scoped keys with budgets, model access, and rate limits."
+    },
+    "gov-users": {
+      "title": "Users",
+      "subtitle": "People with access to this Rolter workspace."
+    },
+    "gov-teams": {
+      "title": "Teams",
+      "subtitle": "Group users and share budgets and access."
+    },
+    "business-units": {
+      "title": "Business Units",
+      "subtitle": "Roll teams up into cost-attributed business units."
+    },
+    "customers": {
+      "title": "Customers",
+      "subtitle": "Attribute usage and spend to your own customers."
+    },
+    "user-provisioning": {
+      "title": "User Provisioning",
+      "subtitle": "SCIM-based user sync and provisioning."
+    },
+    "rbac": {
+      "title": "Roles & Permissions",
+      "subtitle": "Fine-grained role-based access control."
+    },
+    "access-profiles": {
+      "title": "Access Profiles",
+      "subtitle": "Reusable permission bundles for roles."
+    },
+    "audit-logs": {
+      "title": "Audit Logs",
+      "subtitle": "Immutable record of every configuration change."
+    },
+    "guardrails": {
+      "title": "Guardrails",
+      "subtitle": "Input/output guardrail rules and providers."
+    },
+    "guardrail-rules": {
+      "title": "Guardrail Rules",
+      "subtitle": "Content, PII, and safety checks on traffic."
+    },
+    "guardrail-providers": {
+      "title": "Guardrail Providers",
+      "subtitle": "Connect external guardrail engines."
+    },
+    "cluster": {
+      "title": "Cluster Config",
+      "subtitle": "Manage the Rolter cluster, nodes, and replication."
+    },
+    "adaptive-routing": {
+      "title": "Adaptive Routing",
+      "subtitle": "Self-tuning routing based on live performance."
+    },
+    "adaptive-dashboard": {
+      "title": "Adaptive Routing",
+      "subtitle": "Metrics for the adaptive router."
+    },
+    "adaptive-settings": {
+      "title": "Adaptive Routing Settings",
+      "subtitle": "Tune the adaptive routing objective."
+    },
+    "prompt-repo": {
+      "title": "Prompt Repository",
+      "subtitle": "Version-controlled prompts with variables and tests."
+    },
+    "skills-repo": {
+      "title": "Skills Repository",
+      "subtitle": "Reusable agent skills shared across your org."
+    },
+    "settings": {
+      "title": "Settings",
+      "subtitle": "Client, caching, security, API keys, and feature flags."
+    },
+    "client-settings": {
+      "title": "Client Settings",
+      "subtitle": "Base URL, forwarded and injected headers, request correlation."
+    },
+    "compatibility": {
+      "title": "Compatibility",
+      "subtitle": "OpenAI/Anthropic-compatible conversion settings."
+    },
+    "caching": {
+      "title": "Caching",
+      "subtitle": "Direct and semantic response caching."
+    },
+    "security": {
+      "title": "Security",
+      "subtitle": "Configure security and access-control settings for the gateway."
+    },
+    "api-keys": {
+      "title": "API Keys",
+      "subtitle": "Gateway API keys for programmatic access."
+    },
+    "performance": {
+      "title": "Performance Tuning",
+      "subtitle": "Connection pools, timeouts, and concurrency."
+    },
+    "feature-flags": {
+      "title": "Feature Flags",
+      "subtitle": "Toggle experimental gateway features."
+    }
+  },
+  "pages": {
+    "dashboard": {
+      "notConfiguredTitle": "Analytics not configured",
+      "notConfiguredBody": "Traffic, spend, and latency appear here once requests flow through the gateway. Set clickhouse_url on the control plane to enable logging.",
+      "statRequests": "Requests (24h)",
+      "statSpend": "Spend (24h)",
+      "statAvgLatency": "Avg latency",
+      "statErrorRate": "Error rate",
+      "errors_one": "{{count}} error",
+      "errors_other": "{{count}} errors",
+      "last24h": "Last 24h",
+      "live": "Live",
+      "spendTitle": "Spend",
+      "spendSub": "Hourly gateway spend, USD",
+      "noRequestsWindow": "No requests in this window.",
+      "trafficTitle": "Traffic share",
+      "trafficSub": "Requests by model",
+      "noTraffic": "No traffic yet.",
+      "requests": "requests",
+      "byModelTitle": "Requests by model",
+      "recentTitle": "Recent requests",
+      "nothingLogged": "Nothing logged yet.",
+      "colTime": "Time",
+      "colModel": "Model",
+      "colStatus": "Status",
+      "colMs": "ms"
+    },
+    "providers": {
+      "search": "Search providers",
+      "add": "+ Add provider",
+      "loading": "Loading…",
+      "loadFailed": "Failed to load providers.",
+      "scopeBlocked": "Add/edit/delete is unavailable: {{error}}. Read-only view still works.",
+      "noOrg": "No org configured yet — pick or create one to manage providers.",
+      "colName": "Name",
+      "colType": "Type",
+      "colApiBase": "API base",
+      "colSlug": "Slug",
+      "colKeyEnv": "Key env",
+      "copyPrefix": "Copy address prefix",
+      "edit": "Edit",
+      "deleteTitle": "Delete provider",
+      "deleteOne": "Delete provider {{name}}",
+      "noMatch": "No providers match.",
+      "deleteHint": "<0>{{name}}</0> will stop being usable as a route target. This cannot be undone."
+    }
+  }
+}
