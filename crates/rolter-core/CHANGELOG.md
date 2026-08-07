@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-core-v0.0.10...rolter-core-v0.0.11) - 2026-08-07
+
+### Bug Fixes
+- *(core)* drop the inert guardrail default_on flag ([#759](https://github.com/rolter-ai/rolter/pull/759)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* re-check the egress policy at connect time ([#662](https://github.com/rolter-ai/rolter/pull/662)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* make model price currency real and extensible ([#661](https://github.com/rolter-ai/rolter/pull/661)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* deny link-local egress so a provider api_base can't reach metadata ([#655](https://github.com/rolter-ai/rolter/pull/655)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* omit unservable rows from the snapshot instead of 500ing ([#654](https://github.com/rolter-ai/rolter/pull/654)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* fail closed when the virtual-key set is empty ([#653](https://github.com/rolter-ai/rolter/pull/653)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(core)* add ROLTER_TELEMETRY_ENABLED as an explicit telemetry off [#812] ([#827](https://github.com/rolter-ai/rolter/pull/827)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* conform to OTel GenAI semantic conventions [#808] ([#829](https://github.com/rolter-ai/rolter/pull/829)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* export logs, process and resource telemetry over OTLP [#809] ([#828](https://github.com/rolter-ai/rolter/pull/828)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway,core)* export labelled counters and histograms over OTLP [#805] ([#822](https://github.com/rolter-ai/rolter/pull/822)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui,control)* dashboard telemetry — browser tracing, runtime config, UX event ingest and emitters [#805] ([#811](https://github.com/rolter-ai/rolter/pull/811)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway,infra)* fix trace parenting, span the pipeline, add an observability overlay [#805] ([#806](https://github.com/rolter-ai/rolter/pull/806)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui,control)* build client and model settings screens [#564] ([#804](https://github.com/rolter-ai/rolter/pull/804)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce access-profile model and route policy [#791] ([#803](https://github.com/rolter-ai/rolter/pull/803)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce MCP OAuth authorization ([#773](https://github.com/rolter-ai/rolter/pull/773)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add adaptive routing strategy ([#701](https://github.com/rolter-ai/rolter/pull/701)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage cross-dialect compatibility policy ([#696](https://github.com/rolter-ai/rolter/pull/696)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* cap spend by business unit and customer ([#695](https://github.com/rolter-ai/rolter/pull/695)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* attribute virtual-key spend to business units ([#688](https://github.com/rolter-ai/rolter/pull/688)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* register Gemini Interactions provider kind by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist global runtime policy settings by [@ormeilu](https://github.com/ormeilu)
+- *(store)* merge published prompt templates into snapshots by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce post_call guardrails on non-streaming responses ([#667](https://github.com/rolter-ai/rolter/pull/667)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* per-route guardrail enable/disable overrides ([#664](https://github.com/rolter-ai/rolter/pull/664)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* expand provider adapter kind coverage [ROL-132] ([#645](https://github.com/rolter-ai/rolter/pull/645)) by [@ormeilu](https://github.com/ormeilu)
+
+### Miscellaneous
+- *(control)* align MCP transport allowlists across control plane and schema ([#794](https://github.com/rolter-ai/rolter/pull/794)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* audit telemetry helpers against OTel don't-wrap guidance ([#823](https://github.com/rolter-ai/rolter/pull/823)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(core)* add unit tests for normalize_code ([#717](https://github.com/rolter-ai/rolter/pull/717)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.10](https://github.com/rolter-ai/rolter/compare/rolter-core-v0.0.9...rolter-core-v0.0.10) - 2026-07-21
 
 ### Features

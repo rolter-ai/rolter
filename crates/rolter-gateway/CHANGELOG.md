@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.11](https://github.com/rolter-ai/rolter/compare/v0.0.10...v0.0.11) - 2026-08-07
+
+### Bug Fixes
+- *(gateway)* surface queue_full on a shed request instead of a 502 [#639] ([#771](https://github.com/rolter-ai/rolter/pull/771)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* drop the inert guardrail default_on flag ([#759](https://github.com/rolter-ai/rolter/pull/759)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* re-check the egress policy at connect time ([#662](https://github.com/rolter-ai/rolter/pull/662)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* make model price currency real and extensible ([#661](https://github.com/rolter-ai/rolter/pull/661)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* split the snapshot channel from the operator API ([#660](https://github.com/rolter-ai/rolter/pull/660)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* fail closed when the virtual-key set is empty ([#653](https://github.com/rolter-ai/rolter/pull/653)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* conform to OTel GenAI semantic conventions [#808] ([#829](https://github.com/rolter-ai/rolter/pull/829)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* export logs, process and resource telemetry over OTLP [#809] ([#828](https://github.com/rolter-ai/rolter/pull/828)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* stamp tenant identity on exported spans ([#839](https://github.com/rolter-ai/rolter/pull/839)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway,core)* export labelled counters and histograms over OTLP [#805] ([#822](https://github.com/rolter-ai/rolter/pull/822)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway,infra)* fix trace parenting, span the pipeline, add an observability overlay [#805] ([#806](https://github.com/rolter-ai/rolter/pull/806)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui,control)* build client and model settings screens [#564] ([#804](https://github.com/rolter-ai/rolter/pull/804)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce access-profile model and route policy [#791] ([#803](https://github.com/rolter-ai/rolter/pull/803)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce MCP OAuth authorization ([#773](https://github.com/rolter-ai/rolter/pull/773)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* expose adaptive routing telemetry to the control plane ([#765](https://github.com/rolter-ai/rolter/pull/765)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* export adaptive routing decision telemetry ([#705](https://github.com/rolter-ai/rolter/pull/705)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add adaptive routing strategy ([#701](https://github.com/rolter-ai/rolter/pull/701)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* drain nodes out of service safely ([#700](https://github.com/rolter-ai/rolter/pull/700)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add cluster node inventory ([#699](https://github.com/rolter-ai/rolter/pull/699)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage cross-dialect compatibility policy ([#696](https://github.com/rolter-ai/rolter/pull/696)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* cap spend by business unit and customer ([#695](https://github.com/rolter-ai/rolter/pull/695)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* log business unit and customer attribution ([#689](https://github.com/rolter-ai/rolter/pull/689)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* attribute virtual-key spend to business units ([#688](https://github.com/rolter-ai/rolter/pull/688)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* register Gemini Interactions provider kind by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist global runtime policy settings by [@ormeilu](https://github.com/ormeilu)
+- *(store)* merge published prompt templates into snapshots by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce post_call guardrails on non-streaming responses ([#667](https://github.com/rolter-ai/rolter/pull/667)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* per-route guardrail enable/disable overrides ([#664](https://github.com/rolter-ai/rolter/pull/664)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* expand provider adapter kind coverage [ROL-132] ([#645](https://github.com/rolter-ai/rolter/pull/645)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(gateway)* eliminate intermediate allocations in inject_anthropic [ROL-101] ([#787](https://github.com/rolter-ai/rolter/pull/787)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* Pre-allocate vectors in realtime and telemetry modules [ROL-PERF] ([#746](https://github.com/rolter-ai/rolter/pull/746)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* batch redis rate limit commands [ROL-PERF] ([#727](https://github.com/rolter-ai/rolter/pull/727)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* batch budget redis reads with mget ([#728](https://github.com/rolter-ai/rolter/pull/728)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* [performance improvement] [ROL-PERF] ([#730](https://github.com/rolter-ai/rolter/pull/730)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* [performance improvement] [ROL-PERF] ([#726](https://github.com/rolter-ai/rolter/pull/726)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* reduce semantic cache key allocations by [@google-labs-jules[bot]](https://github.com/google-labs-jules[bot])
+- *(gateway)* pre-allocate routing vectors in proxy handlers ([#647](https://github.com/rolter-ai/rolter/pull/647)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(gateway)* add edge case tests for multipart text_field ([#722](https://github.com/rolter-ai/rolter/pull/722)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* add missing test for outbound_trace_headers [ROL-61] ([#718](https://github.com/rolter-ai/rolter/pull/718)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.10](https://github.com/rolter-ai/rolter/compare/v0.0.9...v0.0.10) - 2026-07-21
 
 ### Bug Fixes

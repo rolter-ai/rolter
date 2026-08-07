@@ -6,6 +6,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.10...rolter-control-v0.0.11) - 2026-08-07
+
+### Bug Fixes
+- *(control)* enforce security_settings origins with a CORS layer [#813] ([#826](https://github.com/rolter-ai/rolter/pull/826)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* apply all five alerting code quality findings [#842] ([#842](https://github.com/rolter-ai/rolter/pull/842)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* guard the model and pricing catalog reads ([#792](https://github.com/rolter-ai/rolter/pull/792)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* surface queue_full on a shed request instead of a 502 [#639] ([#771](https://github.com/rolter-ai/rolter/pull/771)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* fix ClickHouse SQL parameter mismatch in MCP logs [ROL-SEC] ([#756](https://github.com/rolter-ai/rolter/pull/756)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* reconcile clickhouse log retention at startup ([#762](https://github.com/rolter-ai/rolter/pull/762)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* prevent timing attack in login handler ([#720](https://github.com/rolter-ai/rolter/pull/720)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* enforce slug validation during organization creation ([#721](https://github.com/rolter-ai/rolter/pull/721)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* make model price currency real and extensible ([#661](https://github.com/rolter-ai/rolter/pull/661)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* split the snapshot channel from the operator API ([#660](https://github.com/rolter-ai/rolter/pull/660)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* reject control characters in CRUD bodies with a 400 ([#658](https://github.com/rolter-ai/rolter/pull/658)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* deny link-local egress so a provider api_base can't reach metadata ([#655](https://github.com/rolter-ai/rolter/pull/655)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* omit unservable rows from the snapshot instead of 500ing ([#654](https://github.com/rolter-ai/rolter/pull/654)) by [@ormeilu](https://github.com/ormeilu)
+
+### CI/CD
+- lint rolter-control under the postgres feature ([#763](https://github.com/rolter-ai/rolter/pull/763)) by [@ormeilu](https://github.com/ormeilu)
+
+### Dependencies
+- *(deps)* bump p256 from 0.13.2 to 0.14.0 ([#800](https://github.com/rolter-ai/rolter/pull/800)) by [@dependabot[bot]](https://github.com/dependabot[bot])
+
+### Features
+- *(core)* add ROLTER_TELEMETRY_ENABLED as an explicit telemetry off [#812] ([#827](https://github.com/rolter-ai/rolter/pull/827)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* back the observability connectors screen with a real API [#511] ([#831](https://github.com/rolter-ai/rolter/pull/831)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* export logs, process and resource telemetry over OTLP [#809] ([#828](https://github.com/rolter-ai/rolter/pull/828)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui,control)* dashboard telemetry — browser tracing, runtime config, UX event ingest and emitters [#805] ([#811](https://github.com/rolter-ai/rolter/pull/811)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui,control)* build client and model settings screens [#564] ([#804](https://github.com/rolter-ai/rolter/pull/804)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce access-profile model and route policy [#791] ([#803](https://github.com/rolter-ai/rolter/pull/803)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add SCIM Groups provisioning and group role mapping [#540] ([#788](https://github.com/rolter-ai/rolter/pull/788)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* complete the MCP OAuth authorization-code, refresh and exchange flow [#707] ([#789](https://github.com/rolter-ai/rolter/pull/789)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add configurable RBAC custom roles and access profiles ([#790](https://github.com/rolter-ai/rolter/pull/790)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* complete the org-owned MCP registry and management screens [#561] ([#782](https://github.com/rolter-ai/rolter/pull/782)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* build guardrail management screens [#562] ([#778](https://github.com/rolter-ai/rolter/pull/778)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* build plugin management screen [#567] ([#779](https://github.com/rolter-ai/rolter/pull/779)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce MCP OAuth authorization ([#773](https://github.com/rolter-ai/rolter/pull/773)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* expose adaptive routing telemetry to the control plane ([#765](https://github.com/rolter-ai/rolter/pull/765)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* onboard accounts with one-time invitation links ([#713](https://github.com/rolter-ai/rolter/pull/713)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add optional oidc single sign-on ([#711](https://github.com/rolter-ai/rolter/pull/711)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add scim 2.0 user provisioning ([#708](https://github.com/rolter-ai/rolter/pull/708)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist and revoke mcp oauth grants and sessions ([#706](https://github.com/rolter-ai/rolter/pull/706)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* serve the rbac capability matrix from the server ([#703](https://github.com/rolter-ai/rolter/pull/703)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist and govern the adaptive routing policy ([#702](https://github.com/rolter-ai/rolter/pull/702)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* add adaptive routing strategy ([#701](https://github.com/rolter-ai/rolter/pull/701)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* drain nodes out of service safely ([#700](https://github.com/rolter-ai/rolter/pull/700)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add cluster node inventory ([#699](https://github.com/rolter-ai/rolter/pull/699)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage request-log retention ([#698](https://github.com/rolter-ai/rolter/pull/698)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* report unavailable feature flags ([#697](https://github.com/rolter-ai/rolter/pull/697)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* manage cross-dialect compatibility policy ([#696](https://github.com/rolter-ai/rolter/pull/696)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* cap spend by business unit and customer ([#695](https://github.com/rolter-ai/rolter/pull/695)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* log business unit and customer attribution ([#689](https://github.com/rolter-ai/rolter/pull/689)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* attribute virtual-key spend to business units ([#688](https://github.com/rolter-ai/rolter/pull/688)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* register Gemini Interactions provider kind by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist global runtime policy settings by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add skills repository CRUD APIs by [@ormeilu](https://github.com/ormeilu)
+- *(control)* seed prompt template bootstrap data by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add prompt template CRUD and publish APIs by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add business unit and customer CRUD foundation by [@ormeilu](https://github.com/ormeilu)
+- *(core)* expand provider adapter kind coverage [ROL-132] ([#645](https://github.com/rolter-ai/rolter/pull/645)) by [@ormeilu](https://github.com/ormeilu)
+
+### Miscellaneous
+- *(control)* align MCP transport allowlists across control plane and schema ([#794](https://github.com/rolter-ai/rolter/pull/794)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(control)* fetch alert rules in a single query ([#729](https://github.com/rolter-ai/rolter/pull/729)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(control)* derive authorize() requirements from the rbac capability table ([#769](https://github.com/rolter-ai/rolter/pull/769)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(control)* exhaustive crate-level RBAC authorization matrix ([#638](https://github.com/rolter-ai/rolter/pull/638)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.10](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.9...rolter-control-v0.0.10) - 2026-07-21
 
 ### Features
