@@ -33,3 +33,4 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 ## 2026-08-04 - Avoiding intermediate string buffers and joining
 **Learning:** During JSON-to-JSON request translation (like in `openai_to_interactions`), pushing concatenated string output into a `Vec<String>` and calling `.join("\\n")` later incurs unnecessary string allocations and an intermediate collection.
 **Action:** Accumulate string output directly into a single `String::new()` via `.push_str()` inside the translation loop, managing separators manually.
+## 2026-08-07 - Single-pass iterators for string generation\n**Learning:** String chains like `.collect::<String>().split().collect::<Vec<_>>().join()` cause multiple severe allocation penalties for tight loops or frequent operations.\n**Action:** Iterate lazily using `String::with_capacity()` and a state machine to combine these operations into a single allocation pass.
