@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-v0.0.10...rolter-v0.0.11) - 2026-08-07
+
+### Bug Fixes
+- *(core)* drop the inert guardrail default_on flag ([#759](https://github.com/rolter-ai/rolter/pull/759)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* make model price currency real and extensible ([#661](https://github.com/rolter-ai/rolter/pull/661)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* split the snapshot channel from the operator API ([#660](https://github.com/rolter-ai/rolter/pull/660)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- *(deployment)* document the egress destination policy ([#760](https://github.com/rolter-ai/rolter/pull/760)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(ui,control)* dashboard telemetry — browser tracing, runtime config, UX event ingest and emitters [#805] ([#811](https://github.com/rolter-ai/rolter/pull/811)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* support gemini interactions api [#599] ([#761](https://github.com/rolter-ai/rolter/pull/761)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce post_call guardrails on non-streaming responses ([#667](https://github.com/rolter-ai/rolter/pull/667)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* per-route guardrail enable/disable overrides ([#664](https://github.com/rolter-ai/rolter/pull/664)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.10](https://github.com/rolter-ai/rolter/compare/rolter-v0.0.9...rolter-v0.0.10) - 2026-07-21
 
 ### Features
