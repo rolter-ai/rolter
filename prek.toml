@@ -13,19 +13,23 @@ repo = "builtin"
 [[repos.hooks]]
 id = "trailing-whitespace"
 args = ["--markdown-linebreak-ext=md"]
-exclude = "^crates/rolter-store/migrations/"
+exclude = "^(crates/rolter-store/migrations/|docs/mermaid\\.min\\.js$)"
 
 [[repos.hooks]]
 id = "end-of-file-fixer"
-exclude = "^crates/rolter-store/migrations/"
+exclude = "^(crates/rolter-store/migrations/|docs/mermaid\\.min\\.js$)"
 
 [[repos.hooks]]
 id = "mixed-line-ending"
 args = ["--fix=no"]
+exclude = "^docs/mermaid\\.min\\.js$"
 
+# the vendored mermaid runtime (docs/mermaid.min.js) is a 2.5 MB upstream build
+# artifact; the book has to render air-gapped, so it is committed on purpose
 [[repos.hooks]]
 id = "check-added-large-files"
 args = ["--maxkb=1024"]
+exclude = "^docs/mermaid\\.min\\.js$"
 
 [[repos.hooks]]
 id = "check-case-conflict"
@@ -138,6 +142,7 @@ name = "typos"
 entry = "typos --config .github/config/typos.toml"
 language = "system"
 types = ["text"]
+exclude = "^docs/mermaid\\.min\\.js$"
 
 [[repos.hooks]]
 id = "migrations-immutable"

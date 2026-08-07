@@ -36,9 +36,9 @@ flowchart LR
 ```mermaid
 flowchart LR
     C[Responses client] --> G[rolter gateway]
-    G -->|OpenAI| R[/v1/responses]
-    G -->|Chat-compatible| CC[/v1/chat/completions]
-    G -->|Anthropic| AM[/v1/messages]
+    G -->|OpenAI| R["/v1/responses"]
+    G -->|Chat-compatible| CC["/v1/chat/completions"]
+    G -->|Anthropic| AM["/v1/messages"]
     R --> G
     CC --> G
     AM --> G

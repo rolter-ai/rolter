@@ -113,6 +113,16 @@ bench-sglang:
 e2e:
     cd integration/e2e && uv run pytest
 
+# build the contributor mdbook to docs/book/. needs both binaries
+# (`cargo install mdbook mdbook-mermaid --locked`) — without the preprocessor
+# the build succeeds but every ```mermaid diagram ships as a code block.
+docs:
+    mdbook build docs
+
+# live-reloading preview of the contributor mdbook
+docs-serve:
+    mdbook serve docs --port 3001 --open
+
 # supply-chain audit (advisories, bans, licenses, sources)
 deny:
     cargo deny check --config .config/deny.toml

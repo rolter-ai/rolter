@@ -76,7 +76,7 @@ provider and using `model` as the upstream model.
 
 ```mermaid
 flowchart LR
-    C["client: model = 'vllm-spb/qwen3'"] --> P{"contains '/' and\nleft = known provider slug?"}
+    C["client: model = 'vllm-spb/qwen3'"] --> P{"contains '/' and<br/>left = known provider slug?"}
     P -- no --> RN[resolve as route name today]
     P -- yes --> PR["pin provider vllm-spb"]
     PR --> UM["upstream model = 'qwen3'"]

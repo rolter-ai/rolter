@@ -12,7 +12,18 @@ language = "en"
 git-repository-url = "https://github.com/ormeilu/rolter"
 edit-url-template = "https://github.com/ormeilu/rolter/edit/master/docs/{path}"
 default-theme = "rust"
+# mermaid runtime + theme bootstrap, vendored under docs/ rather than pulled
+# from a cdn: the book has to build and render fully air-gapped. `mdbook-mermaid
+# install docs` regenerates both, but mermaid-init.js carries a local fix for
+# mdbook 0.5 theme ids - re-apply it after any refresh (see the file header).
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
 level = 1
+
+# turns ```mermaid fences into <pre class="mermaid"> for the runtime above.
+# without it mdbook emits them as inert code blocks, so the docs job installs
+# mdbook-mermaid alongside mdbook.
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

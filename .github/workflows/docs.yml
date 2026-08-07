@@ -9,18 +9,54 @@ on:
     paths:
       - docs/**
       - .github/workflows/docs.yml
+  # build (but don't publish) on docs prs, so a broken book or a diagram that
+  # silently degrades to a code block is caught before it reaches master
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/docs.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# allow one concurrent deployment; don't cancel an in-progress publish
+# allow one concurrent deployment; don't cancel an in-progress publish. pr
+# builds are per-ref so a new push supersedes its own in-flight run
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('docs-{0}', github.ref) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-deploy:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # mdbook-mermaid is required, not optional: without the preprocessor the
+      # build still succeeds and quietly ships every diagram as a code block.
+      - name: install mdbook
+        uses: taiki-e/install-action@1beb33eee6d086258184383af9a538940be190ed # v2.85.6
+        with:
+          tool: mdbook,mdbook-mermaid
+      - name: build
+        run: mdbook build docs
+      - name: verify diagrams rendered
+        run: |
+          fences=$(grep -rl '^```mermaid' docs --include='*.md' | wc -l)
+          blocks=$(grep -rl 'class="mermaid"' docs/book --include='*.html' | wc -l)
+          echo "source files with mermaid fences: $fences; built pages with mermaid blocks: $blocks"
+          if [ "$blocks" -eq 0 ] && [ "$fences" -gt 0 ]; then
+            echo "::error::mdbook-mermaid did not run - diagrams would ship as code blocks"
+            exit 1
+          fi
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/book
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,18 +66,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: install mdbook
-        uses: taiki-e/install-action@1beb33eee6d086258184383af9a538940be190ed # v2.85.6
-        with:
-          tool: mdbook
-      - name: build
-        run: mdbook build docs
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: docs/book
       - id: deploy
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

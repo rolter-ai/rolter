@@ -48,6 +48,29 @@ just build | just test | just fmt | just lint
 just gateway | just control | just ui-dev | just up
 ```
 
+## Build these docs
+
+This book is mdBook. Diagrams are ```mermaid fences rendered by the
+`mdbook-mermaid` preprocessor, so both tools have to be on `PATH` — with
+`mdbook` alone the build still succeeds and every diagram silently ships as a
+plain code block.
+
+```bash
+cargo install mdbook mdbook-mermaid --locked
+just docs         # build to docs/book/ (gitignored)
+just docs-serve   # live-reloading preview on http://localhost:3001
+```
+
+The mermaid runtime is vendored at `docs/mermaid.min.js` and
+`docs/mermaid-init.js` so the book renders air-gapped. `mdbook-mermaid install
+docs` regenerates both, but `mermaid-init.js` carries a local fix — upstream
+still binds theme buttons by their pre-0.5 ids (`ayu`, `navy`, …), which now
+throws and leaves diagrams on the light palette after a theme switch — so
+re-apply it after any refresh. Write labels in
+mermaid's own dialect rather than GitHub's — quote any label containing `/`
+(`R["/v1/responses"]`, since `[/…]` is parallelogram syntax) and break lines
+with `<br/>`, never `\n`.
+
 ## Before committing
 
 ```bash
