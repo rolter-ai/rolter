@@ -386,7 +386,7 @@ function TemplateIndex({
               aria-current={selectedId === template.id ? "page" : undefined}
               onClick={() => onSelect(template.id)}
               className={cn(
-                "group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
+                "group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 selectedId === template.id
                   ? "bg-[color:var(--surface-selected)] text-foreground"
                   : "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-hover)] hover:text-foreground",
@@ -626,7 +626,7 @@ export function VersionRail({ className, template, versions, selectedVersion, lo
         {loading ? <Skeleton width="100%" height={180} radius={8} /> : versions.length === 0 ? <p className="px-2 py-5 text-center text-xs text-muted-foreground">No saved versions</p> : versions.map((version) => {
           const published = template.published_version === version.version;
           return <div key={version.version} className={cn("rounded-lg border p-2.5", selectedVersion === version.version ? "border-[color:var(--red-folk)] bg-[color:var(--surface-selected)]" : "border-transparent hover:bg-[color:var(--surface-hover)]")}>
-            <button type="button" className="w-full text-left" aria-pressed={selectedVersion === version.version} onClick={() => onSelect(version.version)}>
+            <button type="button" className="w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md" aria-pressed={selectedVersion === version.version} onClick={() => onSelect(version.version)}>
               <div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold tabular-nums">v{version.version}</span><Badge tone={published ? "success" : "neutral"}>{versionLabel(template, version.version)}</Badge></div>
               <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground"><Clock3 className="h-3 w-3" />{formatDate(version.created_at)}</p>
               <p className="mt-1 text-[0.6875rem] text-[color:var(--text-subtle)]">{version.variables.length} variables · {version.decorators.length} decorators</p>
