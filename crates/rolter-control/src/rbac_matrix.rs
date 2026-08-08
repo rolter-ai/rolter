@@ -919,13 +919,13 @@ async fn get_effective(
 
 /// Distinct `(profile, role)` pairs the caller holds at `chain`.
 fn held_roles(grants: &[EffectiveGrant], chain: ScopeChain) -> Vec<HeldRoleView> {
-    let mut seen: Vec<(Uuid, Uuid)> = Vec::new();
-    let mut views = Vec::new();
+    let mut seen: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
+    let mut views = Vec::with_capacity(grants.len());
     for grant in grants.iter().filter(|g| grant_applies(g, chain)) {
         if seen.contains(&(grant.profile_id, grant.role_id)) {
             continue;
         }
-        seen.push((grant.profile_id, grant.role_id));
+        seen.insert((grant.profile_id, grant.role_id));
         views.push(HeldRoleView {
             profile_id: grant.profile_id,
             role_id: grant.role_id,
