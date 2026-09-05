@@ -215,6 +215,8 @@ export default function AuditLog() {
           <button
             type="button"
             className="rounded-sm text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-expanded={expanded === row.id}
+            aria-label={`${expanded === row.id ? 'Hide' : 'Show'} details for action ${row.action} on target ${row.target_type || 'unknown'}`}
             onClick={() => setExpanded(expanded === row.id ? null : row.id)}
           >
             {expanded === row.id ? "hide" : "show"}
@@ -300,6 +302,7 @@ export default function AuditLog() {
                 <button
                   key={r.label}
                   type="button"
+                  aria-pressed={i === rangeIdx}
                   onClick={() => setRangeIdx(i)}
                   className={`rounded-md border px-2.5 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                     i === rangeIdx
@@ -357,6 +360,7 @@ export default function AuditLog() {
               <div className="flex gap-1">
                 <button
                   type="button"
+                  aria-label="Previous page"
                   disabled={cursors.length === 0}
                   onClick={() => setCursors((c) => c.slice(0, -1))}
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
@@ -365,6 +369,7 @@ export default function AuditLog() {
                 </button>
                 <button
                   type="button"
+                  aria-label="Next page"
                   disabled={!page.data?.has_next || !page.data.next_cursor}
                   onClick={() =>
                     page.data?.next_cursor &&
