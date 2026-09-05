@@ -1100,7 +1100,11 @@
       "actorFilterAria": "Фильтр по автору действия",
       "anyActor": "Любой автор",
       "actorPlaceholder": "ID пользователя (полный UUID)…",
-      "detail": "Детали записи"
+      "detail": "Детали записи",
+      "hideDetailsAria": "Скрыть подробности действия {{action}} над {{target}}",
+      "showDetailsAria": "Показать подробности действия {{action}} над {{target}}",
+      "prevPageAria": "Предыдущая страница",
+      "nextPageAria": "Следующая страница"
     },
     "complexityRouter": {
       "emptyTitle": "Нет маршрутов, которым можно задать политику",
