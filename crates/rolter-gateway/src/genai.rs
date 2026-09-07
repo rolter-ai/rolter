@@ -185,14 +185,17 @@ pub(crate) fn encoding_formats(request: &serde_json::Value) -> Option<String> {
     if let Some(one) = value.as_str() {
         return (!one.is_empty()).then(|| one.to_string());
     }
-    let joined = value
+    let mut iter = value
         .as_array()?
         .iter()
         .filter_map(|v| v.as_str())
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join(",");
-    (!joined.is_empty()).then_some(joined)
+        .filter(|v| !v.is_empty());
+    let mut joined = iter.next()?.to_string();
+    for s in iter {
+        joined.push(',');
+        joined.push_str(s);
+    }
+    Some(joined)
 }
 
 /// The `error.type` value for a failed upstream attempt.
