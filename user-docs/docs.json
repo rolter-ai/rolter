@@ -56,6 +56,7 @@
             "group": "Configuration",
             "pages": [
               "configuration/config-file",
+              "configuration/config-export",
               "configuration/environment-variables",
               "configuration/providers",
               "configuration/hot-reload",

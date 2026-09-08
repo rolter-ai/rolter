@@ -1425,6 +1425,91 @@ async fn admin_token_guards_crud_and_snapshot() {
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
 
+/// `GET /api/v1/config/export` hands back the deployment as an importable
+/// `rolter.toml` (#1082). The route is superadmin-only, the body is a TOML
+/// document rather than JSON, and — the part worth an end-to-end test — the
+/// sealed credential the same store decrypts into `/internal/snapshot` does not
+/// appear in it.
+#[tokio::test]
+async fn config_export_serves_importable_toml_without_credentials() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let denied = client
+        .get(format!("{base}/api/v1/config/export"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401, "the export must not be anonymous");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("sekrit")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "openai",
+            "kind": "openai",
+            "api_base": "https://api.openai.com",
+            "api_key": "sk-live-export-secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/toml"),
+        "unexpected content type: {content_type}"
+    );
+    assert!(response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .contains("rolter.toml"));
+
+    let body = response.text().await.unwrap();
+    assert!(
+        !body.contains("sk-live-export-secret"),
+        "the export leaked a sealed credential:\n{body}"
+    );
+    let parsed = rolter_core::GatewayConfig::from_toml_str(&body)
+        .expect("the export must be a config the importer can read");
+    assert_eq!(parsed.providers.len(), 1);
+    assert_eq!(parsed.providers[0].name, "openai");
+    assert!(parsed.providers[0].api_key.is_none());
+}
+
 /// `GET /api/v1/version` is the dashboard's one source for the update hint
 /// (#902): any signed-in caller reads it, an anonymous one does not, and with
 /// the check disabled it reports the running version and nothing else — no

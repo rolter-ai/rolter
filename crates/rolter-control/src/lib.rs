@@ -29,6 +29,10 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+// the renderer is pure and compiles without a store so its determinism and
+// secret-stripping are covered by the default-feature test run too; only the
+// route it backs needs postgres
+pub mod config_export;
 #[cfg(feature = "postgres")]
 mod connectors;
 mod cors;
@@ -891,6 +895,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(runtime_policy::router())
             .merge(compatibility_policy::router())
             .merge(client_settings::router())
+            .merge(config_export::router())
             .merge(model_defaults::router())
             .merge(adaptive_policy::router())
             .merge(adaptive_telemetry::router())

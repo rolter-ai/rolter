@@ -1,0 +1,98 @@
+---
+title: "Export the Live Configuration as an Importable rolter.toml"
+sidebarTitle: "Config Export"
+description: "Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs."
+---
+
+Rolter's seeding tool treats a TOML file as **desired state**: `rolter-seed --import rolter.toml` converges the database onto the file, so re-importing an edited copy applies the edits instead of duplicating rows.
+
+The config export is the other direction. It writes what the database holds back out in exactly the shape the importer accepts, so a deployment built entirely through the dashboard still has a file you can commit to git, promote to another environment, or diff after a change.
+
+```bash
+rolter config export --output rolter.toml
+```
+
+```bash
+# and back into another deployment
+rolter-seed --database-url "$STAGING_DATABASE_URL" --import rolter.toml
+```
+
+Exporting is read-only. It never writes to the database it reads.
+
+---
+
+### What round-trips
+
+The export deliberately carries only the sections the importer consumes, so nothing in the file is dropped on the way back in.
+
+| Section | Notes |
+| --- | --- |
+| `[[providers]]` | name, slug, kind, `api_base`, `api_key_env`, egress proxies |
+| `[[provider_groups]]` and `[[provider_groups.members]]` | group strategy and its weighted members |
+| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]` | strategy, admin parameter defaults, the override policy, and the weighted upstream targets |
+| `[[model_prices]]` | input, output and cached-input rates with their currency |
+| `[prompt_templates]` | published templates with their variables, decorators and route bindings |
+| `[logging.payload_capture]` | the capture policy, its size cap and its redaction and model filters |
+
+### What is deliberately left out
+
+An export that carried rows the importer ignores would promise more than a re-import delivers, so those rows are not written at all. The emitted file states this in a header comment, so the omission is visible in the artifact rather than only in this page.
+
+- **Virtual keys.** Only a one-way digest of a key is stored; there is nothing to export that would work on the receiving side.
+- **Budgets and rate limits.** Both are keyed by the database id of the org, team, project or key they cap, and those ids do not survive a move to another deployment.
+- **MCP servers and OAuth sessions, guardrails, SSO and SCIM configuration.**
+- **Users, teams, projects and memberships.** `rolter-seed` creates the org, team and project it imports into.
+- **Operational tables** — request logs, sessions, audit records and usage. These are history, not configuration.
+
+### Credentials never leave
+
+A provider key is exported only as the **name** of the environment variable it is read from:
+
+```toml
+[[providers]]
+name = "openai-primary"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+```
+
+A key that was sealed through the dashboard has no environment variable to name, so nothing is written where the credential would be, and a comment says so:
+
+```toml
+[[providers]]
+name = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://vllm-1:8000"
+# api_key: not exported; any credential for this provider stays sealed in the control-plane store
+```
+
+On the receiving deployment, set that provider's key through the dashboard or point it at an `api_key_env` before sending traffic. `ROLTER_KEK` is not required to run an export.
+
+<Warning>
+  `rolter-seed --import` never overwrites a credential sealed through the dashboard, so re-importing an export into the deployment it came from cannot clear a key that is already there.
+</Warning>
+
+### Stable output
+
+Providers and groups are ordered by slug, routes and prices by model name, and parameter maps by key. The header carries no timestamp. Two exports of an unchanged deployment are byte-identical, so a diff between them shows only real changes — which is what makes the file usable as a review artifact in a pull request.
+
+Identity is always a slug or a public model name, never a database id, which is what lets the same file bootstrap a different deployment.
+
+---
+
+### From the API
+
+The control plane serves the same document over HTTP:
+
+```http
+GET /api/v1/config/export
+```
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  http://localhost:4001/api/v1/config/export -o rolter.toml
+```
+
+The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and superadmin-only: one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
+
+The CLI does not call this endpoint — it reads the store directly, the same way `rolter-seed` writes to it directly, so an export works during a bootstrap or an incident when the control plane is not serving. Both paths render through the same code, so they cannot drift.
