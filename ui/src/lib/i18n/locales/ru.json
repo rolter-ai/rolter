@@ -42,7 +42,8 @@
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "Подробнее",
     "loading": "Загрузка…",
-    "provider": "Провайдер"
+    "provider": "Провайдер",
+    "rowActions": "Действия со строкой"
   },
   "errors": {
     "load": {

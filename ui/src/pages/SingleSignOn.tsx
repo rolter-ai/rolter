@@ -267,9 +267,9 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
     <div className="border-t border-[color:var(--border-subtle)] px-4 py-3.5">
       <div className="flex items-center gap-1.5">
         <Users aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
-        <h4 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+        <h3 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
           {t("pages.sso.mappings.title")}
-        </h4>
+        </h3>
       </div>
 
       {mappings.isLoading && <Skeleton className="mt-2.5 h-8 rounded-md" />}

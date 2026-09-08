@@ -267,12 +267,47 @@ line was left behind.)
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
-whole document once the play function has finished, and fails the story on any
-**serious** or **critical** violation. The rule set is `wcag2a` + `wcag2aa` +
-`best-practice`, with exactly two rules disabled — `document-title` and
-`html-has-lang`, which describe Storybook's own iframe rather than the
-dashboard. The whole document rather than `#storybook-root`, because dialogs,
-sheets and toasts portal to `<body>` and those are the ones worth checking.
+whole document once the play function has finished, and fails the story on
+**any violation at any impact** — minor and moderate included. The rule set is
+`wcag2a` + `wcag2aa` + `best-practice`, and every disabled rule is named in
+`DISABLED_RULES` with the reason beside it. The whole document rather than
+`#storybook-root`, because dialogs, sheets and toasts portal to `<body>` and
+those are the ones worth checking.
+
+##### The moderate/minor band, measured
+
+The gate shipped as serious+critical only (#1181); #1244 measured what the
+other half contained before turning it on. Over all 695 stories:
+
+| rule | impact | nodes | stories | decision |
+|---|---|---:|---:|---|
+| `region` | moderate | 3177 | 488 | excluded — page-level |
+| `landmark-one-main` | moderate | 593 | 593 | excluded — page-level |
+| `page-has-heading-one` | moderate | 570 | 570 | excluded — page-level |
+| `empty-table-header` | minor | 13 | 13 | fixed |
+| `heading-order` | moderate | 11 | 11 | fixed |
+| `landmark-unique` | moderate | 9 | 9 | fixed |
+
+The three excluded rules all describe a *page*. A story mounts one component,
+or one screen body, into a bare iframe with no app shell around it: the
+landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
+and `components/screen.tsx`, which no story mounts. Asserting them per story
+would only ever fail, and satisfying them would mean every story grew a fake
+shell that ships nowhere. Nothing checks them today — the e2e suite drives the
+real shell but has no axe pass; #1353 adds one there.
+
+The three fixed ones were small and real: an empty `<th>` over the actions
+column in Cluster and User provisioning (now an `sr-only` `common.rowActions`),
+an `<h4>` under an `<h2>` in Single sign-on, and the two unnamed `<aside>`
+landmarks on Prompt repository and Skills repository.
+
+Re-measure any time — set `ROLTER_AXE_TALLY` to a file path and the runner
+appends one JSON line per story listing every violation at every impact,
+including the excluded rules, without failing anything:
+
+```
+ROLTER_AXE_TALLY=/tmp/axe.jsonl bun run test-storybook --url http://127.0.0.1:6011
+```
 
 The failure prints the story id, then two tables: the rule and its impact, then
 the CSS selector and the HTML of each offending node. `color-contrast` also

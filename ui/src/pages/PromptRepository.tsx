@@ -481,7 +481,7 @@ function TemplateIndex({
 }) {
   const { t } = useTranslation();
   return (
-    <aside className="overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
+    <aside aria-label={t("pages.promptRepo.templates")} className="overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
       <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-3 py-2.5">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">{t("pages.promptRepo.templates")}</p>
@@ -728,7 +728,7 @@ function PreviewPanel({ variables, decorators, samples, onSamplesChange }: { var
   const resolved = (content: string) => content.replace(/{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}/g, (_match, name: string) => samples[name] || variables.find((variable) => variable.name === name)?.default || `{{ ${name} }}`);
   const missing = variables.filter((variable) => variable.required && !samples[variable.name]);
   return (
-    <aside className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0">
+    <aside aria-label={t("pages.promptRepo.previewTitle")} className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0">
       <SectionHeading eyebrow={t("pages.promptRepo.liveRenderEyebrow")} title={t("pages.promptRepo.previewTitle")} description={t("pages.promptRepo.previewDescription")} />
       {variables.length > 0 && <div className="mb-5 space-y-2">{variables.map((variable) => <label key={variable.name} className="block text-xs font-medium">{variable.name || t("pages.promptRepo.unnamedVariable")}{variable.required && <span className="ml-1 text-[color:var(--red-folk-text)]">{t("pages.promptRepo.requiredMark")}</span>}<Input className="mt-1" aria-label={t("pages.promptRepo.sampleValueAria", { name: variable.name || t("pages.promptRepo.unnamedVariableLower") })} value={samples[variable.name] ?? ""} placeholder={variable.default ? t("pages.promptRepo.samplePlaceholderDefault", { value: variable.default }) : t("pages.promptRepo.samplePlaceholder")} onChange={(event) => onSamplesChange({ ...samples, [variable.name]: event.target.value })} /></label>)}</div>}
       {missing.length > 0 && <p role="status" className="mb-3 rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5 p-2.5 text-xs text-[color:var(--text-secondary)]">{t("pages.promptRepo.missingSamples", { names: missing.map((variable) => variable.name).join(", ") })}</p>}
@@ -752,7 +752,7 @@ export function VersionRail({ className, template, versions, selectedVersion, lo
   const { t } = useTranslation();
   const format = useFormat();
   return (
-    <aside className={cn("overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]", className)}>
+    <aside aria-label={t("pages.promptRepo.versionHistory")} className={cn("overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]", className)}>
       <div className="border-b border-[color:var(--border-subtle)] px-4 py-3"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">{t("pages.promptRepo.versionHistory")}</p><p className="mt-1 text-xs text-muted-foreground">{t("pages.promptRepo.versionHistoryHint")}</p></div>
       <div className="max-h-[30rem] space-y-1 overflow-y-auto p-2 2xl:max-h-[calc(100vh-14rem)]">
         {loading ? <Skeleton width="100%" height={180} radius={8} /> : versions.length === 0 ? <p className="px-2 py-5 text-center text-xs text-muted-foreground">{t("pages.promptRepo.noSavedVersions")}</p> : versions.map((version) => {

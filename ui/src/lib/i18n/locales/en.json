@@ -40,7 +40,8 @@
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
-    "provider": "Provider"
+    "provider": "Provider",
+    "rowActions": "Row actions"
   },
   "errors": {
     "load": {

@@ -398,7 +398,9 @@ export default function UserProvisioning() {
     },
     {
       key: "actions",
-      header: "",
+      // an empty <th> leaves the cells under it unnamed; the column is real,
+      // it just has nothing worth drawing (#1244)
+      header: <span className="sr-only">{t("common.rowActions")}</span>,
       align: "right",
       render: (_v, row) => (
         <GatedButton
