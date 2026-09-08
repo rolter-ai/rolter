@@ -122,6 +122,48 @@ before, so the fallback rendered nowhere — dead code that still advertised tha
 the rail was allowed to point at a screen which does not exist. Both the set and
 the placeholder are gone; the test is what keeps the table complete.
 
+## The experimental marker
+
+`SUBSYSTEMS` in `crates/rolter-core/src/stability.rs` is the only list of what
+this build ships as experimental (#1385). It travels on `GET /api/v1/version`
+as `experimental`, and each entry carries the `nav_keys` it surfaces on — so
+the mapping from subsystem to nav leaf has one owner, and `ui/` never keeps a
+second copy that can drift out of step with the backend's.
+
+`useStability` in `ui/src/lib/version.ts` turns that into a map of nav leaf key
+→ note. It shares `useVersionStatus`'s query key, so the shell still makes one
+request for the two things it reads out of that answer, and it is tolerant on
+every path that can fail: an older control plane with no `experimental` field,
+a network error, or a session still being checked all yield an empty map. The
+rail then renders with no markers, which is the correct answer rather than an
+error — a rail that will not render is a far worse outcome than a rail missing
+a badge.
+
+`toNavItem` in `ui/src/App.tsx` sets `experimental` and `experimentalNote` on
+the `NavItem`s whose key the map names. The marker rides along with the
+individual entry: the grouping is untouched and there is no "experimental"
+section, which was an explicit constraint of #1386.
+
+Two shapes, because the rail has two widths:
+
+- **Full width** — a `Badge` beside the label carrying `shell.experimental`,
+  with the build's own one-line note as its `title`. The badge is inside the
+  button, so the entry's accessible name is "Tool groups Experimental" and a
+  screen reader gets the marker without having to find a sibling element.
+- **Folded to icons** — no room for a word, so the marker is a decorative dot
+  on the corner of the entry's icon, mirroring the footer's update hint. The
+  word moves into `shell.experimentalItem`, the button's `title`; on a button
+  with no text content that tooltip is also its accessible name.
+
+The page header deliberately carries no marker. #1386 asked for the nav alone,
+and the rail is where an operator is choosing what to rely on.
+
+Stories: `ExperimentalItems`, `ExperimentalItemsCollapsed` and
+`ExperimentalItemsNarrow` in `nav-sidebar.stories.tsx` cover the two shapes and
+the narrowest width the rail can be dragged to; `ExperimentalMarker` and
+`ExperimentalMarkerOnIconRail` in `App.stories.tsx` cover the whole path from
+the endpoint's answer to the marked entry.
+
 ## The tab strip
 
 `ui/src/components/ui/tabs.tsx` is the in-page counterpart to the rail: an
