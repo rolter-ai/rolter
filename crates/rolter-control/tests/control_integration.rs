@@ -4346,6 +4346,8 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
     seed_membership(&pool, bob, Some(org_uuid), None, None, "member").await;
     let bob_token = seed_session(&pool, bob, "bob").await;
 
+    use rolter_store::postgres::repo::McpSessionMaterial;
+
     let kek = rolter_store::postgres::crypto::Kek::from_secret("test-kek");
     let repo = rolter_store::postgres::repo::McpOAuthRepo(&pool);
     let alice_grant = repo
@@ -4360,11 +4362,13 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
         .store_session(
             &kek,
             alice_grant.id,
-            "must-not-store",
-            None,
-            &["tools:write".to_string()],
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            None,
+            McpSessionMaterial {
+                access_token: "must-not-store",
+                refresh_token: None,
+                scopes: &["tools:write".to_string()],
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                refresh_expires_at: None,
+            },
         )
         .await;
     assert!(excessive.is_err(), "session exceeded the consent grant");
@@ -4372,22 +4376,26 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
         .store_session(
             &kek,
             alice_grant.id,
-            "at-alice-secret",
-            Some("rt-alice-secret"),
-            &["tools:read".to_string()],
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            Some(chrono::Utc::now() + chrono::Duration::days(30)),
+            McpSessionMaterial {
+                access_token: "at-alice-secret",
+                refresh_token: Some("rt-alice-secret"),
+                scopes: &["tools:read".to_string()],
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                refresh_expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
+            },
         )
         .await
         .unwrap();
     repo.store_session(
         &kek,
         bob_grant.id,
-        "at-bob-secret",
-        None,
-        &["tools:read".to_string()],
-        chrono::Utc::now() + chrono::Duration::hours(1),
-        None,
+        McpSessionMaterial {
+            access_token: "at-bob-secret",
+            refresh_token: None,
+            scopes: &["tools:read".to_string()],
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            refresh_expires_at: None,
+        },
     )
     .await
     .unwrap();
@@ -4534,11 +4542,13 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
         .store_session(
             &kek,
             bob_grant.id,
-            "at-bob-expired",
-            None,
-            &["tools:read".to_string()],
-            chrono::Utc::now() - chrono::Duration::minutes(1),
-            None,
+            McpSessionMaterial {
+                access_token: "at-bob-expired",
+                refresh_token: None,
+                scopes: &["tools:read".to_string()],
+                expires_at: chrono::Utc::now() - chrono::Duration::minutes(1),
+                refresh_expires_at: None,
+            },
         )
         .await
         .unwrap();

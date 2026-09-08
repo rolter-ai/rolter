@@ -39,7 +39,9 @@ use uuid::Uuid;
 use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{McpOAuthSession, McpServer};
-use rolter_store::postgres::repo::{McpOAuthRepo, McpServerRepo, McpSessionContext};
+use rolter_store::postgres::repo::{
+    McpOAuthClient, McpOAuthRepo, McpServerRepo, McpSessionContext, McpSessionMaterial, NewMcpLogin,
+};
 
 use crate::crud::{
     log_audit, pool, require_allowed_egress, require_non_empty, ApiError, ApiResult, SafeJson,
@@ -183,11 +185,13 @@ async fn set_oauth_client(
         .set_oauth_client(
             &kek()?,
             id,
-            &body.authorize_url,
-            &body.token_url,
-            &body.client_id,
-            body.client_secret.as_deref(),
-            &scopes,
+            McpOAuthClient {
+                authorize_url: &body.authorize_url,
+                token_url: &body.token_url,
+                client_id: &body.client_id,
+                client_secret: body.client_secret.as_deref(),
+                default_scopes: &scopes,
+            },
         )
         .await?;
     log_audit(
@@ -300,12 +304,14 @@ async fn start_authorize(
     McpOAuthRepo(pool(&state))
         .start_login(
             &kek()?,
-            &csrf_state,
-            server.id,
-            user.id,
-            &verifier,
-            &requested,
-            &redirect,
+            NewMcpLogin {
+                state: &csrf_state,
+                server_id: server.id,
+                user_id: user.id,
+                code_verifier: &verifier,
+                scopes: &requested,
+                redirect_uri: &redirect,
+            },
         )
         .await?;
     Ok(Json(AuthorizeStarted {
@@ -451,11 +457,13 @@ async fn callback(
         .store_session(
             &kek,
             grant.id,
-            &tokens.access_token,
-            tokens.refresh_token.as_deref(),
-            &granted,
-            tokens.access_expires_at(now),
-            tokens.refresh_expires_at(now),
+            McpSessionMaterial {
+                access_token: &tokens.access_token,
+                refresh_token: tokens.refresh_token.as_deref(),
+                scopes: &granted,
+                expires_at: tokens.access_expires_at(now),
+                refresh_expires_at: tokens.refresh_expires_at(now),
+            },
         )
         .await?;
     log_audit_system(
@@ -706,11 +714,13 @@ pub(crate) async fn refresh_session(
     repo.rotate_session(
         &kek,
         session_id,
-        &tokens.access_token,
-        Some(&refresh),
-        &scopes,
-        tokens.access_expires_at(now),
-        tokens.refresh_expires_at(now),
+        McpSessionMaterial {
+            access_token: &tokens.access_token,
+            refresh_token: Some(&refresh),
+            scopes: &scopes,
+            expires_at: tokens.access_expires_at(now),
+            refresh_expires_at: tokens.refresh_expires_at(now),
+        },
     )
     .await
     .map_err(|e| TokenError::Transient(e.to_string()))
@@ -851,11 +861,13 @@ async fn exchange_endpoint(
         .store_session(
             &kek,
             context.grant_id,
-            &tokens.access_token,
-            tokens.refresh_token.as_deref(),
-            &granted,
-            tokens.access_expires_at(now),
-            tokens.refresh_expires_at(now),
+            McpSessionMaterial {
+                access_token: &tokens.access_token,
+                refresh_token: tokens.refresh_token.as_deref(),
+                scopes: &granted,
+                expires_at: tokens.access_expires_at(now),
+                refresh_expires_at: tokens.refresh_expires_at(now),
+            },
         )
         .await?;
     log_audit(
