@@ -362,3 +362,49 @@ describe("findLiterals sees prose beside an interpolation", () => {
     ]);
   });
 });
+
+// a comparison operator survived `TEXT`'s `(?<!=)` lookbehind, so the `>` of
+// `a > b` read as a closing tag and the code up to the next `<` read as a text
+// node — code recorded as copy, and #958 would have tried to translate it
+// (#1370)
+describe("findLiterals tells a comparison from a tag", () => {
+  test("ignores a comparison operator", () => {
+    const source = [
+      "const f = (a: number, b: number, c: number, d: number) => a > b && c < d;",
+      "const over = usage.total > limit.total && usage.spend < cap;",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("ignores an arrow and a `>=`", () => {
+    const source = [
+      "const at = (n: number) => n >= threshold && n <= ceiling;",
+      "const hot = rows.filter((r) => r.count >= 10 && r.count < 99);",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("ignores a closing generic", () => {
+    const source = [
+      "export interface TableProps<T> extends React.HTMLAttributes<HTMLDivElement> { rows: T[] }",
+      "const rows = useQuery<Row[], Error>({ queryKey: ['rows'] });",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  // the comparison must not eat the element behind it either: the run it
+  // reported ended at the `<` of the very tag that carries the copy
+  test("still reads an element that follows a comparison", () => {
+    const source = ["const over = used > limit;", "return <p>Usage is over the limit.</p>;"].join(
+      "\n",
+    );
+    expect(texts(source)).toEqual(["Usage is over the limit."]);
+  });
+
+  // the `=>` of a handler sits inside the tag it belongs to, so a tag scan that
+  // stopped at the first `>` would drop the label of every button in the app
+  test("reads an element whose attributes hold an arrow handler", () => {
+    const source = '<Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>';
+    expect(texts(source)).toEqual(["Cancel"]);
+  });
+});
