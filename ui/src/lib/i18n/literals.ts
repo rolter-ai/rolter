@@ -109,6 +109,35 @@ const TEXT = /(?<!=)>\s*([A-Za-z][^<>{}]{2,}?)\s*</g;
  */
 const TEXT_EXPR = /(?<!=)>\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\s*</g;
 /**
+ * one `{…}` expression in text position, with one level of nesting allowed
+ * (`{fmt({ x })}`). `<` and `>` are excluded on purpose: a `{cond && <Badge/>}`
+ * carries its own tags, and letting the group span them would read a tag's
+ * attributes as prose
+ */
+const EXPR_SOURCE = "\\{[^{}<>]*(?:\\{[^{}<>]*\\}[^{}<>]*)*\\}";
+/**
+ * children that mix prose with interpolation: `<p>{name} owns enforcement</p>`
+ * (#1355). `TEXT` cannot see these — its text run may not contain a brace — so
+ * a whole grammatical class of copy, the class that most needs a catalog entry
+ * because interpolation order differs by language, never entered the ratchet.
+ *
+ * The region has to hold at least one expression; children without one are
+ * `TEXT`'s job and are left to it, so this widening only ever adds findings.
+ */
+const TEXT_MIXED = new RegExp(`(?<!=)>((?:[^<>{}]*${EXPR_SOURCE})+[^<>{}]*)<`, "g");
+/** the expressions inside such a region, to cut it into prose runs */
+const EXPR_IN_TEXT = new RegExp(EXPR_SOURCE, "g");
+/**
+ * what an interpolation collapses to in a reported literal. The runs of one
+ * element are reported as a single candidate rather than one finding each: the
+ * sentence is what a catalog entry holds, and `Charged to {name} monthly` split
+ * in two would record `Charged to` and `monthly`, neither of which is copy
+ * anybody would translate.
+ */
+const PLACEHOLDER = "{…}";
+/** `{" "}`, the explicit JSX space */
+const JSX_SPACE = /^\{\s*(["'])\s+\1\s*\}$/;
+/**
  * an error thrown with a literal message: LoadError prints `error.message`
  * under its heading, so this is copy the operator reads (#1200)
  */
@@ -336,6 +365,60 @@ export function maskSource(source: string): Masked {
   return { text: out.join(""), map };
 }
 
+/**
+ * The sentence a mixed children region carries, with every interpolation
+ * replaced by `{…}` — or `null` when the region holds no prose at all, which is
+ * the common case (`{a} · {b}`, `{rows.map(…)}`, a lone `(`).
+ *
+ * Requiring a prose run with a letter in it is what keeps the baseline free of
+ * separator noise; the usual `isNotCopy` thresholds still apply to the result.
+ */
+export function mixedText(region: string): string | null {
+  const parts: string[] = [];
+  let prose = false;
+  let at = 0;
+  EXPR_IN_TEXT.lastIndex = 0;
+  for (const m of region.matchAll(EXPR_IN_TEXT)) {
+    const run = region.slice(at, m.index);
+    if (/[A-Za-z]/.test(run)) prose = true;
+    // `{" "}` is JSX's way of writing a space the formatter cannot eat; it is
+    // whitespace, not a value, and reporting it as a placeholder would put a
+    // second `{…}` in the middle of every wrapped sentence
+    parts.push(run, JSX_SPACE.test(m[0]) ? " " : PLACEHOLDER);
+    at = m.index + m[0].length;
+  }
+  const tail = region.slice(at);
+  if (/[A-Za-z]/.test(tail)) prose = true;
+  parts.push(tail);
+  if (!prose) return null;
+  return parts.join("");
+}
+
+/**
+ * Is the `>` at `gt` the end of a JSX tag, rather than the end of a generic
+ * argument list?
+ *
+ * `TEXT` never had to ask: its run may not contain a brace, so the worst a
+ * `React.useState<Row[]>(…)` could yield was a short token. `TEXT_MIXED` spans
+ * braces, so a misread `>` swallows whole statements — `{…} const ARROWS:
+ * Record` and `{…} async function getText(url: string): Promise` both showed up
+ * as copy before this check existed.
+ *
+ * The tell is the character in front of the matching `<`: a generic opens flush
+ * against the identifier it parameterises (`Promise<`, `Record<`), and JSX never
+ * does — a tag opens after whitespace, `(`, `{`, `,` or another tag.
+ */
+function endsJsxTag(masked: string, gt: number): boolean {
+  const lt = masked.lastIndexOf("<", gt);
+  if (lt === -1) return false;
+  const after = masked[lt + 1] ?? "";
+  // `</Foo>` closes an element and its parent's children run on; `<>` opens a
+  // fragment. neither can be a generic
+  if (after === "/" || after === ">") return true;
+  if (!/[A-Za-z]/.test(after)) return false;
+  return !/[A-Za-z0-9_$.)\]]/.test(masked[lt - 1] ?? "");
+}
+
 function lineOf(source: string, index: number): number {
   let line = 1;
   for (let i = 0; i < index; i++) if (source.charCodeAt(i) === 10) line++;
@@ -376,6 +459,11 @@ export function findLiterals(source: string, file: string): Literal[] {
   for (const m of scanned.matchAll(TEXT)) push(m.index, m[1], "text");
   for (const m of scanned.matchAll(TEXT_EXPR)) {
     for (const inner of m[1].matchAll(STRING_IN_EXPR)) push(m.index, inner[2], "text");
+  }
+  for (const m of scanned.matchAll(TEXT_MIXED)) {
+    if (!endsJsxTag(scanned, m.index)) continue;
+    const text = mixedText(m[1]);
+    if (text !== null) push(m.index, text, "text");
   }
   out.sort((a, b) => a.line - b.line);
   return out;
