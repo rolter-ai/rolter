@@ -408,6 +408,11 @@ export interface InvocationRow {
   completion_tokens: number | string;
   total_tokens: number | string;
   cost_usd: number | string;
+  /// 1 when the model had no price row when the request was served, so
+  /// `cost_usd` is unknown rather than zero. recorded per request by the
+  /// gateway against the catalogue that applied then, which is why the
+  /// dashboard reads it instead of re-deriving it from today's prices (#1226)
+  unpriced: number | string;
   latency_ms: number | string;
   ttft_ms: number | string;
   error: string;
