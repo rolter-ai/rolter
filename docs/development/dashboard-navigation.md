@@ -35,6 +35,37 @@ viewport addon only sizes the preview iframe inside the Storybook UI, so
 without that hook a "fits at 375px" story would be measured at 1280 and assert
 nothing.
 
+## The assembled shell
+
+The three shapes above are the rail's. The shell is the rail *plus* the screen
+header that opens it and the route that dismisses it, and until #1239 nothing
+mounted all three together: the drawer's open state is owned by `App`, its
+trigger lives in `ScreenHeader`, and the `useEffect` on `location.pathname`
+that closes it is a third place again. Each half had a story; the composition
+had none.
+
+`ui/src/pages/shell-harness.tsx` is the fixture that mounts it. It stacks the
+providers in the order `main.tsx` does — query client, toasts, a session
+already in `localStorage`, a `MemoryRouter` at the requested route, `App` —
+over a fetch stub that answers `/auth/me`, the RBAC pair, the org/team/project
+chain, `/version` and the landing screen's own data. Anything it does not
+name falls through to `[]`, so a screen the drawer navigates to lands in its
+empty state rather than an error. It is a sibling of `pages/story-harness.tsx`
+rather than more of it: that module is imported by every screen story, and
+pulling `App` into it would pull every page into every one of those bundles.
+
+`ui/src/App.stories.tsx` uses it for the three widths — `Desktop` (full rail,
+splitter, the booted route marked `aria-current`), `Tablet` (52px icon strip,
+no splitter) and `Mobile` (no rail at all, the hamburger opens the drawer, and
+picking an entry both navigates and closes it). All three read their copy out
+of the `en` catalog rather than repeating it.
+
+The story caught a real defect the moment it existed: the screen's scroll
+container in `App.tsx` was scrollable without being focusable, so on any
+viewport where a screen overflows, everything below the fold was mouse-only.
+It now carries `tabIndex={0}` and a `role="region"` named by the screen title,
+the same contract `ListTable` and `CodeBlock` already sign.
+
 ## Collapse
 
 `collapsible` puts a toggle in the brand row that folds the rail down to a
