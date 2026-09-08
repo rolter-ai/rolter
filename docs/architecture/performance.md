@@ -20,7 +20,7 @@ Goal: beat the reference Python proxy (LiteLLM cites ~8ms P95 added latency at 1
 
 ## Benchmarking
 
-Two layers, neither on the per-PR gate:
+Three layers. Only the third is on the per-PR gate:
 
 - **Micro-benches** (`just bench`) — criterion, covering balancer `pick` across
   every strategy and the prefix trie. Compiled on every PR via clippy so they
@@ -28,6 +28,43 @@ Two layers, neither on the per-PR gate:
 - **End-to-end load** (`just bench-sim` / `bench-vllm` / `bench-sglang`) —
   `integration/engines/bench.py` against a real engine, measuring rolter's added
   latency directly and its behaviour under sustained concurrency.
+- **Allocation counting** (`cargo test -p rolter-gateway --test
+  hot_path_allocations`) — asserts that the per-attempt admission checks make
+  **zero** allocations. This one *is* a merge gate, because it measures a
+  property rather than a duration.
+
+### Why allocation counting is a test and not a benchmark
+
+"Keep the hot path allocation-light" is a rule this document states and
+AGENTS.md repeats, but timings alone cannot enforce it: a per-request
+allocation costs tens of nanoseconds, which is well inside the noise of a
+shared CI runner. That is why the criterion benches are compiled and not run —
+and it means a regression like the `(String, usize)` key that `Breaker::allows`
+and `Cooldowns::is_parked` once built could come back without anything failing.
+
+`crates/rolter-gateway/tests/hot_path_allocations.rs` installs a counting
+`#[global_allocator]` and asserts an exact **zero** on the steady-state paths.
+Zero is deliberate: an allocation *budget* would be a portability trap across
+allocators and toolchains, whereas "this path does not allocate at all" is both
+stable and the property actually wanted. A count is exact and reproducible in a
+way a duration is not, so this can gate where the benches cannot.
+
+Two details worth knowing before extending it:
+
+- **The counter is per-thread, not global.** Cargo runs a binary's tests on
+  parallel threads, so a process-wide counter attributes a sibling test's
+  ordinary allocations to whichever measurement happens to be open, and fails
+  it for something it never did. Arming and counting are both thread-local, and
+  a test asserts that property directly.
+- **It is verified against an injected regression, not just observed passing.**
+  A guard that cannot fail is worse than none, since it reads as evidence. Put
+  a `model.to_string()` back into `Breaker::allows` and exactly the two breaker
+  tests fail, with one allocation per candidate target; the cooldown tests,
+  which touch none of the changed code, keep passing.
+
+To extend it to another hot-path component, add a test that warms any lazily
+built internals first — otherwise you measure first-call setup — then wraps the
+steady-state operation in `counting(...)` and asserts zero.
 
 ### Tool decision (#847, closing #455)
 
