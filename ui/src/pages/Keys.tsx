@@ -13,8 +13,8 @@ import {
   cacheMode,
   keyNameProblem,
   parseCacheMode,
-  parseModels,
   ttlToDays,
+  useRouteModels,
   type CacheMode,
 } from "@/components/KeyMintFields";
 import {
@@ -475,12 +475,15 @@ function AddKeyDialog({
 }) {
   const { t } = useTranslation();
   const [name, setName] = React.useState("");
-  const [modelsText, setModelsText] = React.useState("");
+  const [models, setModels] = React.useState<string[]>([]);
   const [cache, setCache] = React.useState<CacheMode>("inherit");
   const [ttl, setTtl] = React.useState(String(DEFAULT_KEY_TTL_DAYS));
   const [providerSel, setProviderSel] = React.useState<string[]>([]);
   const [unitId, setUnitId] = React.useState(UNATTRIBUTED);
   const [customerId, setCustomerId] = React.useState(UNATTRIBUTED);
+  // the models this project routes, offered as ticks; only asked for while the
+  // sheet is open, since a closed sheet has nothing to populate
+  const routes = useRouteModels(projectId, open);
 
   // names the form, never its contents — this dialog mints a credential
   const ux = useFormTelemetry("virtual-key-create", open);
@@ -488,7 +491,7 @@ function AddKeyDialog({
   React.useEffect(() => {
     if (open) {
       setName("");
-      setModelsText("");
+      setModels([]);
       setCache("inherit");
       setTtl(String(DEFAULT_KEY_TTL_DAYS));
       setProviderSel([]);
@@ -496,8 +499,6 @@ function AddKeyDialog({
       setCustomerId(UNATTRIBUTED);
     }
   }, [open]);
-
-  const models = React.useMemo(() => parseModels(modelsText), [modelsText]);
 
   const create = useMutation({
     // POST /virtual-keys carries the provider allow-list but not the
@@ -534,7 +535,7 @@ function AddKeyDialog({
       title="Create virtual key"
       subtitle="The plaintext key is shown once, right after creation — copy it then"
       dirty={
-        Boolean(name || modelsText || providerSel.length) ||
+        Boolean(name || models.length || providerSel.length) ||
         cache !== "inherit" ||
         unitId !== UNATTRIBUTED ||
         customerId !== UNATTRIBUTED
@@ -554,7 +555,14 @@ function AddKeyDialog({
         <KeyNameField value={name} onChange={setName} />
         <KeyExpiryField value={ttl} onChange={setTtl} />
         <KeyCacheField value={cache} onChange={setCache} />
-        <KeyModelsField value={modelsText} onChange={setModelsText} />
+        <KeyModelsField
+          value={models}
+          onChange={setModels}
+          options={routes.models}
+          loading={routes.loading}
+          error={routes.error}
+          onRetry={routes.retry}
+        />
         <KeyProvidersField
           providers={providers}
           selected={providerSel}

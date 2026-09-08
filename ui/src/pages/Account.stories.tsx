@@ -16,7 +16,7 @@ import {
   withConfirm,
   type FetchStub,
 } from "./story-harness";
-import type { MintedKey, MyUsageRow, OwnedKeyRow, ProviderRow } from "@/lib/api";
+import type { MintedKey, MyUsageRow, OwnedKeyRow, ProviderRow, RouteRow } from "@/lib/api";
 
 const KEYS: OwnedKeyRow[] = [
   {
@@ -58,6 +58,32 @@ const PROVIDERS: ProviderRow[] = [
   },
 ];
 
+/** the project's routes, which the model allow-list ticks off (#1345) */
+const ROUTES: RouteRow[] = [
+  {
+    id: "route-1",
+    project_id: "project-1",
+    model: "gpt-4o",
+    strategy: "round_robin",
+    enabled: true,
+    params: {},
+    param_policy: {},
+    advanced: {},
+    created_at: "2026-01-02T00:00:00Z",
+  },
+  {
+    id: "route-2",
+    project_id: "project-1",
+    model: "claude-sonnet",
+    strategy: "round_robin",
+    enabled: true,
+    params: {},
+    param_policy: {},
+    advanced: {},
+    created_at: "2026-01-03T00:00:00Z",
+  },
+];
+
 const USAGE: MyUsageRow[] = [
   { virtual_key_id: "vk-1", requests: 1204, tokens: 903_112, cost_usd: "12.34", errors: 3 },
 ];
@@ -92,6 +118,8 @@ const account = (
     // the key list gave it an option named `null` — a checkbox row with no
     // label at all, which is what axe reported as `button-name` (#1181)
     if (url.includes("/providers")) return json(PROVIDERS);
+    // the mint sheet's model allow-list ticks the project's routes off (#1345)
+    if (url.includes("/routes")) return json(ROUTES);
     if (url.includes("/me/usage")) return usage();
     return keys(init);
   });
