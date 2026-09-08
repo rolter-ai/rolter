@@ -1,0 +1,453 @@
+{
+  "$comment": "generated from crates/rolter-control/src/rbac_matrix.rs by `bun run gen:rbac` — do not edit by hand",
+  "capabilities": [
+    {
+      "resource": "org",
+      "scope": "org",
+      "read": "viewer",
+      "create": "superadmin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "team",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "project",
+      "scope": "team",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "provider",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "plugin",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "provider_group",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "label",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "model_label",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "route",
+      "scope": "project",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "virtual_key",
+      "scope": "project",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "my_virtual_key",
+      "scope": "project",
+      "read": null,
+      "create": "member",
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "budget",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "rate_limit",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "model_price",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": null,
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "model",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": null,
+      "update": null,
+      "delete": "superadmin"
+    },
+    {
+      "resource": "version",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "business_unit",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "customer",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "prompt_template",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "skill",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "user",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "membership",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "scim_token",
+      "scope": "org",
+      "read": "admin",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "scim_group_mapping",
+      "scope": "org",
+      "read": "admin",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "mcp_server",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "mcp_tool_group",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "mcp_settings",
+      "scope": "org",
+      "read": "viewer",
+      "create": null,
+      "update": "admin",
+      "delete": null
+    },
+    {
+      "resource": "mcp_oauth_client",
+      "scope": "org",
+      "read": "admin",
+      "create": null,
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "mcp_oauth_grant",
+      "scope": "org",
+      "read": "viewer",
+      "create": "member",
+      "update": null,
+      "delete": "viewer"
+    },
+    {
+      "resource": "mcp_oauth_session",
+      "scope": "org",
+      "read": "viewer",
+      "create": "member",
+      "update": "member",
+      "delete": "viewer"
+    },
+    {
+      "resource": "custom_role",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "access_profile",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "access_profile_assignment",
+      "scope": "org",
+      "read": "viewer",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "audit_log",
+      "scope": "org",
+      "read": "admin",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "invitation",
+      "scope": "org",
+      "read": "admin",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "sso_provider",
+      "scope": "org",
+      "read": "admin",
+      "create": "admin",
+      "update": "admin",
+      "delete": "admin"
+    },
+    {
+      "resource": "sso_group_mapping",
+      "scope": "org",
+      "read": "admin",
+      "create": "admin",
+      "update": null,
+      "delete": "admin"
+    },
+    {
+      "resource": "org_auth_policy",
+      "scope": "org",
+      "read": "admin",
+      "create": null,
+      "update": "admin",
+      "delete": null
+    },
+    {
+      "resource": "feature_flags",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "runtime_policy",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "logging_settings",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "compatibility_policy",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "client_settings",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "model_defaults",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "adaptive_routing_policy",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "guardrail_rule",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "guardrail_provider",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "adaptive_routing_telemetry",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "cluster_node",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "security_settings",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": "superadmin",
+      "delete": null
+    },
+    {
+      "resource": "config_export",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "connector",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "alert_channel",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "alert_rule",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": "superadmin",
+      "delete": "superadmin"
+    },
+    {
+      "resource": "alert_history",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "mcp_log",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": "superadmin",
+      "update": null,
+      "delete": null
+    }
+  ]
+}
