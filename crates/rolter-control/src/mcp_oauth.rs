@@ -32,7 +32,8 @@ use rolter_store::postgres::models::{
     McpGatewaySettings, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
 };
 use rolter_store::postgres::repo::{
-    McpGatewaySettingsRepo, McpOAuthRepo, McpServerRepo, McpToolGroupRepo,
+    McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo, McpServerUpdate,
+    McpToolGroupRepo, NewMcpServer,
 };
 
 use crate::crud::{
@@ -222,18 +223,18 @@ async fn create_server(
         ));
     }
     let server = McpServerRepo(pool(&state))
-        .create(
+        .create(NewMcpServer {
             org_id,
-            &body.name,
-            &body.slug,
-            &body.url,
+            name: &body.name,
+            slug: &body.slug,
+            url: &body.url,
             transport,
-            &body.description,
-            body.enabled,
-            &body.tools,
-            &body.source,
-            &body.required_scopes,
-        )
+            description: &body.description,
+            enabled: body.enabled,
+            tools: &body.tools,
+            source: &body.source,
+            required_scopes: &body.required_scopes,
+        })
         .await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -305,13 +306,15 @@ async fn update_server(
     let server = repo
         .update(
             id,
-            name,
-            url,
-            transport,
-            description,
-            enabled,
-            tools,
-            required_scopes,
+            McpServerUpdate {
+                name,
+                url,
+                transport,
+                description,
+                enabled,
+                tools,
+                required_scopes,
+            },
         )
         .await?;
     publish_config_change(&state).await?;
@@ -847,12 +850,14 @@ async fn update_mcp_settings(
     let settings = McpGatewaySettingsRepo(pool(&state))
         .update(
             org_id,
-            &body.default_transport,
-            body.connect_timeout_ms,
-            body.request_timeout_ms,
-            body.max_retries,
-            &body.default_failure_mode,
-            body.allow_unlisted_tools,
+            McpGatewaySettingsUpdate {
+                default_transport: &body.default_transport,
+                connect_timeout_ms: body.connect_timeout_ms,
+                request_timeout_ms: body.request_timeout_ms,
+                max_retries: body.max_retries,
+                default_failure_mode: &body.default_failure_mode,
+                allow_unlisted_tools: body.allow_unlisted_tools,
+            },
         )
         .await?;
     log_audit(
