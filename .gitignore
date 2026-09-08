@@ -70,3 +70,11 @@ ui/debug-storybook.log
 # in on purpose — these two are not, because they are per-run state, not fixtures
 integration/dogfood/.kek
 integration/dogfood/.virtual-key
+
+# test-run leftovers — #1300 committed seven playwright/storybook recordings
+# and a dev-server log (#1317). playwright's own output goes to
+# ui/e2e/.output (ignored in ui/.gitignore); anything that still lands at the
+# root is never part of a change
+videos/
+*.webm
+*.log
