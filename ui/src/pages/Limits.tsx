@@ -153,6 +153,18 @@ export default function Limits() {
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
+  // the scope field is a name picker whenever the scope type has rows to offer
+  // and a bare uuid box otherwise; the hint has to say which one it is, since
+  // "the project this cap applies to" reads as nonsense over an empty uuid
+  // field (#1202)
+  const hasPicker =
+    (scopeType === "org" && scope.orgs.length > 0) ||
+    (scopeType === "team" && scope.teams.length > 0) ||
+    (scopeType === "project" && scope.projects.length > 0) ||
+    (scopeType === "virtual_key" && (virtualKeys.data?.length ?? 0) > 0) ||
+    (scopeType === "business_unit" && (businessUnits.data?.length ?? 0) > 0) ||
+    (scopeType === "customer" && (customers.data?.length ?? 0) > 0);
+
   return (
     <PageBody className="gap-[22px]">
 
@@ -185,7 +197,12 @@ export default function Limits() {
               ))}
             </Select>
           </Field>
-          <Field label="Scope" hint={t("pages.limits.scopeHint", { type: t(`pages.limits.scopeTypes.${scopeType}`) })}>
+          <Field
+            label="Scope"
+            hint={t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
+              type: t(`pages.limits.scopeTypes.${scopeType}`),
+            })}
+          >
             {scopeType === "org" && scope.orgs.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
                 <option value="">Select an org</option>
