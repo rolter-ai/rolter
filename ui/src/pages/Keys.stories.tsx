@@ -21,6 +21,7 @@ import type {
   BusinessUnitRow,
   CustomerRow,
   ProviderRow,
+  RouteRow,
   VirtualKeyRow,
 } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -85,11 +86,39 @@ const PROVIDERS: ProviderRow[] = [
   },
 ];
 
-/** the three org-scoped lookups the attribution editor reads */
+
+/** the project's routes, which the model allow-list ticks off (#1345) */
+const ROUTES: RouteRow[] = [
+  {
+    id: "route-1",
+    project_id: "project-1",
+    model: "gpt-4o",
+    strategy: "round_robin",
+    enabled: true,
+    params: {},
+    param_policy: {},
+    advanced: {},
+    created_at: "2026-01-02T00:00:00Z",
+  },
+  {
+    id: "route-2",
+    project_id: "project-1",
+    model: "claude-sonnet",
+    strategy: "round_robin",
+    enabled: true,
+    params: {},
+    param_policy: {},
+    advanced: {},
+    created_at: "2026-01-03T00:00:00Z",
+  },
+];
+
+/** the lookups the mint and attribution editors read */
 const lookups = (url: string): Response | null => {
   if (url.includes("/business-units")) return json(UNITS);
   if (url.includes("/customers")) return json(CUSTOMERS);
   if (url.includes("/providers")) return json(PROVIDERS);
+  if (url.includes("/routes")) return json(ROUTES);
   return null;
 };
 
@@ -288,7 +317,7 @@ export const KeepsADirtyDraftWhenDiscardIsDeclined: Story = {
  */
 export const AdminCreateAlsoRequiresANameAndAnExpiry: Story = {
   render: () => (
-    <Harness fetchStub={scoped(async () => json(KEYS))}>
+    <Harness fetchStub={withKeys(KEYS)}>
       <Keys />
     </Harness>
   ),
@@ -531,5 +560,39 @@ export const OnlyCustomersThatFitTheChosenUnitAreOffered: Story = {
     // Acme belongs to that unit and Globex to none, so both still fit
     await expect(within(customer).getByText("Acme Corp")).toBeInTheDocument();
     await expect(within(customer).getByText("Globex")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The model allow-list is the project's routes, ticked off rather than typed
+ * (#1345). The wire format is unchanged — the same array of addresses — but a
+ * typo can no longer produce an allow-list that matches nothing.
+ */
+export const TheAllowListOffersTheProjectsRoutes: Story = {
+  render: () => (
+    <Harness fetchStub={recorded(KEYS[0])}>
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
+    await waitFor(() =>
+      expect(within(form).getByRole("checkbox", { name: "gpt-4o" })).toBeVisible(),
+    );
+    await userEvent.click(within(form).getByRole("checkbox", { name: "gpt-4o" }));
+    // an address no route serves is still allowed through free-form entry
+    await userEvent.type(
+      within(form).getByLabelText(/model allow-list/i),
+      "legacy-davinci",
+    );
+    await userEvent.click(within(form).getByRole("button", { name: "Add" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+
+    const posted = (await sent.expectSentBody("POST", "/virtual-keys")) as {
+      models: string[];
+    };
+    await expect(posted.models).toEqual(["gpt-4o", "legacy-davinci"]);
   },
 };
