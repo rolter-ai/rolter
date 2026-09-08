@@ -12,7 +12,7 @@ use rolter_core::{
     GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
 };
 use rolter_store::postgres::models::{GuardrailProvider, GuardrailRule as GuardrailRuleRow};
-use rolter_store::postgres::repo::GuardrailRepo;
+use rolter_store::postgres::repo::{GuardrailProviderInput, GuardrailRepo, GuardrailRuleInput};
 
 use crate::crud::{log_audit, pool, publish_config_change, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
@@ -65,6 +65,42 @@ struct ProviderBody {
     max_body_bytes: i32,
     auth_kind: String,
     auth_env: Option<String>,
+}
+
+impl RuleBody {
+    // create and update send the same body and write the same columns, so both
+    // borrow their repo input from here rather than restating the field list
+    fn as_input(&self) -> GuardrailRuleInput<'_> {
+        GuardrailRuleInput {
+            name: &self.name,
+            enabled: self.enabled,
+            source_type: &self.source_type,
+            builtin: self.builtin.as_deref(),
+            pattern: self.pattern.as_deref(),
+            stage: &self.stage,
+            action: &self.action,
+            replacement: self.replacement.as_deref(),
+            include_system: self.include_system,
+            position: self.position,
+        }
+    }
+}
+
+impl ProviderBody {
+    fn as_input(&self) -> GuardrailProviderInput<'_> {
+        GuardrailProviderInput {
+            name: &self.name,
+            enabled: self.enabled,
+            url: &self.url,
+            stage: &self.stage,
+            timeout_ms: self.timeout_ms,
+            max_retries: self.max_retries,
+            failure_mode: &self.failure_mode,
+            max_body_bytes: self.max_body_bytes,
+            auth_kind: &self.auth_kind,
+            auth_env: self.auth_env.as_deref(),
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -207,18 +243,7 @@ async fn create_rule(
     authorize_superadmin(&principal, superadmin_cap!("guardrail_rule", Create))?;
     validate_rule(&body)?;
     let row = GuardrailRepo(pool(&state))
-        .create_rule(
-            &body.name,
-            body.enabled,
-            &body.source_type,
-            body.builtin.as_deref(),
-            body.pattern.as_deref(),
-            &body.stage,
-            &body.action,
-            body.replacement.as_deref(),
-            body.include_system,
-            body.position,
-        )
+        .create_rule(body.as_input())
         .await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -243,19 +268,7 @@ async fn update_rule(
     authorize_superadmin(&principal, superadmin_cap!("guardrail_rule", Update))?;
     validate_rule(&body)?;
     let row = GuardrailRepo(pool(&state))
-        .update_rule(
-            id,
-            &body.name,
-            body.enabled,
-            &body.source_type,
-            body.builtin.as_deref(),
-            body.pattern.as_deref(),
-            &body.stage,
-            &body.action,
-            body.replacement.as_deref(),
-            body.include_system,
-            body.position,
-        )
+        .update_rule(id, body.as_input())
         .await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -308,18 +321,7 @@ async fn create_provider(
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Create))?;
     validate_provider(&body)?;
     let row = GuardrailRepo(pool(&state))
-        .create_provider(
-            &body.name,
-            body.enabled,
-            &body.url,
-            &body.stage,
-            body.timeout_ms,
-            body.max_retries,
-            &body.failure_mode,
-            body.max_body_bytes,
-            &body.auth_kind,
-            body.auth_env.as_deref(),
-        )
+        .create_provider(body.as_input())
         .await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -344,19 +346,7 @@ async fn update_provider(
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Update))?;
     validate_provider(&body)?;
     let row = GuardrailRepo(pool(&state))
-        .update_provider(
-            id,
-            &body.name,
-            body.enabled,
-            &body.url,
-            &body.stage,
-            body.timeout_ms,
-            body.max_retries,
-            &body.failure_mode,
-            body.max_body_bytes,
-            &body.auth_kind,
-            body.auth_env.as_deref(),
-        )
+        .update_provider(id, body.as_input())
         .await?;
     publish_config_change(&state).await?;
     log_audit(
