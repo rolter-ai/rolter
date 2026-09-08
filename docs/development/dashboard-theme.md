@@ -167,3 +167,18 @@ background and ratio it measured, and the fix is nearly always a token swap from
 this page rather than a new colour. A story may opt out with
 `parameters: { a11y: { disable: true } }`, but it has to say why beside it — no
 story in the dashboard currently needs to.
+
+## The identity around the tokens
+
+This page governs the dashboard's *interior*: which token a component reaches
+for and why. The identity those tokens express — the cross-stitch mark, its
+clear space and minimum size, when `--red-500` is the accent and `--red-folk`
+is ornament, where the вышивка rule belongs and where it does not, and how the
+wordmark is set — is documented once for everybody, in
+[the brand usage guidelines](../../user-docs/community/brand.mdx) on the
+end-user docs site.
+
+Read it before you place the mark anywhere, add a `.vyshivka-rule` to a screen,
+or produce an asset that carries the brand (a slide, a README header, the social
+preview at `assets/og.svg`). The rules there are the reason the constraints here
+exist.
