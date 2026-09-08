@@ -401,6 +401,118 @@ export const EditsAProviderInPlace: Story = {
   },
 };
 
+// #1293: a stray space in the secret field used to trim to "" and reach the
+// server as the wire's "clear it", so the provider silently lost its sealed
+// secret and the next login failed at token exchange. whitespace alone is now
+// the same as untouched: nothing is sent
+const whitespace = record(api({ providers: () => [provider()] }));
+
+export const TreatsAWhitespaceOnlySecretAsUntouched: Story = {
+  render: () => (
+    <Harness fetchStub={whitespace.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit provider Acme Okta/);
+
+    const panel = within(sheet());
+    await userEvent.type(panel.getByLabelText("Client secret"), "   ");
+    await userEvent.click(panel.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      const put = whitespace.calls.find((c) => c.method === "PUT");
+      expect(put).toBeDefined();
+      const body = put?.body as Record<string, unknown>;
+      // the assertion that matters: not an empty string, not present at all
+      expect("client_secret" in body).toBe(false);
+      expect(body.client_id).toBe("0oa1b2c3d4");
+    });
+  },
+};
+
+/**
+ * #1293: clearing is its own control now, and it is the only thing that sends
+ * the empty string.
+ *
+ * The stub models the server rather than a fixture: the PUT flips the stored
+ * flag, so the badge the card draws afterwards comes from a refetched list and
+ * not from the story asserting on its own constant.
+ */
+function clearingApi(): FetchStub {
+  let stored = true;
+  const row = () => provider({ has_client_secret: stored });
+  return scoped(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/group-mappings")) return json([], 200);
+    if (url.includes("/sso-providers")) {
+      if (method === "PUT") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (body.client_secret === "") stored = false;
+        return json(row(), 200);
+      }
+      return json([row()], 200);
+    }
+    if (url.includes("/auth-policy")) return json(POLICY, 200);
+    return json([]);
+  });
+}
+
+const clears = record(clearingApi());
+
+export const RemovesTheStoredSecretWithConfirmation: Story = {
+  render: () => (
+    <Harness fetchStub={clears.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Stored")).toBeVisible());
+    const sent = () =>
+      clears.calls.some(
+        (c) => (c.body as Record<string, unknown> | undefined)?.client_secret === "",
+      );
+
+    // cancelling sends nothing: a secret that cannot be read back must not be
+    // droppable by one stray click
+    await userEvent.click(
+      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
+    );
+    await cancelConfirmation();
+    expect(sent()).toBe(false);
+
+    await userEvent.click(
+      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
+    );
+    await confirmDestructive(/Acme Okta/, "Remove secret");
+
+    await waitFor(() => {
+      const put = clears.calls.find((c) => c.method === "PUT");
+      expect(put).toBeDefined();
+      const body = put?.body as Record<string, unknown>;
+      // the empty string is the wire's third value, and only this path sends it
+      expect(body.client_secret).toBe("");
+      // the rest of the row rides along unchanged
+      expect(body.name).toBe("Acme Okta");
+      expect(body.enabled).toBe(true);
+    });
+
+    // and the badge flips off the refetched list
+    await waitFor(() =>
+      expect(canvas.getByText("No client secret")).toBeVisible(),
+    );
+    await expect(canvas.getByText("Not set")).toBeVisible();
+    // with nothing stored, the control that removes one is gone
+    await expect(
+      canvas.queryByLabelText("Remove the stored client secret for Acme Okta"),
+    ).toBeNull();
+  },
+};
+
 // a provider is taken out of service with a switch instead of a delete
 const toggles = record(api({ providers: () => [provider()] }));
 
