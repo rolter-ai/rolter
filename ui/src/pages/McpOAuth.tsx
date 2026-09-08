@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, KeyRound, Loader2, RefreshCw, Shield, ShieldOff } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
@@ -102,18 +102,18 @@ function TokenNotice({ children }: { children: React.ReactNode }) {
 
 // what a listing contains depends on who asked for it, so the screens say so
 // instead of implying the table is the whole org
-function ScopeNote({ noun }: { noun: string }) {
-  return (
-    <p className="text-xs text-[color:var(--text-subtle)]">
-      Org admins see every {noun} in the org; members and viewers see — and may
-      revoke — only their own.
-    </p>
-  );
+function ScopeNote({ note }: { note: string }) {
+  return <p className="text-xs text-[color:var(--text-subtle)]">{note}</p>;
 }
 
 function Scopes({ scopes }: { scopes: string[] }) {
+  const { t } = useTranslation();
   if (scopes.length === 0) {
-    return <span className="text-xs text-[color:var(--text-subtle)]">no scopes</span>;
+    return (
+      <span className="text-xs text-[color:var(--text-subtle)]">
+        {t("pages.mcpOAuth.noScopes")}
+      </span>
+    );
   }
   return (
     <div className="flex flex-wrap gap-1">
@@ -211,11 +211,7 @@ export function OAuthGrants() {
 
   return (
     <PageBody>
-      <TokenNotice>
-        A grant records consent, not credentials. No access or refresh token is
-        ever sent to this dashboard — the sealed tokens stay inside the control
-        plane, and revoking consent here is what makes them unusable.
-      </TokenNotice>
+      <TokenNotice>{t("pages.mcpOAuth.grantsTokenNotice")}</TokenNotice>
 
       {grants.isError ? (
         <ForbiddenNote
@@ -227,7 +223,7 @@ export function OAuthGrants() {
         <>
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm text-muted-foreground">
-              {rows.length} grants · {active} active
+              {t("pages.mcpOAuth.grantsCount", { count: rows.length, active })}
             </span>
             {revoke.isError && (
               <span className="text-xs text-[color:var(--status-danger-text)]">
@@ -235,7 +231,7 @@ export function OAuthGrants() {
               </span>
             )}
           </div>
-          <ScopeNote noun="grant" />
+          <ScopeNote note={t("pages.mcpOAuth.scopeNoteGrants")} />
 
           {rows.length === 0 ? (
             // deliberately actionless: consent is only ever given by the user
@@ -249,12 +245,12 @@ export function OAuthGrants() {
           ) : (
             <ListTable minWidth={980}>
               <ListHeader grid={GRANT_GRID}>
-                <span>Server</span>
-                <span>Owner</span>
-                <span>Scopes</span>
-                <span>Granted</span>
-                <span>Sessions</span>
-                <span>State</span>
+                <span>{t("pages.mcpOAuth.server")}</span>
+                <span>{t("pages.mcpOAuth.owner")}</span>
+                <span>{t("pages.mcpOAuth.scopes")}</span>
+                <span>{t("pages.mcpOAuth.granted")}</span>
+                <span>{t("pages.mcpOAuth.sessions.header")}</span>
+                <span>{t("pages.mcpOAuth.state")}</span>
                 <span />
               </ListHeader>
               {rows.map((g) => {
@@ -287,8 +283,8 @@ export function OAuthGrants() {
                       danger
                       title={
                         g.active
-                          ? "Revoke this consent and every session under it"
-                          : "Already revoked"
+                          ? t("pages.mcpOAuth.grants.revokeTitle")
+                          : t("pages.mcpOAuth.alreadyRevoked")
                       }
                       gate="mcp_oauth_grant:delete"
                       aria-label={t("pages.mcpOAuth.grants.revokeAria", {
@@ -315,34 +311,34 @@ export function OAuthGrants() {
         {confirming && (
           <>
             <DialogHeader>
-              <DialogTitle>Revoke consent</DialogTitle>
+              <DialogTitle>{t("pages.mcpOAuth.confirm.grantTitle")}</DialogTitle>
               <DialogDescription>
                 {/* the cascade is stated before the click, not discovered after
                     it: the server revokes the grant and its sessions in one
                     transaction */}
-                Revoking this grant for{" "}
-                <span className="font-mono">
-                  {serverLabel(servers.data, confirming.server_id)}
-                </span>{" "}
-                also revokes{" "}
-                {sessionsKnown
-                  ? t("pages.mcpOAuth.liveSessions", {
-                      count: liveByGrant.get(confirming.id) ?? 0,
-                    })
-                  : "every session"}{" "}
-                under it, in the same transaction. The user must consent again
-                before the server can be called on their behalf.
+                <Trans
+                  i18nKey="pages.mcpOAuth.confirm.grantBody"
+                  values={{
+                    server: serverLabel(servers.data, confirming.server_id),
+                    sessions: sessionsKnown
+                      ? t("pages.mcpOAuth.liveSessions", {
+                          count: liveByGrant.get(confirming.id) ?? 0,
+                        })
+                      : t("pages.mcpOAuth.everySession"),
+                  }}
+                  components={[<span key="server" className="font-mono" />]}
+                />
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button variant="outline" onClick={() => setConfirming(null)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 disabled={revoke.isPending}
                 onClick={() => revoke.mutate(confirming.id)}
               >
-                Revoke consent
+                {t("pages.mcpOAuth.confirm.grantConfirm")}
               </Button>
             </DialogFooter>
           </>
@@ -432,11 +428,7 @@ export function AuthSessions() {
 
   return (
     <PageBody>
-      <TokenNotice>
-        Sessions are shown as metadata only. The access and refresh tokens are
-        sealed with the deployment key and never leave the control plane, so
-        this screen can tell you a session is renewable but never what it holds.
-      </TokenNotice>
+      <TokenNotice>{t("pages.mcpOAuth.sessionsTokenNotice")}</TokenNotice>
 
       {sessions.isError ? (
         <ForbiddenNote
@@ -448,7 +440,7 @@ export function AuthSessions() {
         <>
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm text-muted-foreground">
-              {rows.length} sessions · {live} live
+              {t("pages.mcpOAuth.sessionsCount", { count: rows.length, live })}
             </span>
             {revoke.isError && !confirming && (
               <span className="text-xs text-[color:var(--status-danger-text)]">
@@ -456,7 +448,7 @@ export function AuthSessions() {
               </span>
             )}
           </div>
-          <ScopeNote noun="session" />
+          <ScopeNote note={t("pages.mcpOAuth.scopeNoteSessions")} />
 
           {rows.length === 0 ? (
             <EmptyState
@@ -468,12 +460,12 @@ export function AuthSessions() {
           ) : (
             <ListTable minWidth={1024}>
               <ListHeader grid={SESSION_GRID}>
-                <span>Server</span>
-                <span>Owner</span>
-                <span>Scopes</span>
-                <span>Last used</span>
-                <span>Expires</span>
-                <span>State</span>
+                <span>{t("pages.mcpOAuth.server")}</span>
+                <span>{t("pages.mcpOAuth.owner")}</span>
+                <span>{t("pages.mcpOAuth.scopes")}</span>
+                <span>{t("pages.mcpOAuth.lastUsed")}</span>
+                <span>{t("pages.mcpOAuth.expires")}</span>
+                <span>{t("pages.mcpOAuth.state")}</span>
                 <span />
                 <span />
               </ListHeader>
@@ -494,7 +486,7 @@ export function AuthSessions() {
                     </span>
                     <Scopes scopes={s.scopes} />
                     <span className="text-xs text-[color:var(--text-secondary)]">
-                      {s.last_used_at ? fmt.relative(s.last_used_at, now) : "never"}
+                      {s.last_used_at ? fmt.relative(s.last_used_at, now) : t("pages.mcpOAuth.never")}
                     </span>
                     <span
                       className="font-mono text-xs text-[color:var(--text-secondary)]"
@@ -545,8 +537,8 @@ export function AuthSessions() {
                       danger
                       title={
                         state === "revoked"
-                          ? "Already revoked"
-                          : "Revoke this session; the consent behind it stands"
+                          ? t("pages.mcpOAuth.alreadyRevoked")
+                          : t("pages.mcpOAuth.sessions.revokeTitle")
                       }
                       gate="mcp_oauth_session:delete"
                       aria-label={t("pages.mcpOAuth.sessions.revokeAria", {
@@ -586,9 +578,7 @@ export function AuthSessions() {
           />
 
           <p className="text-xs text-[color:var(--text-subtle)]">
-            Revoking a session leaves the consent in place — a new session can be
-            minted without asking the user again. To withdraw consent itself,
-            revoke the grant on OAuth Grants.
+            {t("pages.mcpOAuth.sessionsFootnote")}
           </p>
         </>
       )}

@@ -43,7 +43,9 @@
     "provider": "Provider",
     "rowActions": "Row actions",
     "remove": "Remove",
-    "save": "Save"
+    "save": "Save",
+    "saveChanges": "Save Changes",
+    "saving": "Saving…"
   },
   "errors": {
     "load": {
@@ -785,7 +787,21 @@
         "title": "Delete tool group {{name}}?",
         "body": "The bundle is removed and any client relying on it loses access to the tools it governed."
       },
-      "emptyTitle": "No tool groups"
+      "emptyTitle": "No tool groups",
+      "eyebrow": "governed manifests",
+      "lead": "Bundle exact server/tool pairs into reusable policy manifests. Groups define intended access; project assignment and gateway enforcement remain separate policy work.",
+      "create": "Create group",
+      "emptyBody": "Create a governed bundle from registered server tools.",
+      "emptyNoServers": "Register MCP servers and declare their tools before creating a group.",
+      "enabled": "enabled",
+      "paused": "paused",
+      "enabledLabel": "Enabled",
+      "dialog": {
+        "titleAdd": "Create tool group",
+        "titleEdit": "Configure tool group",
+        "lead": "Select exact tools. A group is a policy manifest, not a credential.",
+        "save": "Save group"
+      }
     },
     "virtualKeys": {
       "explainer": "Virtual keys are the credential clients send to the gateway (sk-rolter-…). Provider keys — the credentials your providers issued to rolter — live on the Providers screen and are never sent by clients.",
@@ -996,13 +1012,55 @@
       "groups": {
         "deleteAria": "Delete tool group {{name}}",
         "configureAria": "Configure tool group {{name}}"
+      },
+      "noTools": "No tools declared",
+      "noDescription": "No description provided.",
+      "noOrgTitle": "Choose an organization",
+      "noOrgBody": "MCP servers are isolated by organization.",
+      "eyebrow": "live registry",
+      "registerServer": "Register server",
+      "registryHint": "Registered servers are projected into the gateway snapshot when enabled.",
+      "enabledServers_one": "{{count}} enabled server",
+      "enabledServers_other": "{{count}} enabled servers",
+      "declaredTools_one": "{{count}} declared tool",
+      "declaredTools_other": "{{count}} declared tools",
+      "emptyTitle": "No MCP servers registered",
+      "emptyBody": "Register a custom endpoint or install a curated server from MCP Library.",
+      "configure": "Configure",
+      "confirmDelete": {
+        "title": "Delete {{name}}?",
+        "body": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
+        "confirm": "Delete server",
+        "pending": "Deleting…"
+      },
+      "dialog": {
+        "titleAdd": "Register MCP server",
+        "titleEdit": "Configure MCP server",
+        "lead": "Declare the endpoint and exact tool names exposed through the organization registry.",
+        "saveServer": "Save server"
+      },
+      "fields": {
+        "name": "Name",
+        "slug": "Slug",
+        "slugHint": "Used in /mcp/{server}; immutable after registration.",
+        "url": "Endpoint URL",
+        "transport": "Transport",
+        "enabledInGateway": "Enabled in gateway",
+        "description": "Description",
+        "tools": "Tools",
+        "toolsHint": "One tool name per line.",
+        "scopes": "Required OAuth scopes",
+        "scopesHint": "One scope per line."
       }
     },
     "mcpOAuth": {
       "confirm": {
         "sessionTitle": "Revoke session on {{server}}?",
         "sessionBody": "The token behind this session stops working at once. The consent it was minted under stands, so a new session can be created without asking the user again.",
-        "sessionConfirm": "Revoke session"
+        "sessionConfirm": "Revoke session",
+        "grantTitle": "Revoke consent",
+        "grantBody": "Revoking this grant for <0>{{server}}</0> also revokes {{sessions}} under it, in the same transaction. The user must consent again before the server can be called on their behalf.",
+        "grantConfirm": "Revoke consent"
       },
       "refresh": {
         "action": "Renew this session on {{server}}",
@@ -1020,12 +1078,35 @@
       "sessionsEmptyTitle": "No sessions yet",
       "sessionsEmptyBody": "A session is minted when a user's consent is exchanged for a token. Start one with Connect on MCP Catalog — the session appears here as soon as the user approves.",
       "grants": {
-        "revokeAria": "Revoke the consent {{owner}} gave {{server}}"
+        "revokeAria": "Revoke the consent {{owner}} gave {{server}}",
+        "revokeTitle": "Revoke this consent and every session under it"
       },
       "sessions": {
         "refreshAria": "Renew the session {{owner}} holds on {{server}}",
-        "revokeAria": "Revoke the session {{owner}} holds on {{server}}"
-      }
+        "revokeAria": "Revoke the session {{owner}} holds on {{server}}",
+        "header": "Sessions",
+        "revokeTitle": "Revoke this session; the consent behind it stands"
+      },
+      "server": "Server",
+      "owner": "Owner",
+      "scopes": "Scopes",
+      "granted": "Granted",
+      "state": "State",
+      "lastUsed": "Last used",
+      "expires": "Expires",
+      "never": "never",
+      "noScopes": "no scopes",
+      "alreadyRevoked": "Already revoked",
+      "everySession": "every session",
+      "grantsTokenNotice": "A grant records consent, not credentials. No access or refresh token is ever sent to this dashboard — the sealed tokens stay inside the control plane, and revoking consent here is what makes them unusable.",
+      "sessionsTokenNotice": "Sessions are shown as metadata only. The access and refresh tokens are sealed with the deployment key and never leave the control plane, so this screen can tell you a session is renewable but never what it holds.",
+      "sessionsFootnote": "Revoking a session leaves the consent in place — a new session can be minted without asking the user again. To withdraw consent itself, revoke the grant on OAuth Grants.",
+      "scopeNoteGrants": "Org admins see every grant in the org; members and viewers see — and may revoke — only their own.",
+      "scopeNoteSessions": "Org admins see every session in the org; members and viewers see — and may revoke — only their own.",
+      "grantsCount_one": "{{count}} grant · {{active}} active",
+      "grantsCount_other": "{{count}} grants · {{active}} active",
+      "sessionsCount_one": "{{count}} session · {{live}} live",
+      "sessionsCount_other": "{{count}} sessions · {{live}} live"
     },
     "cluster": {
       "confirm": {
@@ -1504,7 +1585,30 @@
       "payloadAbsent": "No payload stored for this request. Either payload capture was off when it ran, its model or key falls outside the capture allow-list, or the payload's retention window has already passed — payloads are kept for less time than the log row itself.",
       "payloadCaptureOff": "No payload stored: payload capture is currently off, so prompt and completion bodies are not retained for any request.",
       "payloadCaptureOnButAbsent": "Payload capture is on, but nothing was stored for this request: its model or key may fall outside the capture allow-list, or the payload's {{hours}}h retention window has already passed.",
-      "payloadSettingsLink": "Open log settings"
+      "payloadSettingsLink": "Open log settings",
+      "time": "Time",
+      "model": "Model",
+      "status": "Status",
+      "statusOk": "2xx OK",
+      "statusErrors": "Errors",
+      "latency": "Latency",
+      "cost": "Cost",
+      "tokens": "Tokens",
+      "tokensInOut": "{{in}} in · {{out}} out",
+      "virtualKey": "Virtual key",
+      "error": "Error",
+      "request": "Request",
+      "response": "Response",
+      "filterModels": "Filter models",
+      "closeDetails": "Close details",
+      "prevPage": "Previous page",
+      "nextPage": "Next page",
+      "pause": "Pause",
+      "resume": "Resume",
+      "streaming": "Streaming",
+      "paused": "Paused",
+      "requests_one": "{{count}} request",
+      "requests_other": "{{count}} requests"
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -1512,7 +1616,26 @@
       "noMatchTitle": "No calls match these filters",
       "noMatchBody": "Nothing in this window matched the status and transport you selected.",
       "statusFilterAria": "Filter by status",
-      "transportFilterAria": "Filter by transport"
+      "transportFilterAria": "Filter by transport",
+      "calls24h": "Calls (24h)",
+      "failures": "Failures",
+      "avgLatency": "Avg latency",
+      "p95Latency": "p95 latency",
+      "allStatuses": "all statuses",
+      "allTransports": "all transports",
+      "prev": "← Prev",
+      "next": "Next →",
+      "time": "Time",
+      "server": "Server",
+      "tool": "Tool",
+      "status": "Status",
+      "transport": "Transport",
+      "latency": "Latency",
+      "request": "Request",
+      "trace": "Trace",
+      "arguments": "Arguments",
+      "result": "Result",
+      "closeDetails": "Close MCP log details"
     },
     "providerGroups": {
       "emptyTitle": "No provider groups yet",
@@ -1626,16 +1749,123 @@
       }
     },
     "mcpSettings": {
-      "defaultTransport": "Default transport"
+      "defaultTransport": "Default transport",
+      "noOrgTitle": "Choose an organization",
+      "noOrgBody": "MCP defaults are organization scoped.",
+      "eyebrow": "organization defaults",
+      "lead": "Defaults apply when registering new MCP servers. Runtime authorization still comes from server scopes and each user’s OAuth session.",
+      "transportDefaults": "Transport defaults",
+      "failureMode": "Default failure policy",
+      "failureModeHint": "Stored as the intended policy for clients that consume MCP settings.",
+      "failClosed": "Fail closed",
+      "failOpen": "Fail open",
+      "allowUnlisted": "Allow unlisted tools",
+      "allowUnlistedHint": "Permit clients to request tools not declared in the registry manifest.",
+      "requestControls": "Request controls",
+      "connectTimeout": "Connect timeout (ms)",
+      "requestTimeout": "Request timeout (ms)",
+      "maxRetries": "Maximum retries",
+      "persistNote": "These values are persisted for MCP-aware clients. The current HTTP proxy continues to use deployment-level transport timeouts.",
+      "save": "Save MCP settings"
     },
     "logsSettings": {
       "captureOffSummary": "Nothing is stored: no prompt or completion text is retained for any request. Log metadata — model, tokens, cost, latency, status — is unaffected and keeps flowing.",
       "captureOnSummary": "Stored: the raw prompt and completion body of each matching request, truncated at {{bytes}} bytes, kept for {{hours}} hours and then deleted. Redacted before writing: {{redacted}}. Models captured: {{models}}.",
       "everyModel": "every model",
-      "nothing": "nothing"
+      "nothing": "nothing",
+      "sampleRate": "Sample Rate",
+      "sampleRateHint": "Percentage of requests written to the log. Lower it to cut storage on high-volume deployments; metrics and budgets are unaffected.",
+      "sampleRatePercent": "Sample rate percent",
+      "percentOfRequests": "% of requests",
+      "capture": "Capture Request Payloads",
+      "captureHint": "Store raw prompt and completion bodies alongside the log metadata. Off by default — payloads carry whatever the caller sent.",
+      "captureAria": "Capture request payloads",
+      "maxBytes": "Max bytes per payload",
+      "maxBytesHint": "Anything longer is truncated. Maximum 1048576 (1 MiB).",
+      "redacted": "Redacted Fields",
+      "redactedHint": "Comma-separated JSON keys stripped from captured payloads before they are stored. Redaction happens before the write, so a redacted value never reaches storage.",
+      "redactedPlaceholder": "authorization, api_key, ssn",
+      "onlyModels": "Capture Only These Models",
+      "onlyModelsHint": "Comma-separated model names. Leave empty to capture payloads for every model.",
+      "onlyModelsPlaceholder": "gpt-4o, claude-sonnet-5",
+      "onlyKeys": "Capture Only These Virtual Keys",
+      "onlyKeysHint": "Comma-separated virtual key UUIDs. Leave empty to capture payloads for every key.",
+      "retention": "Retention",
+      "retentionHint": "How long each half of the log is kept. Payloads are the sensitive half, so they cannot outlive the metadata they belong to.",
+      "retentionDays": "Log metadata (days)",
+      "retentionDaysAria": "Retention days",
+      "payloadRetentionHours": "Captured payloads (hours)",
+      "payloadRetentionHoursAria": "Payload retention hours",
+      "errors": {
+        "sampleRange": "Sample rate must be between 0 and 100 percent.",
+        "maxBytes": "Max payload bytes must be a whole number between 0 and 1048576.",
+        "retentionDays": "Retention must be a whole number of days between 1 and 3650.",
+        "payloadRetentionHours": "Payload retention must be a whole number of hours between 1 and 8760.",
+        "payloadOutlivesLog": "Payload retention cannot outlive log retention."
+      }
     },
     "clientSettings": {
-      "exampleRequest": "Example request"
+      "exampleRequest": "Example request",
+      "baseUrl": "Base URL",
+      "baseUrlHint": "The address clients point their SDK at. Set this when the gateway sits behind a load balancer or a custom domain, so the snippet below matches what a caller can actually reach. Leave it empty to use this dashboard’s own origin.",
+      "publicBaseUrl": "Public base URL",
+      "forwarded": "Forwarded request headers",
+      "forwardedHint": "Inbound client headers passed through to the upstream provider, comma or newline separated. Everything not listed is dropped at the gateway.",
+      "forwardedPlaceholder": "x-tenant-id, x-session-id",
+      "alwaysPropagated": "Always propagated:",
+      "neverForwarded": "Never forwarded:",
+      "injected": "Injected upstream headers",
+      "injectedHint": "Static headers the gateway adds to every upstream request. A trace-context header of the same name still wins, so correlation cannot be broken from here. Values are treated as deployment secrets and are never written to the audit log.",
+      "injectedNone": "No headers injected — upstream requests carry only what the gateway and the caller already send.",
+      "injectedName": "Injected header name {{index}}",
+      "injectedValue": "Injected header value {{index}}",
+      "injectedRemove": "Remove injected header {{index}}",
+      "addHeader": "Add header",
+      "correlation": "Correlation",
+      "correlationHint": "Header carrying the end-to-end request id. The gateway reuses the caller’s value when present, mints one when absent, and echoes it on the response so a client can find its own call in the logs.",
+      "requestIdHeader": "Request ID header",
+      "errors": {
+        "baseUrlScheme": "Base URL must start with http:// or https://.",
+        "badHeaderName": "'{{name}}' is not a valid header name.",
+        "reservedHeader": "'{{name}}' is managed by the gateway.",
+        "duplicateHeader": "'{{name}}' is listed twice.",
+        "controlCharacters": "Value for '{{name}}' must not contain control characters.",
+        "tooManyForwarded": "At most 64 forwarded headers are allowed.",
+        "tooManyInjected": "At most 64 injected headers are allowed.",
+        "badRequestIdHeader": "Request ID header is not a valid header name."
+      }
+    },
+    "security": {
+      "dashboardAuth": "Password protect the dashboard",
+      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
+      "credentialRef": "Credential reference",
+      "managedSecret": "Managed secret",
+      "secretConfigured": "configured — enter to replace",
+      "secretPlaceholder": "Enter a secret to store",
+      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
+      "enforceVk": "Enforce Virtual Keys on Inference",
+      "enforceVkHint": "Require a virtual key for all inference requests.",
+      "allowedOrigins": "Allowed Origins",
+      "allowedOriginsHint": "Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
+      "allowedOriginsPlaceholder": "https://app.example.com, https://console.example.com",
+      "allowedHeaders": "Allowed Headers",
+      "allowedHeadersHint": "Comma-separated list of allowed headers for CORS.",
+      "allowedHeadersPlaceholder": "X-Stainless-Timeout",
+      "requiredHeaders": "Required Headers",
+      "requiredHeadersHint": "Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected.",
+      "requiredHeadersPlaceholder": "X-Tenant-ID: acme, X-Custom-Header: value",
+      "bypassRoutes": "Auth Bypass Routes",
+      "bypassRoutesHint": "Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open.",
+      "bypassRoutesPlaceholder": "/v1/models, /v1/ping"
+    },
+    "mcpLibrary": {
+      "eyebrow": "curated endpoints",
+      "lead": "Install a reviewed server definition into this organization. OAuth consent remains per user; installation never stores a token.",
+      "scopesCount_one": "{{count}} OAuth scope",
+      "scopesCount_other": "{{count}} OAuth scopes",
+      "noScopes": "No OAuth scopes",
+      "install": "Install",
+      "installed": "Installed"
     }
   },
   "playground": {
@@ -2120,5 +2350,35 @@
     "codeBlock": "Code block",
     "table": "Table",
     "imageBlocked": "Images in model output are not loaded"
+  },
+  "providerGroupSheet": {
+    "titleAdd": "Add provider group",
+    "titleEdit": "Edit {{name}}",
+    "subtitleAdd": "one group-slug/model address, balanced across members",
+    "create": "Create group",
+    "save": "Save group",
+    "lead": "A provider group unifies a fleet of providers behind one <0>group-slug/model</0> address, balancing requests across its members by the chosen strategy — one slug, one virtual key.",
+    "fields": {
+      "name": "Name",
+      "slug": "Slug",
+      "slugOptional": "Slug (optional)",
+      "slugHintAdd": "URL-safe id for group-slug/model addressing; derived from the name if blank, and immutable after create",
+      "slugHintUnlocked": "changing the slug breaks any client using the old group-slug/model address",
+      "slugHintLocked": "immutable identity for group-slug/model addressing — enable the switch to change it",
+      "copyPrefix": "Copy address prefix",
+      "allowSlugChange": "Allow slug change",
+      "strategy": "Strategy",
+      "strategyHint": "how requests are balanced across member providers"
+    },
+    "members": {
+      "title": "Members",
+      "add": "Add member",
+      "none": "No members yet. A group with no members resolves to nothing.",
+      "noProviders": "No providers in this org yet — add providers first.",
+      "upstreamModel": "Upstream model",
+      "weight": "Weight",
+      "relativeWeight": "Relative weight",
+      "remove": "Remove member"
+    }
   }
 }

@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { CopyButton } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
@@ -90,7 +90,7 @@ function MemberEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium leading-none">Members</span>
+        <span className="text-sm font-medium leading-none">{t("providerGroupSheet.members.title")}</span>
         <Button
           type="button"
           size="sm"
@@ -100,17 +100,17 @@ function MemberEditor({
           onClick={() => onChange([...members, emptyMember(providers)])}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add member
+          {t("providerGroupSheet.members.add")}
         </Button>
       </div>
       {providers.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          No providers in this org yet — add providers first.
+          {t("providerGroupSheet.members.noProviders")}
         </p>
       )}
       {members.length === 0 && providers.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          No members yet. A group with no members resolves to nothing.
+          {t("providerGroupSheet.members.none")}
         </p>
       )}
       {members.length > 0 && (
@@ -118,9 +118,9 @@ function MemberEditor({
           className="grid gap-2 text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]"
           style={{ gridTemplateColumns: "1.4fr 1.4fr 64px 28px" }}
         >
-          <span>Provider</span>
-          <span>Upstream model</span>
-          <span>Weight</span>
+          <span>{t("common.provider")}</span>
+          <span>{t("providerGroupSheet.members.upstreamModel")}</span>
+          <span>{t("providerGroupSheet.members.weight")}</span>
           <span />
         </div>
       )}
@@ -142,7 +142,7 @@ function MemberEditor({
             ))}
           </Select>
           <Input
-            aria-label="Upstream model"
+            aria-label={t("providerGroupSheet.members.upstreamModel")}
             value={m.upstream_model}
             onChange={(e) => update(i, { upstream_model: e.target.value })}
             placeholder="passthrough"
@@ -152,17 +152,17 @@ function MemberEditor({
               names itself — a `title` alone is a hidden label and nothing a
               screen reader announces reliably */}
           <Input
-            aria-label="Relative weight"
+            aria-label={t("providerGroupSheet.members.relativeWeight")}
             type="number"
             min={1}
             value={m.weight}
             onChange={(e) => update(i, { weight: e.target.value })}
-            title="Relative weight"
+            title={t("providerGroupSheet.members.relativeWeight")}
           />
           <button
             type="button"
-            title="Remove member"
-            aria-label="Remove member"
+            title={t("providerGroupSheet.members.remove")}
+            aria-label={t("providerGroupSheet.members.remove")}
             onClick={() => remove(i)}
             className="flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -274,12 +274,15 @@ export function ProviderGroupSheet({
     },
   });
 
-  const title = mode === "add" ? "Add provider group" : `Edit ${group?.name ?? ""}`;
+  const title =
+    mode === "add"
+      ? t("providerGroupSheet.titleAdd")
+      : t("providerGroupSheet.titleEdit", { name: group?.name ?? "" });
   const subtitle =
     mode === "add"
-      ? "one group-slug/model address, balanced across members"
+      ? t("providerGroupSheet.subtitleAdd")
       : `${draft.slug || "—"}/model · ${draft.strategy}`;
-  const cta = mode === "add" ? "Create group" : "Save group";
+  const cta = mode === "add" ? t("providerGroupSheet.create") : t("providerGroupSheet.save");
   const canSave = !!draft.name.trim() && !save.isPending && (mode === "add" ? !!orgId : true);
 
   return (
@@ -291,12 +294,13 @@ export function ProviderGroupSheet({
       />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
-          A provider group unifies a fleet of providers behind one{" "}
-          <span className="font-mono text-foreground">group-slug/model</span> address, balancing
-          requests across its members by the chosen strategy — one slug, one virtual key.
+          <Trans
+            i18nKey="providerGroupSheet.lead"
+            components={[<span key="address" className="font-mono text-foreground" />]}
+          />
         </p>
 
-        <Field label="Name">
+        <Field label={t("providerGroupSheet.fields.name")}>
           <Input
             value={draft.name}
             onChange={(e) => set({ name: e.target.value })}
@@ -306,8 +310,8 @@ export function ProviderGroupSheet({
 
         {mode === "add" ? (
           <Field
-            label="Slug (optional)"
-            hint="URL-safe id for group-slug/model addressing; derived from the name if blank, and immutable after create"
+            label={t("providerGroupSheet.fields.slugOptional")}
+            hint={t("providerGroupSheet.fields.slugHintAdd")}
           >
             <Input
               value={draft.slug}
@@ -318,11 +322,11 @@ export function ProviderGroupSheet({
           </Field>
         ) : (
           <Field
-            label="Slug"
+            label={t("providerGroupSheet.fields.slug")}
             hint={
               draft.allowSlugChange
-                ? "changing the slug breaks any client using the old group-slug/model address"
-                : "immutable identity for group-slug/model addressing — enable the switch to change it"
+                ? t("providerGroupSheet.fields.slugHintUnlocked")
+                : t("providerGroupSheet.fields.slugHintLocked")
             }
             // the child here is a row, not the control, so Field cannot find
             // the input to hang the id on — say which one the label means
@@ -338,7 +342,7 @@ export function ProviderGroupSheet({
                 className="font-mono"
               />
               {group && !draft.allowSlugChange && (
-                <CopyButton value={`${group.slug}/`} label="Copy address prefix" />
+                <CopyButton value={`${group.slug}/`} label={t("providerGroupSheet.fields.copyPrefix")} />
               )}
             </div>
             <div className="flex items-center gap-2 pt-1.5">
@@ -347,14 +351,14 @@ export function ProviderGroupSheet({
                 aria-labelledby="provider-group-slug-toggle"
                 onCheckedChange={(v) => set({ allowSlugChange: v })}
               />
-              <span id="provider-group-slug-toggle" className="text-xs text-muted-foreground">Allow slug change</span>
+              <span id="provider-group-slug-toggle" className="text-xs text-muted-foreground">{t("providerGroupSheet.fields.allowSlugChange")}</span>
             </div>
           </Field>
         )}
 
         <Field
-          label="Strategy"
-          hint="how requests are balanced across member providers"
+          label={t("providerGroupSheet.fields.strategy")}
+          hint={t("providerGroupSheet.fields.strategyHint")}
           // two children, so Field cannot tell which one the label means — the
           // hint below the select is the other one
           htmlFor="provider-group-strategy"
@@ -388,7 +392,7 @@ export function ProviderGroupSheet({
         )}
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
           <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             disabled={!canSave}

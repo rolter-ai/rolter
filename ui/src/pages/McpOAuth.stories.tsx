@@ -309,7 +309,7 @@ export const SessionsMemberScoped: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("1 sessions · 1 live")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("1 session · 1 live")).toBeVisible());
     // the owner falls back to a short id rather than an error
     await expect(canvas.getByText("user-ada")).toBeVisible();
     await expect(
