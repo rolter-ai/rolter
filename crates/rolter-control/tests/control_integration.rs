@@ -8162,12 +8162,18 @@ async fn labels_are_scoped_by_the_subject_they_describe() {
 
 /// A static MCP credential is sealed at rest, never comes back out of the read
 /// API, and the auth kind and the credential columns cannot disagree (#952).
-/// Runs in its own process (nextest), so setting the KEK env var here cannot
-/// race other tests.
+///
+/// Deliberately the *same* KEK value as the OAuth tests above rather than one
+/// of its own. `set_var` is process-wide, and the coverage job runs plain
+/// `cargo test` rather than nextest — one binary, tests as threads — so a
+/// distinct value here can be read by `Kek::from_env()` inside another test's
+/// request between it sealing a value and opening it again. Sharing the value
+/// makes this call a no-op for them. (#1351 tracks the six values already in
+/// this file, which can still collide with each other.)
 #[tokio::test]
 async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "mcp-credential-test-kek");
+    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
 
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
