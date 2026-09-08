@@ -147,6 +147,7 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/stability",
               "api/ui-events",
               "api/version",
               "api/control-plane-openapi"

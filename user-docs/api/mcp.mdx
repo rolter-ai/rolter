@@ -64,3 +64,11 @@ MCP Settings stores organization defaults for transport, timeout intent,
 retries, failure policy and undeclared tools. The current HTTP proxy continues
 to use deployment-level transport timeouts; the screen calls this out rather
 than implying a saved value has already changed request-path behavior.
+
+<Warning>
+  **Tool Groups and MCP Settings are experimental** and may change shape or be
+  removed in a minor release. Both are management surfaces the proxy does not
+  read yet, so the shape each stores is likely to move when it starts to. The
+  MCP proxy itself — `/mcp/{server}`, its authorization and its logs — is not
+  experimental.
+</Warning>

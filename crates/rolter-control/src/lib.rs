@@ -86,6 +86,8 @@ mod security;
 pub mod seed;
 #[cfg(feature = "postgres")]
 mod sso;
+#[cfg(feature = "postgres")]
+mod stability;
 mod telemetry;
 mod ui_config;
 #[cfg(feature = "postgres")]
@@ -967,6 +969,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(connectors::router())
             .merge(collector_config::router())
             .merge(security::router())
+            .merge(stability::router())
             .merge(update_check::router());
     }
 

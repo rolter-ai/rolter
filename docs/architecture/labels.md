@@ -83,6 +83,12 @@ can be allowed to annotate a provider without being allowed to re-point it.
 
 ## Display and filter only, for now
 
+This is why labels carry the `experimental` stability marker: the day a route
+selects on a label, a label stops being an annotation and becomes configuration
+the gateway consumes, which is a change of shape rather than an addition. See
+[Stability markers](../development/stability-markers.md) for what that exempts
+labels from.
+
 Labels are not read by the data plane. A route cannot yet *select* on one — a
 route that targeted `eu-only` would turn labels into config the gateway
 consumes, which is a materially larger change than displaying them.

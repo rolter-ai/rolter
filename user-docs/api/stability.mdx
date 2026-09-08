@@ -1,0 +1,78 @@
+---
+title: "Experimental Subsystems in the Rolter Control Plane"
+sidebarTitle: "Stability"
+description: "GET /api/v1/stability lists the subsystems this build marks experimental — the ones that may change shape or be removed in a minor release. Absence means stable."
+---
+
+Rolter ships a wide surface, and not all of it is equally settled. A handful of
+subsystems are still moving: their shape may change, or they may be withdrawn,
+in a **minor** release. `GET /api/v1/stability` is the list, and it is the same
+list the dashboard reads to put an *Experimental* marker beside a nav entry.
+
+Everything not in that list is stable and carries whatever compatibility promise
+the release makes. **Absence is the signal** — `"stability": "stable"` is never
+sent, because a badge on every page is a badge nobody reads.
+
+## Request
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  http://localhost:4001/api/v1/stability
+```
+
+Any signed-in caller may read it, including a viewer with no membership
+anywhere: it describes the build, not a tenant's data. An anonymous request is
+`401`.
+
+## Response
+
+```json
+[
+  {
+    "id": "realtime",
+    "stability": "experimental",
+    "note": "the /v1/realtime websocket relay is outside the request-path subsystems: a session is admitted against process-local caps only, and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution",
+    "nav_keys": []
+  },
+  {
+    "id": "plugins",
+    "stability": "experimental",
+    "note": "the webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
+    "nav_keys": ["plugins"]
+  }
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | stable subsystem identifier, `snake_case`. Never renamed once published, so it is safe to key off |
+| `stability` | `experimental` today. `stable` exists in the vocabulary but is never sent |
+| `note` | one sentence naming what specifically is unfinished. Written to be shown verbatim |
+| `nav_keys` | the dashboard screens this subsystem owns, if any. Empty is normal — a gateway surface or a cross-cutting concept has no screen of its own |
+
+An empty array is a healthy answer: it means this build marks nothing
+experimental.
+
+<Note>
+  The list is compiled into the binary. It changes only when you upgrade, it is
+  identical for every caller, and no setting alters it — it says how finished
+  the code is, not whether a subsystem is available or turned on.
+</Note>
+
+## What the marker does and does not say
+
+`experimental` withholds exactly one guarantee: that the subsystem will still
+have the same shape, or exist at all, in the next minor release. On an
+experimental subsystem a minor release may rename or withdraw API paths and
+fields, rename or drop configuration keys, change what stored rows mean, or
+remove a dashboard screen.
+
+It is **not** a quality warning, a support disclaimer, or a schedule. An
+experimental subsystem is held to the same review, test and security standards
+as the rest of Rolter, a bug in one is still a bug that gets fixed, and nothing
+graduates on a date. It is also unrelated to whether a subsystem is enabled —
+every entry in the list is usable in a default deployment.
+
+The operation appears as `getStability` in the
+[control-plane OpenAPI document](/api/control-plane-openapi), with a
+`SubsystemStability` schema, so a generated SDK carries it too.
