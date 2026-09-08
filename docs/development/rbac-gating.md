@@ -59,6 +59,16 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   `gate` prop, and a hand-rolled `<button>` reads `useGate()` at the top of the
   screen — one call for the whole list, because the answer does not vary by
   row.
+- **The workbench header controls.** The prompt repository and the skills
+  repository are master-detail screens, so their mutating controls sit in the
+  workbench header rather than on a row. Rename, Settings, Save new version,
+  Publish and Roll back are all one `<resource>:update` — publishing moves a
+  version pointer through the same `PUT` guard as an edit
+  (`set_prompt_template_version` / `set_skill_version` in
+  `crates/rolter-control/src/crud.rs`), and there is no `:publish` action in
+  the capability table to gate on instead — and Delete is the one control that
+  takes `<resource>:delete` (#1297). The `AsViewer` story on each screen
+  asserts all five are refused and name the Admin role.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors, alerting and the MCP logs are wrapped in

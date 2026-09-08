@@ -565,6 +565,9 @@ function PromptWorkbench({
   const problem = draftProblem(draft);
   const problemText = problem && t(`pages.promptRepo.${problem.key}`, { name: problem.name || t("pages.promptRepo.problemUnnamed") });
   const selectedPublished = baseVersion?.version === template.published_version;
+  // publishing, rolling back, saving a version and renaming are one guard in
+  // crates/rolter-control/src/crud.rs — `prompt_template:update` — so the
+  // header gates on that and reserves `prompt_template:delete` for the delete
   return (
     <main className="min-w-0 overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3 sm:px-5">
@@ -578,19 +581,19 @@ function PromptWorkbench({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {baseVersion && !selectedPublished && (
-              <Button variant="outline" disabled={pending} onClick={() => onPublish(baseVersion.version)}>
+              <GatedButton gate="prompt_template:update" variant="outline" disabled={pending} onClick={() => onPublish(baseVersion.version)}>
                 <Check className="h-4 w-4" /> {t("pages.promptRepo.publishVersion", { version: baseVersion.version })}
-              </Button>
+              </GatedButton>
             )}
-            <Button disabled={pending || !!problem} onClick={onSave}>
+            <GatedButton gate="prompt_template:update" disabled={pending || !!problem} onClick={onSave}>
               <FilePlus2 className="h-4 w-4" /> {pending ? t("pages.promptRepo.saving") : t("pages.promptRepo.saveNewDraft")}
-            </Button>
-            <Button variant="ghost" aria-label={t("pages.promptRepo.renameAction", { name: template.name })} onClick={onRename}>
+            </GatedButton>
+            <GatedButton gate="prompt_template:update" variant="ghost" aria-label={t("pages.promptRepo.renameAction", { name: template.name })} onClick={onRename}>
               <Pencil className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" aria-label={t("pages.promptRepo.deleteAction", { name: template.name })} onClick={onDelete}>
+            </GatedButton>
+            <GatedButton gate="prompt_template:delete" variant="ghost" aria-label={t("pages.promptRepo.deleteAction", { name: template.name })} onClick={onDelete}>
               <Trash2 className="h-4 w-4" />
-            </Button>
+            </GatedButton>
           </div>
         </div>
         <div className="mt-3 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -763,7 +766,7 @@ export function VersionRail({ className, template, versions, selectedVersion, lo
               <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground"><Clock3 className="h-3 w-3" />{format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}</p>
               <p className="mt-1 text-[0.6875rem] text-[color:var(--text-subtle)]">{t("pages.promptRepo.versionCounts", { variables: version.variables.length, decorators: version.decorators.length })}</p>
             </button>
-            {!published && template.published_version && <Button variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.promptRepo.rollbackTo", { version: version.version })}</Button>}
+            {!published && template.published_version && <GatedButton gate="prompt_template:update" variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.promptRepo.rollbackTo", { version: version.version })}</GatedButton>}
           </div>;
         })}
       </div>
