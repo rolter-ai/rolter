@@ -82,10 +82,10 @@ export default function Teams() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {teams.data?.length ?? 0} teams · group users, share budgets and access
+          {t("pages.teams.summary", { count: teams.data?.length ?? 0 })}
         </span>
         <GatedButton gate="team:create" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!scope.orgId}>
-          + New team
+          + {t("pages.teams.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -135,7 +135,7 @@ export default function Teams() {
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <div>
                   <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    Members
+                    {t("pages.teams.members")}
                   </div>
                   <div className="font-mono text-sm text-[color:var(--text-secondary)]">
                     {memberships.isError ? "—" : members.length}
@@ -143,7 +143,7 @@ export default function Teams() {
                 </div>
                 <div>
                   <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    Budget
+                    {t("pages.teams.budget")}
                   </div>
                   <div className="font-mono text-sm text-[color:var(--text-secondary)]">
                     {budget
@@ -154,7 +154,9 @@ export default function Teams() {
               </div>
               {admin && (
                 <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                  <span className="text-xs text-[color:var(--text-subtle)]">admin</span>
+                  <span className="text-xs text-[color:var(--text-subtle)]">
+                    {t("pages.teams.admin")}
+                  </span>
                   <span className="ml-auto truncate font-mono text-xs text-[color:var(--text-secondary)]">
                     {admin.user_id}
                   </span>
@@ -171,16 +173,16 @@ export default function Teams() {
           setAddOpen(open);
           if (!open) setName("");
         }}
-        title="New team"
-        subtitle="Group users, share budgets and access."
+        title={t("pages.teams.emptyAction")}
+        subtitle={t("pages.teams.addSubtitle")}
         dirty={name.trim() !== ""}
         errorMessage={create.isError ? (create.error as Error).message : undefined}
-        saveLabel="Create"
+        saveLabel={t("common.create")}
         canSave={!!name.trim()}
         saving={create.isPending}
         onSave={() => create.mutate()}
       >
-        <Field label="Team name">
+        <Field label={t("pages.teams.teamName")}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="platform" />
         </Field>
       </EditorSheet>

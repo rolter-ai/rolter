@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, WalletCards } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
@@ -89,12 +89,12 @@ const blank = (): EditorState => ({
 function slugErrorFor(form: EditorState, original: string | null): string | undefined {
   const slug = form.slug.trim() || slugify(form.name);
   if (slug && !SLUG.test(slug)) {
-    return "Slug must be lowercase alphanumerics and dashes, starting with a letter or digit.";
+    return "pages.costAttribution.editor.slugInvalid";
   }
   // the server refuses a silent rename because attribution already recorded
   // against the old slug does not follow it
   if (original && slug !== original && !form.allowSlugChange) {
-    return "Renaming the slug breaks attribution recorded against the old one. Confirm below to allow it.";
+    return "pages.costAttribution.editor.slugRenameBlocked";
   }
   return undefined;
 }
@@ -120,32 +120,46 @@ function Editor({
   pending: boolean;
   error?: string;
 }) {
-  const slugError = slugErrorFor(form, original);
-  const noun = kind === "unit" ? "business unit" : "customer";
+  const { t } = useTranslation();
+  // the validator names a catalog key rather than carrying english copy
+  const slugErrorKey = slugErrorFor(form, original);
+  const slugError = slugErrorKey ? t(slugErrorKey) : undefined;
   const effectiveSlug = form.slug.trim() || slugify(form.name);
   return (
     <>
       <SheetHeader
-        title={form.id ? `Edit ${noun}` : `New ${noun}`}
+        title={t(
+          form.id
+            ? kind === "unit"
+              ? "pages.costAttribution.editor.editUnit"
+              : "pages.costAttribution.editor.editCustomer"
+            : kind === "unit"
+              ? "pages.costAttribution.editor.newUnit"
+              : "pages.costAttribution.editor.newCustomer",
+        )}
         subtitle={effectiveSlug || "—"}
         onClose={onClose}
       />
       <SheetBody>
-        <Field label="Name">
+        <Field label={t("pages.costAttribution.editor.name")}>
           <Input
-            aria-label="Name"
+            aria-label={t("pages.costAttribution.editor.name")}
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder={kind === "unit" ? "Platform Engineering" : "Acme Corp"}
+            placeholder={t(
+              kind === "unit"
+                ? "pages.costAttribution.editor.unitNamePlaceholder"
+                : "pages.costAttribution.editor.customerNamePlaceholder",
+            )}
           />
         </Field>
         <Field
-          label="Slug"
-          hint="Derived from the name when left blank. This is the stable identity spend is attributed by."
+          label={t("pages.costAttribution.editor.slug")}
+          hint={t("pages.costAttribution.editor.slugHint")}
           error={slugError}
         >
           <Input
-            aria-label="Slug"
+            aria-label={t("pages.costAttribution.editor.slug")}
             className="font-mono text-xs"
             value={form.slug}
             onChange={(e) => setForm({ ...form, slug: e.target.value })}
@@ -156,29 +170,34 @@ function Editor({
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <input
               type="checkbox"
-              aria-label="Allow slug change"
+              aria-label={t("pages.costAttribution.editor.allowSlugChange")}
               checked={form.allowSlugChange}
               onChange={(e) =>
                 setForm({ ...form, allowSlugChange: e.target.checked })
               }
             />
-            Rename the slug from{" "}
-            <span className="font-mono text-foreground">{original}</span> anyway
+            <Trans
+              i18nKey="pages.costAttribution.editor.renameSlug"
+              values={{ slug: original }}
+              components={[<span key="slug" className="font-mono text-foreground" />]}
+            />
           </label>
         )}
         {kind === "customer" && (
           <Field
-            label="Business unit"
-            hint="Roll this customer's spend up into a business unit, or leave it unassigned."
+            label={t("pages.costAttribution.editor.businessUnit")}
+            hint={t("pages.costAttribution.editor.businessUnitHint")}
           >
             <Select
-              aria-label="Business unit"
+              aria-label={t("pages.costAttribution.editor.businessUnit")}
               value={form.businessUnitId}
               onChange={(e) =>
                 setForm({ ...form, businessUnitId: e.target.value })
               }
             >
-              <option value={UNASSIGNED}>Unassigned</option>
+              <option value={UNASSIGNED}>
+              {t("pages.costAttribution.editor.unassignedOption")}
+            </option>
               {units
                 .filter((u) => !u.retired_at || u.id === form.businessUnitId)
                 .map((u) => (
@@ -194,13 +213,13 @@ function Editor({
       <SheetFooter>
         <div className="flex justify-end gap-2 px-[22px] py-3.5">
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             disabled={!form.name.trim() || !!slugError || pending}
             onClick={onSubmit}
           >
-            {form.id ? "Save" : "Create"}
+            {form.id ? t("common.save") : t("common.create")}
           </Button>
         </div>
       </SheetFooter>
@@ -416,8 +435,16 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
     setOpen(true);
   };
 
-  const noun = kind === "unit" ? "business unit" : "customer";
-  const plural = kind === "unit" ? "business units" : "customers";
+  // a noun cannot be interpolated into a sentence frame and still decline, so
+  // each kind names its own key (docs/development/i18n.md)
+  const summaryKey =
+    kind === "unit"
+      ? "pages.costAttribution.unitSummary"
+      : "pages.costAttribution.customerSummary";
+  const createKey =
+    kind === "unit"
+      ? "pages.costAttribution.newUnit"
+      : "pages.costAttribution.newCustomer";
   // one screen serves two resources, so the capability it gates on follows the
   // kind rather than the file (#1183)
   const gate: Capability =
@@ -460,7 +487,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">
-          {rows.length} {plural} · {active} active
+          {t(summaryKey, { count: rows.length, active })}
         </span>
         {/* the confirmation carries the delete's own failure, so the banner
             stands down while it is open rather than saying it twice */}
@@ -468,7 +495,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           <span className="text-xs text-[color:var(--status-danger-text)]">{mutationError.message}</span>
         )}
         <GatedButton gate={gate} className="ml-auto" disabled={disabled} onClick={startCreate}>
-          + New {noun}
+          + {t(createKey)}
         </GatedButton>
       </div>
 
@@ -495,7 +522,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           }
           actions={
             <GatedButton gate={gate} disabled={disabled} onClick={startCreate}>
-              + New {noun}
+              + {t(createKey)}
             </GatedButton>
           }
         />
@@ -527,12 +554,13 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                 {kind === "customer" && (
                   <div className="text-xs text-muted-foreground">
                     {assigned ? (
-                      <>
-                        rolls up into{" "}
-                        <span className="text-foreground">{assigned}</span>
-                      </>
+                      <Trans
+                        i18nKey="pages.costAttribution.rollsUpInto"
+                        values={{ name: assigned }}
+                        components={[<span key="unit" className="text-foreground" />]}
+                      />
                     ) : (
-                      "unassigned"
+                      t("pages.costAttribution.unassigned")
                     )}
                   </div>
                 )}
@@ -545,7 +573,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                     disabled={disabled}
                     onClick={() => startEdit(row)}
                   >
-                    Edit
+                    {t("pages.costAttribution.edit")}
                   </GatedButton>
                   {/* retiring keeps the history a delete would strand */}
                   <GatedButton
@@ -561,7 +589,9 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                     disabled={disabled || mutating}
                     onClick={() => onRetire(row, !row.retired_at)}
                   >
-                    {row.retired_at ? "Restore" : "Retire"}
+                    {row.retired_at
+                      ? t("pages.costAttribution.restore")
+                      : t("pages.costAttribution.retire")}
                   </GatedButton>
                   <GatedButton
                     gate={deleteGate}
@@ -572,7 +602,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                     disabled={disabled || mutating}
                     onClick={() => startDelete(row)}
                   >
-                    Delete
+                    {t("common.delete")}
                   </GatedButton>
                 </div>
               </div>

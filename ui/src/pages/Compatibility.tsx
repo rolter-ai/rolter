@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
@@ -32,14 +32,16 @@ const fromDto = (dto: CompatibilityPolicyDto): FormState => ({
 const DATED_RELEASE = /^\d{4}-\d{2}-\d{2}$/;
 
 // mirrors the server's validation so a bad value is caught before the round
-// trip; the server stays the authority and its message is surfaced on reject
+// trip; the server stays the authority and its message is surfaced on reject.
+// it names a catalog key rather than carrying english copy — the screen renders
+// it, which is where `t` lives
 function validate(form: FormState): string | null {
   if (!DATED_RELEASE.test(form.anthropicVersion.trim())) {
-    return "Anthropic version must be a dated release like 2023-06-01.";
+    return "pages.compatibility.validation.anthropicVersion";
   }
   const tokens = Number(form.defaultMaxTokens);
   if (!Number.isInteger(tokens) || tokens < 1 || tokens > 1_000_000) {
-    return "Default max tokens must be a whole number between 1 and 1000000.";
+    return "pages.compatibility.validation.defaultMaxTokens";
   }
   return null;
 }
@@ -119,7 +121,8 @@ function CompatibilityScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  const localErrorKey = validate(form);
+  const localError = localErrorKey ? t(localErrorKey) : null;
   // the server owns this list, so the screen warns without knowing which
   // fields need a restart
   const restartRequired = policy.data?.restart_required ?? [];
@@ -128,16 +131,19 @@ function CompatibilityScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Anthropic API Version</span>
+          <span className="text-sm font-medium">
+            {t("pages.compatibility.version.title")}
+          </span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Sent as the <code className="font-mono text-xs">anthropic-version</code>{" "}
-            header on every request Rolter translates into the Anthropic dialect.
-            Forwarded verbatim, so it must be a dated release.
+            <Trans
+              i18nKey="pages.compatibility.version.desc"
+              components={[<code key="header" className="font-mono text-xs" />]}
+            />
           </p>
         </div>
         <Input
           className="max-w-[200px] font-mono text-xs"
-          aria-label="Anthropic API version"
+          aria-label={t("pages.compatibility.version.aria")}
           placeholder="2023-06-01"
           value={form.anthropicVersion}
           onChange={(e) => set({ anthropicVersion: e.target.value })}
@@ -146,17 +152,20 @@ function CompatibilityScreen() {
 
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Default Max Tokens</span>
+          <span className="text-sm font-medium">
+            {t("pages.compatibility.maxTokens.title")}
+          </span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Anthropic requires <code className="font-mono text-xs">max_tokens</code>{" "}
-            while OpenAI treats it as optional. This value fills the gap when an
-            OpenAI-shaped request that omits it is translated.
+            <Trans
+              i18nKey="pages.compatibility.maxTokens.desc"
+              components={[<code key="field" className="font-mono text-xs" />]}
+            />
           </p>
         </div>
         <Input
           className="max-w-[200px]"
           inputMode="numeric"
-          aria-label="Default max tokens"
+          aria-label={t("pages.compatibility.maxTokens.aria")}
           value={form.defaultMaxTokens}
           onChange={(e) => set({ defaultMaxTokens: e.target.value })}
         />
@@ -166,8 +175,11 @@ function CompatibilityScreen() {
         <section className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
           <Badge tone="warning">RESTART</Badge>
           <p className="text-sm text-muted-foreground">
-            These fields only take effect after a gateway restart:{" "}
-            <span className="font-mono text-xs">{restartRequired.join(", ")}</span>
+            <Trans
+              i18nKey="pages.compatibility.restartRequired"
+              values={{ fields: restartRequired.join(", ") }}
+              components={[<span key="fields" className="font-mono text-xs" />]}
+            />
           </p>
         </section>
       )}
@@ -178,7 +190,7 @@ function CompatibilityScreen() {
           disabled={save.isPending || localError !== null}
           onClick={() => save.mutate(form)}
         >
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

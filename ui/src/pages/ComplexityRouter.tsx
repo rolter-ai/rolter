@@ -64,8 +64,10 @@ export default function ComplexityRouter() {
   return (
     <PageBody>
       <span className="text-sm text-muted-foreground">
-        {configured.length} of {withPolicy.length} routes have a complexity policy · requests are
-        measured by input bytes and routed to the matching tier
+        {t("pages.complexityRouter.summary", {
+          configured: configured.length,
+          count: withPolicy.length,
+        })}
       </span>
 
       {routes.isLoading && <CardGridSkeleton cards={3} height={196} min={380} />}
@@ -112,7 +114,7 @@ export default function ComplexityRouter() {
                 color="var(--status-info-text)"
                 tint="rgba(59,130,246,.14)"
               >
-                {tiers.length} tiers
+                {t("pages.complexityRouter.tierCount", { count: tiers.length })}
               </Pill>
             </div>
             <div className="flex flex-col gap-1.5">
@@ -126,7 +128,7 @@ export default function ComplexityRouter() {
                   <span className="text-[color:var(--text-secondary)]">{tier.name}</span>
                   <span className="text-[color:var(--text-subtle)]">
                     {tier.max_input_bytes === null || tier.max_input_bytes === undefined
-                      ? "catch-all"
+                      ? t("pages.complexityRouter.catchAll")
                       : `≤ ${formatBytes(fmt, tier.max_input_bytes)}`}
                   </span>
                   <span className="ml-auto truncate text-muted-foreground">→ {tier.route}</span>
@@ -145,7 +147,7 @@ export default function ComplexityRouter() {
                 })}
                 onClick={() => setEditing(route)}
               >
-                Edit policy
+                {t("pages.complexityRouter.editPolicy")}
               </GatedButton>
             </div>
           </div>
@@ -260,11 +262,13 @@ function PolicyDialog({
     <EditorSheet
       open
       onOpenChange={(open) => !open && onClose()}
-      title="Complexity policy"
-      subtitle={`${route.model} · tiers checked in order by input size`}
+      title={translate("pages.complexityRouter.policyTitle")}
+      subtitle={translate("pages.complexityRouter.policySubtitle", {
+        model: route.model,
+      })}
       dirty={dirty}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
-      saveLabel="Save"
+      saveLabel={translate("common.save")}
       canSave={!!tiers && tiers.length > 0}
       saving={save.isPending}
       onSave={() => tiers && save.mutate(tiers)}
@@ -275,7 +279,7 @@ function PolicyDialog({
             <Input
               className="w-[110px] font-mono text-xs"
               value={t.name}
-              placeholder="tier name"
+              placeholder={translate("pages.complexityRouter.tierNamePlaceholder")}
               onChange={(e) => set(i, { name: e.target.value })}
             />
             <Input
@@ -283,7 +287,7 @@ function PolicyDialog({
               type="number"
               min={1}
               value={t.max_input_bytes ?? ""}
-              placeholder="catch-all"
+              placeholder={translate("pages.complexityRouter.catchAll")}
               onChange={(e) =>
                 set(i, {
                   max_input_bytes: e.target.value === "" ? null : Number(e.target.value),
@@ -328,7 +332,7 @@ function PolicyDialog({
           }
         >
           <Plus className="h-3.5 w-3.5" />
-          Add tier
+          {translate("pages.complexityRouter.addTier")}
         </Button>
       </div>
     </EditorSheet>

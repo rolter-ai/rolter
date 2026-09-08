@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Pencil, Plus, Trash2, Key, Loader2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import {
   DEFAULT_KEY_TTL_DAYS,
@@ -204,17 +204,17 @@ export default function Keys() {
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <SearchInput
-          placeholder="Search by name…"
+          placeholder={t("pages.virtualKeys.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" onClick={exportCsv}>
-            Export CSV
+            {t("pages.virtualKeys.exportCsv")}
           </Button>
           <GatedButton gate="virtual_key:create" onClick={() => setAddOpen(true)} disabled={scopeBlocked || !scope.projectId}>
             <Plus className="h-4 w-4" />
-            Add Virtual Key
+            {t("pages.virtualKeys.add")}
           </GatedButton>
         </div>
       </div>
@@ -228,7 +228,7 @@ export default function Keys() {
       )}
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Add/edit/delete is unavailable: {scopeMessage}. Read-only view still works.
+          {t("common.scopeReadOnly", { reason: scopeMessage })}
         </p>
       )}
 
@@ -255,7 +255,9 @@ export default function Keys() {
             className={key.disabled ? "bg-[color:var(--surface-subtle)]/60" : undefined}
           >
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">{key.name ?? "unnamed key"}</div>
+              <div className="truncate text-sm font-semibold">
+                {key.name ?? t("pages.virtualKeys.unnamed")}
+              </div>
               <div className="truncate text-[0.6875rem] text-muted-foreground">
                 {key.expires_at
                   ? t("pages.virtualKeys.expiresOn", { date: fmt.date(key.expires_at) })
@@ -266,13 +268,17 @@ export default function Keys() {
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
                 {key.key_prefix}…
               </code>
-              <CopyButton value={key.key_prefix} label="Copy key prefix" className="h-6 px-1" />
+              <CopyButton
+                value={key.key_prefix}
+                label={t("pages.virtualKeys.copyPrefix")}
+                className="h-6 px-1"
+              />
             </div>
             <div className="flex min-w-0 flex-wrap gap-1 overflow-hidden">
               {key.models.length ? (
                 key.models.slice(0, 3).map((model) => <Tag key={model}>{model}</Tag>)
               ) : (
-                <Badge tone="neutral">all models</Badge>
+                <Badge tone="neutral">{t("pages.virtualKeys.allModels")}</Badge>
               )}
               {key.models.length > 3 && (
                 <span className="font-mono text-[10px] text-[color:var(--text-subtle)]">
@@ -372,7 +378,10 @@ export default function Keys() {
       </ListTable>
       <div className="flex items-center justify-between px-0.5 text-xs text-muted-foreground">
         <span>
-          {rows.length} of {keys.data?.length ?? 0} keys
+          {t("pages.virtualKeys.shownOf", {
+            shown: rows.length,
+            count: keys.data?.length ?? 0,
+          })}
         </span>
       </div>
 
@@ -405,10 +414,13 @@ export default function Keys() {
 
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
-          <DialogTitle>Delete virtual key</DialogTitle>
+          <DialogTitle>{t("pages.virtualKeys.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            <span className="font-mono">{deleteTarget?.key_prefix}…</span> will stop
-            authenticating immediately. This cannot be undone.
+            <Trans
+              i18nKey="pages.virtualKeys.deleteBody"
+              values={{ prefix: `${deleteTarget?.key_prefix}…` }}
+              components={[<span key="prefix" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removeKey.isError && (
@@ -418,7 +430,7 @@ export default function Keys() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -446,7 +458,7 @@ export default function Keys() {
             }}
           >
             {removeKey.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -532,8 +544,8 @@ function AddKeyDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Create virtual key"
-      subtitle="The plaintext key is shown once, right after creation — copy it then"
+      title={t("pages.virtualKeys.createTitle")}
+      subtitle={t("pages.virtualKeys.createSubtitle")}
       dirty={
         Boolean(name || models.length || providerSel.length) ||
         cache !== "inherit" ||
@@ -543,7 +555,9 @@ function AddKeyDialog({
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
-      saveLabel={create.isPending ? "Creating…" : "Create"}
+      saveLabel={
+        create.isPending ? t("pages.virtualKeys.creating") : t("common.create")
+      }
       canSave={keyNameProblem(name) === null}
       saving={create.isPending}
       onSave={() => {
@@ -737,10 +751,9 @@ function CreatedKeyDialog({
   return (
     <Dialog open={!!created} onOpenChange={onOpenChange}>
       <DialogHeader>
-        <DialogTitle>Key created</DialogTitle>
+        <DialogTitle>{t("pages.virtualKeys.createdTitle")}</DialogTitle>
         <DialogDescription>
-          This is the only time the plaintext key is shown. Copy it now — it can't be
-          retrieved again.
+          {t("pages.virtualKeys.createdBody")}
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
@@ -758,7 +771,7 @@ function CreatedKeyDialog({
         </div>
       </div>
       <DialogFooter>
-        <Button onClick={() => onOpenChange(false)}>Done</Button>
+        <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
       </DialogFooter>
     </Dialog>
   );

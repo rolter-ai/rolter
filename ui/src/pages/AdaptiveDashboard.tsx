@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { Activity, Network } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -35,28 +36,50 @@ function share(fmt: Formatters, value: number, total: number): string {
   return fmt.percent(total > 0 ? value / total : 0, 0);
 }
 
-function formatLatency(fmt: Formatters, value?: number): string {
-  if (!value || value <= 0) return "No samples";
-  return `${fmt.number(value, DECIMAL)} ms`;
+function formatLatency(t: TFunction, fmt: Formatters, value?: number): string {
+  if (!value || value <= 0) return t("pages.adaptiveDashboard.noSamples");
+  return t("pages.adaptiveDashboard.latencyMs", { value: fmt.number(value, DECIMAL) });
 }
 
-function formatCost(fmt: Formatters, value?: number): string {
-  if (!value || value <= 0) return "Unknown";
+function formatCost(t: TFunction, fmt: Formatters, value?: number): string {
+  if (!value || value <= 0) return t("pages.adaptiveDashboard.unknownCost");
   return fmt.number(value, DECIMAL);
 }
 
-function policySummary(fmt: Formatters, node: AdaptiveNodeTelemetryDto): string {
+function policySummary(
+  t: TFunction,
+  fmt: Formatters,
+  node: AdaptiveNodeTelemetryDto,
+): string {
   const policy = node.policy;
+  const weight = (key: string, value: number) =>
+    t(key, { value: fmt.number(value, DECIMAL) });
   const weights = [
-    policy.latency_weight != null ? `${fmt.number(policy.latency_weight, DECIMAL)} latency` : null,
-    policy.cost_weight != null ? `${fmt.number(policy.cost_weight, DECIMAL)} cost` : null,
-    policy.load_weight != null ? `${fmt.number(policy.load_weight, DECIMAL)} load` : null,
+    policy.latency_weight != null
+      ? weight("pages.adaptiveDashboard.policy.latencyWeight", policy.latency_weight)
+      : null,
+    policy.cost_weight != null
+      ? weight("pages.adaptiveDashboard.policy.costWeight", policy.cost_weight)
+      : null,
+    policy.load_weight != null
+      ? weight("pages.adaptiveDashboard.policy.loadWeight", policy.load_weight)
+      : null,
   ].filter(Boolean);
-  const details = weights.length > 0 ? weights.join(" / ") : "policy unavailable";
-  const summary = policy.min_samples == null
-    ? details
-    : `${details} · ${fmt.number(policy.min_samples)} warm-up samples`;
-  return policy.enabled === false ? `disabled · ${summary}` : summary;
+  const details =
+    weights.length > 0
+      ? weights.join(" / ")
+      : t("pages.adaptiveDashboard.policy.unavailable");
+  const summary =
+    policy.min_samples == null
+      ? details
+      : t("pages.adaptiveDashboard.policy.withWarmUp", {
+          details,
+          count: policy.min_samples,
+          value: fmt.number(policy.min_samples),
+        });
+  return policy.enabled === false
+    ? t("pages.adaptiveDashboard.policy.disabled", { summary })
+    : summary;
 }
 
 function routeIsDisabled(route: AdaptiveRouteTelemetryDto): boolean {
@@ -124,15 +147,17 @@ function AdaptiveDashboardScreen() {
     <PageBody>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-[65ch] text-sm leading-relaxed text-muted-foreground">
-          Live scores and decision modes reported by gateways using the adaptive strategy.
-          Counts reset when a gateway rebuilds its routing snapshot.
+          {t("pages.adaptiveDashboard.lead")}
         </p>
         {view && (
           <p className="text-xs tabular-nums text-muted-foreground">
             <time dateTime={view.generated_at} title={fmt.dateTime(view.generated_at)}>
-              Updated {fmt.time(view.generated_at)}
+              {t("pages.adaptiveDashboard.updated", { time: fmt.time(view.generated_at) })}
             </time>
-            {` · reports expire after ${fmt.number(view.fresh_window_secs)} s`}
+            {" "}
+            {t("pages.adaptiveDashboard.reportsExpire", {
+              seconds: fmt.number(view.fresh_window_secs),
+            })}
           </p>
         )}
       </div>
@@ -167,7 +192,7 @@ function AdaptiveDashboardScreen() {
             {routes.map((route) => (
               <section
                 key={route.model}
-                aria-label={`Adaptive route ${route.model}`}
+                aria-label={t("pages.adaptiveDashboard.routeAria", { model: route.model })}
                 className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3 bg-[color:var(--surface-subtle)] px-4 py-3">
@@ -212,7 +237,10 @@ function AdaptiveDashboardScreen() {
                               {nodeState(node)}
                             </Badge>
                             <span className="text-xs tabular-nums text-muted-foreground">
-                              {fmt.number(decisionTotal)} decisions
+                              {t("pages.adaptiveDashboard.decisions", {
+                                count: decisionTotal,
+                                value: fmt.number(decisionTotal),
+                              })}
                             </span>
                           </span>
                         </summary>
@@ -220,18 +248,25 @@ function AdaptiveDashboardScreen() {
                         <div className="flex flex-col gap-4 border-t border-[color:var(--border-subtle)] p-4">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <p className="max-w-[65ch] text-xs leading-relaxed text-muted-foreground">
-                              {policySummary(fmt, node)}
+                              {policySummary(t, fmt, node)}
                             </p>
                             <time
                               dateTime={node.reported_at}
                               title={fmt.dateTime(node.reported_at)}
                               className="text-xs tabular-nums text-muted-foreground"
                             >
-                              Reported {fmt.time(node.reported_at)}
+                              {t("pages.adaptiveDashboard.reported", {
+                                time: fmt.time(node.reported_at),
+                              })}
                             </time>
                           </div>
 
-                          <div role="group" aria-label={`${node.node_id} decision modes`}>
+                          <div
+                            role="group"
+                            aria-label={t("pages.adaptiveDashboard.decisionModesAria", {
+                              node: node.node_id,
+                            })}
+                          >
                             <div
                               className="flex h-2 overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"
                               aria-hidden="true"
@@ -251,9 +286,12 @@ function AdaptiveDashboardScreen() {
                             </div>
                             <dl className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
                               {([
-                                ["Blend", node.decisions.blend],
-                                ["Exploration", node.decisions.exploration],
-                                ["Fallback", node.decisions.fallback],
+                                [t("pages.adaptiveDashboard.modes.blend"), node.decisions.blend],
+                                [
+                                  t("pages.adaptiveDashboard.modes.exploration"),
+                                  node.decisions.exploration,
+                                ],
+                                [t("pages.adaptiveDashboard.modes.fallback"), node.decisions.fallback],
                               ] as const).map(([label, value]) => (
                                 <div key={label} className="flex items-baseline justify-between gap-2">
                                   <dt className="text-muted-foreground">{label}</dt>
@@ -267,7 +305,7 @@ function AdaptiveDashboardScreen() {
 
                           {node.targets.length === 0 ? (
                             <p className="text-sm text-muted-foreground">
-                              No target signals were included in this report.
+                              {t("pages.adaptiveDashboard.noTargets")}
                             </p>
                           ) : (
                             <div
@@ -276,16 +314,30 @@ function AdaptiveDashboardScreen() {
                             >
                               <table className="w-full min-w-[760px] border-collapse text-sm">
                                 <caption className="sr-only">
-                                  Target signals reported by {node.node_id}
+                                  {t("pages.adaptiveDashboard.tableCaption", {
+                                    node: node.node_id,
+                                  })}
                                 </caption>
                                 <thead className="bg-[color:var(--surface-subtle)] text-left text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
                                   <tr>
-                                    <th scope="col" className="px-3 py-2 font-medium">Upstream</th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">Blend score</th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">Latency</th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">Cost / Mtok</th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">In flight</th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">Samples</th>
+                                    <th scope="col" className="px-3 py-2 font-medium">
+                                      {t("pages.adaptiveDashboard.columns.upstream")}
+                                    </th>
+                                    <th scope="col" className="px-3 py-2 text-right font-medium">
+                                      {t("pages.adaptiveDashboard.columns.blendScore")}
+                                    </th>
+                                    <th scope="col" className="px-3 py-2 text-right font-medium">
+                                      {t("pages.adaptiveDashboard.columns.latency")}
+                                    </th>
+                                    <th scope="col" className="px-3 py-2 text-right font-medium">
+                                      {t("pages.adaptiveDashboard.columns.cost")}
+                                    </th>
+                                    <th scope="col" className="px-3 py-2 text-right font-medium">
+                                      {t("pages.adaptiveDashboard.columns.inFlight")}
+                                    </th>
+                                    <th scope="col" className="px-3 py-2 text-right font-medium">
+                                      {t("pages.adaptiveDashboard.columns.samples")}
+                                    </th>
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -301,10 +353,10 @@ function AdaptiveDashboardScreen() {
                                         {target.score == null ? "—" : fmt.number(target.score, DECIMAL)}
                                       </td>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {formatLatency(fmt, target.latency_ms)}
+                                        {formatLatency(t, fmt, target.latency_ms)}
                                       </td>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {formatCost(fmt, target.cost_per_mtok)}
+                                        {formatCost(t, fmt, target.cost_per_mtok)}
                                       </td>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
                                         {fmt.number(target.in_flight ?? 0)}

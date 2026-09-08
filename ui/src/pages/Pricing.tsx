@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDollarSign, Plus, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
 import { useGate } from "@/lib/can";
@@ -83,7 +83,7 @@ export default function Pricing() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {prices.data?.length ?? 0} models · per-million-token pricing · currency set per model
+          {t("pages.pricing.summary", { count: prices.data?.length ?? 0 })}
         </span>
         {/* a price is written with PUT /model-prices whether or not the row
             exists, so adding one takes `model_price:update` — there is no
@@ -97,7 +97,7 @@ export default function Pricing() {
           }}
         >
           <Plus className="h-4 w-4" />
-          Add price
+          {t("pages.pricing.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -138,14 +138,23 @@ export default function Pricing() {
             <div className="truncate font-mono text-sm font-semibold">{price.model}</div>
             <div className="flex flex-wrap gap-1.5">
               <Badge tone="outline">
-                in {price.input_per_mtok} {price.currency}/Mtok
+                {t("pages.pricing.inPrice", {
+                  value: price.input_per_mtok,
+                  currency: price.currency,
+                })}
               </Badge>
               <Badge tone="outline">
-                out {price.output_per_mtok} {price.currency}/Mtok
+                {t("pages.pricing.outPrice", {
+                  value: price.output_per_mtok,
+                  currency: price.currency,
+                })}
               </Badge>
               {price.cached_input_per_mtok && (
                 <Badge tone="neutral">
-                  cached {price.cached_input_per_mtok} {price.currency}/Mtok
+                  {t("pages.pricing.cachedPrice", {
+                    value: price.cached_input_per_mtok,
+                    currency: price.currency,
+                  })}
                 </Badge>
               )}
             </div>
@@ -168,7 +177,7 @@ export default function Pricing() {
                   setEditOpen(true);
                 }}
               >
-                Edit
+                {t("pages.pricing.edit")}
               </GatedButton>
               <button
                 type="button"
@@ -203,11 +212,13 @@ export default function Pricing() {
         onOpenChange={(open) => !open && setDeleteTarget(null)}
       >
         <DialogHeader>
-          <DialogTitle>Delete price</DialogTitle>
+          <DialogTitle>{t("pages.pricing.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            Removes the pricing entry for{" "}
-            <span className="font-mono">{deleteTarget?.model}</span>. Cost
-            accounting for this model falls back to no known price.
+            <Trans
+              i18nKey="pages.pricing.deleteBody"
+              values={{ model: deleteTarget?.model }}
+              components={[<span key="model" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removePrice.isError && (
@@ -217,7 +228,7 @@ export default function Pricing() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -240,7 +251,7 @@ export default function Pricing() {
               });
             }}
           >
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -321,17 +332,21 @@ function UpsertPriceDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={existing ? `Edit ${existing.model}` : "Add price"}
-      subtitle="Prices are per million tokens (Mtok); saving upserts by model name."
+      title={
+        existing
+          ? t("pages.pricing.editTitle", { model: existing.model })
+          : t("pages.pricing.emptyAction")
+      }
+      subtitle={t("pages.pricing.editSubtitle")}
       dirty={dirty}
       errorMessage={submit.isError ? (submit.error as Error).message : undefined}
-      saveLabel="Save"
+      saveLabel={t("common.save")}
       canSave={!!model.trim() && !!inputPerMtok.trim() && !!outputPerMtok.trim()}
       saving={submit.isPending}
       onSave={() => submit.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Model name">
+        <Field label={t("pages.pricing.modelName")}>
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -339,7 +354,7 @@ function UpsertPriceDialog({
             disabled={!!existing}
           />
         </Field>
-        <Field label="Input price per Mtok">
+        <Field label={t("pages.pricing.inputPrice")}>
           <Input
             type="number"
             min={0}
@@ -348,7 +363,7 @@ function UpsertPriceDialog({
             onChange={(e) => setInputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label="Output price per Mtok">
+        <Field label={t("pages.pricing.outputPrice")}>
           <Input
             type="number"
             min={0}
@@ -357,20 +372,20 @@ function UpsertPriceDialog({
             onChange={(e) => setOutputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label="Cached input price per Mtok (optional)">
+        <Field label={t("pages.pricing.cachedInputPrice")}>
           <Input
             type="number"
             min={0}
             step="0.000001"
             value={cachedInputPerMtok}
             onChange={(e) => setCachedInputPerMtok(e.target.value)}
-            placeholder="defaults to input price"
+            placeholder={t("pages.pricing.cachedPlaceholder")}
           />
         </Field>
         <Field
-          label="Currency"
-          hint="Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate."
-          info="Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget."
+          label={t("pages.pricing.currency")}
+          hint={t("pages.pricing.currencyHint")}
+          info={t("pages.pricing.currencyInfo")}
         >
           <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />
         </Field>

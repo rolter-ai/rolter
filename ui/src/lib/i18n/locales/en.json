@@ -45,7 +45,10 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
-    "saving": "Saving…"
+    "saving": "Saving…",
+    "done": "Done",
+    "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
+    "noResults": "No results"
   },
   "errors": {
     "load": {
@@ -140,6 +143,11 @@
       "attributionSpend": "attribution spend",
       "customRoles": "custom roles",
       "orgScope": "teams and projects"
+    },
+    "requestFailed": "request failed: {{status}}",
+    "gateway": {
+      "unauthorized": "unauthorized — set a valid virtual key",
+      "requestFailed": "gateway request failed: {{status}}"
     }
   },
   "locale": {
@@ -401,7 +409,31 @@
       "providerCount_other": "{{first}} +{{count}} more",
       "viewAria": "View {{model}}",
       "editAria": "Edit {{model}}",
-      "deleteAria": "Delete model {{model}}"
+      "deleteAria": "Delete model {{model}}",
+      "searchPlaceholder": "Search models",
+      "modelTally_one": "{{count}} model",
+      "modelTally_other": "{{count}} models",
+      "providerTally_one": "{{count}} provider",
+      "providerTally_other": "{{count}} providers",
+      "origin": {
+        "all": "All",
+        "db": "DB-managed",
+        "config": "Config"
+      },
+      "configLegend": "shipped in config · immutable",
+      "columns": {
+        "model": "Model",
+        "strategy": "Strategy",
+        "origin": "Origin",
+        "price": "In · out /Mtok",
+        "weight": "Weight"
+      },
+      "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
+      "readOnlyPill": "read-only",
+      "view": "View",
+      "edit": "Edit",
+      "deleteTitle": "Delete model",
+      "deleteBody": "This removes all routes and targets for <0>{{model}}</0>. This cannot be undone."
     },
     "providers": {
       "search": "Search providers",
@@ -512,7 +544,18 @@
       "emptyTitle": "No routes yet",
       "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
       "emptyAction": "Add route",
-      "deleteRoute": "Delete route {{model}}"
+      "deleteRoute": "Delete route {{model}}",
+      "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
+      "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
+      "noTargets": "No targets yet.",
+      "addSubtitle": "Public model name resolved to upstream targets by the chosen strategy.",
+      "form": {
+        "modelName": "Model name",
+        "strategy": "Strategy",
+        "firstTarget": "First target",
+        "noTarget": "none (attach later)",
+        "weight": "Weight"
+      }
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",
@@ -520,7 +563,25 @@
       "emptyBody": "Without a price a model's traffic is recorded as unpriced, so its spend is missing from totals and budgets.",
       "emptyAction": "Add price",
       "editAria": "Edit the price for {{model}}",
-      "deleteAria": "Delete the price for {{model}}"
+      "deleteAria": "Delete the price for {{model}}",
+      "summary_one": "{{count}} model · per-million-token pricing · currency set per model",
+      "summary_other": "{{count}} models · per-million-token pricing · currency set per model",
+      "inPrice": "in {{value}} {{currency}}/Mtok",
+      "outPrice": "out {{value}} {{currency}}/Mtok",
+      "cachedPrice": "cached {{value}} {{currency}}/Mtok",
+      "edit": "Edit",
+      "editTitle": "Edit {{model}}",
+      "editSubtitle": "Prices are per million tokens (Mtok); saving upserts by model name.",
+      "deleteTitle": "Delete price",
+      "deleteBody": "Removes the pricing entry for <0>{{model}}</0>. Cost accounting for this model falls back to no known price.",
+      "modelName": "Model name",
+      "inputPrice": "Input price per Mtok",
+      "outputPrice": "Output price per Mtok",
+      "cachedInputPrice": "Cached input price per Mtok (optional)",
+      "cachedPlaceholder": "defaults to input price",
+      "currency": "Currency",
+      "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
+      "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget."
     },
     "playground": {
       "groupRoutes": "Routes",
@@ -827,7 +888,22 @@
       "saving": "Saving…",
       "toggleAria": "Enable {{name}}",
       "cacheAria": "Response cache policy for {{name}}",
-      "deleteKey": "Delete key {{name}}"
+      "deleteKey": "Delete key {{name}}",
+      "searchPlaceholder": "Search by name…",
+      "exportCsv": "Export CSV",
+      "add": "Add Virtual Key",
+      "unnamed": "unnamed key",
+      "copyPrefix": "Copy key prefix",
+      "allModels": "all models",
+      "shownOf_one": "{{shown}} of {{count}} key",
+      "shownOf_other": "{{shown}} of {{count}} keys",
+      "deleteTitle": "Delete virtual key",
+      "deleteBody": "<0>{{prefix}}</0> will stop authenticating immediately. This cannot be undone.",
+      "createTitle": "Create virtual key",
+      "createSubtitle": "The plaintext key is shown once, right after creation — copy it then",
+      "creating": "Creating…",
+      "createdTitle": "Key created",
+      "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
@@ -898,7 +974,13 @@
         "ruleTitle": "Delete rule {{name}}?",
         "ruleBody": "The gateway stops evaluating this rule, so the condition it watches goes unwatched.",
         "ruleConfirm": "Delete rule"
-      }
+      },
+      "channelSummary_one": "{{count}} channel · webhook destinations for alert delivery",
+      "channelSummary_other": "{{count}} channels · webhook destinations for alert delivery",
+      "ruleSummary_one": "{{count}} rule · evaluated every 60s against gateway analytics",
+      "ruleSummary_other": "{{count}} rules · evaluated every 60s against gateway analytics",
+      "historySummary_one": "{{count}} notification · newest first",
+      "historySummary_other": "{{count}} notifications · newest first"
     },
     "connectors": {
       "collectorConfig": {
@@ -922,7 +1004,21 @@
       "testFailed": "Delivery failed: {{message}}",
       "toggleAria": "Enable {{name}}",
       "testAria": "Test delivery to {{name}}",
-      "deleteAria": "Delete connector {{name}}"
+      "deleteAria": "Delete connector {{name}}",
+      "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
+      "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
+      "add": "Add connector",
+      "addSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
+      "sampled": "{{percent}}% sampled",
+      "secretSet": "secret set",
+      "testDelivery": "Test delivery",
+      "form": {
+        "name": "Name",
+        "endpoint": "Endpoint URL",
+        "sampling": "Sampling (%)",
+        "secret": "Bearer secret (optional)",
+        "secretPlaceholder": "stored encrypted"
+      }
     },
     "accessProfiles": {
       "confirm": {
@@ -1119,7 +1215,8 @@
       "emptyBody": "Nodes appear here once a gateway identifies itself on its snapshot poll. A gateway sends its identity only when ROLTER_NODE_ID or HOSTNAME is set in its environment — containers always have HOSTNAME; a bare-metal or native run needs ROLTER_NODE_ID set explicitly.",
       "drainAria": "Drain node {{node}}",
       "returnAria": "Return node {{node}} to service",
-      "forgetAria": "Forget node {{node}}"
+      "forgetAria": "Forget node {{node}}",
+      "stillPolling": "node is still polling; it would reappear on its next snapshot poll"
     },
     "costAttribution": {
       "confirm": {
@@ -1141,7 +1238,36 @@
       "editAria": "Edit {{name}}",
       "retireAria": "Retire {{name}}",
       "restoreAria": "Restore {{name}}",
-      "deleteAria": "Delete {{name}}"
+      "deleteAria": "Delete {{name}}",
+      "editor": {
+        "editUnit": "Edit business unit",
+        "editCustomer": "Edit customer",
+        "newUnit": "New business unit",
+        "newCustomer": "New customer",
+        "name": "Name",
+        "unitNamePlaceholder": "Platform Engineering",
+        "customerNamePlaceholder": "Acme Corp",
+        "slug": "Slug",
+        "slugHint": "Derived from the name when left blank. This is the stable identity spend is attributed by.",
+        "slugInvalid": "Slug must be lowercase alphanumerics and dashes, starting with a letter or digit.",
+        "slugRenameBlocked": "Renaming the slug breaks attribution recorded against the old one. Confirm below to allow it.",
+        "allowSlugChange": "Allow slug change",
+        "renameSlug": "Rename the slug from <0>{{slug}}</0> anyway",
+        "businessUnit": "Business unit",
+        "businessUnitHint": "Roll this customer's spend up into a business unit, or leave it unassigned.",
+        "unassignedOption": "Unassigned"
+      },
+      "unitSummary_one": "{{count}} business unit · {{active}} active",
+      "unitSummary_other": "{{count}} business units · {{active}} active",
+      "customerSummary_one": "{{count}} customer · {{active}} active",
+      "customerSummary_other": "{{count}} customers · {{active}} active",
+      "newUnit": "New business unit",
+      "newCustomer": "New customer",
+      "rollsUpInto": "rolls up into <0>{{name}}</0>",
+      "unassigned": "unassigned",
+      "edit": "Edit",
+      "retire": "Retire",
+      "restore": "Restore"
     },
     "guardrailRules": {
       "confirm": {
@@ -1195,7 +1321,8 @@
       "toggleSystem": "Inspect system messages",
       "toggleSystemHint": "Off by default because operator-authored instructions are trusted.",
       "publishing": "Publishing…",
-      "publish": "Publish rule"
+      "publish": "Publish rule",
+      "loadingAria": "Loading guardrails"
     },
     "guardrailProviders": {
       "confirm": {
@@ -1254,6 +1381,41 @@
         "blendActive": "Blend active",
         "reportingGateways": "Reporting gateways",
         "observedPicks": "Observed picks"
+      },
+      "lead": "Live scores and decision modes reported by gateways using the adaptive strategy. Counts reset when a gateway rebuilds its routing snapshot.",
+      "updated": "Updated {{time}}",
+      "reportsExpire": "· reports expire after {{seconds}} s",
+      "routeAria": "Adaptive route {{model}}",
+      "decisions_one": "{{value}} decision",
+      "decisions_other": "{{value}} decisions",
+      "reported": "Reported {{time}}",
+      "decisionModesAria": "{{node}} decision modes",
+      "modes": {
+        "blend": "Blend",
+        "exploration": "Exploration",
+        "fallback": "Fallback"
+      },
+      "noTargets": "No target signals were included in this report.",
+      "tableCaption": "Target signals reported by {{node}}",
+      "columns": {
+        "upstream": "Upstream",
+        "blendScore": "Blend score",
+        "latency": "Latency",
+        "cost": "Cost / Mtok",
+        "inFlight": "In flight",
+        "samples": "Samples"
+      },
+      "noSamples": "No samples",
+      "latencyMs": "{{value}} ms",
+      "unknownCost": "Unknown",
+      "policy": {
+        "latencyWeight": "{{value}} latency",
+        "costWeight": "{{value}} cost",
+        "loadWeight": "{{value}} load",
+        "unavailable": "policy unavailable",
+        "withWarmUp_one": "{{details}} · {{value}} warm-up sample",
+        "withWarmUp_other": "{{details}} · {{value}} warm-up samples",
+        "disabled": "disabled · {{summary}}"
       }
     },
     "govTeams": {
@@ -1479,7 +1641,13 @@
       "hideDetailsAria": "Hide details for action {{action}} on target {{target}}",
       "showDetailsAria": "Show details for action {{action}} on target {{target}}",
       "prevPageAria": "Previous page",
-      "nextPageAria": "Next page"
+      "nextPageAria": "Next page",
+      "allActions": "All actions",
+      "allTargets": "All targets",
+      "page": "page {{page}}",
+      "totalSuffix": " · {{total}} total",
+      "prev": "Prev",
+      "next": "Next"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -1489,7 +1657,17 @@
       "tierRouteAria": "Route for this tier",
       "editPolicyAria": "Edit the complexity policy for {{model}}",
       "addPolicyAria": "Add a complexity policy for {{model}}",
-      "removeTierAria": "Remove tier {{name}}"
+      "removeTierAria": "Remove tier {{name}}",
+      "summary_one": "{{configured}} of {{count}} route has a complexity policy · requests are measured by input bytes and routed to the matching tier",
+      "summary_other": "{{configured}} of {{count}} routes have a complexity policy · requests are measured by input bytes and routed to the matching tier",
+      "tierCount_one": "{{count}} tier",
+      "tierCount_other": "{{count}} tiers",
+      "editPolicy": "Edit policy",
+      "catchAll": "catch-all",
+      "policyTitle": "Complexity policy",
+      "policySubtitle": "{{model}} · tiers checked in order by input size",
+      "tierNamePlaceholder": "tier name",
+      "addTier": "Add tier"
     },
     "health": {
       "closed": "closed",
@@ -1647,12 +1825,31 @@
       "noOrgTitle": "Choose an organization",
       "noOrgBody": "Provider groups are scoped to one organization. Pick or create one to manage them.",
       "editOne": "Edit provider group {{name}}",
-      "deleteOne": "Delete provider group {{name}}"
+      "deleteOne": "Delete provider group {{name}}",
+      "searchPlaceholder": "Search provider groups",
+      "columns": {
+        "name": "Name",
+        "strategy": "Strategy",
+        "address": "Address",
+        "members": "Members"
+      },
+      "copyAddress": "Copy address prefix",
+      "noMembers": "no members",
+      "edit": "Edit",
+      "deleteTitle": "Delete provider group",
+      "deleteBody": "<0>{{name}}</0> will stop resolving as a <1>{{address}}</1> address. Member providers are unaffected. This cannot be undone."
     },
     "teams": {
       "emptyTitle": "No teams yet",
       "emptyBody": "A team groups users so a budget and a set of projects can be shared across them.",
-      "emptyAction": "New team"
+      "emptyAction": "New team",
+      "summary_one": "{{count}} team · group users, share budgets and access",
+      "summary_other": "{{count}} teams · group users, share budgets and access",
+      "members": "Members",
+      "budget": "Budget",
+      "admin": "admin",
+      "addSubtitle": "Group users, share budgets and access.",
+      "teamName": "Team name"
     },
     "userProvisioning": {
       "mappings": {
@@ -1675,7 +1872,35 @@
       "emptyTitle": "No provisioning tokens yet",
       "emptyBody": "Issue a token, paste it into your identity provider's SCIM connector, and it syncs users into this organization. The token is shown once, at creation.",
       "emptyAction": "Issue token",
-      "revokeAria": "Revoke provisioning token {{name}}"
+      "revokeAria": "Revoke provisioning token {{name}}",
+      "lead_one": "{{count}} token · {{active}} active. Your identity provider presents one of these as a bearer token and drives <0>/scim/v2/Users</0> to create, update and deactivate accounts in this org.",
+      "lead_other": "{{count}} tokens · {{active}} active. Your identity provider presents one of these as a bearer token and drives <0>/scim/v2/Users</0> to create, update and deactivate accounts in this org.",
+      "issueToken": "Issue token",
+      "forbidden": "Provisioning tokens are visible to org admins only. Ask an admin to issue or revoke one for your identity provider.",
+      "columns": {
+        "token": "Token",
+        "status": "Status",
+        "lastSync": "Last sync",
+        "created": "Created"
+      },
+      "revokedAt": "revoked {{when}}",
+      "neverUsed": "never used",
+      "revoke": "Revoke",
+      "revoked": "Revoked",
+      "revokeTitle": "Revoke provisioning token",
+      "revokeBody": "<0>{{name}}</0> stops authenticating on the very next request — there is no cache to wait out. Accounts it already provisioned are left exactly as they are: nobody is deactivated or logged out, the directory simply stops syncing until you point the IdP at a new token.",
+      "sheet": {
+        "issueTitle": "Issue provisioning token",
+        "copyTitle": "Copy the token now",
+        "subtitle": "scim 2.0 · bearer credential"
+      },
+      "copyToken": "Copy provisioning token",
+      "onceWarning": "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
+      "pasteHint": "Paste it into your identity provider's SCIM connector as the bearer token, alongside the base URL <0>https://your-rolter-host/scim/v2</0>. The token carries the org, so no tenant id goes in the URL.",
+      "nameLabel": "Name",
+      "nameHint": "how you will recognise it later — usually the identity provider it belongs to",
+      "namePlaceholder": "Okta production",
+      "viewerNote": "Provisioned accounts join this org as viewers and have no local password: SCIM decides who exists, you still decide what they may do."
     },
     "users": {
       "emptyTitle": "No users yet",
@@ -1871,6 +2096,128 @@
       "noScopes": "No OAuth scopes",
       "install": "Install",
       "installed": "Installed"
+    },
+    "performance": {
+      "retries": {
+        "title": "Retries",
+        "desc": "Upstream retry budget for a single client request. Backoff grows exponentially from the base up to the cap.",
+        "maxRetries": "Max retries",
+        "baseBackoff": "Base backoff (ms)",
+        "backoffCap": "Backoff cap (ms)"
+      },
+      "timeouts": {
+        "title": "Timeouts",
+        "desc": "How long the gateway waits on an upstream. Zero disables the timeout — streaming responses are bounded by the request timeout too.",
+        "connect": "Connect (s)",
+        "request": "Request (s)"
+      },
+      "queue": {
+        "title": "Admission Queue",
+        "desc": "Each provider gets its own bounded queue and worker set, so a slow provider cannot consume the admission capacity of healthy ones.",
+        "toggleAria": "Admission queue",
+        "capacity": "Capacity",
+        "workers": "Workers",
+        "whenFull": "When the queue is full",
+        "blockTimeout": "Block timeout (ms)"
+      },
+      "backpressure": {
+        "drop": "Drop — shed the request immediately with an overload response.",
+        "block": "Block — wait for capacity until the block timeout expires.",
+        "error": "Error — return a structured queue_full error immediately."
+      },
+      "validation": {
+        "maxRetries": "Max retries must be between 0 and 10.",
+        "retryBase": "Retry base must be between 0 and 60000 ms.",
+        "retryCap": "Retry cap must be between 0 and 600000 ms.",
+        "retryCapBelowBase": "Retry cap cannot be lower than the retry base.",
+        "connectTimeout": "Connect timeout must be between 0 and 300 s.",
+        "requestTimeout": "Request timeout must be between 0 and 3600 s.",
+        "queueCapacity": "Queue capacity must be between 1 and 100000.",
+        "queueWorkers": "Queue workers must be between 1 and 2048.",
+        "blockTimeout": "Block timeout must be between 0 and 120000 ms.",
+        "blockNeedsTimeout": "Block backpressure needs a non-zero block timeout."
+      }
+    },
+    "adaptiveSettings": {
+      "title": "Adaptive Routing",
+      "killSwitch": "The kill switch. Turning it off leaves every route on the <0>adaptive</0> strategy serving from its static target weights instead.",
+      "noAffectedRoutes": "No route currently uses the adaptive strategy.",
+      "governsRoutes_one": "Governs {{count}} route:",
+      "governsRoutes_other": "Governs {{count}} routes:",
+      "toggleAria": "Adaptive routing enabled",
+      "weightsTitle": "Blend Weights",
+      "weightsDesc": "Each signal is scored in <0>[0, 1]</0> and combined as a weighted sum, so only the ratio between these matters — doubling all three changes nothing.",
+      "weights": {
+        "latency": {
+          "label": "Latency",
+          "hint": "How strongly observed latency pulls traffic."
+        },
+        "cost": {
+          "label": "Cost",
+          "hint": "How strongly per-token cost pulls traffic."
+        },
+        "load": {
+          "label": "Load",
+          "hint": "How strongly in-flight load pushes traffic away."
+        }
+      },
+      "weightAria": "{{label}} weight",
+      "explorationTitle": "Exploration",
+      "explorationDesc": "The share of traffic sent off the current best target to keep its score fresh, and how many samples a target needs before its score is trusted at all. Ratio is capped at {{maxRatio}}.",
+      "explorationRatio": "Exploration ratio",
+      "warmUpSamples": "Warm-up samples",
+      "validation": {
+        "weightRange": "Each weight must be between 0 and {{maxWeight}}.",
+        "weightPositive": "At least one weight must be positive. Use the kill switch to stop adaptive routing.",
+        "ratioRange": "Exploration ratio must be between 0 and {{maxRatio}}.",
+        "samplesRange": "Warm-up samples must be a whole number between 0 and {{maxSamples}}."
+      }
+    },
+    "modelSettings": {
+      "applyDefaults": "Apply defaults",
+      "active": "active",
+      "inactive": "inactive",
+      "applyDefaultsDesc": "Fill in the parameters below when a request omits them. A value the client sent is never overwritten, so turning this on cannot change a request that was already explicit. With it off, request bodies reach the provider untouched.",
+      "noDefaults": "No defaults are set yet, so nothing is applied. Fill in at least one field below.",
+      "sampling": {
+        "title": "Sampling",
+        "desc": "Applied to chat, messages and responses requests. Embeddings, audio and image endpoints take no sampling parameters and are left alone.",
+        "temperature": "Temperature",
+        "topP": "Top-p",
+        "maxTokens": "Max tokens",
+        "maxTokensHint": "Completion length cap"
+      },
+      "model": {
+        "title": "Model",
+        "desc": "Used when a request arrives without a model. Leave this empty to keep rejecting such requests instead of silently picking one for the caller.",
+        "defaultModel": "Default model",
+        "defaultModelHint": "A routed model or group-slug/model address"
+      },
+      "timeoutsNote": "Upstream timeouts and the retry budget are deployment-wide and live under <0>Settings › Performance Tuning</0>.",
+      "providerDefault": "provider default",
+      "validation": {
+        "defaultModel": "Default model must be at most 256 characters.",
+        "temperature": "Temperature must be between 0 and 2.",
+        "topP": "Top-p must be between 0 and 1.",
+        "maxTokens": "Max tokens must be a whole number between 1 and 1000000."
+      }
+    },
+    "compatibility": {
+      "version": {
+        "title": "Anthropic API Version",
+        "desc": "Sent as the <0>anthropic-version</0> header on every request Rolter translates into the Anthropic dialect. Forwarded verbatim, so it must be a dated release.",
+        "aria": "Anthropic API version"
+      },
+      "maxTokens": {
+        "title": "Default Max Tokens",
+        "desc": "Anthropic requires <0>max_tokens</0> while OpenAI treats it as optional. This value fills the gap when an OpenAI-shaped request that omits it is translated.",
+        "aria": "Default max tokens"
+      },
+      "restartRequired": "These fields only take effect after a gateway restart: <0>{{fields}}</0>",
+      "validation": {
+        "anthropicVersion": "Anthropic version must be a dated release like 2023-06-01.",
+        "defaultMaxTokens": "Default max tokens must be a whole number between 1 and 1000000."
+      }
     }
   },
   "playground": {
@@ -1958,6 +2305,11 @@
       "teams": "Teams",
       "teamProjects": "Projects in {{team}}",
       "empty": "This organization has no teams yet, so the only scope to pick is the organization itself."
+    },
+    "namePlaceholder": {
+      "org": "Acme Inc",
+      "team": "Platform",
+      "project": "prod"
     }
   },
   "screens": {
@@ -2386,5 +2738,35 @@
       "relativeWeight": "Relative weight",
       "remove": "Remove member"
     }
+  },
+  "paramsEditor": {
+    "title": "Params",
+    "subtitle": "Admin default inference params, applied reload-free on save.",
+    "aboutParams": "About params",
+    "aboutParamsText": "Default inference params sent to the upstream on every request for this model (e.g. temperature 0.7, max_tokens 1024). Pick the value's type per row; json accepts arrays/objects like stop sequences.",
+    "empty": "No default params.",
+    "paramName": "Param name",
+    "paramType": "Param type",
+    "paramValue": "Param value",
+    "unrecognized": "Unrecognized param key",
+    "lockedToggle": "Locked — callers can't override; click to allow",
+    "overridableToggle": "Overridable — callers may override; click to lock",
+    "removeParam": "Remove param",
+    "addParam": "Add param",
+    "unknownKeys": "Not a standard OpenAI/Anthropic param: {{keys}}. Saved as-is — check the spelling if unintended.",
+    "policyTitle": "Override policy",
+    "aboutPolicy": "About override policy",
+    "aboutPolicyText": "Governs whether a caller's request params can replace these admin defaults. 'Callers may override' allows all; 'Locked by default' allows none; 'Manual' decides per param with the lock toggle on each row.",
+    "mode": {
+      "allow": "Callers may override",
+      "deny": "Locked by default",
+      "manual": "Manual"
+    },
+    "modeHint": {
+      "allow": "Callers can override any default above.",
+      "deny": "Callers can't override any default — the admin values always win.",
+      "manual": "Set override or lock per param with the toggle on each row."
+    },
+    "saveParams": "Save params"
   }
 }

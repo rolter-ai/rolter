@@ -104,11 +104,10 @@ export default function RoutingRules() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {routes.data?.length ?? 0} routes · public model names clients call, resolved to
-          upstream targets
+          {t("pages.routing.summary", { count: routes.data?.length ?? 0 })}
         </span>
         <GatedButton gate="route:create" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!scope.projectId}>
-          + Add route
+          + {t("pages.routing.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -159,7 +158,9 @@ export default function RoutingRules() {
               </div>
               <div className="flex flex-col gap-2.5">
                 {targets.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No targets yet.</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("pages.routing.noTargets")}
+                  </p>
                 )}
                 {targets.map((t, i) => {
                   const share = t.weight / totalWeight;
@@ -329,17 +330,17 @@ function AddRouteDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add route"
-      subtitle="Public model name resolved to upstream targets by the chosen strategy."
+      title={t("pages.routing.emptyAction")}
+      subtitle={t("pages.routing.addSubtitle")}
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={!!model.trim()}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Model name">
+        <Field label={t("pages.routing.form.modelName")}>
           <Input
             className="font-mono"
             value={model}
@@ -348,7 +349,7 @@ function AddRouteDialog({
           />
         </Field>
         {/* the select plus its caveat, so the label is bound by hand (#1264) */}
-        <Field label="Strategy" htmlFor="route-strategy">
+        <Field label={t("pages.routing.form.strategy")} htmlFor="route-strategy">
           <Select
             id="route-strategy"
             value={strategy}
@@ -362,9 +363,9 @@ function AddRouteDialog({
           </Select>
           <StrategyHint strategy={strategy} />
         </Field>
-        <Field label="First target">
+        <Field label={t("pages.routing.form.firstTarget")}>
           <Select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
-            <option value="">none (attach later)</option>
+            <option value="">{t("pages.routing.form.noTarget")}</option>
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -373,7 +374,7 @@ function AddRouteDialog({
           </Select>
         </Field>
         {providerId && (
-          <Field label="Weight">
+          <Field label={t("pages.routing.form.weight")}>
             <Input
               type="number"
               min={1}

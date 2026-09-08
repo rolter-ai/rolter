@@ -1,119 +1,10 @@
 {
-  "src/components/GuardrailPanel.tsx": [
-    "Loading guardrails"
-  ],
-  "src/components/ParamsEditor.tsx": [
-    "About override policy",
-    "About params",
-    "Add param",
-    "Admin default inference params, applied reload-free on save.",
-    "No default params.",
-    "Not a standard OpenAI/Anthropic param: {…}. Saved as-is — check the spelling if unintended.",
-    "Overridable — callers may override; click to lock",
-    "Override policy",
-    "Param name",
-    "Param type",
-    "Param value",
-    "Params",
-    "Remove param",
-    "Save params",
-    "Unrecognized param key"
-  ],
-  "src/components/ProviderSheet.tsx": [
-    "Cancel"
-  ],
-  "src/components/ScopeSwitcher.tsx": [
-    "Acme Inc",
-    "Platform"
-  ],
-  "src/components/ui/filter-panel.tsx": [
-    "No results"
-  ],
   "src/components/ui/nav-sidebar.tsx": [
     "absolute bottom-[calc(100%+6px)] z-40 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] py-1.5 shadow-lg",
     "left-0 w-[min(260px,calc(100vw_-_1.5rem))]"
   ],
-  "src/components/ui/tag.tsx": [
-    "Remove"
-  ],
-  "src/lib/api.ts": [
-    "request failed: ${res.status}"
-  ],
   "src/lib/auth.tsx": [
     "useAuth must be used within AuthProvider"
-  ],
-  "src/lib/gateway.ts": [
-    "gateway request failed: ${res.status}",
-    "unauthorized — set a valid virtual key"
-  ],
-  "src/pages/AdaptiveDashboard.tsx": [
-    "Blend",
-    "Blend score",
-    "Cost / Mtok",
-    "Exploration",
-    "Fallback",
-    "In flight",
-    "Latency",
-    "Live scores and decision modes reported by gateways using the adaptive strategy. Counts reset when a gateway rebuilds its routing snapshot.",
-    "No target signals were included in this report.",
-    "Reported {…}",
-    "Samples",
-    "Target signals reported by {…}",
-    "Updated {…}",
-    "Upstream",
-    "{…} decisions"
-  ],
-  "src/pages/AdaptiveSettings.tsx": [
-    "Adaptive Routing",
-    "Adaptive routing enabled",
-    "Blend Weights",
-    "Each signal is scored in",
-    "Exploration",
-    "Exploration ratio",
-    "Governs {…} {…}:",
-    "No route currently uses the adaptive strategy.",
-    "Save Changes",
-    "Saving…",
-    "The kill switch. Turning it off leaves every route on the",
-    "The share of traffic sent off the current best target to keep its score fresh, and how many samples a target needs before its score is trusted at all. Ratio is capped at {…}.",
-    "Warm-up samples",
-    "and combined as a weighted sum, so only the ratio between these matters — doubling all three changes nothing."
-  ],
-  "src/pages/Alerting.tsx": [
-    "{…} channels · webhook destinations for alert delivery",
-    "{…} notifications · newest first",
-    "{…} rules · evaluated every 60s against gateway analytics"
-  ],
-  "src/pages/AuditLog.tsx": [
-    "All actions",
-    "All targets",
-    "Next",
-    "Prev",
-    "page {…} {…}"
-  ],
-  "src/pages/Cluster.tsx": [
-    "node is still polling; it would reappear on its next snapshot poll"
-  ],
-  "src/pages/Compatibility.tsx": [
-    "Anthropic API Version",
-    "Anthropic API version",
-    "Anthropic requires",
-    "Default Max Tokens",
-    "Default max tokens",
-    "Save Changes",
-    "Saving…",
-    "Sent as the",
-    "These fields only take effect after a gateway restart:",
-    "header on every request Rolter translates into the Anthropic dialect. Forwarded verbatim, so it must be a dated release.",
-    "while OpenAI treats it as optional. This value fills the gap when an OpenAI-shaped request that omits it is translated."
-  ],
-  "src/pages/ComplexityRouter.tsx": [
-    "Add tier",
-    "Complexity policy",
-    "Edit policy",
-    "Save",
-    "{…} of {…} routes have a complexity policy · requests are measured by input bytes and routed to the matching tier",
-    "{…} tiers"
   ],
   "src/pages/Config.tsx": [
     "API base",
@@ -134,58 +25,6 @@
     "Targets",
     "grid grid-cols-[1fr_1.1fr_2fr] items-center gap-3 border-b border-[color:var(--border-subtle)] px-3.5 py-[9px] font-mono text-xs"
   ],
-  "src/pages/Connectors.tsx": [
-    "Add connector",
-    "Bearer secret (optional)",
-    "Create",
-    "Endpoint URL",
-    "Name",
-    "OTLP/HTTP collector endpoint request logs are exported to.",
-    "Sampling (%)",
-    "{…} connectors · OTLP/HTTP sinks for request logs",
-    "{…}% sampled"
-  ],
-  "src/pages/CostAttribution.tsx": [
-    "+ New {…}",
-    "Acme Corp",
-    "Allow slug change",
-    "Business unit",
-    "Cancel",
-    "Create",
-    "Delete",
-    "Edit",
-    "Name",
-    "Platform Engineering",
-    "Rename the slug from",
-    "Restore",
-    "Retire",
-    "Save",
-    "Slug",
-    "Unassigned",
-    "{…} {…} · {…} active"
-  ],
-  "src/pages/FeatureFlags.tsx": [
-    "Save Changes",
-    "Saving…"
-  ],
-  "src/pages/Keys.tsx": [
-    "Add Virtual Key",
-    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
-    "Cancel",
-    "Copy key prefix",
-    "Create",
-    "Create virtual key",
-    "Creating…",
-    "Delete virtual key",
-    "Done",
-    "Export CSV",
-    "Key created",
-    "Search by name…",
-    "The plaintext key is shown once, right after creation — copy it then",
-    "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
-    "will stop authenticating immediately. This cannot be undone.",
-    "{…} of {…} keys"
-  ],
   "src/pages/Limits.tsx": [
     "{…} rpm",
     "{…} tpm"
@@ -196,142 +35,18 @@
   "src/pages/McpLogs.tsx": [
     "{…} ms"
   ],
-  "src/pages/ModelSettings.tsx": [
-    "Apply defaults",
-    "Default model",
-    "Fill in the parameters below when a request omits them. A value the client sent is never overwritten, so turning this on cannot change a request that was already explicit. With it off, request bodies reach the provider untouched.",
-    "Max tokens",
-    "Model",
-    "No defaults are set yet, so nothing is applied. Fill in at least one field below.",
-    "Sampling",
-    "Save Changes",
-    "Saving…",
-    "Settings &rsaquo; Performance Tuning",
-    "Temperature",
-    "Top-p",
-    "Upstream timeouts and the retry budget are deployment-wide and live under"
-  ],
   "src/pages/Models.tsx": [
-    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
-    "Cancel",
-    "Delete",
-    "Delete model",
-    "Edit",
-    "In · out /Mtok",
-    "Model",
-    "Origin",
-    "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
-    "Provider",
-    "Search models",
-    "Strategy",
-    "This removes all routes and targets for",
-    "View",
-    "Weight",
-    "color-mix(in srgb, var(--status-success) 32%, transparent)",
-    "shipped in config · immutable",
-    "{…} models · {…} providers"
-  ],
-  "src/pages/Performance.tsx": [
-    "Admission Queue",
-    "Admission queue",
-    "Backoff cap (ms)",
-    "Base backoff (ms)",
-    "Block timeout (ms)",
-    "Capacity",
-    "Connect (s)",
-    "Each provider gets its own bounded queue and worker set, so a slow provider cannot consume the admission capacity of healthy ones.",
-    "Max retries",
-    "Request (s)",
-    "Retries",
-    "Save Changes",
-    "Saving…",
-    "Timeouts",
-    "When the queue is full",
-    "Workers"
+    "color-mix(in srgb, var(--status-success) 32%, transparent)"
   ],
   "src/pages/Playground.tsx": [
     "n=1",
     "n=4",
     "sample {…}"
   ],
-  "src/pages/Pricing.tsx": [
-    "Add price",
-    "Cached input price per Mtok (optional)",
-    "Cancel",
-    "Currency",
-    "Delete",
-    "Delete price",
-    "Edit",
-    "Input price per Mtok",
-    "Model name",
-    "Output price per Mtok",
-    "Prices are per million tokens (Mtok); saving upserts by model name.",
-    "Removes the pricing entry for",
-    "Save",
-    "cached {…} {…}/Mtok",
-    "in {…} {…}/Mtok",
-    "out {…} {…}/Mtok",
-    "{…} models · per-million-token pricing · currency set per model"
-  ],
   "src/pages/PromptRepository.tsx": [
     "v{…}"
   ],
-  "src/pages/ProviderGroups.tsx": [
-    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
-    "Address",
-    "Cancel",
-    "Copy address prefix",
-    "Delete provider group",
-    "Edit",
-    "Members",
-    "Name",
-    "Search provider groups",
-    "Strategy",
-    "address. Member providers are unaffected. This cannot be undone.",
-    "{…}/model"
-  ],
-  "src/pages/RoutingRules.tsx": [
-    "Add route",
-    "Create",
-    "First target",
-    "Model name",
-    "No targets yet.",
-    "Public model name resolved to upstream targets by the chosen strategy.",
-    "Strategy",
-    "Weight",
-    "{…} routes · public model names clients call, resolved to upstream targets"
-  ],
   "src/pages/SkillsRepository.tsx": [
     "v{…}"
-  ],
-  "src/pages/Teams.tsx": [
-    "Budget",
-    "Create",
-    "Group users, share budgets and access.",
-    "Members",
-    "New team",
-    "Team name",
-    "{…} teams · group users, share budgets and access"
-  ],
-  "src/pages/UserProvisioning.tsx": [
-    "Cancel",
-    "Copy provisioning token",
-    "Copy the token now",
-    "Done",
-    "Issue provisioning token",
-    "Issue token",
-    "Name",
-    "Okta production",
-    "Paste it into your identity provider's SCIM connector as the bearer token, alongside the base URL",
-    "Provisioned accounts join this org as viewers and have no local password: SCIM decides who exists, you still decide what they may do.",
-    "Provisioning tokens are visible to org admins only. Ask an admin to issue or revoke one for your identity provider.",
-    "Revoke",
-    "Revoke provisioning token",
-    "Revoked",
-    "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
-    "scim 2.0 · bearer credential",
-    "stops authenticating on the very next request — there is no cache to wait out. Accounts it already provisioned are left exactly as they are: nobody is deactivated or logged out, the directory simply stops syncing until you point the IdP at a new token.",
-    "to create, update and deactivate accounts in this org.",
-    "{…} tokens · {…} active. Your identity provider presents one of these as a bearer token and drives"
   ]
 }

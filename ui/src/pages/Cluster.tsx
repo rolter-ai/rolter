@@ -173,7 +173,7 @@ function ClusterScreen() {
               disabled={row.live || forget.isPending}
               title={
                 row.live
-                  ? "node is still polling; it would reappear on its next snapshot poll"
+                  ? t("pages.cluster.stillPolling")
                   : undefined
               }
               onClick={() => startForget(row)}
