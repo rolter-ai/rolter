@@ -90,3 +90,27 @@ back to this screen") for anything missing. Every leaf had been built long
 before, so the fallback rendered nowhere — dead code that still advertised that
 the rail was allowed to point at a screen which does not exist. Both the set and
 the placeholder are gone; the test is what keeps the table complete.
+
+## The tab strip
+
+`ui/src/components/ui/tabs.tsx` is the in-page counterpart to the rail: an
+underline strip of `role="tab"` buttons inside a `role="tablist"`, used by
+`Rbac`, `Playground` and `CodeSnippetDialog`. It follows the WAI-ARIA tablist
+pattern, which is a keyboard contract, not styling:
+
+- **One tab stop.** A roving tabindex puts `tabIndex={0}` on the selected tab
+  and `-1` on the rest, so `Tab` walks past the whole strip in one press
+  instead of one per tab. A `value` matching no tab still leaves the first tab
+  reachable — a strip with no tab stop is a keyboard trap in reverse.
+- **Arrows move selection.** `←`/`→` step and wrap at both ends, `Home` and
+  `End` jump to the edges. Selection follows focus (automatic activation),
+  which is the pattern's default for panels that are cheap to render; all three
+  call sites are.
+- **Panels are optional.** A `TabItem` may carry `id` and `panelId`; the tab
+  then gets `aria-controls` and the caller's `role="tabpanel"` points back with
+  `aria-labelledby`. Call sites that render no panel omit both and are
+  unchanged — the relationship is opt-in, so adding it to the primitive did not
+  ripple through the screens (#1273).
+
+Stories: `WalksWithArrowKeys` and `LinkedToPanel` in `tabs.stories.tsx` cover
+the roving tabindex, the wrap, `Home`/`End` and the panel wiring.
