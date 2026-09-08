@@ -121,7 +121,7 @@ ldap3 = { version = "0.12", default-features = false, features = [
 ] }
 
 # postgres persistence (rolter-store `postgres` feature)
-argon2 = "0.5"
+argon2 = "0.6"
 sha2 = "0.11"
 aes-gcm = "0.11"
 sqlx = { version = "0.8", default-features = false, features = [

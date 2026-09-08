@@ -41,8 +41,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHasher, SaltString};
+use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
 use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
 use rolter_store::postgres::repo::{
@@ -239,9 +238,9 @@ async fn create_admin(pool: &PgPool, email: &str, password: &str) -> anyhow::Res
         return Ok(false);
     }
 
-    let salt = SaltString::generate(&mut OsRng);
+    // hash_password generates its own 16-byte salt from getrandom
     let hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map_err(|e| anyhow::anyhow!("hash admin password: {e}"))?
         .to_string();
 

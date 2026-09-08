@@ -4127,8 +4127,7 @@ const MIN_PASSWORD_LEN: usize = 8;
 /// hash a plaintext password with argon2id for at-rest storage; the repo layer
 /// only ever sees the digest
 pub(crate) fn hash_password(password: &str) -> ApiResult<String> {
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::password_hash::PasswordHasher;
     use argon2::Argon2;
 
     if password.len() < MIN_PASSWORD_LEN {
@@ -4136,9 +4135,9 @@ pub(crate) fn hash_password(password: &str) -> ApiResult<String> {
             "password must be at least {MIN_PASSWORD_LEN} characters"
         ))));
     }
-    let salt = SaltString::generate(&mut OsRng);
+    // hash_password generates its own 16-byte salt from getrandom
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| ApiError::Core(Error::Config(format!("failed to hash password: {e}"))))
 }
@@ -4740,8 +4739,9 @@ mod user_tests {
 
     #[test]
     fn password_hash_enforces_min_length_and_verifies() {
-        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        use argon2::password_hash::PasswordVerifier;
         use argon2::Argon2;
+        use argon2::PasswordHash;
 
         assert!(is_config_err(hash_password("short")));
         let hash = hash_password("longenough").unwrap();
