@@ -1093,7 +1093,11 @@
       "actorFilterAria": "Filter by actor",
       "anyActor": "Any actor",
       "actorPlaceholder": "Actor user id (full UUID)…",
-      "detail": "Entry detail"
+      "detail": "Entry detail",
+      "hideDetailsAria": "Hide details for action {{action}} on target {{target}}",
+      "showDetailsAria": "Show details for action {{action}} on target {{target}}",
+      "prevPageAria": "Previous page",
+      "nextPageAria": "Next page"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
