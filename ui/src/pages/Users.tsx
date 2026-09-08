@@ -277,15 +277,35 @@ export default function Users() {
                 {fmt.date(user.created_at ?? "")}
               </span>
               <div className="flex justify-end gap-[5px]">
-                <RowIconButton title="Grant role" onClick={() => setRoleUser(user)}>
+                {/* an icon button's accessible name is the whole of what a
+                    screen reader gets, so it names the account (#1214) */}
+                <RowIconButton
+                  gate="membership:create"
+                  title={t("pages.users.grantRole", { email: user.email })}
+                  aria-label={t("pages.users.grantRole", { email: user.email })}
+                  onClick={() => setRoleUser(user)}
+                >
                   <Plus className="h-3.5 w-3.5" />
                 </RowIconButton>
-                <RowIconButton title="Edit user" onClick={() => setEditUser(user)}>
+                <RowIconButton
+                  gate="user:update"
+                  title={t("pages.users.editUser", { email: user.email })}
+                  aria-label={t("pages.users.editUser", { email: user.email })}
+                  onClick={() => setEditUser(user)}
+                >
                   <Pencil className="h-3.5 w-3.5" />
                 </RowIconButton>
                 <RowIconButton
+                  gate="user:update"
                   danger={active}
-                  title={active ? "Deactivate user" : "Reactivate user"}
+                  title={t(
+                    active ? "pages.users.deactivate" : "pages.users.reactivate",
+                    { email: user.email },
+                  )}
+                  aria-label={t(
+                    active ? "pages.users.deactivate" : "pages.users.reactivate",
+                    { email: user.email },
+                  )}
                   disabled={toggleActive.isPending && toggleActive.variables?.id === user.id}
                   onClick={() => toggleActive.mutate(user)}
                 >

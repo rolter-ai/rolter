@@ -7,15 +7,14 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
 import { ListHeader, ListRow, ListTable, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   ALERT_SIGNALS,
   createAlertChannel,
@@ -31,6 +30,7 @@ import {
   type AlertChannelRow,
   type AlertRuleRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -84,6 +84,9 @@ function AlertChannelsScreen() {
     remove.reset();
     setDeleteTarget(channel);
   };
+  // the row controls take the same deployment-wide authority the add button
+  // does — alerting has no tenancy scope to be an admin of (#1258)
+  const channelDeleteGate = useGate("alert_channel:delete");
 
   return (
     <PageBody>
@@ -127,7 +130,8 @@ function AlertChannelsScreen() {
                 <div className="font-mono text-sm font-semibold">{c.name}</div>
                 <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
               </div>
-              <Switch
+              <GatedSwitch
+                gate="alert_channel:update"
                 checked={c.enabled}
                 disabled={toggle.isPending}
                 aria-label={t("pages.alerting.channels.toggleAria", { name: c.name })}
@@ -143,13 +147,22 @@ function AlertChannelsScreen() {
                   secret set
                 </Pill>
               )}
+              {/* the label names the channel: a column of cards each
+                  offering "Delete channel" is N buttons a screen reader
+                  cannot tell apart (#1214) */}
               <button
                 type="button"
-                title="Delete channel"
-                aria-label="Delete channel"
-                disabled={remove.isPending && remove.variables === c.id}
+                title={
+                  channelDeleteGate.reason ??
+                  t("pages.alerting.channels.deleteAria", { name: c.name })
+                }
+                aria-label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                disabled={
+                  channelDeleteGate.denied ||
+                  (remove.isPending && remove.variables === c.id)
+                }
                 onClick={() => startDelete(c)}
-                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {remove.isPending && remove.variables === c.id ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -345,6 +358,7 @@ function AlertRulesScreen() {
     remove.reset();
     setDeleteTarget(rule);
   };
+  const ruleDeleteGate = useGate("alert_rule:delete");
 
   return (
     <PageBody>
@@ -392,7 +406,8 @@ function AlertRulesScreen() {
                 <Pill color={tone[0]} tint={tone[1]}>
                   {r.state}
                 </Pill>
-                <Switch
+                <GatedSwitch
+                  gate="alert_rule:update"
                   className="ml-auto"
                   checked={r.enabled}
                   disabled={toggle.isPending}
@@ -418,22 +433,32 @@ function AlertRulesScreen() {
                 <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                <Button
+                {/* running a rule writes an alert-history row, which is the
+                    capability the control plane guards it with */}
+                <GatedButton
+                  gate="alert_history:create"
                   size="sm"
                   variant="outline"
+                  aria-label={t("pages.alerting.rules.evaluateAria", { name: r.name })}
                   disabled={evaluate.isPending}
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   <Play className="h-3.5 w-3.5" />
                   Evaluate now
-                </Button>
+                </GatedButton>
                 <button
                   type="button"
-                  title="Delete rule"
-                  aria-label="Delete rule"
-                  disabled={remove.isPending && remove.variables === r.id}
+                  title={
+                    ruleDeleteGate.reason ??
+                    t("pages.alerting.rules.deleteAria", { name: r.name })
+                  }
+                  aria-label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                  disabled={
+                    ruleDeleteGate.denied ||
+                    (remove.isPending && remove.variables === r.id)
+                  }
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {remove.isPending && remove.variables === r.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />

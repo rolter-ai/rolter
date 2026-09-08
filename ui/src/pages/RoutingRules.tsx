@@ -25,6 +25,7 @@ import {
   type RouteTargetRow,
 } from "@/lib/api";
 import { StrategyHint } from "@/components/StrategyHint";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { strategyOptions, strategyTone } from "@/lib/strategies";
@@ -41,6 +42,8 @@ export default function RoutingRules() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const scope = useScope();
+  // deleting a route is the same admin capability adding one is (#1258)
+  const deleteGate = useGate("route:delete");
 
   const routes = useQuery({
     queryKey: ["routes", scope.projectId],
@@ -193,13 +196,21 @@ export default function RoutingRules() {
                 <span className="text-xs text-[color:var(--text-subtle)]">
                   {t("pages.routing.targetCount", { count: targets.length })}
                 </span>
+                {/* the label names the route, so a grid of cards does not
+                    expose N buttons a screen reader cannot tell apart (#1214) */}
                 <button
                   type="button"
-                  title="Delete route"
-                  aria-label="Delete route"
-                  disabled={remove.isPending && remove.variables === r.id}
+                  title={
+                    deleteGate.reason ??
+                    t("pages.routing.deleteRoute", { model: r.model })
+                  }
+                  aria-label={t("pages.routing.deleteRoute", { model: r.model })}
+                  disabled={
+                    deleteGate.denied ||
+                    (remove.isPending && remove.variables === r.id)
+                  }
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {remove.isPending && remove.variables === r.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />

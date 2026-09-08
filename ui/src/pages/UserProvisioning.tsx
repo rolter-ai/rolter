@@ -215,6 +215,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
                 <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
                 <RowIconButton
                   danger
+                  gate="scim_group_mapping:delete"
                   title={t("pages.userProvisioning.mappings.remove")}
                   aria-label={t("pages.userProvisioning.mappings.removeNamed", {
                     group: mapping.group_name,
@@ -400,14 +401,16 @@ export default function UserProvisioning() {
       header: "",
       align: "right",
       render: (_v, row) => (
-        <Button
+        <GatedButton
+          gate="scim_token:delete"
           variant="outline"
           size="sm"
+          aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
           disabled={!!row.revoked_at || revoke.isPending}
           onClick={() => setRevokeTarget(row)}
         >
           {row.revoked_at ? "Revoked" : "Revoke"}
-        </Button>
+        </GatedButton>
       ),
     },
   ];

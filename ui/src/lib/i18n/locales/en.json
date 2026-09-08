@@ -254,7 +254,10 @@
       "noMatchTitle": "No models match",
       "noMatchBody": "Nothing matched the search and origin filters you have on.",
       "providerCount_one": "{{first}} +{{count}} more",
-      "providerCount_other": "{{first}} +{{count}} more"
+      "providerCount_other": "{{first}} +{{count}} more",
+      "viewAria": "View {{model}}",
+      "editAria": "Edit {{model}}",
+      "deleteAria": "Delete model {{model}}"
     },
     "providers": {
       "search": "Search providers",
@@ -275,7 +278,8 @@
       "emptyTitle": "No providers yet",
       "emptyBody": "A provider is an upstream the gateway can route to. Add one with its API base and credential to start serving traffic.",
       "noMatchBody": "Nothing matched your search. Clear it to see every provider in this organization.",
-      "noOrgTitle": "Choose an organization"
+      "noOrgTitle": "Choose an organization",
+      "editOne": "Edit provider {{name}}"
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -345,7 +349,9 @@
       "confirm": {
         "title": "Delete {{name}}?",
         "body": "The gateway stops consulting this plugin immediately, at every stage it was configured for."
-      }
+      },
+      "deleteAria": "Delete plugin {{name}}",
+      "configureAria": "Configure plugin {{name}}"
     },
     "routing": {
       "strategyHints": {
@@ -361,13 +367,16 @@
       "targetCount_other": "{{count}} targets",
       "emptyTitle": "No routes yet",
       "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
-      "emptyAction": "Add route"
+      "emptyAction": "Add route",
+      "deleteRoute": "Delete route {{model}}"
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",
       "emptyTitle": "No model prices set",
       "emptyBody": "Without a price a model's traffic is recorded as unpriced, so its spend is missing from totals and budgets.",
-      "emptyAction": "Add price"
+      "emptyAction": "Add price",
+      "editAria": "Edit the price for {{model}}",
+      "deleteAria": "Delete the price for {{model}}"
     },
     "playground": {
       "groupRoutes": "Routes",
@@ -618,7 +627,9 @@
       "editSubtitleHint": "Renaming and re-scoping a key are not offered: the control plane cannot change either after the secret is issued.",
       "save": "Save",
       "saving": "Saving…",
-      "toggleAria": "Enable {{name}}"
+      "toggleAria": "Enable {{name}}",
+      "cacheAria": "Response cache policy for {{name}}",
+      "deleteKey": "Delete key {{name}}"
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
@@ -636,7 +647,8 @@
         "emptyTitle": "No channels yet",
         "emptyBody": "Add a webhook destination — Slack, PagerDuty, email or a custom endpoint — so rules have somewhere to deliver.",
         "add": "Add channel",
-        "toggleAria": "Enable {{name}}"
+        "toggleAria": "Enable {{name}}",
+        "deleteAria": "Delete channel {{name}}"
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -645,7 +657,9 @@
         "add": "Add rule",
         "toggleAria": "Enable {{name}}",
         "evaluated": "Rule {{name}} evaluated",
-        "evaluateFailed": "Could not evaluate {{name}}"
+        "evaluateFailed": "Could not evaluate {{name}}",
+        "deleteAria": "Delete rule {{name}}",
+        "evaluateAria": "Evaluate rule {{name}} now"
       },
       "history": {
         "emptyTitle": "No alerts delivered yet",
@@ -681,7 +695,9 @@
       "emptyBody": "Add an OTLP/HTTP collector and request logs are mirrored to it — Datadog, Langfuse, or your own stack.",
       "emptyAction": "Add connector",
       "testFailed": "Delivery failed: {{message}}",
-      "toggleAria": "Enable {{name}}"
+      "toggleAria": "Enable {{name}}",
+      "testAria": "Test delivery to {{name}}",
+      "deleteAria": "Delete connector {{name}}"
     },
     "accessProfiles": {
       "confirm": {
@@ -763,6 +779,15 @@
         "blocked": "The consent tab was blocked",
         "blockedDetail": "Allow pop-ups for this dashboard, then start the flow again.",
         "failed": "Could not start consent for {{name}}"
+      },
+      "servers": {
+        "toggleAria": "Enable {{name}}",
+        "deleteAria": "Delete server {{name}}",
+        "configureAria": "Configure server {{name}}"
+      },
+      "groups": {
+        "deleteAria": "Delete tool group {{name}}",
+        "configureAria": "Configure tool group {{name}}"
       }
     },
     "mcpOAuth": {
@@ -785,7 +810,14 @@
       "grantsEmptyTitle": "No consent granted yet",
       "grantsEmptyBody": "A grant appears the first time a user completes the OAuth flow for an MCP server. Nothing is created here — consent is only ever given by the user.",
       "sessionsEmptyTitle": "No sessions yet",
-      "sessionsEmptyBody": "A session is minted when a user's consent is exchanged for a token. Start one with Connect on MCP Catalog — the session appears here as soon as the user approves."
+      "sessionsEmptyBody": "A session is minted when a user's consent is exchanged for a token. Start one with Connect on MCP Catalog — the session appears here as soon as the user approves.",
+      "grants": {
+        "revokeAria": "Revoke the consent {{owner}} gave {{server}}"
+      },
+      "sessions": {
+        "refreshAria": "Renew the session {{owner}} holds on {{server}}",
+        "revokeAria": "Revoke the session {{owner}} holds on {{server}}"
+      }
     },
     "cluster": {
       "confirm": {
@@ -794,7 +826,10 @@
         "confirm": "Forget node"
       },
       "emptyTitle": "No nodes have reported in",
-      "emptyBody": "Nodes appear here once a gateway identifies itself on its snapshot poll. A gateway sends its identity only when ROLTER_NODE_ID or HOSTNAME is set in its environment — containers always have HOSTNAME; a bare-metal or native run needs ROLTER_NODE_ID set explicitly."
+      "emptyBody": "Nodes appear here once a gateway identifies itself on its snapshot poll. A gateway sends its identity only when ROLTER_NODE_ID or HOSTNAME is set in its environment — containers always have HOSTNAME; a bare-metal or native run needs ROLTER_NODE_ID set explicitly.",
+      "drainAria": "Drain node {{node}}",
+      "returnAria": "Return node {{node}} to service",
+      "forgetAria": "Forget node {{node}}"
     },
     "costAttribution": {
       "confirm": {
@@ -812,19 +847,27 @@
       "spendUnattributedShare": "{{share}} of the window",
       "noSpend": "No spend in this window",
       "cardRequests_one": "{{count}} request",
-      "cardRequests_other": "{{count}} requests"
+      "cardRequests_other": "{{count}} requests",
+      "editAria": "Edit {{name}}",
+      "retireAria": "Retire {{name}}",
+      "restoreAria": "Restore {{name}}",
+      "deleteAria": "Delete {{name}}"
     },
     "guardrailRules": {
       "confirm": {
         "title": "Delete {{name}}?",
         "body": "Gateway policy changes immediately: this rule stops being enforced on live traffic."
-      }
+      },
+      "deleteAria": "Delete rule {{name}}",
+      "editAria": "Edit rule {{name}}"
     },
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",
         "body": "External enforcement through this provider stops immediately; traffic it was screening is no longer sent to it."
-      }
+      },
+      "deleteAria": "Delete provider {{name}}",
+      "editAria": "Edit provider {{name}}"
     },
     "adaptiveDashboard": {
       "reportingGateways_one": "{{count}} reporting gateway",
@@ -1057,7 +1100,10 @@
       "emptyBody": "A complexity policy hangs off a route, so create a route first — its input-size tiers are set from here afterwards.",
       "emptyAction": "Open routing rules",
       "noPolicyYet": "No policy yet",
-      "tierRouteAria": "Route for this tier"
+      "tierRouteAria": "Route for this tier",
+      "editPolicyAria": "Edit the complexity policy for {{model}}",
+      "addPolicyAria": "Add a complexity policy for {{model}}",
+      "removeTierAria": "Remove tier {{name}}"
     },
     "health": {
       "closed": "closed",
@@ -1113,7 +1159,10 @@
       },
       "unpricedBadge": "unpriced: {{policy}}",
       "unpricedHint": "What to do about a model with no price row: its spend is never counted, so it can never exhaust this budget. Inherit uses the deployment-wide setting; an override can only tighten it.",
-      "unpricedLabel": "Unpriced traffic"
+      "unpricedLabel": "Unpriced traffic",
+      "noCaps": "no caps",
+      "deleteBudgetAria": "Delete the {{period}} budget of {{amount}} for {{scope}}",
+      "deleteRateLimitAria": "Delete the {{limit}} rate limit for {{scope}}"
     },
     "logs": {
       "emptyTitle": "Nothing logged yet",
@@ -1144,7 +1193,9 @@
       "noMatchTitle": "No provider groups match",
       "noMatchBody": "Nothing matched your search. Clear it to see every group in this organization.",
       "noOrgTitle": "Choose an organization",
-      "noOrgBody": "Provider groups are scoped to one organization. Pick or create one to manage them."
+      "noOrgBody": "Provider groups are scoped to one organization. Pick or create one to manage them.",
+      "editOne": "Edit provider group {{name}}",
+      "deleteOne": "Delete provider group {{name}}"
     },
     "teams": {
       "emptyTitle": "No teams yet",
@@ -1174,7 +1225,8 @@
       },
       "emptyTitle": "No provisioning tokens yet",
       "emptyBody": "Issue a token, paste it into your identity provider's SCIM connector, and it syncs users into this organization. The token is shown once, at creation.",
-      "emptyAction": "Issue token"
+      "emptyAction": "Issue token",
+      "revokeAria": "Revoke provisioning token {{name}}"
     },
     "users": {
       "emptyTitle": "No users yet",
@@ -1184,7 +1236,11 @@
       "noMatchBody": "Nothing matched your search and the status tab you are on.",
       "noOrgTitle": "Choose an organization",
       "noOrgBody": "Users are managed per organization. Pick or create one to see its members.",
-      "superadmin": "Superadmin (full cross-org access)"
+      "superadmin": "Superadmin (full cross-org access)",
+      "grantRole": "Grant a role to {{email}}",
+      "editUser": "Edit {{email}}",
+      "deactivate": "Deactivate {{email}}",
+      "reactivate": "Reactivate {{email}}"
     },
     "config": {
       "allSections": {

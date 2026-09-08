@@ -78,6 +78,24 @@ not "may I destroy this row") and are tracked separately.
 and deleting both exist — `CostAttribution` — the copy points at the reversible
 one rather than only warning about the other.
 
+## The control names its row too
+
+The dialog naming the row is only half of it. The control that opens it needs
+the same name, because a list of twelve rows otherwise exposes twelve buttons
+whose accessible name is the identical `"Delete channel"` — a screen reader
+user tabbing the grid hears it twelve times with nothing to tell them apart,
+and the row's identity lives only in the visual layout (#1214).
+
+So the `aria-label` carries the row: `t("pages.alerting.channels.deleteAria",
+{ name })`, never a bare `"Delete channel"` and never a template literal —
+`check:literals` matches quoted strings only, so an interpolated one would stay
+untranslated with the gate still green. The copy lives under
+`pages.<screen>.*Aria` in every catalog, like all the rest.
+
+The payoff is in the tests: a story selects its delete button by that name
+rather than by index, so it asserts on the control it means instead of trusting
+the confirmation dialog to prove the right row was picked afterwards.
+
 ## Copy and stories
 
 Strings live under `pages.<screen>.confirm.*` in **every** catalog under

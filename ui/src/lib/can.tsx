@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import {
   ApiError,
@@ -173,6 +174,60 @@ export function useCan(): (resource: string, action: RbacAction) => Permission {
     (resource, action) => decide(value, resource, action),
     [value],
   );
+}
+
+/**
+ * What one gated control has to know: whether it is refused, and what to say.
+ *
+ * The two go together — "disabled" on its own is the same non-answer the 403
+ * was — so every gated control reads them from here rather than each deciding
+ * for itself. `GatedButton` was the first caller; the per-row icon buttons and
+ * toggles are the rest of them (#1258).
+ */
+export interface GateState {
+  /** an explicit "no" from the control plane, never a "not known yet" */
+  denied: boolean;
+  /** the role a refused control would take, ready for a `title` */
+  reason: string | undefined;
+}
+
+/**
+ * Resolve `resource:action` into a disabled flag and the sentence that explains it.
+ *
+ * `gate` is optional so a component can accept the prop and stay ungated when
+ * it is omitted: a row control that never had a capability to check must not
+ * start claiming one.
+ */
+export function useGate(gate: Capability | undefined): GateState {
+  const { t } = useTranslation();
+  const value = useCapabilities();
+  const can = useCan();
+  if (!gate) return { denied: false, reason: undefined };
+  const [resource, action] = splitCapability(gate);
+  // only an explicit "no" disables; `undefined` is "not known yet", and a
+  // control that starts disabled and enables itself a request later reads as
+  // broken
+  const denied = can(resource, action) === false;
+  if (!denied) return { denied: false, reason: undefined };
+  const requirement = requirementFor(value?.matrix ?? null, resource, action);
+  const reason =
+    requirement === "superadmin"
+      ? t("rbac.needsSuperadmin")
+      : requirement
+        ? t("rbac.needsRole", { role: t(`shell.roles.${requirement}`) })
+        : t("rbac.needsPermission");
+  return { denied: true, reason };
+}
+
+/**
+ * `"provider:create"` → `["provider", "create"]`.
+ *
+ * A resource never contains a colon, so the split is unambiguous. Typed through
+ * `Capability`, so a pair the wire format could not carry does not compile.
+ */
+export function splitCapability(gate: Capability): [string, RbacAction] {
+  const at = gate.lastIndexOf(":");
+  return [gate.slice(0, at), gate.slice(at + 1) as RbacAction];
 }
 
 /** Whether this caller is a superadmin; `undefined` until the answer is in. */

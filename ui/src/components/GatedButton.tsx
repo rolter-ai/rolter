@@ -1,13 +1,5 @@
-import { useTranslation } from "react-i18next";
-
 import { Button, type ButtonProps } from "@/components/ui/button";
-import type { RbacAction } from "@/lib/api";
-import {
-  requirementFor,
-  useCan,
-  useCapabilities,
-  type Capability,
-} from "@/lib/can";
+import { useGate, type Capability } from "@/lib/can";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,22 +24,7 @@ export function GatedButton({
   style,
   ...props
 }: ButtonProps & { gate: Capability }) {
-  const { t } = useTranslation();
-  const can = useCan();
-  const capabilities = useCapabilities();
-  const [resource, action] = splitGate(gate);
-  // only an explicit "no" disables. `undefined` is "not known yet", and a
-  // control that starts disabled and enables itself a request later reads as
-  // broken (see lib/can.tsx)
-  const denied = can(resource, action) === false;
-  const requirement = requirementFor(capabilities?.matrix ?? null, resource, action);
-  const reason = !denied
-    ? title
-    : requirement === "superadmin"
-      ? t("rbac.needsSuperadmin")
-      : requirement
-        ? t("rbac.needsRole", { role: t(`shell.roles.${requirement}`) })
-        : t("rbac.needsPermission");
+  const { denied, reason } = useGate(gate);
 
   return (
     <Button
@@ -59,19 +36,7 @@ export function GatedButton({
       // reliably outranks the variant; `disabled` still swallows the click
       style={denied ? { ...style, pointerEvents: "auto" } : style}
       disabled={disabled || denied}
-      title={reason}
+      title={denied ? reason : title}
     />
   );
-}
-
-/**
- * `"provider:create"` → `["provider", "create"]`.
- *
- * A resource never contains a colon, so the split is unambiguous. Typed
- * through `Capability`, so a pair the wire format could not carry does not
- * compile.
- */
-function splitGate(gate: Capability): [string, RbacAction] {
-  const at = gate.lastIndexOf(":");
-  return [gate.slice(0, at), gate.slice(at + 1) as RbacAction];
 }

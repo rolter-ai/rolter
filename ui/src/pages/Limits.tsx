@@ -37,6 +37,7 @@ import {
   type RateLimitRow,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -389,6 +390,14 @@ function BudgetCard({
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  const deleteGate = useGate("budget:delete");
+  // the label names the row: the grid is a wall of identical cards otherwise,
+  // and "Delete budget" said three times tells a screen reader nothing (#1214)
+  const label = t("pages.limits.deleteBudgetAria", {
+    amount: fmt.currency(Number(budget.limit_usd), currency),
+    period: budget.period,
+    scope: budget.scope_id,
+  });
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2.5">
@@ -408,11 +417,11 @@ function BudgetCard({
         )}
         <button
           type="button"
-          title="Delete budget"
-          aria-label="Delete budget"
-          disabled={deleting}
+          title={deleteGate.reason ?? label}
+          aria-label={label}
+          disabled={deleting || deleteGate.denied}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </button>
@@ -436,19 +445,36 @@ function RateLimitCard({
   onDelete: () => void;
   deleting: boolean;
 }) {
+  const { t } = useTranslation();
+  const deleteGate = useGate("rate_limit:delete");
+  // the caps are the only thing that tells two limits on one scope apart, so
+  // they are what the accessible name carries (#1214)
+  const caps =
+    [
+      limit.rpm != null ? `${limit.rpm} rpm` : null,
+      limit.tpm != null ? `${limit.tpm} tpm` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || t("pages.limits.noCaps");
+  const label = t("pages.limits.deleteRateLimitAria", {
+    limit: caps,
+    scope: limit.scope_id,
+  });
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         {limit.rpm != null && <Badge tone="outline">{limit.rpm} rpm</Badge>}
         {limit.tpm != null && <Badge tone="outline">{limit.tpm} tpm</Badge>}
-        {limit.rpm == null && limit.tpm == null && <Badge tone="neutral">no caps</Badge>}
+        {limit.rpm == null && limit.tpm == null && (
+          <Badge tone="neutral">{t("pages.limits.noCaps")}</Badge>
+        )}
         <button
           type="button"
-          title="Delete rate limit"
-          aria-label="Delete rate limit"
-          disabled={deleting}
+          title={deleteGate.reason ?? label}
+          aria-label={label}
+          disabled={deleting || deleteGate.denied}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </button>

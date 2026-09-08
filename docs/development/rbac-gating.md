@@ -52,6 +52,13 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a screen whose every request is already known to fail.
 - **The create controls.** Every Add / New / Create / Invite / Generate button
   on the list screens is a `GatedButton` on `<resource>:create`.
+- **The per-row controls.** Every edit, delete, retire, revoke, rotate, drain
+  and enabled toggle on a row is gated on the same row's
+  `<resource>:update` / `<resource>:delete` (#1258). A `Button` becomes a
+  `GatedButton`, a `Switch` becomes a `GatedSwitch`, `RowIconButton` takes a
+  `gate` prop, and a hand-rolled `<button>` reads `useGate()` at the top of the
+  screen — one call for the whole list, because the answer does not vary by
+  row.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors, alerting and the MCP logs are wrapped in
@@ -83,13 +90,33 @@ scope switch re-keys the query, so a viewer in one org does not carry a cached
 ## Adding a screen
 
 Give the nav leaf its `resource`, gate the create control on
-`<resource>:create`, and wrap the screen in `superadminOnly()` if the capability
+`<resource>:create`, gate each row control on `<resource>:update` or
+`<resource>:delete`, and wrap the screen in `superadminOnly()` if the capability
 table puts it at `scope: "deployment"`. Cover the roles in a story with
 `<Harness role="viewer">` — the harness stubs both RBAC endpoints from the same
 table this doc names.
 
-## What is not gated yet
+## A refused row control still has to name its row
 
-Per-row edit, delete and toggle controls still render for everyone and still
-fail with a 403 (#1258). The gate is the same call, `useCan()(resource,
-"update" | "delete")`; only the fan-out across the row components is left.
+A gate answers "may I", never "which one". The two are separate rules and both
+have to hold on the same button: `<resource>:delete` decides whether it is
+enabled, and the accessible name decides whether a screen reader can tell it
+apart from the eleven identical buttons under it (#1214). So a row control
+carries an `aria-label` interpolated with the row's own name —
+`t("pages.routing.deleteRoute", { model })`, not `"Delete route"` — and the
+`title` falls back to that same sentence when the control is *allowed*, so the
+tooltip says what the button does rather than nothing at all.
+
+Naming it with a template literal would type-check and read correctly and still
+be wrong: `check:literals` only matches quoted strings, so an
+`` aria-label={`Delete route ${model}`} `` slips past the gate while staying
+untranslated forever. Route it through the catalogs.
+
+That is also what lets a story select the control it means:
+
+```tsx
+await canvas.findByRole("button", { name: "Delete route gpt-4o" });
+```
+
+rather than reaching for `getAllByRole(...)[2]` and trusting the confirmation
+dialog to prove the right row was picked.

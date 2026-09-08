@@ -201,8 +201,12 @@ function GuardrailProvidersScreen() {
               details={`${provider.timeout_ms} ms timeout · ${provider.max_retries} retries · ${Math.round(provider.max_body_bytes / 1024)} KiB cap`}
               actions={
                 <>
-                  <Button
+                  <GatedButton
+                    gate="guardrail_provider:delete"
                     variant="ghost"
+                    aria-label={t("pages.guardrailProviders.deleteAria", {
+                      name: provider.name,
+                    })}
                     onClick={() => startDelete(provider)}
                     disabled={
                       remove.isPending && remove.variables === provider.id
@@ -212,13 +216,17 @@ function GuardrailProvidersScreen() {
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
                     Delete
-                  </Button>
-                  <Button
+                  </GatedButton>
+                  <GatedButton
+                    gate="guardrail_provider:update"
                     variant="outline"
+                    aria-label={t("pages.guardrailProviders.editAria", {
+                      name: provider.name,
+                    })}
                     onClick={() => setEditing(provider)}
                   >
                     Edit provider
-                  </Button>
+                  </GatedButton>
                 </>
               }
             />

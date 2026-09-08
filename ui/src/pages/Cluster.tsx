@@ -5,11 +5,11 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { superadminOnly } from "@/components/ForbiddenScreen";
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Table, type TableColumn } from "@/components/ui/table";
 import {
@@ -145,20 +145,29 @@ function ClusterScreen() {
         const draining = row.desired_state === "draining";
         return (
           <div className="flex justify-end gap-2">
-            <Button
+            {/* the label names the node: a table of them all offering
+                "Drain" is N controls a screen reader cannot tell apart (#1214) */}
+            <GatedButton
+              gate="cluster_node:update"
               variant="outline"
               size="sm"
+              aria-label={t(
+                draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria",
+                { node: row.id },
+              )}
               disabled={drain.isPending}
               onClick={() => drain.mutate({ id: row.id, draining: !draining })}
             >
               {drain.isPending && drain.variables?.id === row.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {draining ? "Return to service" : "Drain"}
-            </Button>
+            </GatedButton>
             {/* a node that is still running reappears on its next poll, so
                 forgetting is only meaningful once it has gone stale */}
-            <Button
+            <GatedButton
+              gate="cluster_node:delete"
               variant="ghost"
               size="sm"
+              aria-label={t("pages.cluster.forgetAria", { node: row.id })}
               disabled={row.live || forget.isPending}
               title={
                 row.live
@@ -169,7 +178,7 @@ function ClusterScreen() {
             >
               {forget.isPending && forget.variables === row.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Forget
-            </Button>
+            </GatedButton>
           </div>
         );
       },

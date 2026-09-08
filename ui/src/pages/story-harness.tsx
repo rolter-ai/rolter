@@ -135,8 +135,6 @@ const SCOPED_RESOURCES = [
   "virtual_key",
   "budget",
   "rate_limit",
-  "model",
-  "model_price",
   "business_unit",
   "customer",
   "prompt_template",
@@ -152,6 +150,18 @@ const SCOPED_RESOURCES = [
   "mcp_oauth_grant",
   "mcp_oauth_session",
 ];
+
+// the two deployment-wide catalogs, which are neither scoped nor an admin's:
+// the effective model list and the pricing table carry no tenant's data, so
+// every authenticated caller reads them, and there is no deployment membership
+// a role floor could be measured against, so every mutation is the
+// superadmin's alone (crates/rolter-control/src/rbac_matrix.rs). the actions
+// they do not have — a price is upserted, never created; a model row is only
+// ever deleted — are absent here for the same reason they are absent there
+const CATALOG_ACTIONS: Record<string, RbacAction[]> = {
+  model: ["delete"],
+  model_price: ["update", "delete"],
+};
 
 // an admin read: the rows name the IdPs and the invitations, not just the data
 const ADMIN_RESOURCES = [
@@ -197,6 +207,9 @@ export function effectiveFor(role: StoryRole): RbacEffective {
         for (const action of ACTIONS) allowed.push(`${resource}:${action}`);
       }
     }
+    // the catalogs are every authenticated caller's read, an admin's included,
+    // and nobody's write short of a superadmin
+    for (const resource of Object.keys(CATALOG_ACTIONS)) allowed.push(`${resource}:read`);
     // a key a member mints for themself, which is the one create a non-admin has
     if (role !== "viewer") allowed.push("my_virtual_key:create");
     if (role === "admin") {
@@ -241,6 +254,24 @@ export function matrixFixture(): RbacMatrix {
         resource,
         scope: "org",
         actions: actions("admin"),
+      })),
+      ...Object.entries(CATALOG_ACTIONS).map(([resource, mutations]) => ({
+        resource,
+        scope: "deployment",
+        actions: [
+          {
+            action: "read" as RbacAction,
+            minimum_role: null,
+            superadmin_only: false,
+            authenticated_only: true,
+          },
+          ...mutations.map((action) => ({
+            action,
+            minimum_role: null,
+            superadmin_only: true,
+            authenticated_only: false,
+          })),
+        ],
       })),
       ...DEPLOYMENT_RESOURCES.map((resource) => ({
         resource,

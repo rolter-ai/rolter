@@ -301,6 +301,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
               <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
               <RowIconButton
                 danger
+                gate="sso_group_mapping:delete"
                 title={t("pages.sso.mappings.remove")}
                 aria-label={t("pages.sso.mappings.removeNamed", {
                   group: mapping.group_name,
@@ -457,6 +458,7 @@ function ProviderCard({
         </RowIconButton>
         <RowIconButton
           danger
+          gate="sso_provider:delete"
           title={t("pages.sso.providers.delete")}
           aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
           disabled={deleting}

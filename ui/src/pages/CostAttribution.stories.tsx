@@ -245,7 +245,10 @@ export const SlugRenameNeedsConfirmation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
-    await userEvent.click(canvas.getAllByRole("button", { name: "Edit" })[0]);
+    // by name, not by index: each row control names its own unit (#1214)
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Edit Platform Engineering" }),
+    );
     // the sheet portals to document.body, so query outside the canvas root
     const sheet = within(document.body);
     const slug = await sheet.findByLabelText("Slug");
@@ -324,7 +327,8 @@ export const ConfirmsBeforeDeletingABusinessUnit: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
-    const del = () => canvas.getAllByRole("button", { name: "Delete" })[0];
+    const del = () =>
+      canvas.getByRole("button", { name: "Delete Platform Engineering" });
 
     await userEvent.click(del());
     await cancelConfirmation();
@@ -351,7 +355,7 @@ export const ConfirmsBeforeDeletingACustomer: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Acme Corp")).toBeVisible());
-    await userEvent.click(canvas.getAllByRole("button", { name: "Delete" })[0]);
+    await userEvent.click(canvas.getByRole("button", { name: "Delete Acme Corp" }));
     await confirmDestructive(/Acme Corp/, "Delete");
     await customerDeletes.expectSent("DELETE", `/customers/${CUSTOMERS[0].id}`);
   },

@@ -422,6 +422,11 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   // kind rather than the file (#1183)
   const gate: Capability =
     kind === "unit" ? "business_unit:create" : "customer:create";
+  // the row controls follow the same resource the create button does (#1258)
+  const updateGate: Capability =
+    kind === "unit" ? "business_unit:update" : "customer:update";
+  const deleteGate: Capability =
+    kind === "unit" ? "business_unit:delete" : "customer:delete";
   const unitName = (id: string | null) =>
     units.find((u) => u.id === id)?.name ?? null;
   const spendById = new Map(spend.map((row) => [row.id, row]));
@@ -532,32 +537,43 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </div>
                 )}
                 <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
-                  <Button
+                  <GatedButton
+                    gate={updateGate}
                     variant="outline"
                     size="sm"
+                    aria-label={t("pages.costAttribution.editAria", { name: row.name })}
                     disabled={disabled}
                     onClick={() => startEdit(row)}
                   >
                     Edit
-                  </Button>
+                  </GatedButton>
                   {/* retiring keeps the history a delete would strand */}
-                  <Button
+                  <GatedButton
+                    gate={updateGate}
                     variant="ghost"
                     size="sm"
+                    aria-label={t(
+                      row.retired_at
+                        ? "pages.costAttribution.restoreAria"
+                        : "pages.costAttribution.retireAria",
+                      { name: row.name },
+                    )}
                     disabled={disabled || mutating}
                     onClick={() => onRetire(row, !row.retired_at)}
                   >
                     {row.retired_at ? "Restore" : "Retire"}
-                  </Button>
-                  <Button
+                  </GatedButton>
+                  <GatedButton
+                    gate={deleteGate}
                     variant="ghost"
                     size="sm"
                     className="ml-auto text-[color:var(--status-danger-text)]"
+                    aria-label={t("pages.costAttribution.deleteAria", { name: row.name })}
                     disabled={disabled || mutating}
                     onClick={() => startDelete(row)}
                   >
                     Delete
-                  </Button>
+                  </GatedButton>
                 </div>
               </div>
             );

@@ -2,7 +2,9 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, waitFor, within } from "storybook/test";
 import { useTranslation } from "react-i18next";
 
+import { AlertChannels } from "./Alerting";
 import Keys from "./Keys";
+import Pricing from "./Pricing";
 import Providers from "./Providers";
 import Security from "./Security";
 import {
@@ -14,7 +16,13 @@ import {
   type StoryRole,
 } from "./story-harness";
 import { NavSidebar, type NavItem } from "@/components/ui/nav-sidebar";
-import type { SecuritySettingsDto } from "@/lib/api";
+import type {
+  AlertChannelRow,
+  ModelPriceRow,
+  ProviderRow,
+  SecuritySettingsDto,
+  VirtualKeyRow,
+} from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { visibleNav, type NavDef } from "@/lib/nav";
 
@@ -62,6 +70,100 @@ async function expectOffered(canvasElement: HTMLElement, name: RegExp) {
   const canvas = within(canvasElement);
   const button = await canvas.findByRole("button", { name });
   await waitFor(() => expect(button).toBeEnabled());
+}
+
+// One row's worth of each list, so the stories below have a row to gate. The
+// controls are what is under test, not the data, so these are the smallest
+// fixtures that render one.
+const KEY: VirtualKeyRow = {
+  id: "vk-1",
+  project_id: "project-1",
+  key_hash: "hash-1",
+  key_prefix: "sk-rolter-backend",
+  name: "backend service",
+  models: [],
+  providers: [],
+  created_by: null,
+  business_unit_id: null,
+  customer_id: null,
+  disabled: false,
+  expires_at: null,
+  cache_enabled: null,
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+const PROVIDER: ProviderRow = {
+  id: "p-1",
+  org_id: "org-1",
+  name: "openai-prod",
+  slug: "openai-prod",
+  kind: "openai",
+  api_base: "https://api.openai.com/v1",
+  api_key_env: "OPENAI_API_KEY",
+  egress_proxies: [],
+  created_at: "2026-01-02T00:00:00Z",
+};
+
+const CHANNEL: AlertChannelRow = {
+  id: "chan-1",
+  name: "ops-slack",
+  kind: "webhook",
+  endpoint: "https://hooks.slack.com/services/T000/B000/xxx",
+  enabled: true,
+  secret_configured: true,
+  created_at: "2026-05-01T00:00:00Z",
+  updated_at: "2026-05-01T00:00:00Z",
+};
+
+const PRICE: ModelPriceRow = {
+  id: "price-1",
+  model: "gpt-4o",
+  input_per_mtok: "2.50",
+  output_per_mtok: "10.00",
+  cached_input_per_mtok: null,
+  currency: "USD",
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+const oneKey = routes([["/virtual-keys", () => [KEY]]]);
+const oneProvider = routes([["/providers", () => [PROVIDER]]]);
+const oneChannel = routes([["/alert-channels", () => [CHANNEL]]]);
+const onePrice = routes([
+  ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: { USD: 1 } })],
+  ["/model-prices", () => [PRICE]],
+]);
+
+const NEEDS_ADMIN = "Requires the Admin role";
+const NEEDS_SUPERADMIN = "Requires a superadmin";
+
+/**
+ * Assert a per-row control is refused, and says what it would take (#1258).
+ *
+ * Looked up by its accessible name rather than by position, which is what
+ * naming the row in every label bought (#1214): "the edit button on the
+ * backend service key", not "the third button on the screen".
+ */
+async function expectRowRefused(
+  canvasElement: HTMLElement,
+  role: "button" | "switch" | "combobox",
+  name: string,
+  requirement: string,
+) {
+  const canvas = within(canvasElement);
+  const control = await canvas.findByRole(role, { name });
+  await waitFor(() => expect(control).toBeDisabled());
+  await expect(control).toHaveAttribute("title", requirement);
+}
+
+/** Assert a per-row control is offered. */
+async function expectRowOffered(
+  canvasElement: HTMLElement,
+  role: "button" | "switch" | "combobox",
+  name: string,
+) {
+  const canvas = within(canvasElement);
+  const control = await canvas.findByRole(role, { name });
+  await waitFor(() => expect(control).toBeEnabled());
 }
 
 const meta = {
@@ -279,4 +381,160 @@ export const EveryRole: Story = {
       ))}
     </div>
   ),
+};
+
+// The row controls, which #1183 deliberately left out and #1258 finished.
+//
+// A viewer used to get a live Edit, Delete and Enabled toggle on every row and
+// learn it was refused only from the 403 that came back after the click — the
+// exact failure the create buttons above no longer have.
+
+export const KeyRowsAsViewer: Story = {
+  render: () => (
+    <Harness fetchStub={oneKey} role="viewer">
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowRefused(canvasElement, "button", "Edit key backend service", NEEDS_ADMIN);
+    await expectRowRefused(canvasElement, "button", "Delete key backend service", NEEDS_ADMIN);
+    // the toggle and the cache select are updates too, and a switch that flips
+    // and snaps back is a worse answer than one that never moved
+    await expectRowRefused(canvasElement, "switch", "Enable backend service", NEEDS_ADMIN);
+    await expectRowRefused(
+      canvasElement,
+      "combobox",
+      "Response cache policy for backend service",
+      NEEDS_ADMIN,
+    );
+  },
+};
+
+// a member may mint a key for themself, and still may not touch a project's
+export const KeyRowsAsMember: Story = {
+  render: () => (
+    <Harness fetchStub={oneKey} role="member">
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowRefused(canvasElement, "button", "Edit key backend service", NEEDS_ADMIN);
+    await expectRowRefused(canvasElement, "button", "Delete key backend service", NEEDS_ADMIN);
+    await expectRowRefused(canvasElement, "switch", "Enable backend service", NEEDS_ADMIN);
+  },
+};
+
+export const KeyRowsAsAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={oneKey} role="admin">
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowOffered(canvasElement, "button", "Edit key backend service");
+    await expectRowOffered(canvasElement, "button", "Delete key backend service");
+    await expectRowOffered(canvasElement, "switch", "Enable backend service");
+  },
+};
+
+export const ProviderRowsAsViewer: Story = {
+  render: () => (
+    <Harness fetchStub={oneProvider} role="viewer">
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowRefused(canvasElement, "button", "Edit provider openai-prod", NEEDS_ADMIN);
+    await expectRowRefused(canvasElement, "button", "Delete provider openai-prod", NEEDS_ADMIN);
+  },
+};
+
+export const ProviderRowsAsMember: Story = {
+  render: () => (
+    <Harness fetchStub={oneProvider} role="member">
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowRefused(canvasElement, "button", "Edit provider openai-prod", NEEDS_ADMIN);
+    await expectRowRefused(canvasElement, "button", "Delete provider openai-prod", NEEDS_ADMIN);
+  },
+};
+
+export const ProviderRowsAsAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={oneProvider} role="admin">
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowOffered(canvasElement, "button", "Edit provider openai-prod");
+    await expectRowOffered(canvasElement, "button", "Delete provider openai-prod");
+  },
+};
+
+// alerting has no tenancy scope to be an admin of, so its rows are the
+// superadmin's — an admin never reaches them at all, because the screen refuses
+// itself before it mounts
+export const AlertingRowsAsAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={oneChannel} role="admin">
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+    await expect(
+      within(canvasElement).queryByRole("button", { name: "Delete channel ops-slack" }),
+    ).toBeNull();
+  },
+};
+
+export const AlertingRowsAsSuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={oneChannel} role="superadmin">
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowOffered(canvasElement, "button", "Delete channel ops-slack");
+    await expectRowOffered(canvasElement, "switch", "Enable ops-slack");
+  },
+};
+
+// pricing is the case where both halves are visible at once: the rows load
+// for an admin — a price is a deployment-wide read — and every control on them
+// names the authority it would take, which is not a role anyone can be granted
+export const PriceRowsAsAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={onePrice} role="admin">
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowRefused(
+      canvasElement,
+      "button",
+      "Edit the price for gpt-4o",
+      NEEDS_SUPERADMIN,
+    );
+    await expectRowRefused(
+      canvasElement,
+      "button",
+      "Delete the price for gpt-4o",
+      NEEDS_SUPERADMIN,
+    );
+  },
+};
+
+export const PriceRowsAsSuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={onePrice} role="superadmin">
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRowOffered(canvasElement, "button", "Edit the price for gpt-4o");
+    await expectRowOffered(canvasElement, "button", "Delete the price for gpt-4o");
+  },
 };

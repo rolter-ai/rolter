@@ -206,7 +206,12 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Revoke" }));
+    // by name, not by position: the row control names the token (#1214)
+    await userEvent.click(
+      await canvas.findByRole("button", {
+        name: "Revoke provisioning token Okta production",
+      }),
+    );
     const modal = within(await within(document.body).findByRole("dialog"));
     await expect(
       modal.getByText(/nobody is deactivated or logged out/),

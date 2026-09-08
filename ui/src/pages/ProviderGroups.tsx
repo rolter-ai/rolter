@@ -37,6 +37,7 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -88,6 +89,8 @@ export default function ProviderGroups() {
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderGroupRow | null>(null);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
+  // a group is edited and deleted by the same admin that may add one (#1258)
+  const deleteGate = useGate("provider_group:delete");
 
   const q = search.trim().toLowerCase();
   const filtered = (groups.data ?? []).filter(
@@ -191,20 +194,26 @@ export default function ProviderGroups() {
               )}
             </span>
             <div className="flex items-center justify-end gap-1.5">
-              <Button
+              <GatedButton
+                gate="provider_group:update"
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
+                aria-label={t("pages.providerGroups.editOne", { name: group.name })}
                 onClick={() => setSheet({ mode: "edit", group })}
               >
                 Edit
-              </Button>
+              </GatedButton>
               <button
                 type="button"
-                title="Delete provider group"
-                aria-label={`Delete provider group ${group.name}`}
+                title={
+                  deleteGate.reason ??
+                  t("pages.providerGroups.deleteOne", { name: group.name })
+                }
+                aria-label={t("pages.providerGroups.deleteOne", { name: group.name })}
+                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(group)}
-                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

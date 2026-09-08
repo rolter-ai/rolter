@@ -40,6 +40,7 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -214,6 +215,10 @@ export default function Models() {
   });
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
+  // a db-backed model row is really its route, and forgetting a model outright
+  // is deployment-wide — two different capabilities on one row (#1258)
+  const routeUpdateGate = useGate("route:update");
+  const deleteGate = useGate("model:delete");
   const filtersActive = !!q || origin !== "all" || unpricedOnly;
   const clearFilters = () => {
     setSearch("");
@@ -232,8 +237,11 @@ export default function Models() {
         <span className="text-sm text-muted-foreground">
           {rows.length} models · {providerCount} providers
         </span>
+        {/* adding a model creates a route, not a `model` row: the catalog is
+            read-only apart from a superadmin's delete, so the create this
+            button takes is the route's (#1258) */}
         <GatedButton
-          gate="model:create"
+          gate="route:create"
           className="ml-auto"
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.projectId}
@@ -386,11 +394,22 @@ export default function Models() {
               {r.weight}
             </span>
             <div className="flex items-center justify-end gap-1.5">
+              {/* a config-file model opens read-only, so only the
+                  editable half of this control is gated (#1258) */}
               <Button
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
-                disabled={r.origin === "db" && !r.route}
+                aria-label={t(
+                  r.origin === "config"
+                    ? "pages.models.viewAria"
+                    : "pages.models.editAria",
+                  { model: r.name },
+                )}
+                title={r.origin === "config" ? undefined : routeUpdateGate.reason}
+                disabled={
+                  r.origin === "db" && (!r.route || routeUpdateGate.denied)
+                }
                 onClick={() =>
                   r.origin === "config"
                     ? setSheet({ mode: "view", configModel: r.entry })
@@ -402,11 +421,17 @@ export default function Models() {
               {r.origin === "db" && (
                 <button
                   type="button"
-                  title="Delete model"
-                  aria-label={`Delete model ${r.name}`}
-                  disabled={removeModel.isPending && deleteTarget?.model === r.entry.model}
+                  title={
+                    deleteGate.reason ??
+                    t("pages.models.deleteAria", { model: r.name })
+                  }
+                  aria-label={t("pages.models.deleteAria", { model: r.name })}
+                  disabled={
+                    deleteGate.denied ||
+                    (removeModel.isPending && deleteTarget?.model === r.entry.model)
+                  }
                   onClick={() => setDeleteTarget(r.entry)}
-                  className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+                  className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {removeModel.isPending && deleteTarget?.model === r.entry.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 </button>
@@ -431,7 +456,7 @@ export default function Models() {
                 </Button>
               ) : (
                 <GatedButton
-                  gate="model:create"
+                  gate="route:create"
                   disabled={scopeBlocked || !scope.projectId}
                   onClick={() => setSheet({ mode: "add" })}
                 >

@@ -9,7 +9,6 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill, Toolbar } from "@/components/screen";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -113,7 +112,8 @@ function ProfileCard({
           )}
         </div>
         <div className="flex flex-none items-center gap-1">
-          <Button
+          <GatedButton
+            gate="access_profile:update"
             variant="ghost"
             size="icon"
             title={t("pages.accessProfiles.editProfile", { name: profile.name })}
@@ -122,8 +122,9 @@ function ProfileCard({
             onClick={() => detail.data && onEdit(detail.data)}
           >
             <Pencil className="size-4" />
-          </Button>
-          <Button
+          </GatedButton>
+          <GatedButton
+            gate="access_profile:delete"
             variant="ghost"
             size="icon"
             title={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
@@ -136,7 +137,7 @@ function ProfileCard({
             ) : (
               <Trash2 className="size-4" />
             )}
-          </Button>
+          </GatedButton>
         </div>
       </div>
     </div>

@@ -27,6 +27,7 @@ import {
 } from "@/components/KeyAttributionFields";
 
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
@@ -43,7 +44,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Tag } from "@/components/ui/tag";
 import {
   createVirtualKey,
@@ -62,6 +62,7 @@ import {
   type ProviderRow,
   type VirtualKeyRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -77,6 +78,10 @@ export default function Keys() {
   const fmt = useFormat();
   const queryClient = useQueryClient();
   const scope = useScope();
+  // the row controls are the same capabilities the mint button is: editing a
+  // key, flipping it off and deleting it are all an admin's (#1258)
+  const updateGate = useGate("virtual_key:update");
+  const deleteGate = useGate("virtual_key:delete");
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -280,10 +285,13 @@ export default function Keys() {
               customer={customerName(key.customer_id)}
             />
             <Select
-              aria-label={`Response cache policy for ${key.name ?? key.key_prefix}`}
+              aria-label={t("pages.virtualKeys.cacheAria", {
+                name: key.name ?? key.key_prefix,
+              })}
+              title={updateGate.reason}
               className="h-8 text-xs"
               value={cacheMode(key.cache_enabled)}
-              disabled={setCache.isPending}
+              disabled={setCache.isPending || updateGate.denied}
               onChange={(event) =>
                 setCache.mutate({ id: key.id, cache: parseCacheMode(event.target.value) })
               }
@@ -292,7 +300,8 @@ export default function Keys() {
               <option value="off">off</option>
               <option value="on">on</option>
             </Select>
-            <Switch
+            <GatedSwitch
+              gate="virtual_key:update"
               checked={!key.disabled}
               disabled={toggleDisabled.isPending}
               aria-label={t("pages.virtualKeys.toggleAria", {
@@ -305,11 +314,11 @@ export default function Keys() {
             <div className="flex items-center justify-self-end">
               <button
                 type="button"
-                title={t("pages.virtualKeys.edit")}
+                title={updateGate.reason ?? t("pages.virtualKeys.edit")}
                 aria-label={t("pages.virtualKeys.editKey", {
                   name: key.name ?? key.key_prefix,
                 })}
-                disabled={scopeBlocked}
+                disabled={scopeBlocked || updateGate.denied}
                 onClick={() => setEditTarget(key)}
                 className="flex rounded-[6px] p-1 text-[color:var(--text-subtle)] transition-colors hover:bg-[color:var(--surface-hover)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
@@ -317,10 +326,18 @@ export default function Keys() {
               </button>
               <button
                 type="button"
-                title="Delete key"
-                aria-label={`Delete key ${key.name ?? key.key_prefix}`}
+                title={
+                  deleteGate.reason ??
+                  t("pages.virtualKeys.deleteKey", {
+                    name: key.name ?? key.key_prefix,
+                  })
+                }
+                aria-label={t("pages.virtualKeys.deleteKey", {
+                  name: key.name ?? key.key_prefix,
+                })}
+                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(key)}
-                className="flex rounded-[6px] p-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex rounded-[6px] p-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

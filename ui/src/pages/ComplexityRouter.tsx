@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { EditorSheet } from "@/components/EditorSheet";
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill } from "@/components/screen";
@@ -18,6 +19,7 @@ import {
   type ComplexityTier,
   type RouteRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -49,6 +51,8 @@ export default function ComplexityRouter() {
   });
 
   const [editing, setEditing] = React.useState<RouteRow | null>(null);
+  // a policy lives on its route, so both entry points are `route:update`
+  const updateGate = useGate("route:update");
 
   const withPolicy = (routes.data ?? []).map((r, i) => ({
     route: r,
@@ -130,9 +134,19 @@ export default function ComplexityRouter() {
               ))}
             </div>
             <div className="flex items-center justify-end border-t border-[color:var(--border-subtle)] pt-3">
-              <Button size="sm" variant="outline" onClick={() => setEditing(route)}>
+              {/* a complexity policy is stored on the route, so editing one
+                  is the route's own update capability (#1258) */}
+              <GatedButton
+                gate="route:update"
+                size="sm"
+                variant="outline"
+                aria-label={t("pages.complexityRouter.editPolicyAria", {
+                  model: route.model,
+                })}
+                onClick={() => setEditing(route)}
+              >
                 Edit policy
-              </Button>
+              </GatedButton>
             </div>
           </div>
         ))}
@@ -148,8 +162,13 @@ export default function ComplexityRouter() {
               <button
                 key={route.id}
                 type="button"
+                title={updateGate.reason}
+                aria-label={t("pages.complexityRouter.addPolicyAria", {
+                  model: route.model,
+                })}
+                disabled={updateGate.denied}
                 onClick={() => setEditing(route)}
-                className="flex items-center gap-2 rounded-[8px] border border-[color:var(--border-subtle)] px-3 py-2 font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--border-default)] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex items-center gap-2 rounded-[8px] border border-[color:var(--border-subtle)] px-3 py-2 font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--border-default)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {route.model}
                 <Plus className="h-3 w-3" />
@@ -285,8 +304,12 @@ function PolicyDialog({
             </Select>
             <button
               type="button"
-              title="Remove tier"
-              aria-label={`Remove tier ${i + 1}`}
+              title={translate("pages.complexityRouter.removeTierAria", {
+                name: t.name || i + 1,
+              })}
+              aria-label={translate("pages.complexityRouter.removeTierAria", {
+                name: t.name || i + 1,
+              })}
               onClick={() => setTiers((ts) => ts?.filter((_, j) => j !== i) ?? null)}
               className="flex h-8 flex-none items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >

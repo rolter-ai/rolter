@@ -259,6 +259,9 @@ export function OAuthGrants() {
               </ListHeader>
               {rows.map((g) => {
                 const live = liveByGrant.get(g.id) ?? 0;
+                // one grant per (server, owner) pair, so both are what tells
+                // two rows apart to a screen reader (#1214)
+                const owner = ownerLabel(users.data, g.user_id);
                 return (
                   <ListRow key={g.id} grid={GRANT_GRID}>
                     <span className="truncate font-mono text-xs font-semibold">
@@ -287,7 +290,11 @@ export function OAuthGrants() {
                           ? "Revoke this consent and every session under it"
                           : "Already revoked"
                       }
-                      aria-label={`Revoke consent for ${serverLabel(servers.data, g.server_id)}`}
+                      gate="mcp_oauth_grant:delete"
+                      aria-label={t("pages.mcpOAuth.grants.revokeAria", {
+                        owner,
+                        server: serverLabel(servers.data, g.server_id),
+                      })}
                       disabled={!g.active || revoke.isPending}
                       onClick={() => setConfirming(g)}
                     >
@@ -476,6 +483,7 @@ export function AuthSessions() {
                 const server = grant
                   ? serverLabel(servers.data, grant.server_id)
                   : s.grant_id.slice(0, 8);
+                const owner = grant ? ownerLabel(users.data, grant.user_id) : "—";
                 return (
                   <ListRow key={s.id} grid={SESSION_GRID}>
                     <span className="truncate font-mono text-xs font-semibold">
@@ -514,8 +522,12 @@ export function AuthSessions() {
                     {/* renewal is only possible where a refresh token was
                         stored, and a revoked session has nothing to renew */}
                     <RowIconButton
+                      gate="mcp_oauth_session:update"
                       title={t("pages.mcpOAuth.refresh.action", { server })}
-                      aria-label={t("pages.mcpOAuth.refresh.action", { server })}
+                      aria-label={t("pages.mcpOAuth.sessions.refreshAria", {
+                        owner,
+                        server,
+                      })}
                       disabled={
                         !s.has_refresh_token ||
                         state === "revoked" ||
@@ -536,7 +548,11 @@ export function AuthSessions() {
                           ? "Already revoked"
                           : "Revoke this session; the consent behind it stands"
                       }
-                      aria-label={`Revoke session on ${server}`}
+                      gate="mcp_oauth_session:delete"
+                      aria-label={t("pages.mcpOAuth.sessions.revokeAria", {
+                        owner,
+                        server,
+                      })}
                       disabled={state === "revoked" || (revoke.isPending && revoke.variables === s.id)}
                       onClick={() => startRevoke(s, server)}
                     >

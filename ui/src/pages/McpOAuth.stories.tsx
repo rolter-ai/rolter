@@ -220,7 +220,7 @@ export const GrantRevokeNamesItsSessions: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const revoke = await canvas.findByRole("button", {
-      name: "Revoke consent for github",
+      name: "Revoke the consent ada@acme.dev gave github",
     });
     await userEvent.click(revoke);
     // the dialog portals to document.body, not the canvas root
@@ -355,8 +355,16 @@ export const SessionRevokeConfirmsFirst: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // selected by name rather than by position among every revoke button on
+    // the screen: the label names the owner and the server (#1214). ada holds
+    // two sessions on github, so the match is still a list — but a list of the
+    // two rows the story means, not of every session on the page
     const revoke = async () =>
-      (await canvas.findAllByRole("button", { name: "Revoke session on github" }))[0];
+      (
+        await canvas.findAllByRole("button", {
+          name: "Revoke the session ada@acme.dev holds on github",
+        })
+      )[0];
 
     await userEvent.click(await revoke());
     await cancelConfirmation();
@@ -390,7 +398,7 @@ export const SessionRefreshesFromTheRow: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const renew = (await canvas.findAllByRole("button", {
-      name: "Renew this session on github",
+      name: "Renew the session ada@acme.dev holds on github",
     }))[0];
     await userEvent.click(renew);
     await sessionRefreshes.expectSent("POST", "/mcp/sessions/sess-1/refresh");
@@ -420,7 +428,7 @@ export const SessionRefreshFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      (await canvas.findAllByRole("button", { name: "Renew this session on github" }))[0],
+      (await canvas.findAllByRole("button", { name: "Renew the session ada@acme.dev holds on github" }))[0],
     );
     await waitFor(() =>
       expect(canvas.getByText("Could not renew the session")).toBeVisible(),
@@ -445,7 +453,7 @@ export const SessionWithoutRefreshTokenCannotRenew: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      await canvas.findByRole("button", { name: "Renew this session on github" }),
+      await canvas.findByRole("button", { name: "Renew the session ada@acme.dev holds on github" }),
     ).toBeDisabled();
   },
 };

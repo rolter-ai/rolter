@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
+import { useGate } from "@/lib/can";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -74,6 +75,9 @@ export default function Pricing() {
   const [editOpen, setEditOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<ModelPriceRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ModelPriceRow | null>(null);
+  // model prices are deployment-wide, so a row control is the superadmin's
+  // exactly as the add button is (#1258)
+  const deleteGate = useGate("model_price:delete");
 
   return (
     <PageBody>
@@ -81,8 +85,11 @@ export default function Pricing() {
         <span className="text-sm text-muted-foreground">
           {prices.data?.length ?? 0} models · per-million-token pricing · currency set per model
         </span>
+        {/* a price is written with PUT /model-prices whether or not the row
+            exists, so adding one takes `model_price:update` — there is no
+            create capability to gate on (#1258) */}
         <GatedButton
-          gate="model_price:create"
+          gate="model_price:update"
           className="ml-auto"
           onClick={() => {
             setEditTarget(null);
@@ -110,7 +117,7 @@ export default function Pricing() {
           description={t("pages.pricing.emptyBody")}
           actions={
             <GatedButton
-              gate="model_price:create"
+              gate="model_price:update"
               onClick={() => {
                 setEditTarget(null);
                 setEditOpen(true);
@@ -151,23 +158,31 @@ export default function Pricing() {
               </p>
             )}
             <div className="flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
-              <Button
+              <GatedButton
+                gate="model_price:update"
                 size="sm"
                 variant="outline"
+                aria-label={t("pages.pricing.editAria", { model: price.model })}
                 onClick={() => {
                   setEditTarget(price);
                   setEditOpen(true);
                 }}
               >
                 Edit
-              </Button>
+              </GatedButton>
               <button
                 type="button"
-                title="Delete price"
-                aria-label={`Delete price for ${price.model}`}
-                disabled={removePrice.isPending && deleteTarget?.model === price.model}
+                title={
+                  deleteGate.reason ??
+                  t("pages.pricing.deleteAria", { model: price.model })
+                }
+                aria-label={t("pages.pricing.deleteAria", { model: price.model })}
+                disabled={
+                  deleteGate.denied ||
+                  (removePrice.isPending && deleteTarget?.model === price.model)
+                }
                 onClick={() => setDeleteTarget(price)}
-                className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+                className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {removePrice.isPending && deleteTarget?.model === price.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
               </button>

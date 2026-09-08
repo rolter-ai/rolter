@@ -119,7 +119,9 @@ export const ConfirmsBeforeDeletingARule: Story = {
   render: () => <Harness fetchStub={deletes.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const del = async () => (await canvas.findAllByRole("button", { name: "Delete" }))[0];
+    // by name, not by index: each row control names its own rule (#1214)
+    const del = async () =>
+      canvas.findByRole("button", { name: "Delete rule Redact customer email" });
 
     await userEvent.click(await del());
     await cancelConfirmation();
@@ -135,7 +137,9 @@ export const EditsRule: Story = {
   render: () => <Harness fetchStub={async () => json(RULES)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click((await canvas.findAllByRole("button", { name: "Edit rule" }))[0]);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit rule Redact customer email" }),
+    );
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeVisible());
     await expect(within(document.body).getByLabelText("Rule name")).toHaveValue("Redact customer email");
   },

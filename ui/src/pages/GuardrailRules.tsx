@@ -191,8 +191,10 @@ function GuardrailRulesScreen() {
               }
               actions={
                 <>
-                  <Button
+                  <GatedButton
+                    gate="guardrail_rule:delete"
                     variant="ghost"
+                    aria-label={t("pages.guardrailRules.deleteAria", { name: rule.name })}
                     onClick={() => startDelete(rule)}
                     disabled={remove.isPending && remove.variables === rule.id}
                   >
@@ -200,10 +202,15 @@ function GuardrailRulesScreen() {
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
                     Delete
-                  </Button>
-                  <Button variant="outline" onClick={() => setEditing(rule)}>
+                  </GatedButton>
+                  <GatedButton
+                    gate="guardrail_rule:update"
+                    variant="outline"
+                    aria-label={t("pages.guardrailRules.editAria", { name: rule.name })}
+                    onClick={() => setEditing(rule)}
+                  >
                     Edit rule
-                  </Button>
+                  </GatedButton>
                 </>
               }
             />
