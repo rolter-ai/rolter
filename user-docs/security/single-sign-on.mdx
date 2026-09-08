@@ -83,9 +83,11 @@ Three things are worth knowing about the edit:
   needs a different slug is a different provider.
 - **An empty client secret field means "keep".** The stored secret is not
   readable, so the form cannot show it — leaving the field alone leaves the
-  sealed secret exactly where it is. Type a new value to rotate it. To *clear*
-  it, turning the provider into a public PKCE client, send `client_secret: ""`
-  through the API.
+  sealed secret exactly where it is. Whitespace counts as empty: a stray space
+  or a pasted newline changes nothing. Type a new value to rotate it. Saving the
+  form can never remove a secret — see
+  [Removing a stored client secret](#removing-a-stored-client-secret) for the
+  control that does.
 - **Group mappings survive.** They hang off the provider's id, and editing keeps
   that id, so the roles your IdP groups grant are untouched.
 
@@ -94,6 +96,28 @@ Three things are worth knowing about the edit:
   whether the client secret was left unchanged, rotated, or cleared — never the
   secret itself.
 </Note>
+
+## Removing a stored client secret
+
+Turning a provider into a public client — one that relies on PKCE alone — is its
+own action, separate from editing. On the provider's card, the eraser button
+next to the pencil reads **Remove stored secret**, and it only appears while
+there is one to remove. It names the provider in a confirmation before anything
+leaves the browser, because a sealed secret cannot be read back: if you remove
+the wrong one, the only way forward is to fetch a fresh secret from your identity
+provider.
+
+Confirming sends `client_secret: ""` to `PUT /api/v1/sso-providers/{id}` — the
+wire's third value, distinct from omitting the field (keep) and from sending one
+(rotate). The card's **Client secret** row then reads *Not set* and the
+**No client secret** badge appears.
+
+<Warning>
+  If your identity provider still expects a client secret, every sign-in through
+  the provider fails at the token exchange from the moment the secret is
+  removed. Remove one only when you have deliberately switched the IdP
+  application to a public client.
+</Warning>
 
 ## Taking a provider out of service
 

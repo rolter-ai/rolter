@@ -1014,10 +1014,13 @@
         "noSecret": "No client secret",
         "noSecretHint": "No client secret is sealed for this provider, so the token exchange will fail at login. Re-register it with a secret, or check that ROLTER_KEK was set when it was created.",
         "edit": "Edit provider",
+        "clearSecret": "Remove stored secret",
+        "clearSecretNamed": "Remove the stored client secret for {{name}}",
         "editNamed": "Edit provider {{name}}",
         "toggleNamed": "Enable provider {{name}}",
         "enabledToast": "{{name}} is now accepting sign-ins",
-        "disabledToast": "{{name}} is out of service"
+        "disabledToast": "{{name}} is out of service",
+        "secretClearedToast": "{{name}} no longer has a stored client secret"
       },
       "empty": {
         "title": "No identity provider yet",
@@ -1027,6 +1030,11 @@
         "title": "Delete provider {{name}}?",
         "body": "Anyone signing in through it loses that route immediately, and its group mappings go with it. Accounts it already created stay, with the roles they already hold.",
         "confirm": "Delete provider"
+      },
+      "clearSecret": {
+        "title": "Remove the stored client secret for {{name}}?",
+        "body": "The provider becomes a public client relying on PKCE alone from the next sign-in. If your identity provider still expects a secret, every login through it fails until you enter a new one — and the removed secret cannot be read back, here or anywhere else.",
+        "confirm": "Remove secret"
       },
       "create": {
         "title": "Add identity provider",
@@ -1046,7 +1054,7 @@
         "clientIdPlaceholder": "0oa1b2c3d4",
         "clientSecret": "Client secret",
         "clientSecretHint": "Leave empty for a public client that relies on PKCE alone.",
-        "secretWriteOnly": "The secret is sealed the moment it is saved and is never shown again — not on this screen, not through the API. To change it, delete the provider and register it again.",
+        "secretWriteOnly": "The secret is sealed the moment it is saved and is never shown again — not on this screen, not through the API. To change it, edit the provider and enter a new one.",
         "scopes": "Scopes",
         "scopesHint": "Space-separated. Leave empty for openid email profile.",
         "scopesPlaceholder": "openid email profile groups",
@@ -1062,7 +1070,7 @@
         "subtitle": "Rotate the client secret, correct the issuer, or take the provider out of service. Group mappings and the provider's id are kept.",
         "save": "Save changes",
         "slugImmutable": "The slug is in the login URL, so it cannot be changed. A provider that needs a different one is a different provider.",
-        "clientSecretHint": "Leave empty to keep the stored secret. Enter a new one to rotate it. The stored secret is never shown, here or anywhere else."
+        "clientSecretHint": "Leave empty to keep the stored secret — whitespace alone counts as empty and changes nothing. Enter a new one to rotate it. The stored secret is never shown, here or anywhere else; to drop it entirely, use Remove stored secret on the provider's card."
       },
       "mappings": {
         "title": "Group mappings",
