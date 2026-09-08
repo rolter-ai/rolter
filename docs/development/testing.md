@@ -332,6 +332,40 @@ JSDoc docgen transform appends a `parameters: { docs: … }` of its own to every
 meta and would replace a whole-object spread silently, leaving the story green
 and unchecked.
 
+##### Two guards, because prose did not hold (#1373)
+
+The first version of the override above shipped as `...withPageA11y` at meta
+level and ran green asserting nothing; it was caught by printing the merged
+rule map by hand. A gate that can be switched off without a word is the one
+failure worth spending code on, so the placement rule is now enforced twice:
+
+| Guard | Where | What it catches |
+|---|---|---|
+| `parameters.a11y.expectRules` | `.storybook/test-runner.ts` `postVisit` | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the runner fails the story if any of them is not enabled in the map it actually merged. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
+| `bun run check:stories` | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters` |
+
+The shapes are read from the fixture modules rather than listed in the checker,
+so a fixture added later is covered the day it is written. A third story file
+that mounts a whole page needs its title added to `PAGE_A11Y_STORY_ID` in
+`ui/src/lib/story-a11y.ts`; `story-a11y.test.ts` fails if the pattern and the
+files that spread the fixture disagree.
+
+Moving the spread up one level fails like this:
+
+```
+screens-login--wrong-password: axe rules region, landmark-one-main,
+page-has-heading-one should be enabled for this story but are not. spread
+`withPageA11y` from src/lib/story-a11y.ts *inside* the meta's `parameters`
+object (`parameters: { ...withPageA11y }`) — spread as a bare story or meta
+field it is replaced by the docgen transform and the story passes asserting
+nothing (#1373).
+```
+
+`parameters: { a11y: { disable: true } }` still opts a story out of the axe
+gate entirely, the `expectRules` check included — that is one explicit,
+reviewable line, which is the opposite of the silent drop these guards exist
+for.
+
 That is what a separate `@axe-core/playwright` pass in `ui/e2e/` would have
 bought, for a fraction of the cost: no new dependency, and it runs on every PR
 with the rest of the story gate rather than only where Playwright does. The one
