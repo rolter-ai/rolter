@@ -116,18 +116,17 @@ function GuardrailProvidersScreen() {
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="font-mono text-[0.6875rem] uppercase tracking-[0.16em] text-[color:var(--status-danger-text)]">
-            External enforcement
+            {t("pages.guardrailProviders.eyebrow")}
           </p>
           <h1 className="mt-1 text-xl font-semibold tracking-tight">
-            Guardrail provider registry
+            {t("pages.guardrailProviders.heading")}
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Register services freely; activate one at a time. Enabling a
-            provider atomically hands enforcement over from the current service.
+            {t("pages.guardrailProviders.intro")}
           </p>
         </div>
         <GatedButton gate="guardrail_provider:create" onClick={() => setEditing(null)}>
-          <Plus className="h-4 w-4" aria-hidden /> Add provider
+          <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailProviders.addProvider")}
         </GatedButton>
       </div>
 
@@ -139,12 +138,12 @@ function GuardrailProvidersScreen() {
           />
           <div>
             <p className="text-sm font-medium">
-              {active.name} owns external enforcement
+              {t("pages.guardrailProviders.activeBanner", { name: active.name })}
             </p>
             <p className="text-xs text-muted-foreground">
               {active.failure_mode === "fail_closed"
-                ? "Requests stop when the service cannot decide."
-                : "Requests continue when the service cannot decide."}
+                ? t("pages.guardrailProviders.activeFailClosed")
+                : t("pages.guardrailProviders.activeFailOpen")}
             </p>
           </div>
         </section>
@@ -163,11 +162,11 @@ function GuardrailProvidersScreen() {
         />
       ) : providers.length === 0 ? (
         <GuardrailEmpty
-          title="No guardrail providers"
-          description="Register a self-hosted HTTP guardrail service. Credentials remain environment references, never stored secret values."
+          title={t("pages.guardrailProviders.emptyTitle")}
+          description={t("pages.guardrailProviders.emptyBody")}
           action={
             <GatedButton gate="guardrail_provider:create" onClick={() => setEditing(null)}>
-              Register first provider
+              {t("pages.guardrailProviders.emptyAction")}
             </GatedButton>
           }
         />
@@ -198,7 +197,11 @@ function GuardrailProvidersScreen() {
                   </Badge>
                 </>
               }
-              details={`${provider.timeout_ms} ms timeout · ${provider.max_retries} retries · ${Math.round(provider.max_body_bytes / 1024)} KiB cap`}
+              details={t("pages.guardrailProviders.detailLine", {
+                timeout: provider.timeout_ms,
+                retries: provider.max_retries,
+                kib: Math.round(provider.max_body_bytes / 1024),
+              })}
               actions={
                 <>
                   <GatedButton
@@ -215,7 +218,7 @@ function GuardrailProvidersScreen() {
                     {remove.isPending && remove.variables === provider.id && (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
-                    Delete
+                    {t("common.delete")}
                   </GatedButton>
                   <GatedButton
                     gate="guardrail_provider:update"
@@ -225,7 +228,7 @@ function GuardrailProvidersScreen() {
                     })}
                     onClick={() => setEditing(provider)}
                   >
-                    Edit provider
+                    {t("pages.guardrailProviders.editProvider")}
                   </GatedButton>
                 </>
               }
@@ -291,6 +294,7 @@ function ProviderDialog({
   onClose: () => void;
   onSave: (body: GuardrailProviderInput) => void;
 }) {
+  const { t } = useTranslation();
   const [form, setForm] = React.useState<GuardrailProviderInput>(
     initial ?? EMPTY,
   );
@@ -306,15 +310,14 @@ function ProviderDialog({
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
         <DialogTitle>
-          {initial ? "Edit guardrail provider" : "Register guardrail provider"}
+          {initial ? t("pages.guardrailProviders.dialogEditTitle") : t("pages.guardrailProviders.dialogAddTitle")}
         </DialogTitle>
         <DialogDescription>
-          Use an HTTP endpoint and reference credentials by environment
-          variable. Activating this provider pauses the current one.
+          {t("pages.guardrailProviders.dialogBody")}
         </DialogDescription>
       </DialogHeader>
       <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
-        <Field label="Provider name" htmlFor="provider-name">
+        <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
           <Input
             id="provider-name"
             value={form.name}
@@ -322,9 +325,9 @@ function ProviderDialog({
           />
         </Field>
         <Field
-          label="Evaluation URL"
+          label={t("pages.guardrailProviders.fieldUrl")}
           htmlFor="provider-url"
-          hint="The gateway posts a vendor-neutral decision envelope."
+          hint={t("pages.guardrailProviders.urlHint")}
         >
           <Input
             id="provider-url"
@@ -334,7 +337,7 @@ function ProviderDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Stage" htmlFor="provider-stage">
+          <Field label={t("pages.guardrailProviders.fieldStage")} htmlFor="provider-stage">
             <Select
               id="provider-stage"
               value={form.stage}
@@ -344,11 +347,11 @@ function ProviderDialog({
                 })
               }
             >
-              <option value="pre_call">Before upstream</option>
-              <option value="post_call">Before response</option>
+              <option value="pre_call">{t("pages.guardrailProviders.stagePre")}</option>
+              <option value="post_call">{t("pages.guardrailProviders.stagePost")}</option>
             </Select>
           </Field>
-          <Field label="Failure policy" htmlFor="provider-failure">
+          <Field label={t("pages.guardrailProviders.fieldFailure")} htmlFor="provider-failure">
             <Select
               id="provider-failure"
               value={form.failure_mode}
@@ -359,13 +362,13 @@ function ProviderDialog({
                 })
               }
             >
-              <option value="fail_closed">Fail closed</option>
-              <option value="fail_open">Fail open</option>
+              <option value="fail_closed">{t("pages.guardrailProviders.failClosed")}</option>
+              <option value="fail_open">{t("pages.guardrailProviders.failOpen")}</option>
             </Select>
           </Field>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Timeout (ms)" htmlFor="provider-timeout">
+          <Field label={t("pages.guardrailProviders.fieldTimeout")} htmlFor="provider-timeout">
             <Input
               id="provider-timeout"
               type="number"
@@ -376,7 +379,7 @@ function ProviderDialog({
               }
             />
           </Field>
-          <Field label="Retries" htmlFor="provider-retries">
+          <Field label={t("pages.guardrailProviders.fieldRetries")} htmlFor="provider-retries">
             <Input
               id="provider-retries"
               type="number"
@@ -387,7 +390,7 @@ function ProviderDialog({
               }
             />
           </Field>
-          <Field label="Body cap" htmlFor="provider-cap">
+          <Field label={t("pages.guardrailProviders.fieldBodyCap")} htmlFor="provider-cap">
             <Input
               id="provider-cap"
               type="number"
@@ -399,7 +402,7 @@ function ProviderDialog({
             />
           </Field>
         </div>
-        <Field label="Authentication" htmlFor="provider-auth">
+        <Field label={t("pages.guardrailProviders.fieldAuth")} htmlFor="provider-auth">
           <Select
             id="provider-auth"
             value={form.auth_kind}
@@ -412,16 +415,16 @@ function ProviderDialog({
               });
             }}
           >
-            <option value="none">None</option>
-            <option value="bearer">Bearer token</option>
-            <option value="shared_secret">Shared secret header</option>
+            <option value="none">{t("pages.guardrailProviders.authNone")}</option>
+            <option value="bearer">{t("pages.guardrailProviders.authBearer")}</option>
+            <option value="shared_secret">{t("pages.guardrailProviders.authSharedSecret")}</option>
           </Select>
         </Field>
         {form.auth_kind !== "none" && (
           <Field
-            label="Secret environment variable"
+            label={t("pages.guardrailProviders.fieldEnv")}
             htmlFor="provider-env"
-            hint="Only the variable name is stored."
+            hint={t("pages.guardrailProviders.envHint")}
           >
             <Input
               id="provider-env"
@@ -436,21 +439,20 @@ function ProviderDialog({
         )}
         <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
           <div>
-            <p className="text-sm font-medium">Activate provider</p>
+            <p className="text-sm font-medium">{t("pages.guardrailProviders.activateLabel")}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Takes enforcement ownership from the currently active provider.
+              {t("pages.guardrailProviders.activateHint")}
             </p>
           </div>
           <Switch
             checked={form.enabled}
-            aria-label="Activate provider"
+            aria-label={t("pages.guardrailProviders.activateLabel")}
             onCheckedChange={(enabled) => set({ enabled })}
           />
         </div>
         {form.failure_mode === "fail_open" && (
           <p className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]">
-            Fail-open favors availability: traffic continues if this provider
-            times out or errors.
+            {t("pages.guardrailProviders.failOpenWarning")}
           </p>
         )}
         {error && (
@@ -461,10 +463,10 @@ function ProviderDialog({
       </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button disabled={!valid || pending} onClick={() => onSave(form)}>
-          {pending ? "Publishing…" : "Save provider"}
+          {pending ? t("pages.guardrailProviders.publishing") : t("pages.guardrailProviders.save")}
         </Button>
       </DialogFooter>
     </Dialog>

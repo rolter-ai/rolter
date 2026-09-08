@@ -325,7 +325,7 @@ function ChatColumn({
           <Pilcrow className="h-3.5 w-3.5" />
         </Button>
         {removable && (
-          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onRemove} aria-label="Remove column">
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onRemove} aria-label={t("pages.playground.removeColumn")}>
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         )}
@@ -333,7 +333,7 @@ function ChatColumn({
       <div className="flex flex-1 flex-col gap-2.5 overflow-auto p-4">
         {msgs.length === 0 && (
           <p className="m-auto text-center text-xs text-muted-foreground">
-            Send a message to {model}.
+            {t("pages.playground.sendMessageTo", { model })}
           </p>
         )}
         {msgs.map((m, i) => (
@@ -366,8 +366,8 @@ function ChatColumn({
         <div className="px-3 pb-1">
           {image && (
             <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-[0.625rem] text-muted-foreground">
-              <ImageIcon className="h-3 w-3" /> image attached
-              <button onClick={() => setImage(null)} aria-label="Remove attachment" className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded">
+              <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
+              <button onClick={() => setImage(null)} aria-label={t("pages.playground.removeAttachment")} className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded">
                 <Trash2 className="h-3 w-3" />
               </button>
             </div>
@@ -390,7 +390,7 @@ function ChatColumn({
               variant="ghost"
               className="h-8 w-8"
               onClick={() => fileRef.current?.click()}
-              aria-label="Attach image"
+              aria-label={t("pages.playground.attachImage")}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -400,10 +400,10 @@ function ChatColumn({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Message…"
+          placeholder={t("pages.playground.messagePlaceholder")}
           className="h-8 flex-1 text-sm"
         />
-        <Button size="icon" className="h-8 w-8" onClick={send} disabled={busy} aria-label="Send">
+        <Button size="icon" className="h-8 w-8" onClick={send} disabled={busy} aria-label={t("pages.playground.send")}>
           <Send className="h-4 w-4" />
         </Button>
       </div>
@@ -445,14 +445,16 @@ function ChatMode({ models }: { models: ModelOption[] }) {
           <span id="playground-multimodal-label">{t("pages.playground.multimodal")}</span>
         </label>
         <span className="text-xs text-[color:var(--text-subtle)]">
-          · attach images to any turn
+          {t("pages.playground.attachHint")}
         </span>
         <span className="ml-auto flex items-center gap-2">
           <Badge tone={compare ? "accent" : "neutral"}>
-            {compare ? `Compare · ${cols.length}` : "Single"}
+            {compare
+              ? t("pages.playground.compareBadge", { count: cols.length })
+              : t("pages.playground.single")}
           </Badge>
           <Button size="sm" variant="outline" onClick={add}>
-            <GitCompare className="h-3.5 w-3.5" /> Add model
+            <GitCompare className="h-3.5 w-3.5" /> {t("pages.playground.addModel")}
           </Button>
         </span>
       </div>
@@ -572,15 +574,15 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
       <div className="flex flex-col">
         <ModelSelect models={models} value={model} onChange={setModel} className="mb-2.5 h-8 text-xs" />
         <div className="flex max-h-[280px] flex-col gap-1.5 overflow-y-auto pr-1">
-          {texts.map((t, i) => (
+          {texts.map((row, i) => (
             <div key={i} className="flex items-center gap-1.5">
               <span className="w-4 flex-none text-right font-mono text-[0.625rem] text-[color:var(--text-subtle)]">
                 {i + 1}
               </span>
               <Input
-                value={t}
+                value={row}
                 onChange={(e) => setText(i, e.target.value)}
-                placeholder="Enter text…"
+                placeholder={t("pages.playground.textPlaceholder")}
                 className="h-8 text-sm"
               />
               <Button
@@ -588,7 +590,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 variant="ghost"
                 className="h-8 w-8"
                 onClick={() => removeField(i)}
-                aria-label="Remove text"
+                aria-label={t("pages.playground.removeText")}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -597,17 +599,17 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         </div>
         <div className="mt-2.5 flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={addField}>
-            <Plus className="h-3.5 w-3.5" /> Add text
+            <Plus className="h-3.5 w-3.5" /> {t("pages.playground.addText")}
           </Button>
           <Button size="sm" onClick={run} disabled={busy}>
-            <Play className="h-3.5 w-3.5" /> Embed &amp; project
+            <Play className="h-3.5 w-3.5" /> {t("pages.playground.embedProject")}
           </Button>
         </div>
         <ErrorNote error={error} />
       </div>
       <div className="rounded-lg border border-[color:var(--border-default)] bg-card p-4">
         <p className="mb-2.5 font-mono text-xs text-muted-foreground">
-          PCA projection · {points.length} vectors
+          {t("pages.playground.pcaCount", { count: points.length })}
         </p>
         {points.length ? (
           <ScatterPlot
@@ -619,7 +621,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           />
         ) : (
           <p className="py-16 text-center text-sm text-muted-foreground">
-            Embed some texts to see them projected to 2D.
+            {t("pages.playground.embedEmpty")}
           </p>
         )}
       </div>
@@ -682,14 +684,14 @@ function ImageMode({ models }: { models: ModelOption[] }) {
             <option value="4">n=4</option>
           </Select>
           <Button size="sm" onClick={gen} disabled={busy}>
-            <ImageIcon className="h-3.5 w-3.5" /> Generate
+            <ImageIcon className="h-3.5 w-3.5" /> {t("pages.playground.generate")}
           </Button>
         </div>
         <ErrorNote error={error} />
       </div>
       <div className="rounded-lg border border-[color:var(--border-default)] bg-card p-4">
         <p className="mb-2.5 font-mono text-xs text-muted-foreground">
-          Output · {images.length} sample{images.length === 1 ? "" : "s"}
+          {t("pages.playground.outputCount", { count: images.length })}
         </p>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
           {(images.length ? images : Array.from({ length: n }, () => null)).map(
@@ -785,18 +787,20 @@ function AudioMode({ models }: { models: ModelOption[] }) {
                 <option value="shimmer">voice: shimmer</option>
               </Select>
               <Button size="sm" onClick={speak} disabled={busy}>
-                <Mic className="h-3.5 w-3.5" /> Synthesize
+                <Mic className="h-3.5 w-3.5" /> {t("pages.playground.synthesize")}
               </Button>
             </div>
             <ErrorNote error={error} />
           </div>
           <div className="rounded-lg border border-[color:var(--border-default)] bg-card p-4">
-            <p className="mb-2.5 font-mono text-xs text-muted-foreground">Output</p>
+            <p className="mb-2.5 font-mono text-xs text-muted-foreground">
+              {t("pages.playground.output")}
+            </p>
             {audioUrl ? (
               <audio controls src={audioUrl} className="w-full" />
             ) : (
               <p className="py-10 text-center text-sm text-muted-foreground">
-                Synthesize to hear the result.
+                {t("pages.playground.synthesizeEmpty")}
               </p>
             )}
           </div>
@@ -813,17 +817,19 @@ function AudioMode({ models }: { models: ModelOption[] }) {
               onChange={(e) => e.target.files?.[0] && doTranscribe(e.target.files[0])}
             />
             <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
-              <Upload className="h-3.5 w-3.5" /> Upload audio
+              <Upload className="h-3.5 w-3.5" /> {t("pages.playground.uploadAudio")}
             </Button>
             <ErrorNote error={error} />
           </div>
           <div className="rounded-lg border border-[color:var(--border-default)] bg-card p-4">
-            <p className="mb-2.5 font-mono text-xs text-muted-foreground">Transcript</p>
+            <p className="mb-2.5 font-mono text-xs text-muted-foreground">
+              {t("pages.playground.transcript")}
+            </p>
             {transcript != null ? (
-              <p className="text-sm text-foreground">{transcript || "(empty)"}</p>
+              <p className="text-sm text-foreground">{transcript || t("pages.playground.transcriptEmpty")}</p>
             ) : (
               <p className="py-10 text-center text-sm text-muted-foreground">
-                Upload an audio file to transcribe.
+                {t("pages.playground.transcribeEmpty")}
               </p>
             )}
           </div>
@@ -835,6 +841,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
 
 /* ---------------- realtime (WebSocket) ---------------- */
 function RealtimeMode({ models }: { models: ModelOption[] }) {
+  const { t } = useTranslation();
   const [model, setModel] = React.useState(models[0]?.id ?? FAKE);
   const [live, setLive] = React.useState(false);
   const [log, setLog] = React.useState<string[]>([]);
@@ -887,38 +894,41 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
             variant={live ? "destructive" : "default"}
             onClick={live ? stop : start}
           >
-            <Mic className="h-3.5 w-3.5" /> {live ? "Stop session" : "Start session"}
+            <Mic className="h-3.5 w-3.5" />{" "}
+            {live ? t("pages.playground.stopSession") : t("pages.playground.startSession")}
           </Button>
         </span>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Session</CardTitle>
-            <CardDescription>WebSocket · bidirectional audio + text</CardDescription>
+            <CardTitle className="text-base">{t("pages.playground.sessionTitle")}</CardTitle>
+            <CardDescription>{t("pages.playground.sessionSubtitle")}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-1">
             <StatusRow
               status={live ? "success" : "idle"}
               chevron={false}
-              label={live ? "Connected" : "Idle"}
+              label={live ? t("pages.playground.connected") : t("pages.playground.idle")}
             />
             <StatusRow
               status={live ? "running" : "idle"}
               chevron={false}
-              label={live ? "Channel open" : "No session"}
+              label={live ? t("pages.playground.channelOpen") : t("pages.playground.noSession")}
             />
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Event log</CardTitle>
-            <CardDescription>Frames sent and received</CardDescription>
+            <CardTitle className="text-base">{t("pages.playground.eventLog")}</CardTitle>
+            <CardDescription>{t("pages.playground.eventLogSubtitle")}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="mb-2.5 flex h-[140px] flex-col gap-1 overflow-auto font-mono text-[0.6875rem] text-[color:var(--text-secondary)]">
               {log.length === 0 ? (
-                <span className="text-[color:var(--text-subtle)]">no events yet</span>
+                <span className="text-[color:var(--text-subtle)]">
+                  {t("pages.playground.noEvents")}
+                </span>
               ) : (
                 log.map((l, i) => <div key={i}>{l}</div>)
               )}
@@ -928,11 +938,11 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send()}
-                placeholder="Send a text frame…"
+                placeholder={t("pages.playground.framePlaceholder")}
                 className="h-8 text-sm"
                 disabled={!live}
               />
-              <Button size="icon" className="h-8 w-8" onClick={send} disabled={!live} aria-label="Send">
+              <Button size="icon" className="h-8 w-8" onClick={send} disabled={!live} aria-label={t("pages.playground.send")}>
                 <Send className="h-4 w-4" />
               </Button>
             </div>
