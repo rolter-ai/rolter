@@ -130,6 +130,14 @@
       "delete": null
     },
     {
+      "resource": "stability",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "read": "viewer",
