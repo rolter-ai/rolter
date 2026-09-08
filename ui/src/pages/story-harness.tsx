@@ -341,8 +341,11 @@ export interface Recorder {
    * Asserting the *body* is the difference between "the screen sent a PUT" and
    * "the screen sent the attribution the operator picked": a mutation that
    * fires with the wrong payload passes every url-only assertion (#1193).
+   *
+   * `T` names the shape the story is about to assert on, so a field check reads
+   * as `body.client_secret` rather than through a cast at every call site.
    */
-  expectSentBody: (method: string, fragment: string) => Promise<unknown>;
+  expectSentBody: <T = unknown>(method: string, fragment: string) => Promise<T>;
 }
 
 export function recording(handler: FetchStub): Recorder {
@@ -365,9 +368,9 @@ export function recording(handler: FetchStub): Recorder {
     expectNotSent: (method, fragment) => {
       expect(match(method, fragment)).toBeUndefined();
     },
-    expectSentBody: async (method, fragment) => {
+    expectSentBody: async <T,>(method: string, fragment: string): Promise<T> => {
       await waitFor(() => expect(match(method, fragment)?.body).toBeDefined());
-      return JSON.parse(match(method, fragment)!.body as string) as unknown;
+      return JSON.parse(match(method, fragment)!.body as string) as T;
     },
   };
 }
