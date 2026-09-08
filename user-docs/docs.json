@@ -12,6 +12,16 @@
     "dark": "/logo.svg"
   },
   "favicon": "/logo.svg",
+  "seo": {
+    "metatags": {
+      "og:site_name": "Rolter",
+      "og:title": "Rolter — OpenAI- and Anthropic-compatible AI gateway",
+      "og:description": "A high-performance AI gateway and load balancer with drop-in OpenAI and Anthropic compatibility, smart routing, virtual keys and cost tracking.",
+      "og:image": "/images/og.png",
+      "twitter:card": "summary_large_image",
+      "twitter:image": "/images/og.png"
+    }
+  },
   "navbar": {
     "primary": {
       "type": "github",
@@ -114,6 +124,12 @@
               "deployment/cluster",
               "deployment/air-gapped",
               "deployment/backup-and-restore"
+            ]
+          },
+          {
+            "group": "Project",
+            "pages": [
+              "community/brand"
             ]
           }
         ]
