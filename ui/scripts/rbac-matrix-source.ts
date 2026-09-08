@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
  *
  * The control plane publishes that table over HTTP but emits no build artifact,
  * so there is nothing checked in to diff against — hence this parser, and
- * `#1364` for the snapshot export that would replace it. It reads the `const
+ * #1369 for the snapshot export that would replace it. It reads the `const
  * CAPABILITIES` table directly; `scripts/gen-rbac-capabilities.ts` writes the
  * result to `src/lib/rbac-capabilities.json`, and `rbac-matrix-source.test.ts`
  * fails the build when the two disagree.

@@ -97,6 +97,31 @@ org/team/project chain (`staleTime` one minute) plus the matrix for the copy. A
 scope switch re-keys the query, so a viewer in one org does not carry a cached
 "no" into the next one.
 
+## The stories render as a role from the real table
+
+`<Harness role="viewer">` stubs both RBAC endpoints, and it derives the answers
+from `ui/src/lib/rbac-capabilities.json` — a generated copy of `CAPABILITIES`,
+written by `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`).
+`ui/src/lib/rbac-capabilities.ts` turns that copy into the two payloads the
+same way the control plane does: `matrixFixture()` is the port of
+`resource_view`, `effectiveFor()` of `allowed_for`.
+
+It used to be a table typed out by hand in `story-harness.tsx`, and nothing
+compared the two. So it drifted — #1258 found it calling `model` and
+`model_price` org-scoped admin resources when both are deployment-wide catalogs
+only a superadmin writes, which let two screens gate on `model:create` and
+`model_price:create`, capabilities the control plane does not define, while
+their stories passed. A fixture more generous than the deployment makes a
+gating story assert behaviour nobody runs.
+
+`ui/scripts/rbac-matrix-source.test.ts` is the gate (#1298): it re-parses
+`rbac_matrix.rs` on every `bun run test` and fails when the copy disagrees,
+naming the pair — `model_price:update takes superadmin in
+crates/rolter-control/src/rbac_matrix.rs, admin in the fixture`. **Change the
+capability table, run `bun run gen:rbac` and commit the JSON with it.** The
+generator parses the Rust source because the control plane emits no artifact to
+read; #1369 tracks replacing that with a snapshot the Rust test suite writes.
+
 ## Adding a screen
 
 Give the nav leaf its `resource`, gate the create control on
