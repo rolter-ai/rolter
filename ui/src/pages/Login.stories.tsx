@@ -10,6 +10,7 @@ import {
   type FetchStub,
 } from "./story-harness";
 import { AuthProvider } from "@/lib/auth";
+import { withPageA11y } from "@/lib/story-a11y";
 
 /**
  * The login screen used to answer every failure the same way: it signed the
@@ -21,6 +22,9 @@ import { AuthProvider } from "@/lib/auth";
 const meta: Meta<typeof Login> = {
   title: "Screens/Login",
   component: Login,
+  // the signed-out page is a page: no story mounts the shell around it, so it
+  // carries its own landmark, <main> and <h1> and is gated on them (#1353)
+  parameters: { ...withPageA11y },
 };
 export default meta;
 type Story = StoryObj<typeof Login>;

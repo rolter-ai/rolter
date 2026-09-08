@@ -302,20 +302,40 @@ other half contained before turning it on. Over all 695 stories:
 
 | rule | impact | nodes | stories | decision |
 |---|---|---:|---:|---|
-| `region` | moderate | 3177 | 488 | excluded — page-level |
-| `landmark-one-main` | moderate | 593 | 593 | excluded — page-level |
-| `page-has-heading-one` | moderate | 570 | 570 | excluded — page-level |
+| `region` | moderate | 3177 | 488 | off by default — page-level |
+| `landmark-one-main` | moderate | 593 | 593 | off by default — page-level |
+| `page-has-heading-one` | moderate | 570 | 570 | off by default — page-level |
 | `empty-table-header` | minor | 13 | 13 | fixed |
 | `heading-order` | moderate | 11 | 11 | fixed |
 | `landmark-unique` | moderate | 9 | 9 | fixed |
 
-The three excluded rules all describe a *page*. A story mounts one component,
-or one screen body, into a bare iframe with no app shell around it: the
-landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
-and `components/screen.tsx`, which no story mounts. Asserting them per story
-would only ever fail, and satisfying them would mean every story grew a fake
-shell that ships nowhere. Nothing checks them today — the e2e suite drives the
-real shell but has no axe pass; #1353 adds one there.
+The three page-level rules all describe a *page*. A story normally mounts one
+component, or one screen body, into a bare iframe with no app shell around it:
+the landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
+and `components/ScreenHeader.tsx`. Asserting them on a component story would
+only ever fail, and satisfying them would mean every story grew a fake shell
+that ships nowhere — so `DISABLED_RULES` turns them off for the default case.
+
+They are off by default, not unchecked (#1353). Two story files mount a whole
+page and turn them back on by name:
+
+| Story file | What it mounts | Widths |
+|---|---|---|
+| `ui/src/App.stories.tsx` | the assembled shell — rail + header + screen, signed in (#1239) | 1280, 768, 375 |
+| `ui/src/pages/Login.stories.tsx` | the signed-out login page, which has no shell around it | desktop |
+
+Both spread `withPageA11y` from `ui/src/lib/story-a11y.ts` into their meta
+`parameters`; `postVisit` merges `parameters.a11y.rules` over `DISABLED_RULES`,
+so an override is per-story and additive and cannot loosen the gate for
+anything else. Spread it into `parameters`, never as a bare story field — the
+JSDoc docgen transform appends a `parameters: { docs: … }` of its own to every
+meta and would replace a whole-object spread silently, leaving the story green
+and unchecked.
+
+That is what a separate `@axe-core/playwright` pass in `ui/e2e/` would have
+bought, for a fraction of the cost: no new dependency, and it runs on every PR
+with the rest of the story gate rather than only where Playwright does. The one
+fix it asked for was `Login.tsx`, whose card is now a `<main>`.
 
 The three fixed ones were small and real: an empty `<th>` over the actions
 column in Cluster and User provisioning (now an `sr-only` `common.rowActions`),
@@ -339,7 +359,9 @@ to one screen with `bun run test-storybook --url … -- -t "Keys"`.
 
 A story can opt out with `parameters: { a11y: { disable: true } }` and a comment
 saying why. None currently does — treat needing one as a signal that the screen,
-not the checker, is wrong.
+not the checker, is wrong. The inverse, `parameters: { a11y: { rules: { … } } }`,
+re-enables a rule `DISABLED_RULES` turns off; it is for stories that mount a
+whole page, and the two that do are listed above.
 
 #### The screen-story harness
 

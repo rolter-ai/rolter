@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import App from "./App";
 import { AppShell } from "./pages/shell-harness";
 import en from "@/lib/i18n/locales/en.json";
+import { withPageA11y } from "@/lib/story-a11y";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 // The assembled shell (#1239): rail + header + screen, signed in.
@@ -23,10 +24,13 @@ const OPEN_NAV = en.shell.openNav;
 const nav = en.nav as Record<string, string>;
 const screens = en.screens as Record<string, { title: string }>;
 
+// this is the one story file that mounts the whole page, so it is where the
+// three page-level axe rules the runner defaults off are actually gated —
+// at all three widths, since the rail changes shape at each of them (#1353)
 const meta = {
   title: "Shell/App",
   component: App,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", ...withPageA11y },
 } satisfies Meta<typeof App>;
 export default meta;
 type Story = StoryObj<typeof meta>;

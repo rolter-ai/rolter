@@ -22,16 +22,22 @@ const DESKTOP = { width: 1280, height: 800 };
 // are fixed, and the three below are excluded by name with a reason, so
 // neither half of the band can drift unnoticed. re-measure with
 // ROLTER_AXE_TALLY (see docs/development/testing.md)
-const DISABLED_RULES: Record<string, { enabled: false }> = {
+const DISABLED_RULES: Record<string, { enabled: boolean }> = {
   // storybook's iframe, not ours: the dashboard's index.html sets both
   "document-title": { enabled: false },
   "html-has-lang": { enabled: false },
   // the next three describe a *page*, and a story is one component (or one
   // screen body) rendered into a bare iframe with no app shell around it.
   // the landmarks, the <main> and the <h1> they ask for live in App.tsx and
-  // components/screen.tsx, which no story mounts — asserting them here would
-  // only ever fail, and passing them would mean every story grew a fake shell.
-  // the shell itself needs its own axe pass in the e2e suite: #1353
+  // components/screen.tsx, so asserting them on a component story would only
+  // ever fail, and passing them would mean every story grew a fake shell.
+  //
+  // they are off *by default*, not unchecked: the stories that do mount a
+  // whole page turn them back on through `parameters.a11y.rules`, which is
+  // merged over this map below. Shell/App mounts the assembled shell at all
+  // three widths and Screens/Login mounts the signed-out page, so between them
+  // every landmark, the <main> and the <h1> are gated on every PR (#1353).
+  // any other story is one component and keeps them off
   "region": { enabled: false },
   "landmark-one-main": { enabled: false },
   "page-has-heading-one": { enabled: false },
@@ -48,7 +54,14 @@ const config: TestRunnerConfig = {
   },
   async postVisit(page, context) {
     const story = await getStoryContext(page, context);
-    if ((story.parameters?.a11y as { disable?: boolean } | undefined)?.disable) return;
+    const a11y = story.parameters?.a11y as
+      | { disable?: boolean; rules?: Record<string, { enabled: boolean }> }
+      | undefined;
+    if (a11y?.disable) return;
+    // a story that mounts a whole page re-enables the page-level rules above
+    // by name; its map wins over the defaults, so an override is additive and
+    // never silently loosens the gate for everything else
+    const rules = { ...DISABLED_RULES, ...(a11y?.rules ?? {}) };
     // ROLTER_AXE_TALLY=<path> re-measures the whole band (#1244): every
     // violation at every impact is appended as one JSON line per story so the
     // per-rule table in docs/development/testing.md can be regenerated. it
@@ -75,7 +88,7 @@ const config: TestRunnerConfig = {
       detailedReportOptions: { html: true },
       axeOptions: {
         runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "best-practice"] },
-        rules: DISABLED_RULES,
+        rules,
       },
       includedImpacts: ["minor", "moderate", "serious", "critical"],
     });
