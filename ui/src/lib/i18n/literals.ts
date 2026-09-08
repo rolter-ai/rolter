@@ -100,7 +100,8 @@ const PROP_EXPR = new RegExp(
  * The `>` must not be the tail of an arrow, or `=> Promise<Response>` reads as
  * the text node "Promise" sitting between two tags. Every `.tsx` file with a
  * generic return type on an arrow function hits that, so the lookbehind is
- * load-bearing rather than defensive.
+ * load-bearing rather than defensive. A comparison (`a > b`) survives the
+ * lookbehind, so every match is confirmed against `jsxTagEnds` too (#1370).
  */
 const TEXT = /(?<!=)>\s*([A-Za-z][^<>{}]{2,}?)\s*</g;
 /**
@@ -395,28 +396,53 @@ export function mixedText(region: string): string | null {
 }
 
 /**
- * Is the `>` at `gt` the end of a JSX tag, rather than the end of a generic
- * argument list?
+ * Every offset in `masked` that holds the `>` closing a JSX tag.
  *
- * `TEXT` never had to ask: its run may not contain a brace, so the worst a
- * `React.useState<Row[]>(…)` could yield was a short token. `TEXT_MIXED` spans
- * braces, so a misread `>` swallows whole statements — `{…} const ARROWS:
- * Record` and `{…} async function getText(url: string): Promise` both showed up
- * as copy before this check existed.
+ * A `>` is otherwise ambiguous, and both misreads cost findings: a generic
+ * (`Promise<Response>`) makes the type name read as a text node, and a
+ * comparison (`a > b && c < d`) makes the code between the operator and the
+ * next `<` read as one (#1370). `TEXT_MIXED` spans braces, so there a misread
+ * `>` swallows whole statements — `{...} const ARROWS: Record` and `{...} async
+ * function getText(url: string): Promise` both showed up as copy before this
+ * check existed (#1355).
  *
- * The tell is the character in front of the matching `<`: a generic opens flush
- * against the identifier it parameterises (`Promise<`, `Record<`), and JSX never
- * does — a tag opens after whitespace, `(`, `{`, `,` or another tag.
+ * Asking the question from the `<` end is what makes it answerable. A tag opens
+ * as `<Name`, `</Name`, or `<>` for a fragment, and never flush against an
+ * identifier — that is a generic (`Promise<`, `Record<`). From there the tag
+ * runs to its own `>`, skipping attribute strings and everything inside `{…}`,
+ * so the `=>` of an `onClick={() => …}` handler stays an arrow instead of
+ * ending the tag it sits in.
  */
-function endsJsxTag(masked: string, gt: number): boolean {
-  const lt = masked.lastIndexOf("<", gt);
-  if (lt === -1) return false;
-  const after = masked[lt + 1] ?? "";
-  // `</Foo>` closes an element and its parent's children run on; `<>` opens a
-  // fragment. neither can be a generic
-  if (after === "/" || after === ">") return true;
-  if (!/[A-Za-z]/.test(after)) return false;
-  return !/[A-Za-z0-9_$.)\]]/.test(masked[lt - 1] ?? "");
+function jsxTagEnds(masked: string): Set<number> {
+  const ends = new Set<number>();
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] !== "<") continue;
+    const after = masked[i + 1] ?? "";
+    const opensTag =
+      after === ">" ||
+      after === "/" ||
+      (/[A-Za-z]/.test(after) && !/[A-Za-z0-9_$.)\]]/.test(masked[i - 1] ?? ""));
+    if (!opensTag) continue;
+    let depth = 0;
+    for (let j = i + 1; j < masked.length; j++) {
+      const ch = masked[j];
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        while (++j < masked.length && masked[j] !== quote);
+        continue;
+      }
+      if (ch === "{") depth++;
+      else if (ch === "}") depth = Math.max(0, depth - 1);
+      else if (depth > 0) continue;
+      // a second `<` before this one closed: not a tag after all
+      else if (ch === "<") break;
+      else if (ch === ">") {
+        ends.add(j);
+        break;
+      }
+    }
+  }
+  return ends;
 }
 
 function lineOf(source: string, index: number): number {
@@ -439,6 +465,7 @@ export function findLiterals(source: string, file: string): Literal[] {
   const seen = new Set<string>();
   const masked = maskSource(source);
   const scanned = masked.text.replace(T_CALL, blank);
+  const tagEnds = jsxTagEnds(scanned);
 
   const push = (index: number, raw: string, kind: Literal["kind"]) => {
     const text = normalize(raw);
@@ -456,12 +483,15 @@ export function findLiterals(source: string, file: string): Literal[] {
   for (const m of scanned.matchAll(PROP_EXPR)) {
     for (const inner of m[1].matchAll(STRING_IN_EXPR)) push(m.index, inner[2], "prop");
   }
-  for (const m of scanned.matchAll(TEXT)) push(m.index, m[1], "text");
+  for (const m of scanned.matchAll(TEXT)) {
+    if (!tagEnds.has(m.index)) continue;
+    push(m.index, m[1], "text");
+  }
   for (const m of scanned.matchAll(TEXT_EXPR)) {
     for (const inner of m[1].matchAll(STRING_IN_EXPR)) push(m.index, inner[2], "text");
   }
   for (const m of scanned.matchAll(TEXT_MIXED)) {
-    if (!endsJsxTag(scanned, m.index)) continue;
+    if (!tagEnds.has(m.index)) continue;
     const text = mixedText(m[1]);
     if (text !== null) push(m.index, text, "text");
   }
