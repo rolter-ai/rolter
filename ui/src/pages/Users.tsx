@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Building2, Loader2, Pencil, Plus, Trash2, UsersRound } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -147,6 +147,12 @@ export default function Users() {
     setStatusTab("all");
   };
 
+  const statusLabels = {
+    all: t("pages.users.statusAll"),
+    active: t("pages.users.statusActive"),
+    deactivated: t("pages.users.statusDeactivated"),
+  };
+
   const GRID = "1.7fr 1.4fr 110px 1fr 110px";
   // the categorical chip palette, one token per entry: a raw hex here is not
   // retunable and is contrast-checked by nobody, which is how the gold entry
@@ -165,33 +171,33 @@ export default function Users() {
     <PageBody>
       <Toolbar>
         <SearchInput
-          placeholder="Search users"
+          placeholder={t("pages.users.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="flex gap-0.5">
-          {(["all", "active", "deactivated"] as const).map((t) => (
+          {(["all", "active", "deactivated"] as const).map((tab) => (
             <button
-              key={t}
+              key={tab}
               type="button"
-              onClick={() => setStatusTab(t)}
+              onClick={() => setStatusTab(tab)}
               className={
                 "border-b-2 px-3 py-[7px] text-sm capitalize transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring " +
-                (statusTab === t
+                (statusTab === tab
                   ? "border-[color:var(--red-folk)] text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground")
               }
             >
-              {t}{" "}
+              {statusLabels[tab]}{" "}
               <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
-                {counts[t]}
+                {counts[tab]}
               </span>
             </button>
           ))}
         </div>
         <GatedButton gate="invitation:create" className="ml-auto" onClick={() => setInviteOpen(true)} disabled={!orgId}>
           <Plus className="h-4 w-4" />
-          Invite user
+          {t("pages.users.inviteAction")}
         </GatedButton>
       </Toolbar>
 
@@ -216,10 +222,10 @@ export default function Users() {
 
       <ListTable>
         <ListHeader grid={GRID}>
-          <span>User</span>
-          <span>Roles</span>
-          <span>Status</span>
-          <span>Created</span>
+          <span>{t("pages.users.colUser")}</span>
+          <span>{t("pages.users.colRoles")}</span>
+          <span>{t("pages.users.colStatus")}</span>
+          <span>{t("pages.users.colCreated")}</span>
           <span />
         </ListHeader>
         {orgId && users.isLoading && <ListSkeleton rows={4} className="p-3" />}
@@ -255,7 +261,7 @@ export default function Users() {
               </div>
               <div className="min-w-0 truncate text-[11px] text-[color:var(--text-subtle)]">
                 {grants.length === 0
-                  ? "no roles"
+                  ? t("pages.users.noRoles")
                   : grants.map((g) => `${g.role}@${scopeLabel(g, scope.teams)}`).join(" · ")}
               </div>
               <div>
@@ -270,7 +276,7 @@ export default function Users() {
                     className="h-1.5 w-1.5 rounded-full"
                     style={{ background: "currentColor" }}
                   />
-                  {active ? "active" : "blocked"}
+                  {active ? t("pages.users.statusActive") : t("pages.users.statusBlocked")}
                 </span>
               </div>
               <span className="font-mono text-xs text-muted-foreground">
@@ -454,15 +460,16 @@ function InviteUserDialog({
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogHeader>
-          <DialogTitle>Invitation link</DialogTitle>
-          <DialogDescription>
-            Shown once and not recoverable after you close this dialog.
-          </DialogDescription>
+          <DialogTitle>{t("pages.users.linkTitle")}</DialogTitle>
+          <DialogDescription>{t("pages.users.linkBody")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            Send this link to <strong>{email.trim()}</strong>. It works once and
-            expires in seven days.
+            <Trans
+              i18nKey="pages.users.linkSendTo"
+              values={{ email: email.trim() }}
+              components={[<strong key="email" />]}
+            />
           </p>
           <code className="block break-all rounded-md border bg-muted/40 p-2 text-xs">
             {link}
@@ -476,9 +483,9 @@ function InviteUserDialog({
               setCopied(true);
             }}
           >
-            {copied ? "Copied" : "Copy link"}
+            {copied ? t("common.copied") : t("pages.users.copyLink")}
           </Button>
-          <Button onClick={() => onOpenChange(false)}>Done</Button>
+          <Button onClick={() => onOpenChange(false)}>{t("pages.users.done")}</Button>
         </DialogFooter>
       </Dialog>
     );
@@ -488,49 +495,49 @@ function InviteUserDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Invite user"
-      subtitle="Send a one-time link, or create the account with a password you choose"
+      title={t("pages.users.inviteTitle")}
+      subtitle={t("pages.users.inviteSubtitle")}
       dirty={Boolean(email || password) || role !== "member" || method !== "link"}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Invite"
+      saveLabel={t("pages.users.inviteSave")}
       canSave={Boolean(email.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
         <div className="space-y-3">
-          <Field label="Email">
+          <Field label={t("pages.users.email")}>
             <Input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="dev@example.com"
+              placeholder={t("pages.users.emailPlaceholder")}
             />
           </Field>
-          <Field label="Method">
+          <Field label={t("pages.users.method")}>
             <Select
               value={method}
               onChange={(e) =>
                 setMethod(e.target.value as "link" | "password")
               }
             >
-              <option value="link">Invitation link (they pick a password)</option>
-              <option value="password">Set a password now</option>
+              <option value="link">{t("pages.users.methodLink")}</option>
+              <option value="password">{t("pages.users.methodPassword")}</option>
             </Select>
           </Field>
           {method === "password" && (
             <Field
-              label="Password (optional)"
-              hint="at least 8 characters if set; blank leaves an SSO-only account"
+              label={t("pages.users.passwordOptional")}
+              hint={t("pages.users.passwordOptionalHint")}
             >
               <Input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="leave blank for SSO-only"
+                placeholder={t("pages.users.passwordOptionalPlaceholder")}
               />
             </Field>
           )}
-          <Field label="Org role">
+          <Field label={t("pages.users.orgRole")}>
             <Select value={role} onChange={(e) => setRole(e.target.value)}>
               {ROLES.map((r) => (
                 <option key={r} value={r}>
@@ -608,33 +615,36 @@ function EditUserDialog({
     <EditorSheet
       open
       onOpenChange={onOpenChange}
-      title="Edit user"
-      subtitle="Email, password and the superadmin flag require superadmin privileges"
+      title={t("pages.users.editTitle")}
+      subtitle={t("pages.users.editSubtitle")}
       dirty={
         email.trim() !== user.email ||
         password !== "" ||
         isSuperadmin !== user.is_superadmin
       }
       errorMessage={save.isError ? (save.error as Error).message : undefined}
-      saveLabel="Save"
+      saveLabel={t("common.save")}
       canSave
       saving={save.isPending}
       onSave={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Email">
+        <Field label={t("pages.users.email")}>
           <Input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field label="New password" hint="leave blank to keep the current one">
+        <Field
+          label={t("pages.users.newPassword")}
+          hint={t("pages.users.newPasswordHint")}
+        >
           <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="unchanged"
+            placeholder={t("pages.users.newPasswordPlaceholder")}
           />
         </Field>
         <label className="flex items-center gap-2 text-sm">
@@ -650,7 +660,7 @@ function EditUserDialog({
           {!confirmDelete ? (
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                Permanently delete this account and its memberships.
+                {t("pages.users.deleteHint")}
               </span>
               <Button
                 size="sm"
@@ -658,14 +668,17 @@ function EditUserDialog({
                 onClick={() => setConfirmDelete(true)}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Delete
+                {t("common.delete")}
               </Button>
             </div>
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-[color:var(--status-danger-text)]">
-                Delete <span className="font-mono">{user.email}</span>? This
-                can't be undone.
+                <Trans
+                  i18nKey="pages.users.deleteConfirmBody"
+                  values={{ email: user.email }}
+                  components={[<span key="email" className="font-mono" />]}
+                />
               </p>
               {remove.isError && (
                 <p className="text-xs text-[color:var(--status-danger-text)]">
@@ -678,7 +691,7 @@ function EditUserDialog({
                   variant="outline"
                   onClick={() => setConfirmDelete(false)}
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </Button>
                 <Button
                   size="sm"
@@ -686,7 +699,7 @@ function EditUserDialog({
                   disabled={remove.isPending}
                   onClick={() => remove.mutate()}
                 >
-                  Confirm delete
+                  {t("pages.users.deleteConfirm")}
                 </Button>
               </div>
             </div>
@@ -757,8 +770,8 @@ function AddRoleDialog({
     <EditorSheet
       open
       onOpenChange={onOpenChange}
-      title="Grant role"
-      subtitle={`Grant ${user.email} a role at a scope within this org`}
+      title={t("pages.users.grantTitle")}
+      subtitle={t("pages.users.grantSubtitle", { email: user.email })}
       dirty={
         scopeType !== "org" ||
         teamId !== (teams[0]?.id ?? "") ||
@@ -766,13 +779,13 @@ function AddRoleDialog({
         role !== "member"
       }
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Grant"
+      saveLabel={t("pages.users.grantSave")}
       canSave={Boolean(scopeId.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Scope">
+        <Field label={t("pages.users.scope")}>
           <Select
             value={scopeType}
             onChange={(e) =>
@@ -789,9 +802,9 @@ function AddRoleDialog({
           </Select>
         </Field>
         {scopeType === "team" && (
-          <Field label="Team">
+          <Field label={t("pages.users.team")}>
             <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-              {teams.length === 0 && <option value="">no teams in org</option>}
+              {teams.length === 0 && <option value="">{t("pages.users.noTeams")}</option>}
               {teams.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
@@ -802,8 +815,8 @@ function AddRoleDialog({
         )}
         {scopeType === "project" && (
           <Field
-            label="Project id"
-            hint="uuid of a project in this org (from the Providers/Keys scope)"
+            label={t("pages.users.projectId")}
+            hint={t("pages.users.projectIdHint")}
           >
             <Input
               value={projectId}
@@ -813,7 +826,7 @@ function AddRoleDialog({
             />
           </Field>
         )}
-        <Field label="Role">
+        <Field label={t("pages.users.role")}>
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
             {ROLES.map((r) => (
               <option key={r} value={r}>

@@ -170,19 +170,17 @@ export default function Limits() {
 
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Scope defaults are unavailable: {scopeMessage}. Pick a scope manually below.
+          {t("pages.limits.scopeBlocked", { detail: scopeMessage })}
         </p>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Scope</CardTitle>
-          <CardDescription>
-            Budgets and rate limits below apply to this scope.
-          </CardDescription>
+          <CardTitle>{t("pages.limits.scopeTitle")}</CardTitle>
+          <CardDescription>{t("pages.limits.scopeBody")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
-          <Field label="Scope type">
+          <Field label={t("pages.limits.scopeTypeLabel")}>
             <Select
               value={scopeType}
               onChange={(e) => {
@@ -198,14 +196,14 @@ export default function Limits() {
             </Select>
           </Field>
           <Field
-            label="Scope"
+            label={t("pages.limits.scopeLabel")}
             hint={t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
               type: t(`pages.limits.scopeTypes.${scopeType}`),
             })}
           >
             {scopeType === "org" && scope.orgs.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select an org</option>
+                <option value="">{t("pages.limits.selectOrg")}</option>
                 {scope.orgs.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
@@ -214,7 +212,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "team" && scope.teams.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a team</option>
+                <option value="">{t("pages.limits.selectTeam")}</option>
                 {scope.teams.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -223,7 +221,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "project" && scope.projects.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a project</option>
+                <option value="">{t("pages.limits.selectProject")}</option>
                 {scope.projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -232,7 +230,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "virtual_key" && virtualKeys.data && virtualKeys.data.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a virtual key</option>
+                <option value="">{t("pages.limits.selectVirtualKey")}</option>
                 {virtualKeys.data.map((k) => (
                   <option key={k.id} value={k.id}>
                     {k.name || k.key_prefix}
@@ -274,7 +272,7 @@ export default function Limits() {
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-0.5">
-            <h2 className="text-base font-medium">Budgets</h2>
+            <h2 className="text-base font-medium">{t("pages.limits.budgetsTitle")}</h2>
             <span className="text-xs text-muted-foreground">
               {t("pages.limits.budgetsHint")}
             </span>
@@ -287,7 +285,7 @@ export default function Limits() {
             disabled={!scopeId}
           >
             <Plus className="h-4 w-4" />
-            Add budget
+            {t("pages.limits.budgetsAdd")}
           </GatedButton>
         </div>
         {budgets.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
@@ -326,7 +324,7 @@ export default function Limits() {
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-0.5">
-            <h2 className="text-base font-medium">Rate limits</h2>
+            <h2 className="text-base font-medium">{t("pages.limits.rateLimitsTitle")}</h2>
             <span className="text-xs text-muted-foreground">
               {t("pages.limits.rateLimitsHint")}
             </span>
@@ -339,7 +337,7 @@ export default function Limits() {
             disabled={!scopeId}
           >
             <Plus className="h-4 w-4" />
-            Add rate limit
+            {t("pages.limits.rateLimitsAdd")}
           </GatedButton>
         </div>
         {rateLimits.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
@@ -563,17 +561,17 @@ function AddBudgetDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add budget"
-      subtitle={`Spend cap for ${scopeType}:${scopeId} — delete and recreate to change it`}
+      title={t("pages.limits.budgetSheetTitle")}
+      subtitle={t("pages.limits.budgetSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
       dirty={limitUsd !== "100" || period !== "30d" || unpriced !== ""}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(limitUsd.trim() && period.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Limit (USD)">
+        <Field label={t("pages.limits.budgetLimitLabel")}>
           <Input
             type="number"
             min={0}
@@ -582,7 +580,10 @@ function AddBudgetDialog({
             onChange={(e) => setLimitUsd(e.target.value)}
           />
         </Field>
-        <Field label="Period" hint="e.g. 30d, 7d, 1d">
+        <Field
+          label={t("pages.limits.budgetPeriodLabel")}
+          hint={t("pages.limits.budgetPeriodHint")}
+        >
           <Input value={period} onChange={(e) => setPeriod(e.target.value)} />
         </Field>
         <Field
@@ -661,32 +662,32 @@ function AddRateLimitDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add rate limit"
-      subtitle={`Throughput caps for ${scopeType}:${scopeId} — blank leaves a field uncapped`}
+      title={t("pages.limits.rateLimitSheetTitle")}
+      subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
       dirty={Boolean(rpm || tpm)}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(rpm.trim() || tpm.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Requests per minute (optional)">
+        <Field label={t("pages.limits.rpmLabel")}>
           <Input
             type="number"
             min={0}
             value={rpm}
             onChange={(e) => setRpm(e.target.value)}
-            placeholder="unlimited"
+            placeholder={t("pages.limits.uncapped")}
           />
         </Field>
-        <Field label="Tokens per minute (optional)">
+        <Field label={t("pages.limits.tpmLabel")}>
           <Input
             type="number"
             min={0}
             value={tpm}
             onChange={(e) => setTpm(e.target.value)}
-            placeholder="unlimited"
+            placeholder={t("pages.limits.uncapped")}
           />
         </Field>
       </div>
