@@ -1145,6 +1145,7 @@
       "rateLimitsEmptyTitle": "No rate limits for this scope",
       "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
       "scopeHint": "The {{type}} this cap applies to",
+      "scopeIdHint": "Paste the {{type}} id — a uuid, since none are available to pick",
       "scopeTypes": {
         "org": "Organization",
         "team": "Team",

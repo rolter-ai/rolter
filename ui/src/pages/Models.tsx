@@ -56,6 +56,14 @@ interface CatalogRow {
   entry: EffectiveModelDto;
   route: RouteRow | null;
   providerName: string;
+  /**
+   * every provider the route fans out to, deduplicated and in target order.
+   *
+   * the column only has room for the first name plus a count, so the full list
+   * lives in a tooltip and backs search and the provider tally — a route's
+   * second provider used to be invisible to both (#1202)
+   */
+  providerNames: string[];
   targetCount: number;
   strategy: string;
   origin: "config" | "db";
@@ -156,6 +164,9 @@ export default function Models() {
     // the first target names the provider column; a route spread over several
     // providers says so instead of pretending it lives on one
     const target = targets[0];
+    const providerNames = [...new Set(targets.map((tg) => providerName(tg.provider_id)))].filter(
+      (n) => n !== "—",
+    );
     const price = prices.data?.find((p) => p.model === entry.model);
     const policy = route?.param_policy as Record<string, unknown> | undefined;
     const deny = Array.isArray(policy?.deny) ? (policy.deny as unknown[]) : [];
@@ -167,6 +178,7 @@ export default function Models() {
         targets.length > 1
           ? t("pages.models.providerCount", { first: providerName(target?.provider_id), count: targets.length - 1 })
           : providerName(target?.provider_id),
+      providerNames,
       strategy: entry.strategy,
       origin: entry.source === "config" ? "config" : "db",
       locked: policy?.mode === "deny" || deny.length > 0,
@@ -186,7 +198,9 @@ export default function Models() {
     (r) =>
       (origin === "all" || r.origin === origin) &&
       (!unpricedOnly || r.priced === false) &&
-      (!q || r.name.toLowerCase().includes(q) || r.providerName.toLowerCase().includes(q)),
+      (!q ||
+        r.name.toLowerCase().includes(q) ||
+        r.providerNames.some((n) => n.toLowerCase().includes(q))),
   );
   const sorted = apply(filtered, {
     name: (r) => r.name,
@@ -201,7 +215,7 @@ export default function Models() {
     db: rows.filter((r) => r.origin === "db").length,
   };
 
-  const providerCount = new Set(rows.map((r) => r.providerName).filter((p) => p !== "—")).size;
+  const providerCount = new Set(rows.flatMap((r) => r.providerNames)).size;
   const unpricedCount = rows.filter((r) => r.priced === false).length;
 
   const invalidate = () => {
@@ -361,7 +375,13 @@ export default function Models() {
                 </span>
               )}
             </div>
-            <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+            <span
+              className={cn(
+                "truncate font-mono text-xs text-[color:var(--text-secondary)]",
+                r.providerNames.length > 1 && "cursor-help",
+              )}
+              title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
+            >
               {r.providerName}
             </span>
             <div>

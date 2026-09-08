@@ -12,11 +12,33 @@ import {
   routes,
   scoped,
 } from "./story-harness";
-import type { EffectiveModelDto } from "@/lib/api";
+import type { EffectiveModelDto, RouteRow, RouteTargetRow } from "@/lib/api";
 
 const MODELS: EffectiveModelDto[] = [
   { model: "gpt-4o", strategy: "weighted", targets: 2, source: "db" },
   { model: "claude-sonnet", strategy: "least_load", targets: 1, source: "config" },
+];
+
+// one route fanned out over two providers, which is the shape the provider
+// column has to summarise without losing the second name (#1202)
+const FANOUT_ROUTE = {
+  id: "route-1",
+  project_id: "p1",
+  model: "gpt-4o",
+  strategy: "weighted",
+  enabled: true,
+  params: {},
+  param_policy: {},
+} as RouteRow;
+
+const FANOUT_TARGETS = [
+  { id: "t1", route_id: "route-1", provider_id: "prov-a", weight: 3, created_at: "" },
+  { id: "t2", route_id: "route-1", provider_id: "prov-b", weight: 1, created_at: "" },
+] as RouteTargetRow[];
+
+const FANOUT_PROVIDERS = [
+  { id: "prov-a", name: "sim-a" },
+  { id: "prov-b", name: "sim-b" },
 ];
 
 const loaded = routes([
@@ -109,5 +131,31 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to models/);
+  },
+};
+
+// the column has room for one name, so the rest live in a tooltip rather than
+// silently vanishing behind the first target (#1202)
+export const MultiProviderRoute: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        // longest first: `/routes/:id/targets` would otherwise match `/routes`
+        ["/targets", () => FANOUT_TARGETS],
+        ["/models", () => [MODELS[0]]],
+        ["/providers", () => FANOUT_PROVIDERS],
+        ["/routes", () => [FANOUT_ROUTE]],
+      ])}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await waitFor(() => expect(canvas.getByTitle("sim-a, sim-b")).toBeVisible());
+    await expect(canvas.getByTitle("sim-a, sim-b")).toHaveTextContent("sim-a +1 more");
   },
 };
