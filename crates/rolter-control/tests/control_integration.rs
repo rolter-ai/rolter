@@ -4711,7 +4711,12 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
         .collect();
     assert_eq!(
         elsewhere_allowed,
-        vec!["model_price:read", "model:read", "version:read"]
+        vec![
+            "model_label:read",
+            "model_price:read",
+            "model:read",
+            "version:read"
+        ]
     );
 
     // a project-scoped admin inherits nothing upward: the same user is only an
@@ -7785,4 +7790,372 @@ async fn a_required_policy_refuses_an_unenrolled_account() {
     assert_eq!(refused.status(), 403);
     let body: Value = refused.json().await.unwrap();
     assert_eq!(body["error"]["code"], "mfa_enrolment_required", "{body}");
+}
+
+/// A custom label's full life on a provider, and the conflict an operator gets
+/// for re-using a key on the same subject rather than a silent overwrite
+/// (#985).
+#[tokio::test]
+async fn custom_labels_round_trip_and_refuse_a_duplicate_key() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .json(&json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+
+    let created = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "eu-only",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(created["source"], "custom");
+    assert_eq!(created["key"], "eu-only");
+    assert!(
+        created["observed_at"].is_null() && created["observation"].is_null(),
+        "an operator's assertion carries no provenance: {created}"
+    );
+    let label_id = created["id"].as_str().unwrap().to_string();
+
+    // a valueless label is a flag; one with a value is a field
+    let owner = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "owner",
+            "value": "platform-team",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(owner.status(), 201);
+
+    let duplicate = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "eu-only",
+            "value": "yes",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        duplicate.status(),
+        409,
+        "re-using a key must not silently rewrite the existing label"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+
+    let filtered: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels?key=owner"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(filtered.as_array().unwrap().len(), 1);
+    assert_eq!(filtered[0]["value"], "platform-team");
+
+    let updated: Value = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/labels/{label_id}"))
+        .json(&json!({"value": "frankfurt"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["value"], "frankfurt");
+
+    let deleted = client
+        .delete(format!("{base}/api/v1/orgs/{org_id}/labels/{label_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+
+    // the subject's own deletion sweeps what is left: subject_id is text, so
+    // no foreign key does this for us
+    let removed = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(removed.status().is_success(), "{}", removed.status());
+    let after: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.as_array().unwrap().len(),
+        0,
+        "a deleted provider must not leave labels behind: {after}"
+    );
+}
+
+/// The auto label the pricing catalog produces, and the fact that no request
+/// can edit, retract or impersonate one (#985).
+#[tokio::test]
+async fn auto_labels_are_produced_by_the_store_and_are_read_only() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let priced = client
+        .put(format!("{base}/api/v1/model-prices"))
+        .json(&json!({
+            "model": "gpt-4o",
+            "input_per_mtok": "2.50",
+            "output_per_mtok": "10.00",
+            "currency": "USD",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(priced.status().is_success(), "{}", priced.status());
+
+    let labels: Value = client
+        .get(format!("{base}/api/v1/model-labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(labels.as_array().unwrap().len(), 1, "{labels}");
+    let auto = &labels[0];
+    assert_eq!(auto["source"], "auto");
+    assert_eq!(auto["key"], "priced");
+    assert_eq!(auto["subject_id"], "gpt-4o");
+    assert_eq!(auto["value"], "USD");
+    assert_eq!(
+        auto["observation"], "model_prices",
+        "an auto label must say what established it"
+    );
+    assert!(
+        auto["observed_at"].is_string(),
+        "an auto label must say when: {auto}"
+    );
+    let auto_id = auto["id"].as_str().unwrap().to_string();
+
+    // read-only means read-only over HTTP too, not merely absent from the UI
+    let edit = client
+        .put(format!("{base}/api/v1/model-labels/{auto_id}"))
+        .json(&json!({"value": "EUR"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(edit.status(), 404, "an observation is not editable");
+    let drop = client
+        .delete(format!("{base}/api/v1/model-labels/{auto_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(drop.status(), 404, "an observation is not deletable");
+
+    // an operator writing the same key gets their own row rather than
+    // overwriting the probed one, and it is plainly marked custom
+    let shadow = client
+        .post(format!("{base}/api/v1/model-labels"))
+        .json(&json!({"model": "gpt-4o", "key": "priced", "value": "trust me"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shadow.status(), 201);
+    let shadow: Value = shadow.json().await.unwrap();
+    assert_eq!(shadow["source"], "custom");
+    assert!(shadow["observed_at"].is_null());
+
+    let both: Value = client
+        .get(format!("{base}/api/v1/model-labels?key=priced"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        both.as_array().unwrap().len(),
+        2,
+        "auto and custom labels sharing a key must coexist: {both}"
+    );
+
+    // withdrawing the observation withdraws the auto label and leaves the
+    // operator's alone
+    let unpriced = client
+        .delete(format!("{base}/api/v1/model-prices/gpt-4o"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unpriced.status(), 204);
+    let left: Value = client
+        .get(format!("{base}/api/v1/model-labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(left.as_array().unwrap().len(), 1, "{left}");
+    assert_eq!(left[0]["source"], "custom");
+}
+
+/// A label's tenancy comes from its subject, so one org's path must not reach
+/// another org's provider or another org's label (#985).
+#[tokio::test]
+async fn labels_are_scoped_by_the_subject_they_describe() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn make_org(client: &reqwest::Client, base: &str, slug: &str) -> String {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        org["id"].as_str().unwrap().to_string()
+    }
+
+    let acme = make_org(&client, &base, "acme").await;
+    let globex = make_org(&client, &base, "globex").await;
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{acme}/providers"))
+        .json(&json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+
+    let cross = client
+        .post(format!("{base}/api/v1/orgs/{globex}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "stolen",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cross.status(),
+        404,
+        "another org's path must not label this provider"
+    );
+
+    let mine: Value = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "prod",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let label_id = mine["id"].as_str().unwrap().to_string();
+
+    let peek = client
+        .delete(format!("{base}/api/v1/orgs/{globex}/labels/{label_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        peek.status(),
+        404,
+        "a label id from another org must not be reachable"
+    );
+
+    let globex_labels: Value = client
+        .get(format!("{base}/api/v1/orgs/{globex}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        globex_labels.as_array().unwrap().len(),
+        0,
+        "{globex_labels}"
+    );
+
+    // a model is not an org's to label through the org surface
+    let wrong_surface = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({"subject_type": "model", "subject_id": provider_id, "key": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_surface.status(), 400);
+
+    // and a malformed key is rejected before it reaches the check constraint
+    let bad_key = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "Not A Key",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_key.status(), 400);
 }

@@ -1565,8 +1565,9 @@ mod tests {
             .await
             .unwrap();
         // the provider delete cascades to provider_keys, whose statement trigger
-        // bumps the version even when no key rows exist
-        assert_eq!(current_version(&pool).await.unwrap(), v0 + 3);
+        // bumps the version even when no key rows exist, and sweeps the
+        // provider's labels (#985), whose trigger does the same
+        assert_eq!(current_version(&pool).await.unwrap(), v0 + 4);
     }
 
     /// #933: a virtual key created in the dashboard was rejected for up to the

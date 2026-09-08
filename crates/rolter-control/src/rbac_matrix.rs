@@ -183,6 +183,28 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
     },
     Capability {
+        // a label on a provider, provider group or route. its own capability
+        // rather than the subject's, so an operator role can be allowed to
+        // annotate a provider without being allowed to re-point it
+        resource: "label",
+        scope: "org",
+        read: VIEWER,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
+    },
+    Capability {
+        // a label on a model. models live in the deployment-wide pricing
+        // catalog and not in any one org, so labelling one is a
+        // deployment-wide act and mirrors `model_price` exactly
+        resource: "model_label",
+        scope: "deployment",
+        read: ANYONE,
+        create: SUPER,
+        update: SUPER,
+        delete: SUPER,
+    },
+    Capability {
         resource: "route",
         scope: "project",
         read: VIEWER,
@@ -1078,9 +1100,17 @@ mod tests {
     #[test]
     fn no_membership_means_only_the_global_catalogs() {
         let allowed = allowed_for(false, None, &[], ScopeChain::default());
+        // model labels join the list for the same reason model prices are on
+        // it: the pricing catalog is deployment-wide, so a label on a model
+        // names no tenant and there is no membership to hold over it (#985)
         assert_eq!(
             allowed,
-            vec!["model_price:read", "model:read", "version:read"]
+            vec![
+                "model_label:read",
+                "model_price:read",
+                "model:read",
+                "version:read"
+            ]
         );
     }
 
@@ -1151,6 +1181,7 @@ mod tests {
         ("crud.rs", include_str!("crud.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
+        ("labels.rs", include_str!("labels.rs")),
         ("health.rs", include_str!("health.rs")),
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),

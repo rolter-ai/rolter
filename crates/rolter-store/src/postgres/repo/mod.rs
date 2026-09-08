@@ -10,11 +10,13 @@
 //! caller still writes `postgres::repo::McpServerRepo` either way.
 
 mod guardrails;
+mod labels;
 mod mcp;
 mod mfa;
 mod support;
 
 pub use guardrails::*;
+pub use labels::*;
 pub use mcp::*;
 pub use mfa::*;
 use support::store_err;
@@ -2562,7 +2564,8 @@ impl ModelPriceRepo<'_> {
         cached_input_per_mtok: Option<&str>,
         currency: &str,
     ) -> Result<ModelPrice> {
-        sqlx::query_as(
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let row = sqlx::query_as(
             "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
              values ($1, $2::numeric, $3::numeric, $4::numeric, $5)
              on conflict (model) do update
@@ -2581,20 +2584,43 @@ impl ModelPriceRepo<'_> {
         .bind(output_per_mtok)
         .bind(cached_input_per_mtok)
         .bind(currency)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        // the first producer against the label primitive (#985): "this model
+        // has a price" is a fact rolter establishes, and the moment it becomes
+        // true is this statement, so it is recorded here rather than by a job
+        // that would have to guess how stale it is allowed to be
+        LabelRepo::upsert_auto(
+            &mut *tx,
+            AutoLabelInput {
+                subject_type: "model",
+                subject_id: model,
+                key: PRICED_LABEL_KEY,
+                value: Some(currency),
+                observation: "model_prices",
+                observed_at: Utc::now(),
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(row)
     }
 
     pub async fn delete(&self, model: &str) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
         let res = sqlx::query("delete from model_prices where model = $1")
             .bind(model)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("model price '{model}'")));
         }
+        // the fact stops holding with the row, and an auto label that outlived
+        // its observation would be worse than none
+        LabelRepo::clear_auto(&mut *tx, "model", model, PRICED_LABEL_KEY).await?;
+        tx.commit().await.map_err(store_err)?;
         Ok(())
     }
 }

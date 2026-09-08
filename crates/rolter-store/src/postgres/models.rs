@@ -946,3 +946,24 @@ mod tests {
         assert_eq!(json["has_client_secret"], serde_json::json!(false));
     }
 }
+
+/// one label attached to a provider, provider group, route or model (#985).
+///
+/// `subject_id` is text because a model is addressed by name while everything
+/// else is addressed by id. `source` is `auto` for a fact rolter established
+/// itself — those carry `observed_at` and `observation` and no operator can
+/// write one — or `custom` for an operator's own, which rolter stores and
+/// displays without interpreting.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Label {
+    pub id: Uuid,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub key: String,
+    pub value: Option<String>,
+    pub source: String,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub observation: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
