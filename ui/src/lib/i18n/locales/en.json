@@ -2189,6 +2189,8 @@
     "resizeSidebar": "Resize sidebar",
     "openNav": "Open navigation",
     "closeNav": "Close navigation",
+    "experimental": "Experimental",
+    "experimentalItem": "{{label}} — experimental",
     "githubRepo": "GitHub repository",
     "reportBug": "Report a bug",
     "updateAvailable": "v{{latest}} available",

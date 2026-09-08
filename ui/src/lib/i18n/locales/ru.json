@@ -2267,6 +2267,8 @@
     "resizeSidebar": "Изменить ширину панели",
     "openNav": "Открыть навигацию",
     "closeNav": "Закрыть навигацию",
+    "experimental": "Экспериментально",
+    "experimentalItem": "{{label}} — экспериментально",
     "githubRepo": "Репозиторий на GitHub",
     "reportBug": "Сообщить об ошибке",
     "updateAvailable": "Доступна v{{latest}}",

@@ -34,7 +34,7 @@ import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
-import { useVersionStatus } from "@/lib/version";
+import { useStability, useVersionStatus, type ExperimentalNavKeys } from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
 import {
   UxScreenProvider,
@@ -181,12 +181,20 @@ const GithubIcon = (
   </svg>
 );
 
-function toNavItem(def: NavDef, t: TFunction): NavItem {
+// `marked` is the control plane's answer, keyed by nav leaf key (#1386). The
+// dashboard never decides which subsystems are experimental — a second list
+// here is exactly the drift `crates/rolter-core/src/stability.rs` exists to
+// prevent — so an empty map (older control plane, failed read, no session yet)
+// simply renders a rail with no markers.
+function toNavItem(def: NavDef, t: TFunction, marked: ExperimentalNavKeys): NavItem {
+  const note = marked.get(def.key);
   return {
     key: def.key,
     label: t(`nav.${def.key}`),
     icon: def.icon,
-    children: def.children?.map((child) => toNavItem(child, t)),
+    experimental: note !== undefined,
+    experimentalNote: note,
+    children: def.children?.map((child) => toNavItem(child, t, marked)),
   };
 }
 
@@ -331,6 +339,11 @@ function Shell() {
   // while the endpoint is unreachable or the session is still being checked
   const { version, update } = useVersionStatus(__APP_VERSION__, !!email && status !== "checking");
 
+  // which nav entries this build ships as experimental (#1386). The same
+  // `/api/v1/version` answer the footer reads, so the shell still makes one
+  // request; tolerant by construction, since an empty map marks nothing.
+  const experimental = useStability(!!email && status !== "checking");
+
   // revoke the server-side session (if any) before clearing local state;
   // best-effort so a network hiccup still logs the user out locally
   const handleSignOut = () => {
@@ -360,7 +373,7 @@ function Shell() {
   const redirect = LEGACY[key];
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const navGroups: NavGroup[] = [
-    { items: visibleNav(can).map((def) => toNavItem(def, t)) },
+    { items: visibleNav(can).map((def) => toNavItem(def, t, experimental)) },
   ];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
   const role = orgName

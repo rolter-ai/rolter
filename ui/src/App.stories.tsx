@@ -2,7 +2,11 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import App from "./App";
-import { AppShell } from "./pages/shell-harness";
+import {
+  AppShell,
+  EXPERIMENTAL_SUBSYSTEM,
+  shellStubWithStability,
+} from "./pages/shell-harness";
 import en from "@/lib/i18n/locales/en.json";
 import { withPageA11y } from "@/lib/story-a11y";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -126,6 +130,68 @@ export const Mobile: Story = {
     );
     // …and closed behind itself
     await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * The experimental marker, end to end (#1386): `/api/v1/version` names a
+ * subsystem and the nav leaves it maps to, and the rail marks exactly those
+ * entries in place — no new section, no regrouping, every other entry
+ * untouched.
+ *
+ * The word is read out of the catalog for the same reason the labels are, and
+ * it lands *inside* the button, so a screen reader hears "Plugins,
+ * Experimental" rather than having to find a badge sitting next to it.
+ */
+export const ExperimentalMarker: Story = {
+  render: () => (
+    <AppShell
+      route="/dashboard"
+      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const marked = await within(rail).findByRole("button", {
+      name: `${nav.plugins} ${en.shell.experimental}`,
+    });
+    await expect(marked).toBeVisible();
+    // the badge is the entry's own, not a row of its own
+    await expect(
+      within(marked).getByText(en.shell.experimental),
+    ).toBeVisible();
+    // and the marker is the exception it claims to be: a sibling the answer
+    // did not name carries nothing
+    const plain = within(rail).getByRole("button", { name: nav.playground });
+    await expect(
+      within(plain).queryByText(en.shell.experimental),
+    ).toBeNull();
+  },
+};
+
+/**
+ * Folded to icons there is no room for a word, so the marker becomes a dot on
+ * the corner of the entry's icon and the name it lost moves into the tooltip —
+ * which, on a button with no text, is also its accessible name.
+ */
+export const ExperimentalMarkerOnIconRail: Story = {
+  ...atTablet,
+  render: () => (
+    <AppShell
+      route="/dashboard"
+      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    const marked = await within(rail).findByRole("button", {
+      name: en.shell.experimentalItem.replace("{{label}}", nav.plugins),
+    });
+    await expect(marked).toBeVisible();
+    // the word itself is not painted at this width
+    await expect(within(rail).queryByText(en.shell.experimental)).toBeNull();
     await expectNoHorizontalOverflow();
   },
 };

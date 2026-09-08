@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchVersion, type VersionStatus } from "@/lib/api";
@@ -48,4 +49,49 @@ export function useVersionStatus(
     version: query.data?.current || fallback,
     update: updateHintFrom(query.data),
   };
+}
+
+/**
+ * The nav leaf keys this build ships as experimental, and why (#1386).
+ *
+ * Keyed by nav leaf key rather than by subsystem id: the rail asks "is this
+ * entry marked", and `nav_keys` on the wire is what makes that answerable
+ * without a second list in `ui/`. A subsystem with no nav entry contributes
+ * nothing here — it is documented, not navigated.
+ */
+export type ExperimentalNavKeys = ReadonlyMap<string, string>;
+
+export function experimentalNavKeysFrom(
+  status: VersionStatus | undefined,
+): ExperimentalNavKeys {
+  const marked = new Map<string, string>();
+  for (const entry of status?.experimental ?? []) {
+    // the level rides on each entry, so membership of the list is never what
+    // the marker is inferred from
+    if (entry.stability !== "experimental") continue;
+    for (const key of entry.nav_keys ?? []) marked.set(key, entry.note);
+  }
+  return marked;
+}
+
+/**
+ * Which nav entries carry the experimental marker.
+ *
+ * Shares `useVersionStatus`'s query — same key, same fetch — so the shell pays
+ * for one request rather than two, and deliberately tolerant of every way the
+ * answer can fail to arrive: a 404 from an older control plane, a network
+ * error, or a session still being checked all yield an empty map. Nothing is
+ * marked and nothing is thrown, because a rail that will not render is a worse
+ * outcome than a rail missing two badges.
+ */
+export function useStability(enabled: boolean): ExperimentalNavKeys {
+  const query = useQuery({
+    queryKey: ["version"],
+    queryFn: fetchVersion,
+    enabled,
+    retry: false,
+    staleTime: 60 * 60_000,
+  });
+  const status = query.data;
+  return React.useMemo(() => experimentalNavKeysFrom(status), [status]);
 }
