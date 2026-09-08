@@ -2303,11 +2303,9 @@ async fn login_me_logout_round_trip() {
     let base = format!("http://{addr}");
 
     // seed a user the way `rolter-seed` does (same argon2id hashing call shape)
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
-    let salt = SaltString::generate(&mut OsRng);
+    use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple", &salt)
+        .hash_password(b"correct horse battery staple")
         .unwrap()
         .to_string();
     sqlx::query("insert into users (email, password_hash, is_superadmin) values ($1, $2, true)")
@@ -2412,12 +2410,10 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::password_hash::PasswordHasher;
     let hash_for = |password: &str| {
-        let salt = SaltString::generate(&mut OsRng);
         argon2::Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .unwrap()
             .to_string()
     };
@@ -6388,11 +6384,9 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     let org_id = org["id"].as_str().unwrap().to_string();
 
     // a member who will do the consenting
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
-    let salt = SaltString::generate(&mut OsRng);
+    use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple", &salt)
+        .hash_password(b"correct horse battery staple")
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -6802,14 +6796,12 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
         .unwrap();
     let org_id = uuid::Uuid::parse_str(org["id"].as_str().unwrap()).unwrap();
 
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::password_hash::PasswordHasher;
     let mut tokens = Vec::new();
     let mut ids = Vec::new();
     for email in ["owner@example.com", "other@example.com"] {
-        let salt = SaltString::generate(&mut OsRng);
         let hash = argon2::Argon2::default()
-            .hash_password(b"correct horse battery staple", &salt)
+            .hash_password(b"correct horse battery staple")
             .unwrap()
             .to_string();
         let id: uuid::Uuid = sqlx::query_scalar(

@@ -27,8 +27,9 @@
 //! `GET /api/v1/auth/me`. Wiring role checks into every CRUD mutation is
 //! ROL-34, a separate follow-up.
 
-use argon2::password_hash::{PasswordHash, PasswordVerifier};
+use argon2::password_hash::PasswordVerifier;
 use argon2::Argon2;
+use argon2::PasswordHash;
 use async_trait::async_trait;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
@@ -571,13 +572,11 @@ impl FromRequestParts<ControlState> for CurrentUser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::password_hash::PasswordHasher;
 
     fn hash_password(password: &str) -> String {
-        let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .unwrap()
             .to_string()
     }
@@ -713,5 +712,25 @@ mod tests {
             open_message.contains("ROLTER_ADMIN_TOKEN"),
             "{open_message}"
         );
+    }
+}
+
+#[cfg(test)]
+mod argon2_compat_tests {
+    use argon2::password_hash::PasswordVerifier;
+    use argon2::{Argon2, PasswordHash};
+
+    /// a hash produced outside this crate must still verify, so that passwords
+    /// stored before the argon2 0.6 upgrade keep working
+    #[test]
+    fn a_hash_from_another_implementation_still_verifies() {
+        let stored = "$argon2id$v=19$m=19456,t=2,p=1$h6bR7aTJmF9VpbOjZnZ6lQ$50T6ADgGDSYvzmOfXCRTqwhrtiXkgKVPIQv7uLjJn0g";
+        let parsed = PasswordHash::new(stored).expect("stored hash parses");
+        assert!(Argon2::default()
+            .verify_password(b"correct horse battery staple", &parsed)
+            .is_ok());
+        assert!(Argon2::default()
+            .verify_password(b"wrong password", &parsed)
+            .is_err());
     }
 }
