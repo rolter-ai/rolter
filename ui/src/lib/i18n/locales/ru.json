@@ -99,6 +99,7 @@
       "modelPrices": "цены моделей",
       "models": "модели",
       "config": "действующая конфигурация",
+      "configExport": "экспорт конфигурации",
       "providers": "провайдеры",
       "plugins": "плагины",
       "analytics": "аналитика",
@@ -1687,6 +1688,10 @@
         "fields_few": "{{count}} поля",
         "fields_many": "{{count}} полей",
         "fields_other": "{{count}} поля"
+      },
+      "export": {
+        "action": "Экспортировать rolter.toml",
+        "pending": "Экспорт…"
       }
     },
     "mcpSettings": {
@@ -2183,7 +2188,8 @@
     "saveFailed": "Не удалось сохранить: {{what}}",
     "deleted": "Удалено: {{what}}",
     "deleteFailed": "Не удалось удалить: {{what}}",
-    "created": "Создано: {{what}}"
+    "created": "Создано: {{what}}",
+    "exportFailed": "Не удалось экспортировать: {{what}}"
   },
   "rbac": {
     "needsRole": "Требуется роль «{{role}}»",
