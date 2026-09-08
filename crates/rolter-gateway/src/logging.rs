@@ -1709,6 +1709,87 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     }
 
     #[tokio::test]
+    async fn a_burst_inside_one_flush_keeps_millisecond_resolution() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            req
+        });
+
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            10,
+            Duration::from_millis(50),
+            100,
+            metrics.clone(),
+        );
+
+        // a burst: four requests a few milliseconds apart, all landing in one
+        // flush. the minute-apart case above proves the writer's clock is not
+        // borrowed; this proves the stamp survives at the resolution a burst
+        // actually happens at, which is what the logs screen renders (#1344)
+        let now = Instant::now();
+        let gap_ms = 25u64;
+        for (index, request_id) in ["req-a", "req-b", "req-c", "req-d"].iter().enumerate() {
+            let offset = Duration::from_millis(gap_ms * (3 - index as u64));
+            let started = now.checked_sub(offset).unwrap_or(now);
+            sink.log(RequestLog {
+                ts: started_at(started),
+                request_id: (*request_id).to_string(),
+                ..Default::default()
+            });
+        }
+
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        let body = req.split("\r\n\r\n").nth(1).expect("request has a body");
+        let stamps: Vec<DateTime<Utc>> = body
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let row: serde_json::Value =
+                    serde_json::from_str(line).expect("each line is one json row");
+                let raw = row["ts"].as_str().expect("ts is serialized").to_string();
+                DateTime::parse_from_rfc3339(&raw)
+                    .expect("ts is rfc 3339")
+                    .with_timezone(&Utc)
+            })
+            .collect();
+        assert_eq!(stamps.len(), 4);
+
+        let mut distinct = stamps.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "burst collapsed onto one stamp: {stamps:?}"
+        );
+
+        // and the rows stay in the order the requests arrived, spaced by the
+        // gap between them rather than by the flush
+        for pair in stamps.windows(2) {
+            let delta = (pair[1] - pair[0]).num_milliseconds();
+            assert!(
+                (gap_ms as i64 - 5..=gap_ms as i64 + 5).contains(&delta),
+                "rows should be ~{gap_ms}ms apart, were {delta}ms: {stamps:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_client_that_leaves_mid_stream_is_marked_and_keeps_its_tokens() {
         use futures_util::StreamExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
