@@ -1485,7 +1485,7 @@ export function ModelSheet({
                         params: d.params.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-destructive hover:text-[color:var(--status-danger-text)]"
+                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -1751,7 +1751,7 @@ export function ModelSheet({
                         headers: d.headers.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-destructive hover:text-[color:var(--status-danger-text)]"
+                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
