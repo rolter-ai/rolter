@@ -68,6 +68,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         holds: "observability connector credentials",
     },
     SealedColumn {
+        table: "user_totp_factors",
+        ciphertext: "secret_ciphertext",
+        nonce: "secret_nonce",
+        holds: "TOTP second-factor shared secrets",
+    },
+    SealedColumn {
         table: "mcp_servers",
         ciphertext: "client_secret_ciphertext",
         nonce: "client_secret_nonce",

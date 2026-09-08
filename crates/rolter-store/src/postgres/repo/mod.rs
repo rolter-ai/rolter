@@ -11,10 +11,12 @@
 
 mod guardrails;
 mod mcp;
+mod mfa;
 mod support;
 
 pub use guardrails::*;
 pub use mcp::*;
+pub use mfa::*;
 use support::store_err;
 
 use chrono::{DateTime, Utc};
@@ -2941,7 +2943,7 @@ impl OrgAuthPolicyRepo<'_> {
     /// logging in exactly as they did.
     pub async fn get(&self, org_id: Uuid) -> Result<OrgAuthPolicy> {
         let found: Option<OrgAuthPolicy> = sqlx::query_as(
-            "select org_id, allow_password_login, allow_sso, updated_at
+            "select org_id, allow_password_login, allow_sso, mfa_policy, updated_at
              from org_auth_policies where org_id = $1",
         )
         .bind(org_id)
@@ -2952,6 +2954,7 @@ impl OrgAuthPolicyRepo<'_> {
             org_id,
             allow_password_login: true,
             allow_sso: true,
+            mfa_policy: "off".to_string(),
             updated_at: chrono::Utc::now(),
         }))
     }
@@ -2961,22 +2964,67 @@ impl OrgAuthPolicyRepo<'_> {
         org_id: Uuid,
         allow_password_login: bool,
         allow_sso: bool,
+        mfa_policy: &str,
     ) -> Result<OrgAuthPolicy> {
         sqlx::query_as(
-            "insert into org_auth_policies (org_id, allow_password_login, allow_sso)
-             values ($1, $2, $3)
+            "insert into org_auth_policies (org_id, allow_password_login, allow_sso, mfa_policy)
+             values ($1, $2, $3, $4)
              on conflict (org_id) do update
                  set allow_password_login = excluded.allow_password_login,
                      allow_sso = excluded.allow_sso,
+                     mfa_policy = excluded.mfa_policy,
                      updated_at = now()
-             returning org_id, allow_password_login, allow_sso, updated_at",
+             returning org_id, allow_password_login, allow_sso, mfa_policy, updated_at",
         )
         .bind(org_id)
         .bind(allow_password_login)
         .bind(allow_sso)
+        .bind(mfa_policy)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// The strictest second-factor policy across every org this user belongs
+    /// to, as `(policy, org_id)`.
+    ///
+    /// Strictest wins rather than first-found: a user who is an admin in a
+    /// hardened org and a viewer in a relaxed one must not be able to sign in
+    /// without their factor because the relaxed membership was read first.
+    /// Membership scopes are org/team/project, so a team's and a project's
+    /// owning org counts too -- the same join `password_login_blocked_for_user`
+    /// walks.
+    pub async fn strictest_mfa_policy_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<(String, Uuid)>> {
+        let rows: Vec<(String, Uuid)> = sqlx::query_as(
+            "select ap.mfa_policy, ap.org_id from memberships m
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             join org_auth_policies ap
+               on ap.org_id = coalesce(m.org_id, t.org_id, pt.org_id)
+             where m.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        // ordering is expressed here and not as a SQL `order by`, because the
+        // policy values are words rather than a rank the database knows
+        fn rank(policy: &str) -> u8 {
+            match policy {
+                "required_all" => 3,
+                "required_superadmin" => 2,
+                "optional" => 1,
+                _ => 0,
+            }
+        }
+        Ok(rows
+            .into_iter()
+            .max_by_key(|(policy, _)| rank(policy))
+            .filter(|(policy, _)| rank(policy) > 0))
     }
 
     /// True when at least one org this user belongs to forbids password login.

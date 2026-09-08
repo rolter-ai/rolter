@@ -732,7 +732,36 @@ pub struct OrgAuthPolicy {
     pub org_id: Uuid,
     pub allow_password_login: bool,
     pub allow_sso: bool,
+    /// one of `off`, `optional`, `required_superadmin`, `required_all`
+    /// (`migrations/0067_totp_second_factor.sql`). Stored as text rather than
+    /// an enum so widening the policy set is a migration, not a code change
+    /// every consumer has to be recompiled for
+    pub mfa_policy: String,
     pub updated_at: DateTime<Utc>,
+}
+
+/// What the dashboard and the login exchange may know about a user's second
+/// factor. Deliberately not the row: the sealed secret has no representation
+/// here at all, so there is no serialisation path that could leak it (#1078).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TotpFactorStatus {
+    pub user_id: Uuid,
+    /// null while an enrolment is in progress. An unconfirmed factor grants
+    /// nothing and is not enforced at login
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A live second-factor challenge handed out by the login exchange. It
+/// authenticates nothing on its own -- it only names which user is halfway
+/// through signing in.
+#[derive(Debug, Clone, FromRow)]
+pub struct MfaChallenge {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub attempts: i32,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// a record of an admin/CRUD/auth action, for the audit-log API

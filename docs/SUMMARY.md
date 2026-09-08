@@ -12,6 +12,7 @@
 - [RBAC & auth](architecture/rbac-and-auth.md)
 - [Invitations](architecture/invitations.md)
 - [Single sign-on (OIDC)](architecture/sso.md)
+- [Two-factor authentication](architecture/two-factor-auth.md)
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)

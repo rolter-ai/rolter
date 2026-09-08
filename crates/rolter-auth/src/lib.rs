@@ -12,6 +12,8 @@ use subtle::ConstantTimeEq;
 mod identity;
 pub use identity::{Credential, Identity, IdentityError, IdentityProvider};
 
+pub mod totp;
+
 /// RBAC role, scoped to an org/team/project by the control plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

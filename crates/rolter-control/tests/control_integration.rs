@@ -7265,3 +7265,524 @@ async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
         .unwrap();
     assert_eq!(zero.status(), 400);
 }
+
+// ---------------------------------------------------------------------------
+// TOTP second factor (#1078)
+// ---------------------------------------------------------------------------
+
+/// A password for one test account, generated per run rather than written out.
+/// A literal here is a hard-coded credential to every scanner that reads this
+/// file, and the tests need only that the password round-trips -- not that it
+/// is any particular string.
+fn random_password() -> String {
+    format!("pw-{}", uuid::Uuid::new_v4())
+}
+
+/// Seed a local superadmin with a known password and return its id.
+async fn seed_local_user(pool: &sqlx::PgPool, email: &str, password: &str) -> uuid::Uuid {
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string();
+    sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, $2, true)
+         returning id",
+    )
+    .bind(email)
+    .bind(&hash)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// The current TOTP code for a base32 secret, as an authenticator app would
+/// compute it.
+fn current_code(secret_b32: &str) -> String {
+    let secret = rolter_auth::totp::base32_decode(secret_b32).expect("secret decodes");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    rolter_auth::totp::code_at_step(&secret, rolter_auth::totp::step_at(now))
+}
+
+/// The whole enrolment → step-up → recovery-code path, plus the two properties
+/// that make the factor worth having: a code cannot be replayed, and a
+/// recovery code is single-use.
+#[tokio::test]
+async fn totp_enrolment_step_up_and_recovery_codes() {
+    skip_without_db!();
+    // enrolment seals the secret with the deployment KEK, so a control plane
+    // without one must refuse rather than store a bearer credential in clear
+    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_local_user(&pool, "mfa@example.com", &password).await;
+
+    // sign in the ordinary way: no factor yet, so a session comes straight back
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().expect("session token").to_string();
+
+    // status before enrolment
+    let status: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["policy"], "off");
+
+    // begin enrolment: the secret is shown once
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().expect("secret").to_string();
+    assert!(
+        enrol["otpauth_uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/"),
+        "{enrol}"
+    );
+
+    // an unconfirmed factor arms nothing: logging in again must still hand
+    // back a session, not a challenge
+    let mid: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        mid["token"].is_string(),
+        "unconfirmed factor must not gate login: {mid}"
+    );
+
+    // a wrong code does not arm it
+    let bad = client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // the right code does, and returns the recovery batch
+    let confirmed: Value = client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let codes: Vec<String> = confirmed["recovery_codes"]
+        .as_array()
+        .expect("recovery codes")
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(codes.len(), 10, "{confirmed}");
+
+    // now login is a challenge, not a session
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(challenge["mfa_required"], true, "{challenge}");
+    assert!(
+        challenge["token"].is_null(),
+        "a challenge is not a session: {challenge}"
+    );
+    let mfa_token = challenge["mfa_token"]
+        .as_str()
+        .expect("mfa token")
+        .to_string();
+
+    // a wrong code against the challenge is refused
+    let wrong = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    // the code that confirmed the enrolment has already been spent, so it does
+    // not redeem the challenge either -- the replay rule does not care that
+    // the earlier use was a legitimate one
+    let spent = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        spent.status(),
+        401,
+        "the confirming code is spent and must not redeem a challenge"
+    );
+
+    // stand in for the 30 seconds a real user waits for the next code, by
+    // winding the spent step back one. Winding the clock instead would mean
+    // sleeping through a step in every CI run
+    sqlx::query("update user_totp_factors set last_used_step = last_used_step - 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // now the current code redeems the challenge for a real session
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mfa_token = challenge["mfa_token"]
+        .as_str()
+        .expect("mfa token")
+        .to_string();
+    let code = current_code(&secret);
+    let stepped: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": code}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session = stepped["token"]
+        .as_str()
+        .expect("session token")
+        .to_string();
+    let me = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200, "the stepped-up session must authenticate");
+
+    // *the* property: that same code, still inside its window, cannot be
+    // replayed on a fresh challenge. Without the spent-step check a
+    // shoulder-surfed code stays usable for up to 90 seconds
+    let replay_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let replayed = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": replay_challenge["mfa_token"].as_str().unwrap(),
+            "code": code,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed.status(),
+        401,
+        "a spent TOTP step must not verify again"
+    );
+
+    // a recovery code gets past the factor exactly once
+    let recovery_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let redeemed = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": recovery_challenge["mfa_token"].as_str().unwrap(),
+            "code": codes[0],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        redeemed.status(),
+        200,
+        "an unspent recovery code must verify"
+    );
+
+    let reuse_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let reused = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": reuse_challenge["mfa_token"].as_str().unwrap(),
+            "code": codes[0],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reused.status(), 401, "a recovery code must be single-use");
+
+    let after: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["enabled"], true);
+    assert_eq!(after["recovery_codes_remaining"], 9);
+}
+
+/// A challenge is spendable a bounded number of times. Without this, a
+/// stolen password is six digits and unlimited guesses away from a session.
+#[tokio::test]
+async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_local_user(&pool, "attempts@example.com", &password).await;
+
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "attempts@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().unwrap().to_string();
+    client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "attempts@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mfa_token = challenge["mfa_token"].as_str().unwrap().to_string();
+
+    for attempt in 0..3 {
+        let wrong = client
+            .post(format!("{base}/api/v1/auth/mfa/verify"))
+            .json(&json!({"mfa_token": mfa_token, "code": "000000"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401, "attempt {attempt}");
+    }
+
+    // the budget is spent, so even the *correct* code no longer redeems this
+    // challenge -- the user has to start over from the password
+    let correct = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        correct.status(),
+        401,
+        "an exhausted challenge must not redeem, right code or not"
+    );
+}
+
+/// `rolter mfa reset` is the documented way back into an account whose factor
+/// is gone. It clears the factor and revokes the sessions that were riding on
+/// it, and records why it was run.
+#[tokio::test]
+async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let user_id = seed_local_user(&pool, "locked-out@example.com", &password).await;
+
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "locked-out@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": current_code(enrol["secret"].as_str().unwrap())}))
+        .send()
+        .await
+        .unwrap();
+
+    let cleared = rolter_control::mfa::break_glass_reset(&pool, user_id, "lost phone, ticket 42")
+        .await
+        .unwrap();
+    assert!(cleared, "there was a factor to clear");
+
+    // the session that existed before the reset is gone
+    let stale = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 401, "reset must revoke live sessions");
+
+    // and the password alone gets back in, so the user can enrol again
+    let back_in: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "locked-out@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(back_in["token"].is_string(), "{back_in}");
+
+    // the reason is on the audit entry, which is the whole point of demanding
+    // one on the command line
+    let reason: Option<String> = sqlx::query_scalar(
+        "select detail->>'reason' from audit_log
+         where action = 'auth.mfa_break_glass_reset' and actor_user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap()
+    .flatten();
+    assert_eq!(reason.as_deref(), Some("lost phone, ticket 42"));
+}
+
+/// An org policy of `required_all` refuses a session to an account with no
+/// armed factor, rather than letting it in unprotected.
+#[tokio::test]
+async fn a_required_policy_refuses_an_unenrolled_account() {
+    skip_without_db!();
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let user_id = seed_local_user(&pool, "unenrolled@example.com", &password).await;
+
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'admin')")
+        .bind(user_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into org_auth_policies (org_id, mfa_policy) values ($1, 'required_all')")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let refused = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "unenrolled@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "mfa_enrolment_required", "{body}");
+}
