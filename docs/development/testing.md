@@ -166,6 +166,27 @@ cargo llvm-cov --workspace --all-features --summary-only   # quick %
 cargo llvm-cov --workspace --all-features --html           # browsable report
 ```
 
+### The coverage job runs a different runner
+
+Everything else runs under nextest, which gives each test **its own process**.
+`cargo llvm-cov` shells out to plain `cargo test`, so the coverage job runs the
+whole suite as **threads in one process** sharing one environment. Two rules
+follow, and both have bitten:
+
+- **Never set a process-wide environment variable to a value only your test
+  wants.** `Kek::from_env()` is read at request time, so a test that installs
+  its own `ROLTER_KEK` is read by another test's in-flight request, and a value
+  sealed under one key then fails to open under the next. The symptom lands on
+  whichever unrelated seal-then-open test was mid-flight, never on the test that
+  caused it. `control_integration.rs` installs one shared `TEST_KEK` for exactly
+  this reason (#1351); a test needing a non-matching key builds it with
+  `Kek::from_secret` rather than through the environment.
+- **Postgres tests must use a per-test schema** (`search_path`), since this job
+  shares one database across concurrently running tests.
+
+A comment saying "runs in its own process (nextest)" is true of every job except
+this one, which is what makes the trap easy to walk into.
+
 CI runs coverage in the `coverage` job of `quality.yml` and enforces a
 **ratcheting baseline**: the committed baseline lives in
 [`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and

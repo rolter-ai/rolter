@@ -77,6 +77,22 @@ async fn serve(app: axum::Router) -> SocketAddr {
     addr
 }
 
+/// The one KEK every test in this file installs (#1351).
+///
+/// `std::env::set_var` is process-wide. The main test job runs `cargo nextest`,
+/// which gives each test its own process, but the `coverage` job runs plain
+/// `cargo test` — one binary, tests as threads, one environment — and
+/// `Kek::from_env()` is read at *request* time. So a test setting a value of
+/// its own is read by another test's in-flight request, and a sealed value
+/// written under one key fails to open under the next. The symptom is never
+/// local: it lands on whichever unrelated seal-then-open test was mid-flight.
+///
+/// Nothing here needs a *distinct* key, only *a* key — the one test that needs
+/// a non-matching one builds it directly with `Kek::from_secret`, never through
+/// the environment. So every call site installs this same value and the race
+/// has nothing to observe.
+const TEST_KEK: &str = "integration-test-kek";
+
 macro_rules! skip_without_db {
     () => {
         if database_url().is_none() {
@@ -1262,12 +1278,11 @@ async fn skills_crud_and_publish_round_trip() {
 
 /// Provider credentials posted to the API must be sealed at rest, decrypted
 /// into the gateway snapshot, and never leak through the dashboard config
-/// endpoint. Runs in its own process (nextest), so setting the KEK env var
-/// here cannot race other tests.
+/// endpoint.
 #[tokio::test]
 async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
@@ -1433,7 +1448,7 @@ async fn admin_token_guards_crud_and_snapshot() {
 #[tokio::test]
 async fn config_export_serves_importable_toml_without_credentials() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
     let pool = fresh_pool().await;
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
@@ -3063,7 +3078,7 @@ async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
         .await
         .unwrap();
     let addr = serve(app).await;
-    std::env::set_var("ROLTER_KEK", "sso-update-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -3261,7 +3276,7 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     // the redirect uri is deployment-owned, so the control plane must know its
     // own public url for the flow to be coherent
     std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "sso-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -5297,7 +5312,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
         .unwrap();
     let addr = serve(app).await;
     std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "sso-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -6381,7 +6396,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .unwrap();
     let addr = serve(app).await;
     std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
     let (authz, stub) = stub_authz::serve_stub().await;
@@ -6795,7 +6810,7 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
         .await
         .unwrap();
     let addr = serve(app).await;
-    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -7035,7 +7050,7 @@ async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
 #[tokio::test]
 async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "collector-config-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
     let pool = fresh_pool().await;
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
@@ -7084,7 +7099,7 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
     skip_without_db!();
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
-    std::env::set_var("ROLTER_KEK", "security-policy-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let pool = fresh_pool().await;
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
@@ -7320,7 +7335,7 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
     skip_without_db!();
     // enrolment seals the secret with the deployment KEK, so a control plane
     // without one must refuse rather than store a bearer credential in clear
-    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
@@ -7596,7 +7611,7 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
 #[tokio::test]
 async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
@@ -7675,7 +7690,7 @@ async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
 #[tokio::test]
 async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "totp-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
@@ -8162,18 +8177,11 @@ async fn labels_are_scoped_by_the_subject_they_describe() {
 
 /// A static MCP credential is sealed at rest, never comes back out of the read
 /// API, and the auth kind and the credential columns cannot disagree (#952).
-///
-/// Deliberately the *same* KEK value as the OAuth tests above rather than one
-/// of its own. `set_var` is process-wide, and the coverage job runs plain
-/// `cargo test` rather than nextest — one binary, tests as threads — so a
-/// distinct value here can be read by `Kek::from_env()` inside another test's
-/// request between it sealing a value and opening it again. Sharing the value
-/// makes this call a no-op for them. (#1351 tracks the six values already in
-/// this file, which can still collide with each other.)
+
 #[tokio::test]
 async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
     let pool = fresh_pool().await;
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
