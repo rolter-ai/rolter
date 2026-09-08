@@ -372,6 +372,41 @@ export async function clickWhenEnabled(
  */
 export const LOADING_LABEL = en.common.loading;
 
+/**
+ * What a refused control says it would take, read out of the catalog.
+ *
+ * Built from `rbac.needsRole` rather than written out again, so rewording the
+ * refusal cannot leave the gating stories asserting a sentence the dashboard
+ * no longer renders.
+ */
+export const NEEDS_ADMIN = en.rbac.needsRole.replace("{{role}}", en.shell.roles.admin);
+
+/**
+ * Assert a gated control is refused, and that it names what would allow it.
+ *
+ * Both halves matter: `disabled` on its own is the same non-answer the 403
+ * was, so the `title` has to carry the role (#1183). The disabled state is
+ * awaited rather than asserted at once, because the effective-permissions
+ * query is one request behind the first paint and the control renders enabled
+ * until it lands.
+ */
+export async function expectRefused(
+  canvasElement: HTMLElement,
+  name: RegExp | string,
+  reason: string = NEEDS_ADMIN,
+): Promise<void> {
+  const canvas = within(canvasElement);
+  const button = await canvas.findByRole("button", { name });
+  // both in one wait: a control can already be disabled for a reason of its
+  // own — an unsaved draft that does not validate yet — so asserting the
+  // disabled flag first would pass before the gate has answered and then read
+  // a `title` that is still null
+  await waitFor(() => {
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", reason);
+  });
+}
+
 /** Assert the screen is standing in a skeleton for content it does not have yet. */
 export async function expectSkeleton(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
