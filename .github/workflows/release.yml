@@ -389,7 +389,16 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${REF#v}"
-          digest="$(basename "$(find /tmp/digests -maxdepth 1 -type f | head -1)")"
+          # `find ... -print -quit` rather than `find ... | head -1`: head closes
+          # the pipe after the first line, so find can take SIGPIPE and fail the
+          # whole step under pipefail even though it already found the digest.
+          # letting find stop itself keeps the pipeline out of it entirely (#1306)
+          digest_file="$(find /tmp/digests -maxdepth 1 -type f -print -quit)"
+          if [ -z "$digest_file" ]; then
+            echo "::error::no digest file in /tmp/digests for ${PLATFORM}"
+            exit 1
+          fi
+          digest="$(basename "$digest_file")"
           image="$REGISTRY_IMAGE@sha256:$digest"
           echo "running $image on $PLATFORM"
           got="$(docker run --rm --platform "$PLATFORM" "$image" /usr/local/bin/rolter --version)"
