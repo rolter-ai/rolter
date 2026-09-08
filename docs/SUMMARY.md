@@ -63,6 +63,7 @@
 - [Commit conventions](development/commit-conventions.md)
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)
+- [The ci-ok gate and the title-edit fast path](development/ci-gating.md)
 - [API stability and the semver gate](development/api-stability.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)

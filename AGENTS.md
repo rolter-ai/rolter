@@ -299,7 +299,7 @@ implementation suggests.
 
 - `ci-ok` is the single required status check; it aggregates `quality`, `pr-title` and `codeql`. The heavy gate lives in the reusable `.github/workflows/quality.yml`, so the release paths enforce exactly the same checks.
 - Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows. `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
-- PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI.
+- PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs `pr-title` alone and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/development/ci-gating.md`](docs/development/ci-gating.md).
 
 ## Changelogs
 
