@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 
@@ -66,6 +67,7 @@ export function EditorSheet({
             {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button disabled={!canSave || saving} onClick={onSave}>
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
             {saveLabel}
           </Button>
         </div>

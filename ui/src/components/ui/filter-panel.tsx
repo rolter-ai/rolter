@@ -113,7 +113,7 @@ export function FilterSearchList({
     ? options.filter((o) => String(o.label).toLowerCase().includes(q))
     : options;
   return (
-    <div className="flex flex-col overflow-hidden rounded-md border border-[color:var(--border-subtle)]">
+    <div className="flex flex-col overflow-hidden rounded-md border border-[color:var(--border-subtle)] transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
       <label className="flex items-center gap-2 bg-[color:var(--surface-base)] px-2.5 py-2">
         <Search className="h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]" />
         <input

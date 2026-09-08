@@ -38,6 +38,9 @@ artifacts/engines/
 # machine-specific Claude Code preview launch config
 .claude/launch.json
 
+# transient git worktrees created for isolated background agent runs
+.claude/worktrees/
+
 # machine-specific Warp terminal state
 .warp/
 

@@ -2851,6 +2851,7 @@ dependencies = [
  "rolter-balancer",
  "rolter-core",
  "rolter-store",
+ "scalar_api_reference",
  "serde",
  "serde_json",
  "sha2 0.11.0",

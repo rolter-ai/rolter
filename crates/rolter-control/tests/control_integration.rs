@@ -1425,6 +1425,91 @@ async fn admin_token_guards_crud_and_snapshot() {
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
 
+/// `GET /api/v1/config/export` hands back the deployment as an importable
+/// `rolter.toml` (#1082). The route is superadmin-only, the body is a TOML
+/// document rather than JSON, and — the part worth an end-to-end test — the
+/// sealed credential the same store decrypts into `/internal/snapshot` does not
+/// appear in it.
+#[tokio::test]
+async fn config_export_serves_importable_toml_without_credentials() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let denied = client
+        .get(format!("{base}/api/v1/config/export"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401, "the export must not be anonymous");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("sekrit")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "openai",
+            "kind": "openai",
+            "api_base": "https://api.openai.com",
+            "api_key": "sk-live-export-secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let response = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/toml"),
+        "unexpected content type: {content_type}"
+    );
+    assert!(response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .contains("rolter.toml"));
+
+    let body = response.text().await.unwrap();
+    assert!(
+        !body.contains("sk-live-export-secret"),
+        "the export leaked a sealed credential:\n{body}"
+    );
+    let parsed = rolter_core::GatewayConfig::from_toml_str(&body)
+        .expect("the export must be a config the importer can read");
+    assert_eq!(parsed.providers.len(), 1);
+    assert_eq!(parsed.providers[0].name, "openai");
+    assert!(parsed.providers[0].api_key.is_none());
+}
+
 /// `GET /api/v1/version` is the dashboard's one source for the update hint
 /// (#902): any signed-in caller reads it, an anonymous one does not, and with
 /// the check disabled it reports the running version and nothing else — no
@@ -2968,6 +3053,202 @@ mod stub_idp {
             "exp": now + 300,
         })
     }
+}
+
+/// #1233: a provider is editable in place. Before this, rotating a client
+/// secret or taking a provider out of service meant deleting it and
+/// registering it again, which dropped every group mapping hanging off it and
+/// changed the provider id in the audit trail.
+#[tokio::test]
+async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
+    skip_without_db!();
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    std::env::set_var("ROLTER_KEK", "sso-update-test-kek");
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "UpdOrg", "slug": "upd-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Okta",
+            "slug": "okta",
+            "issuer": "https://acme.okta.com",
+            "client_id": "0oa1",
+            "client_secret": "original-secret",
+            "group_claim": "groups"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = provider["id"].as_str().unwrap().to_string();
+    assert_eq!(provider["has_client_secret"], json!(true));
+
+    // a mapping hangs off the provider. it is the thing delete-and-recreate
+    // used to destroy, so every assertion below re-checks it survived
+    let mapping: Value = client
+        .post(format!("{base}/api/v1/sso-providers/{id}/group-mappings"))
+        .bearer_auth("admintok")
+        .json(&json!({"group_name": "platform", "role": "admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mapping_id = mapping["id"].as_str().unwrap().to_string();
+
+    // omitting client_secret leaves the sealed one alone while everything
+    // else moves, and the slug is untouched because it is in the login url
+    let updated: Value = client
+        .put(format!("{base}/api/v1/sso-providers/{id}"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Okta (prod)",
+            "issuer": "https://acme.okta.com/",
+            "client_id": "0oa2",
+            "scopes": ["openid", "email"],
+            "group_claim": "roles",
+            "default_role": "member",
+            "enabled": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["id"].as_str().unwrap(), id);
+    assert_eq!(updated["name"], json!("Okta (prod)"));
+    assert_eq!(updated["slug"], json!("okta"), "the slug is immutable");
+    // a trailing slash is trimmed the same way create does it, so the issuer
+    // still matches the one in the id token
+    assert_eq!(updated["issuer"], json!("https://acme.okta.com"));
+    assert_eq!(updated["client_id"], json!("0oa2"));
+    assert_eq!(updated["group_claim"], json!("roles"));
+    assert_eq!(updated["default_role"], json!("member"));
+    assert_eq!(
+        updated["enabled"],
+        json!(false),
+        "a provider can be disabled"
+    );
+    assert_eq!(
+        updated["has_client_secret"],
+        json!(true),
+        "an absent client_secret leaves the stored one alone"
+    );
+
+    // a disabled provider is not offered on the login screen
+    let methods: Value = client
+        .get(format!("{base}/api/v1/auth/methods"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !methods.to_string().contains("okta"),
+        "a disabled provider must not be advertised: {methods}"
+    );
+
+    // rotating: a new secret replaces the sealed one and is never echoed back
+    let rotated: Value = client
+        .put(format!("{base}/api/v1/sso-providers/{id}"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Okta (prod)",
+            "issuer": "https://acme.okta.com",
+            "client_id": "0oa2",
+            "client_secret": "rotated-secret",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rotated["has_client_secret"], json!(true));
+    assert!(
+        !rotated.to_string().contains("rotated-secret"),
+        "the client secret leaked into the api response: {rotated}"
+    );
+    // omitting scopes keeps the ones already stored rather than resetting
+    // them to the create-time defaults
+    assert_eq!(rotated["scopes"], json!(["openid", "email"]));
+
+    // an empty string clears it: the provider becomes a public pkce client
+    let cleared: Value = client
+        .put(format!("{base}/api/v1/sso-providers/{id}"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Okta (prod)",
+            "issuer": "https://acme.okta.com",
+            "client_id": "0oa2",
+            "client_secret": "",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["has_client_secret"], json!(false));
+
+    // the mapping is still there: this is the whole point of editing in place
+    let mappings: Value = client
+        .get(format!("{base}/api/v1/sso-providers/{id}/group-mappings"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mappings.as_array().unwrap().len(), 1);
+    assert_eq!(mappings[0]["id"].as_str().unwrap(), mapping_id);
+
+    // a bad issuer is refused before anything is written
+    let bad = client
+        .put(format!("{base}/api/v1/sso-providers/{id}"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Okta", "issuer": "not-a-url", "client_id": "0oa2"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // and every edit is audited, naming what happened to the secret without
+    // ever recording the secret
+    let actions: Vec<String> = sqlx::query_scalar(
+        "select detail->>'client_secret' from audit_log \
+         where action = 'sso_provider.update' order by at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(actions, vec!["unchanged", "rotated", "cleared"]);
 }
 
 /// OIDC SSO (#240) end to end against a stub identity provider: the login

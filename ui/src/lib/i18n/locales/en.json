@@ -969,7 +969,12 @@
         "delete": "Delete provider",
         "deleteNamed": "Delete provider {{name}}",
         "noSecret": "No client secret",
-        "noSecretHint": "No client secret is sealed for this provider, so the token exchange will fail at login. Re-register it with a secret, or check that ROLTER_KEK was set when it was created."
+        "noSecretHint": "No client secret is sealed for this provider, so the token exchange will fail at login. Re-register it with a secret, or check that ROLTER_KEK was set when it was created.",
+        "edit": "Edit provider",
+        "editNamed": "Edit provider {{name}}",
+        "toggleNamed": "Enable provider {{name}}",
+        "enabledToast": "{{name}} is now accepting sign-ins",
+        "disabledToast": "{{name}} is out of service"
       },
       "empty": {
         "title": "No identity provider yet",
@@ -1008,6 +1013,13 @@
         "defaultRole": "Default role",
         "defaultRoleHint": "Granted when no group mapping matches. Leave unset to refuse those users instead.",
         "defaultRoleNone": "Refuse the sign-in"
+      },
+      "edit": {
+        "title": "Edit identity provider",
+        "subtitle": "Rotate the client secret, correct the issuer, or take the provider out of service. Group mappings and the provider's id are kept.",
+        "save": "Save changes",
+        "slugImmutable": "The slug is in the login URL, so it cannot be changed. A provider that needs a different one is a different provider.",
+        "clientSecretHint": "Leave empty to keep the stored secret. Enter a new one to rotate it. The stored secret is never shown, here or anywhere else."
       },
       "mappings": {
         "title": "Group mappings",

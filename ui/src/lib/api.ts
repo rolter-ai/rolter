@@ -408,6 +408,11 @@ export interface InvocationRow {
   completion_tokens: number | string;
   total_tokens: number | string;
   cost_usd: number | string;
+  /// 1 when the model had no price row when the request was served, so
+  /// `cost_usd` is unknown rather than zero. recorded per request by the
+  /// gateway against the catalogue that applied then, which is why the
+  /// dashboard reads it instead of re-deriving it from today's prices (#1226)
+  unpriced: number | string;
   latency_ms: number | string;
   ttft_ms: number | string;
   error: string;
@@ -3779,6 +3784,32 @@ export function createSsoProvider(
     `/api/v1/orgs/${orgId}/sso-providers`,
     input,
   );
+}
+
+/**
+ * The editable half of a provider. `slug` is absent on purpose: it is in the
+ * login URL, so the server refuses to change it (#1233).
+ *
+ * `client_secret` is three-valued. Omit it to leave the sealed secret alone,
+ * send a value to rotate it, send `""` to clear it and make the provider a
+ * public PKCE client.
+ */
+export interface UpdateSsoProviderInput {
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret?: string;
+  scopes?: string[];
+  group_claim?: string;
+  default_role?: string;
+  enabled: boolean;
+}
+
+export function updateSsoProvider(
+  id: string,
+  input: UpdateSsoProviderInput,
+): Promise<SsoProviderRow> {
+  return sendJson<SsoProviderRow>("PUT", `/api/v1/sso-providers/${id}`, input);
 }
 
 export function deleteSsoProvider(id: string): Promise<void> {

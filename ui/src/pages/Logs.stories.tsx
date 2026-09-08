@@ -18,7 +18,6 @@ import type {
   BusinessUnitRow,
   CustomerRow,
   InvocationRow,
-  ModelPriceRow,
 } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -52,6 +51,7 @@ const row = (over: Partial<InvocationRow>): InvocationRow => ({
   completion_tokens: 4345,
   total_tokens: 12345,
   cost_usd: 0.0123,
+  unpriced: 0,
   latency_ms: 842,
   ttft_ms: 120,
   error: "",
@@ -61,19 +61,14 @@ const row = (over: Partial<InvocationRow>): InvocationRow => ({
 const ROWS: InvocationRow[] = [
   row({}),
   // served against a model with no price row: the zero is the absence of a
-  // cost, not a cost of zero (#969)
-  row({ request_id: "req-2", model: "internal-llama", provider: "vllm", cost_usd: 0 }),
-];
-
-const PRICES: ModelPriceRow[] = [
-  {
-    id: "price-1",
-    model: "gpt-4o",
-    input_per_mtok: "2.50",
-    output_per_mtok: "10.00",
-    currency: "USD",
-    created_at: "2026-01-01T00:00:00Z",
-  },
+  // cost, not a cost of zero (#969). the gateway said so on the row itself
+  row({
+    request_id: "req-2",
+    model: "internal-llama",
+    provider: "vllm",
+    cost_usd: 0,
+    unpriced: 1,
+  }),
 ];
 
 const UNIT: BusinessUnitRow = {
@@ -129,7 +124,6 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
 const withLogs = (rows: InvocationRow[], base = "USD"): FetchStub =>
   routes([
     ["/api/v1/analytics/invocations", () => ({ data: rows })],
-    ["/api/v1/model-prices", () => PRICES],
     ["/api/v1/currency", () => ({ base, codes: [base], rates: {} })],
     ["/api/v1/models", () => []],
     ["/business-units", () => [UNIT]],
@@ -183,6 +177,29 @@ export const UnpricedRequestsAreNotFree: Story = {
     await expect(marker).toBeInTheDocument();
     // and the false zero is nowhere on the screen
     await expect(canvas.queryByText(fmt.currency(0, "USD"))).toBeNull();
+  },
+};
+
+/**
+ * #1226: the marker keys off the `unpriced` flag the gateway recorded, not off
+ * the live price catalogue. A request that genuinely cost nothing — a cache
+ * hit, a zero-token completion — carries `unpriced: 0` and must read as free,
+ * even though its cost is also zero and the screen no longer fetches prices.
+ */
+export const AZeroCostThatIsNotUnpricedReadsAsFree: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({ request_id: "req-free", cost_usd: 0, unpriced: 0 }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(fmt.currency(0, "USD"))).toBeInTheDocument();
+    await expect(canvas.queryByTitle(/no price is configured/i)).toBeNull();
   },
 };
 

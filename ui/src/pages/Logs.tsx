@@ -21,7 +21,6 @@ import {
   fetchCustomers,
   fetchInvocations,
   fetchLoggingSettings,
-  fetchModelPrices,
   fetchModels,
   type InvocationRow,
 } from "@/lib/api";
@@ -111,16 +110,6 @@ export default function Logs() {
     enabled: !!scope.orgId,
     retry: false,
   });
-  // the price table is what tells a zero cost apart from an unpriced one: the
-  // control plane records `unpriced` per request but does not return it on an
-  // invocation row, so the dashboard re-derives it from the same evidence the
-  // summary banner uses — a model with no price row (#969, #1182)
-  const prices = useQuery({
-    queryKey: ["model-prices"],
-    queryFn: fetchModelPrices,
-    retry: false,
-  });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -170,11 +159,10 @@ export default function Logs() {
   const unitName = (id: string) => units.data?.find((u) => u.id === id)?.name;
   const customerName = (id: string) =>
     customers.data?.find((c) => c.id === id)?.name;
-  // while the price table is loading, or if it failed, every model would
-  // otherwise be reported as unpriced on no evidence
-  const pricedModels = new Set((prices.data ?? []).map((p) => p.model));
-  const isUnpriced = (row: InvocationRow) =>
-    num(row.cost_usd) <= 0 && prices.isSuccess && !pricedModels.has(row.model);
+  // the gateway decided this per request, against the catalogue that applied
+  // when it was served. re-deriving it from today's model prices re-judges an
+  // old row against a price added or removed after the fact (#1226)
+  const isUnpriced = (row: InvocationRow) => num(row.unpriced) === 1;
   const cost = (row: InvocationRow) =>
     isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =

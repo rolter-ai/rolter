@@ -441,7 +441,9 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: ADMIN,
         create: ADMIN,
-        update: NA,
+        // editing a provider can rotate its client secret and take it in and
+        // out of service, which is the same grant as registering one (#1233)
+        update: ADMIN,
         delete: ADMIN,
     },
     Capability {
@@ -558,6 +560,17 @@ const CAPABILITIES: &[Capability] = &[
         read: SUPER,
         create: NA,
         update: SUPER,
+        delete: NA,
+    },
+    // the configuration export spans every org's providers, groups and routes
+    // in one document (#1082), so there is no tenancy scope narrow enough to
+    // delegate it — and it names every `api_key_env` the deployment reads
+    Capability {
+        resource: "config_export",
+        scope: "deployment",
+        read: SUPER,
+        create: NA,
+        update: NA,
         delete: NA,
     },
     // outbound telemetry export is a deployment-wide egress decision, so it
@@ -1132,6 +1145,7 @@ mod tests {
             "compatibility_policy.rs",
             include_str!("compatibility_policy.rs"),
         ),
+        ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("crud.rs", include_str!("crud.rs")),
@@ -1150,6 +1164,7 @@ mod tests {
         ("mcp_oauth_flow.rs", include_str!("mcp_oauth_flow.rs")),
         ("me.rs", include_str!("me.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
+        ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
         ("rbac.rs", include_str!("rbac.rs")),

@@ -459,12 +459,18 @@ pub struct InvocationsQuery {
 /// unaliased qualified column `payload.request_payload` in its JSON output,
 /// while the dashboard reads `request_payload` / `response_payload` and would
 /// otherwise always fall back to "payload logging is off" (#1177).
+///
+/// `unpriced` rides along with `cost_usd` because the two are only meaningful
+/// together: a zero cost means "free" when the flag is clear and "unknown" when
+/// it is set. The gateway decides that per request, against the catalogue that
+/// applied at the time, so a caller that instead re-derives it from today's
+/// model prices re-judges old rows against new prices and drifts (#1226).
 fn invocations_sql(status_expr: &str) -> String {
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
-                prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, ttft_ms, error, \
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
                 payload.request_payload as request_payload, payload.response_payload as response_payload \
          from request_logs \
          left join ( \
@@ -605,6 +611,15 @@ mod tests {
         // and no attribution value is ever formatted into the text
         assert!(!sql.contains("business_unit_id = '"));
         assert!(!sql.contains("customer_id = '"));
+    }
+
+    #[test]
+    fn invocations_sql_selects_the_unpriced_flag_next_to_cost() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // a zero cost_usd is ambiguous on its own: free, or no price row at all.
+        // the flag the gateway recorded per request has to travel with it, or
+        // the dashboard re-derives it from the live catalogue and drifts (#1226)
+        assert!(sql.contains("cost_usd, unpriced"));
     }
 
     #[test]
