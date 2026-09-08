@@ -2,9 +2,14 @@
 //! unified launcher's `easy-up` subcommand.
 //!
 //! [`seed`] creates an org (+ a `default`/`default` team/project), an optional
-//! admin user, and imports providers/routes from a bootstrap `rolter.toml`.
-//! The org, team, project and admin steps check for an existing row first, so
-//! re-running creates nothing twice.
+//! admin user, and imports providers, provider groups, routes, model prices
+//! and prompt templates from a bootstrap `rolter.toml`. The org, team, project
+//! and admin steps check for an existing row first, so re-running creates
+//! nothing twice.
+//!
+//! What this consumes is what [`crate::config_export::render`] emits: the two
+//! are the read and write halves of one round trip, so a section added to one
+//! belongs in the other (#1082).
 //!
 //! The bootstrap-toml import is an **upsert**: the file is the desired state,
 //! so a re-import of an edited file applies the edits rather than skipping the
@@ -41,7 +46,8 @@ use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::Argon2;
 use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
 use rolter_store::postgres::repo::{
-    LoggingSettingsRepo, OrgRepo, ProjectRepo, ProviderRepo, RouteRepo, RouteTargetRepo, TeamRepo,
+    LoggingSettingsRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo,
+    RouteRepo, RouteTargetRepo, TeamRepo,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -145,6 +151,82 @@ fn slugify(name: &str) -> String {
         })
 }
 
+/// The `providers.kind` column value for a parsed [`ProviderKind`]. Shared by
+/// the provider import and anything else that has to name the stored enum.
+fn provider_kind_column(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Openai => "openai",
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenaiCompatible => "openai_compatible",
+        ProviderKind::Ollama => "ollama",
+        ProviderKind::OllamaCloud => "ollama_cloud",
+        ProviderKind::LlamaCpp => "llama_cpp",
+        ProviderKind::Openrouter => "openrouter",
+        ProviderKind::Tei => "tei",
+        ProviderKind::AzureOpenai => "azure_openai",
+        ProviderKind::Bedrock => "bedrock",
+        ProviderKind::Vertex => "vertex",
+        ProviderKind::Gemini => "gemini",
+        ProviderKind::GeminiNative => "gemini_native",
+        ProviderKind::GeminiInteractions => "gemini_interactions",
+        ProviderKind::Mistral => "mistral",
+        ProviderKind::Groq => "groq",
+        ProviderKind::Xai => "xai",
+        ProviderKind::MetaLlamaApi => "meta_llama_api",
+        ProviderKind::Cohere => "cohere",
+        ProviderKind::Perplexity => "perplexity",
+        ProviderKind::Together => "together",
+        ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Databricks => "databricks",
+        ProviderKind::AlephAlpha => "aleph_alpha",
+        ProviderKind::Nebius => "nebius",
+        ProviderKind::Ovhcloud => "ovhcloud",
+        ProviderKind::Scaleway => "scaleway",
+        ProviderKind::Deepseek => "deepseek",
+        ProviderKind::Qwen => "qwen",
+        ProviderKind::Zhipu => "zhipu",
+        ProviderKind::Kimi => "kimi",
+        ProviderKind::Ernie => "ernie",
+        ProviderKind::Doubao => "doubao",
+        ProviderKind::Hunyuan => "hunyuan",
+        ProviderKind::Yi => "yi",
+        ProviderKind::Minimax => "minimax",
+        ProviderKind::Baichuan => "baichuan",
+        ProviderKind::Gigachat => "gigachat",
+        ProviderKind::YandexGpt => "yandex_gpt",
+        ProviderKind::CloudRu => "cloud_ru",
+        ProviderKind::MtsAi => "mts_ai",
+        ProviderKind::Naver => "naver",
+        ProviderKind::Upstage => "upstage",
+        ProviderKind::Rinna => "rinna",
+        ProviderKind::Rakuten => "rakuten",
+        ProviderKind::Sarvam => "sarvam",
+        ProviderKind::Krutrim => "krutrim",
+        ProviderKind::Falcon => "falcon",
+    }
+}
+
+/// The stored strategy value for a parsed [`BalancingStrategy`]. Routes and
+/// provider groups share the column vocabulary, so they share this.
+fn strategy_column(strategy: BalancingStrategy) -> &'static str {
+    match strategy {
+        BalancingStrategy::RoundRobin => "round_robin",
+        BalancingStrategy::Random => "random",
+        BalancingStrategy::PowerOfTwo => "power_of_two",
+        BalancingStrategy::ConsistentHash => "consistent_hash",
+        BalancingStrategy::CacheAware => "cache_aware",
+        BalancingStrategy::Weighted => "weighted",
+        BalancingStrategy::Pipeline => "pipeline",
+        BalancingStrategy::Cheapest => "cheapest",
+        BalancingStrategy::Fastest => "fastest",
+        BalancingStrategy::PreciseCacheAware => "precise_cache_aware",
+        BalancingStrategy::LmcacheAware => "lmcache_aware",
+        BalancingStrategy::Adaptive => "adaptive",
+        BalancingStrategy::LoraAware => "lora_aware",
+        BalancingStrategy::PredictedLatency => "predicted_latency",
+    }
+}
+
 /// Create a superadmin user; returns `true` when a new row was inserted and
 /// `false` when one already existed for `email`.
 async fn create_admin(pool: &PgPool, email: &str, password: &str) -> anyhow::Result<bool> {
@@ -172,7 +254,7 @@ async fn create_admin(pool: &PgPool, email: &str, password: &str) -> anyhow::Res
     Ok(true)
 }
 
-async fn import_bootstrap_toml(
+pub(crate) async fn import_bootstrap_toml(
     pool: &PgPool,
     org_id: Uuid,
     project_id: Uuid,
@@ -242,56 +324,7 @@ async fn import_config(
 
     let mut provider_ids = HashMap::new();
     for p in &config.providers {
-        let kind = match p.kind {
-            ProviderKind::Openai => "openai",
-            ProviderKind::Anthropic => "anthropic",
-            ProviderKind::OpenaiCompatible => "openai_compatible",
-            ProviderKind::Ollama => "ollama",
-            ProviderKind::OllamaCloud => "ollama_cloud",
-            ProviderKind::LlamaCpp => "llama_cpp",
-            ProviderKind::Openrouter => "openrouter",
-            ProviderKind::Tei => "tei",
-            ProviderKind::AzureOpenai => "azure_openai",
-            ProviderKind::Bedrock => "bedrock",
-            ProviderKind::Vertex => "vertex",
-            ProviderKind::Gemini => "gemini",
-            ProviderKind::GeminiNative => "gemini_native",
-            ProviderKind::GeminiInteractions => "gemini_interactions",
-            ProviderKind::Mistral => "mistral",
-            ProviderKind::Groq => "groq",
-            ProviderKind::Xai => "xai",
-            ProviderKind::MetaLlamaApi => "meta_llama_api",
-            ProviderKind::Cohere => "cohere",
-            ProviderKind::Perplexity => "perplexity",
-            ProviderKind::Together => "together",
-            ProviderKind::Fireworks => "fireworks",
-            ProviderKind::Databricks => "databricks",
-            ProviderKind::AlephAlpha => "aleph_alpha",
-            ProviderKind::Nebius => "nebius",
-            ProviderKind::Ovhcloud => "ovhcloud",
-            ProviderKind::Scaleway => "scaleway",
-            ProviderKind::Deepseek => "deepseek",
-            ProviderKind::Qwen => "qwen",
-            ProviderKind::Zhipu => "zhipu",
-            ProviderKind::Kimi => "kimi",
-            ProviderKind::Ernie => "ernie",
-            ProviderKind::Doubao => "doubao",
-            ProviderKind::Hunyuan => "hunyuan",
-            ProviderKind::Yi => "yi",
-            ProviderKind::Minimax => "minimax",
-            ProviderKind::Baichuan => "baichuan",
-            ProviderKind::Gigachat => "gigachat",
-            ProviderKind::YandexGpt => "yandex_gpt",
-            ProviderKind::CloudRu => "cloud_ru",
-            ProviderKind::MtsAi => "mts_ai",
-            ProviderKind::Naver => "naver",
-            ProviderKind::Upstage => "upstage",
-            ProviderKind::Rinna => "rinna",
-            ProviderKind::Rakuten => "rakuten",
-            ProviderKind::Sarvam => "sarvam",
-            ProviderKind::Krutrim => "krutrim",
-            ProviderKind::Falcon => "falcon",
-        };
+        let kind = provider_kind_column(p.kind);
         let existing = providers
             .list(org_id)
             .await?
@@ -353,22 +386,7 @@ async fn import_config(
     }
 
     for r in &config.routes {
-        let strategy = match r.strategy {
-            BalancingStrategy::RoundRobin => "round_robin",
-            BalancingStrategy::Random => "random",
-            BalancingStrategy::PowerOfTwo => "power_of_two",
-            BalancingStrategy::ConsistentHash => "consistent_hash",
-            BalancingStrategy::CacheAware => "cache_aware",
-            BalancingStrategy::Weighted => "weighted",
-            BalancingStrategy::Pipeline => "pipeline",
-            BalancingStrategy::Cheapest => "cheapest",
-            BalancingStrategy::Fastest => "fastest",
-            BalancingStrategy::PreciseCacheAware => "precise_cache_aware",
-            BalancingStrategy::LmcacheAware => "lmcache_aware",
-            BalancingStrategy::Adaptive => "adaptive",
-            BalancingStrategy::LoraAware => "lora_aware",
-            BalancingStrategy::PredictedLatency => "predicted_latency",
-        };
+        let strategy = strategy_column(r.strategy);
         let existing = routes
             .list(project_id)
             .await?
@@ -457,8 +475,106 @@ async fn import_config(
             }
         }
     }
+    import_provider_groups(pool, org_id, config, &provider_ids).await?;
+    import_model_prices(pool, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
+    Ok(())
+}
+
+/// Upsert `[[provider_groups]]` keyed by slug, then replace each group's
+/// membership with what the file names — the same desired-state rule the rest
+/// of the import follows (#1082, so a configuration export re-imports whole).
+///
+/// A group whose members do not all resolve to providers the file also
+/// declares is left entirely alone. Applying a partial membership would delete
+/// the members the file could not name, which is the one thing an import is
+/// never allowed to do.
+async fn import_provider_groups(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+    provider_ids: &HashMap<String, Uuid>,
+) -> anyhow::Result<()> {
+    if config.provider_groups.is_empty() {
+        return Ok(());
+    }
+    let groups = ProviderGroupRepo(pool);
+    for g in &config.provider_groups {
+        let slug = g.slug.clone().unwrap_or_else(|| slugify(&g.name));
+        let strategy = strategy_column(g.strategy);
+        let existing = groups
+            .list(org_id)
+            .await?
+            .into_iter()
+            .find(|row| row.slug == slug);
+        let row = match existing {
+            Some(row) if row.name == g.name && row.strategy == strategy => row,
+            // the slug is the stable identity, so it is never rewritten — the
+            // same rule providers follow
+            Some(row) => {
+                let updated = groups
+                    .update(row.id, Some(&g.name), None, Some(strategy))
+                    .await?;
+                tracing::info!(group = %g.name, "updated provider group from file");
+                updated
+            }
+            None => {
+                let created = groups.create(org_id, &g.name, &slug, strategy).await?;
+                tracing::info!(group = %g.name, "created provider group");
+                created
+            }
+        };
+
+        let mut members = Vec::with_capacity(g.members.len());
+        let mut unresolved = false;
+        for member in &g.members {
+            match provider_ids.get(&member.provider) {
+                Some(&provider_id) => {
+                    members.push((provider_id, member.model.clone(), member.weight as i32))
+                }
+                None => {
+                    tracing::warn!(
+                        group = %g.name,
+                        member_provider = %member.provider,
+                        "leaving group membership alone: provider not imported"
+                    );
+                    unresolved = true;
+                }
+            }
+        }
+        if !unresolved {
+            groups.set_members(row.id, &members).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Upsert `[[model_prices]]` keyed by public model name. Prices are what a
+/// budget counts against, so an export that carried routes without them would
+/// promote a deployment that silently charges nothing (#1082).
+async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
+    if config.model_prices.is_empty() {
+        return Ok(());
+    }
+    let prices = ModelPriceRepo(pool);
+    for price in &config.model_prices {
+        // the column is `numeric`, so the rate crosses as text rather than
+        // through a float bind that would round it on the way in
+        prices
+            .upsert(
+                &price.model,
+                &price.input_per_mtok.to_string(),
+                &price.output_per_mtok.to_string(),
+                price
+                    .cached_input_per_mtok
+                    .map(|v| v.to_string())
+                    .as_deref(),
+                &price.currency,
+            )
+            .await?;
+        tracing::info!(model = %price.model, "imported model price");
+    }
     Ok(())
 }
 

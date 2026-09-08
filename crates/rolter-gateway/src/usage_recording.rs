@@ -123,6 +123,7 @@ mod tests {
             id: "org-1".to_string(),
             limit_usd: 1_000.0,
             period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
         }])
     }
 

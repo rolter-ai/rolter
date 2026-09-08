@@ -250,6 +250,9 @@ pub struct Budget {
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
     pub limit_usd: String,
     pub period: String,
+    /// this budget's own `ignore` | `warn` | `block` answer to unpriced
+    /// traffic; `None` inherits the deployment-wide setting (#996)
+    pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

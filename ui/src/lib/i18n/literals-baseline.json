@@ -178,7 +178,6 @@
     "Add header",
     "Always propagated:",
     "Base URL",
-    "Copy example request",
     "Correlation",
     "Forwarded request headers",
     "Header carrying the end-to-end request id. The gateway reuses the caller&rsquo;s value when present, mints one when absent, and echoes it on the response so a client can find its own call in the logs.",

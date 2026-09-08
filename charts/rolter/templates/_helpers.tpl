@@ -108,6 +108,8 @@ copy that drifts.
 - name: ROLTER_LOGIN_TRUST_FORWARDED_FOR
   value: {{ .trustForwardedFor | quote }}
 {{- end }}
+- name: ROLTER_UPDATE_CHECK
+  value: {{ .Values.control.updateCheck | quote }}
 {{- if .Values.env.redisUrl }}
 - name: ROLTER_REDIS_URL
   value: {{ .Values.env.redisUrl | quote }}

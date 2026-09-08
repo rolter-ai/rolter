@@ -408,6 +408,11 @@ export interface InvocationRow {
   completion_tokens: number | string;
   total_tokens: number | string;
   cost_usd: number | string;
+  /// 1 when the model had no price row when the request was served, so
+  /// `cost_usd` is unknown rather than zero. recorded per request by the
+  /// gateway against the catalogue that applied then, which is why the
+  /// dashboard reads it instead of re-deriving it from today's prices (#1226)
+  unpriced: number | string;
   latency_ms: number | string;
   ttft_ms: number | string;
   error: string;
@@ -1760,6 +1765,16 @@ export const SCOPE_TYPES = [
 
 export type ScopeType = (typeof SCOPE_TYPES)[number];
 
+/**
+ * A budget's own answer to traffic against a model with no price row, which
+ * accrues zero spend and so can never exhaust the budget. `null` inherits the
+ * deployment-wide setting; an override can only tighten it, because the gateway
+ * resolves most-restrictive-wins across the scope chain (#996).
+ */
+export const UNPRICED_POLICIES = ["ignore", "warn", "block"] as const;
+
+export type UnpricedPolicy = (typeof UNPRICED_POLICIES)[number];
+
 export interface BudgetRow {
   id: string;
   scope_type: string;
@@ -1767,6 +1782,7 @@ export interface BudgetRow {
   /// decimal, returned as text
   limit_usd: string;
   period: string;
+  unpriced_policy: UnpricedPolicy | null;
   created_at: string;
 }
 
@@ -1775,6 +1791,7 @@ export interface CreateBudgetInput {
   scope_id: string;
   limit_usd: string;
   period?: string;
+  unpriced_policy?: UnpricedPolicy | null;
 }
 
 export function fetchBudgets(
@@ -1869,6 +1886,26 @@ export interface CurrencySettings {
 
 export function fetchCurrencySettings(): Promise<CurrencySettings> {
   return getJson<CurrencySettings>("/api/v1/currency");
+}
+
+/**
+ * `GET /api/v1/version`: the running build and the latest stable release the
+ * control plane has heard of (#902). The control plane asks GitHub once at
+ * boot and every few hours; the browser never does. `latest`, `release_url`
+ * and `checked_at` are null until a check has succeeded, and `enabled` is
+ * false when `ROLTER_UPDATE_CHECK=false` opted the deployment out.
+ */
+export interface VersionStatus {
+  current: string;
+  latest: string | null;
+  release_url: string | null;
+  update_available: boolean;
+  checked_at: string | null;
+  enabled: boolean;
+}
+
+export function fetchVersion(): Promise<VersionStatus> {
+  return getJson<VersionStatus>("/api/v1/version");
 }
 
 /**
@@ -3747,6 +3784,32 @@ export function createSsoProvider(
     `/api/v1/orgs/${orgId}/sso-providers`,
     input,
   );
+}
+
+/**
+ * The editable half of a provider. `slug` is absent on purpose: it is in the
+ * login URL, so the server refuses to change it (#1233).
+ *
+ * `client_secret` is three-valued. Omit it to leave the sealed secret alone,
+ * send a value to rotate it, send `""` to clear it and make the provider a
+ * public PKCE client.
+ */
+export interface UpdateSsoProviderInput {
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret?: string;
+  scopes?: string[];
+  group_claim?: string;
+  default_role?: string;
+  enabled: boolean;
+}
+
+export function updateSsoProvider(
+  id: string,
+  input: UpdateSsoProviderInput,
+): Promise<SsoProviderRow> {
+  return sendJson<SsoProviderRow>("PUT", `/api/v1/sso-providers/${id}`, input);
 }
 
 export function deleteSsoProvider(id: string): Promise<void> {

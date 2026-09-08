@@ -14,3 +14,6 @@
 ## 2024-11-20 - Global vs Item-level loading and delete dialogs
 **Learning:** Destructive inline actions (like 'Delete' in lists) without dedicated modals should be guarded by `window.confirm(...)` before mutating. When applying pending visual states to row-level actions in a mapped list sharing a `useMutation`, qualify the loading/disabled state using `mutation.variables === row.id` to avoid disabling all items globally.
 **Action:** When updating mapped list actions, ensure `window.confirm` is used for unmodalized deletes and that `isPending` checks verify the item being mutated using `mutation.variables`.
+## 2024-08-11 - Focus ring on custom input wrappers
+**Learning:** For custom input wrappers, where the actual `<input>` uses `outline-none`, keyboard focus rings will be completely invisible. Instead of adding a ring directly to the `input` (which might misalign with the styled wrapper box), the outer styled `div` or `label` container must have `focus-within:border-ring focus-within:ring-1 focus-within:ring-ring` applied. This is critical for keyboard accessibility in complex React/Tailwind components like those in `FilterSearchList`.
+**Action:** When creating or fixing custom input wrappers that remove default outlines, always ensure the focus indicator is applied to the visible boundary container using Tailwind's `focus-within` utilities.

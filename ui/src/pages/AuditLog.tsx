@@ -9,6 +9,7 @@ import { TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -378,12 +379,15 @@ export default function AuditLog() {
           )}
 
           {expanded && (
-            <pre
-              tabIndex={0}
-              className="max-h-64 overflow-auto rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {JSON.stringify(rows.find((e) => e.id === expanded)?.detail, null, 2)}
-            </pre>
+            /* the entry's recorded detail, through the shared code block so a
+               changed field is picked out rather than buried in monospace
+               (#949) */
+            <CodeBlock
+              value={JSON.stringify(rows.find((e) => e.id === expanded)?.detail, null, 2)}
+              language="json"
+              label={t("pages.auditLog.detail")}
+              maxHeight={256}
+            />
           )}
         </>
       )}

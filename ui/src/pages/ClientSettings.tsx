@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
 import {
   fetchClientSettings,
@@ -339,39 +340,17 @@ function ClientSettingsScreen() {
 }
 
 function Snippet({ base }: { base: string }) {
-  const [copied, setCopied] = React.useState(false);
+  const { t } = useTranslation();
   const code = `curl ${base}/v1/chat/completions \\\n  -H "Authorization: Bearer $ROLTER_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"fake-llm","messages":[{"role":"user","content":"ping"}]}'`;
+  // the example call through the shared code block: the same copy affordance,
+  // focusable scroll region and bash palette as every other snippet (#949)
   return (
-    <div className="relative rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3">
-      <pre
-        tabIndex={0}
-        className="overflow-x-auto whitespace-pre font-mono text-[0.6875rem] leading-relaxed text-[color:var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {code}
-      </pre>
-      <button
-        type="button"
-        aria-label="Copy example request"
-        className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        onClick={() => {
-          // clipboard access is denied in some embedded contexts; the snippet
-          // is selectable either way, so a failure needs no error surface
-          void navigator.clipboard?.writeText(code).then(
-            () => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            },
-            () => {},
-          );
-        }}
-      >
-        {copied ? (
-          <Check className="h-3.5 w-3.5 text-[color:var(--status-success-text)]" />
-        ) : (
-          <Copy className="h-3.5 w-3.5" />
-        )}
-      </button>
-    </div>
+    <CodeBlock
+      value={code}
+      language="bash"
+      label={t("pages.clientSettings.exampleRequest")}
+      density="compact"
+    />
   );
 }
 

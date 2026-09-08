@@ -187,6 +187,37 @@
     /* layout */
     --sidebar-width: 232px;
     --header-height: 52px;
+
+    /* ---- syntax highlighting (#949) -------------------------------------
+       the highlighter is themed from this palette, not from a stock Prism
+       theme: a payload in the Logs drawer has to look like it belongs to the
+       same product as the row it opened from. every value is an existing
+       design token, so the contrast numbers recorded beside those tokens hold
+       here too — the worst surface a code block sits on is --surface-subtle,
+       which is the surface each -text token was tuned against.
+
+       the roles are assigned by meaning rather than by tradition: a keyword is
+       the one thing in a payload that is *structure*, so it carries the
+       вышивка red the rest of the dashboard reserves for its own voice, and a
+       value is coloured by what kind of value it is — string, number,
+       identifier — using the same three status hues a Badge uses. */
+    --code-plain: var(--text-secondary);
+    --code-comment: var(--text-subtle);
+    --code-punctuation: var(--text-muted);
+    --code-keyword: var(--red-folk-text);
+    --code-string: var(--status-success-text);
+    --code-number: var(--status-warning-text);
+    --code-property: var(--status-info-text);
+    --code-function: var(--zinc-50);
+    /* the gutter reads as quieter than the code, but it is still text a
+       person reads: --text-subtle is the dimmest token that clears 4.5:1 on
+       --surface-subtle, which is the surface every code block sits on */
+    --code-gutter: var(--text-subtle);
+    /* log levels reuse the status pairs directly: an ERROR line in a payload
+       and a failing row in the table above it must not be two different reds */
+    --code-level-error: var(--status-danger-text);
+    --code-level-warning: var(--status-warning-text);
+    --code-level-info: var(--status-info-text);
   }
 }
 
@@ -314,5 +345,120 @@
     background-image: radial-gradient(var(--red-folk) 40%, transparent 42%);
     background-size: 8px 8px;
     opacity: 0.8;
+  }
+
+  /* ---- code blocks (#949) ---------------------------------------------
+     the class names are Prism's, because refractor emits them; the colours
+     are the --code-* tokens above and nothing else. grouped by role rather
+     than by grammar, so a language added later inherits a sane palette
+     without a new rule. */
+  .rl-code {
+    font-family: var(--font-mono);
+    color: var(--code-plain);
+    tab-size: 2;
+  }
+  .rl-code .token.comment,
+  .rl-code .token.prolog,
+  .rl-code .token.doctype,
+  .rl-code .token.cdata,
+  .rl-code .token.separator {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .rl-code .token.punctuation,
+  .rl-code .token.operator,
+  .rl-code .token.entity {
+    color: var(--code-punctuation);
+  }
+  .rl-code .token.keyword,
+  .rl-code .token.atrule,
+  .rl-code .token.selector,
+  .rl-code .token.important,
+  .rl-code .token.builtin,
+  .rl-code .token.deleted,
+  .rl-code .token.variable,
+  .rl-code .token.title {
+    color: var(--code-keyword);
+  }
+  .rl-code .token.string,
+  .rl-code .token.char,
+  .rl-code .token.attr-value,
+  .rl-code .token.value,
+  .rl-code .token.inserted,
+  .rl-code .token.url,
+  .rl-code .token.regex {
+    color: var(--code-string);
+  }
+  .rl-code .token.number,
+  .rl-code .token.boolean,
+  .rl-code .token.constant,
+  .rl-code .token.symbol,
+  .rl-code .token.date,
+  .rl-code .token.time {
+    color: var(--code-number);
+  }
+  .rl-code .token.property,
+  .rl-code .token.key,
+  .rl-code .token.tag,
+  .rl-code .token.attr-name,
+  .rl-code .token.class-name,
+  .rl-code .token.table,
+  .rl-code .token.namespace {
+    color: var(--code-property);
+  }
+  .rl-code .token.function,
+  .rl-code .token.method {
+    color: var(--code-function);
+  }
+  /* a null is neither a value nor a keyword; it is the absence of one, and
+     reading it as a string in a redacted payload is exactly the mistake this
+     highlighting exists to prevent */
+  .rl-code .token.null {
+    color: var(--code-comment);
+  }
+  /* log levels — the alias Prism's `log` grammar puts beside `level` */
+  .rl-code .token.level.error {
+    color: var(--code-level-error);
+    font-weight: 500;
+  }
+  .rl-code .token.level.warning {
+    color: var(--code-level-warning);
+    font-weight: 500;
+  }
+  .rl-code .token.level.info {
+    color: var(--code-level-info);
+  }
+  .rl-code .token.level.debug,
+  .rl-code .token.level.trace {
+    color: var(--code-comment);
+  }
+
+  /* the gutter is a CSS counter on each line, never a DOM node: generated
+     content is not part of the document text, so a selection dragged across
+     the block copies the code and not the numbers */
+  .rl-code--numbered code {
+    counter-reset: rl-code-line;
+    display: block;
+  }
+  /* the line stays inline and carries its own trailing newline, so the text
+     of the block is byte-for-byte the source: a block-level line would rely on
+     the browser reinserting a break when the selection is serialised, and
+     `textContent` would lose the newlines outright */
+  .rl-code--numbered .rl-code-line {
+    counter-increment: rl-code-line;
+  }
+  /* sticky rather than absolute, so the gutter stays put when a long line is
+     scrolled sideways instead of sliding out of the viewport with it */
+  .rl-code--numbered .rl-code-line::before {
+    content: counter(rl-code-line);
+    display: inline-block;
+    position: sticky;
+    left: 0;
+    width: 2rem;
+    margin-right: 0.75rem;
+    text-align: right;
+    color: var(--code-gutter);
+    background: var(--surface-subtle);
+    user-select: none;
   }
 }

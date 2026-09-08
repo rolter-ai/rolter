@@ -1,0 +1,86 @@
+---
+title: "Version and Update Check for the Rolter Control Plane"
+sidebarTitle: "Version"
+description: "GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint."
+---
+
+`GET /api/v1/version` answers two questions in one document: which rolter this
+control plane is, and whether a newer stable release exists. The dashboard reads
+it once per session for the small *v0.2.0 available* hint beside the version in
+its footer, so no browser ever calls GitHub itself and a deployment does not
+leak per-user egress.
+
+The answer comes from a check the control plane runs on its own schedule — once
+at boot and every six hours — against
+`https://api.github.com/repos/rolter-ai/rolter/releases/latest`, bounded by a
+5-second timeout. The endpoint only ever reads the last successful result; it
+never triggers a check.
+
+## Request
+
+```http
+GET /api/v1/version
+Authorization: Bearer <session or admin token>
+```
+
+Any authenticated caller may read it — a viewer with no membership anywhere
+included. The `version` capability that `GET /api/v1/rbac/matrix` publishes is
+read-only for every authenticated caller and writable by nobody: this is a fact
+about the deployment, not about any tenant. An anonymous request is refused with `401`.
+
+## Response
+
+```json
+{
+  "current": "0.1.0",
+  "latest": "0.2.0",
+  "release_url": "https://github.com/rolter-ai/rolter/releases/tag/v0.2.0",
+  "update_available": true,
+  "checked_at": "2026-09-05T08:12:44.913Z",
+  "enabled": true
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `current` | string | the version this control plane was built as (the Cargo workspace version, which release-plz maintains) |
+| `latest` | string or `null` | the latest stable release the last successful check reported; `null` until one has succeeded |
+| `release_url` | string or `null` | the release page to send an operator to |
+| `update_available` | boolean | `latest` is strictly newer than `current` by semantic-version order |
+| `checked_at` | RFC 3339 or `null` | when the last successful check completed |
+| `enabled` | boolean | whether the check runs at all; `false` when `ROLTER_UPDATE_CHECK=false` |
+
+### States
+
+The dashboard treats every state except "update available" as "show the plain
+version". These are the shapes it can meet:
+
+| Situation | `enabled` | `latest` | `update_available` |
+|---|---|---|---|
+| check disabled (`ROLTER_UPDATE_CHECK=false`) | `false` | `null` | `false` |
+| still checking, or offline / rate-limited so far | `true` | `null` | `false` |
+| current or newer than the latest release | `true` | set | `false` |
+| an older build | `true` | set | `true` |
+
+An air-gapped control plane that has not opted out is indistinguishable from
+one still checking: `enabled: true`, everything else empty. Nothing is logged
+above `debug`, and nothing is retried more eagerly than the six-hour schedule.
+
+### Version order
+
+Comparison follows semantic versioning. A `v` prefix on the tag is ignored and
+build metadata (`+…`) is dropped. Pre-releases are handled explicitly:
+
+- the check only ever reports a **stable** `latest` — a pre-release tag is
+  treated as a malformed answer and ignored;
+- a pre-release `current` (`0.2.0-rc.1`) sees `update_available: true` for the
+  `0.2.0` it precedes;
+- a `current` ahead of the latest release — a dev build — reports `false`.
+
+## Turning it off
+
+Set `ROLTER_UPDATE_CHECK=false` on the control plane. The endpoint keeps
+answering, with `enabled: false` and nothing else filled in, so a dashboard
+built against a checking deployment renders the same on an opted-out one. The
+same variable silences the `rolter` CLI's stderr notice; see
+[Environment variables](/configuration/environment-variables#update-check).

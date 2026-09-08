@@ -143,6 +143,86 @@ export const CollapsedHasNoSplitter: Story = {
   },
 };
 
+// the footer's update hint (#902): a small link beside the version when the
+// control plane knows of a newer stable release, an icon with a dot in the
+// folded rail, and nothing at all in every other state — checking, disabled,
+// offline, current. the accessible name carries the version and what the link
+// opens, and it leaves the dashboard in a new tab without a referrer
+const update = { latest: "0.2.0", url: "https://github.com/rolter-ai/rolter/releases/tag/v0.2.0" };
+const hintName = /rolter v0\.2\.0 is available/i;
+
+const expectReleaseLink = async (link: HTMLElement) => {
+  await expect(link).toHaveAttribute("href", update.url);
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noreferrer");
+};
+
+export const UpdateAvailable: Story = {
+  args: { version: "v0.1.0", update },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("v0.1.0")).toBeVisible();
+    const link = canvas.getByRole("link", { name: hintName });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveTextContent("v0.2.0 available");
+    await expectReleaseLink(link);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const UpdateAvailableCollapsed: Story = {
+  args: { version: "v0.1.0", update, defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the folded rail has no room for the text: the icon carries the name
+    const link = canvas.getByRole("link", { name: hintName });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("title", expect.stringMatching(hintName));
+    await expect(link).not.toHaveTextContent("available");
+    await expectReleaseLink(link);
+    await expect(canvas.queryByText("v0.1.0")).toBeNull();
+  },
+};
+
+export const UpToDate: Story = {
+  args: { version: "v0.2.0", update: null },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("v0.2.0")).toBeVisible();
+    await expect(canvas.queryByRole("link", { name: hintName })).toBeNull();
+    await expect(canvas.queryByText(/available/)).toBeNull();
+  },
+};
+
+export const UpToDateCollapsed: Story = {
+  args: { version: "v0.2.0", update: null, defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("link", { name: hintName })).toBeNull();
+  },
+};
+
+// the check is disabled, still running, or the control plane is offline: the
+// shell hands the rail no hint at all, and the footer is the plain version
+export const UpdateCheckDisabled: Story = {
+  args: { version: "v0.1.0", update: undefined },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("v0.1.0")).toBeVisible();
+    await expect(canvas.queryByRole("link", { name: hintName })).toBeNull();
+    await expect(canvas.queryByText(/available/)).toBeNull();
+  },
+};
+
+export const UpdateCheckDisabledCollapsed: Story = {
+  args: { version: "v0.1.0", update: undefined, defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("link", { name: hintName })).toBeNull();
+    await expect(canvas.queryByText("v0.1.0")).toBeNull();
+  },
+};
+
 // the shell the two viewport stories below need: the drawer's open state is
 // owned above the rail, exactly as `App` owns it, and the trigger stands in for
 // the hamburger `ScreenHeader` grows below `md`

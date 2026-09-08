@@ -5,6 +5,7 @@ import { Link } from "react-router";
 
 import { CopyButton } from "@/components/CopyButton";
 import { LoadError } from "@/components/LoadError";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchConfig, type GatewayConfigDto } from "@/lib/api";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -183,9 +184,21 @@ function AllSections({ config }: { config: GatewayConfigDto }) {
               <span className="text-foreground">{key}</span>
               <span className="text-[color:var(--text-subtle)]">{summarize(value, t)}</span>
             </summary>
-            <pre className="max-h-[360px] overflow-auto border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 font-mono text-[11px] leading-relaxed text-[color:var(--text-secondary)]">
-              {JSON.stringify(value, null, 2)}
-            </pre>
+            {/* the section reads as JSON because that is what the gateway
+                serves; the shared block gives it the same colours, copy button
+                and focusable scroll region as every other payload (#949).
+                numbered, because these are the sections an operator quotes in
+                a ticket — "line 40 of routes" only means something with a
+                gutter to count from */}
+            <div className="border-t border-[color:var(--border-subtle)] p-2">
+              <CodeBlock
+                value={JSON.stringify(value, null, 2)}
+                language="json"
+                label={key}
+                maxHeight={360}
+                lineNumbers
+              />
+            </div>
           </details>
         ))}
       </div>

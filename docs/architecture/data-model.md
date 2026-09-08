@@ -31,7 +31,7 @@ erDiagram
 ## Cost & limits
 
 - `model_prices` — USD per million tokens for input/output (+ cached input). Used to compute `cost_usd` per request, written to ClickHouse.
-- `budgets` — spend caps per scope and period; enforced before forwarding and refreshed from spend aggregates.
+- `budgets` — spend caps per scope and period; enforced before forwarding and refreshed from spend aggregates. `unpriced_policy` is an optional per-budget override of the deployment-wide unpriced-traffic policy (`ignore` | `warn` | `block`, null inherits); the gateway resolves most-restrictive-wins across the scope chain, so a budget can tighten it but never loosen it (#996).
 - `rate_limits` — RPM/TPM per scope; counters live in Redis for multi-instance correctness.
 
 ## Config versioning

@@ -14,7 +14,7 @@ use rolter_core::{
     McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute, PluginInstanceConfig, PluginStage,
     PluginsConfig, PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig,
     ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, Target,
-    TemplateVariable, VirtualKeyRecord, WebhookAuth, WebhookStage,
+    TemplateVariable, UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
@@ -1011,7 +1011,8 @@ impl PostgresConfigStore {
             // limit_usd is numeric(12,4); decode it as text (Budget.limit_usd is a
             // String) or sqlx errors and the whole snapshot 500s — freezing every
             // polling gateway on its last config the moment any budget exists
-            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, created_at
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                    unpriced_policy, created_at
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1036,6 +1037,7 @@ impl PostgresConfigStore {
                     // decimal stored as text; a malformed value disables the cap
                     limit_usd: r.limit_usd.parse().unwrap_or(f64::INFINITY),
                     period: parse_period(&r.period),
+                    unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
                 })
             })
             .collect())
@@ -1243,6 +1245,22 @@ fn parse_period(period: &str) -> BudgetPeriod {
         "daily" | "1d" | "24h" => BudgetPeriod::Daily,
         "total" | "lifetime" | "all" => BudgetPeriod::Total,
         _ => BudgetPeriod::Monthly,
+    }
+}
+
+/// Map the `budgets.unpriced_policy` column to an [`UnpricedPolicy`] override.
+///
+/// Unlike [`parse_period`], an unrecognized value yields `None` rather than a
+/// default: `None` means "inherit the deployment-wide setting", which is the
+/// conservative reading. Guessing a policy here would let a typo silently
+/// decide whether unaccountable traffic is served, and the column carries a
+/// check constraint precisely so this branch stays unreachable in practice.
+fn parse_unpriced_policy(value: &str) -> Option<UnpricedPolicy> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "ignore" => Some(UnpricedPolicy::Ignore),
+        "warn" => Some(UnpricedPolicy::Warn),
+        "block" => Some(UnpricedPolicy::Block),
+        _ => None,
     }
 }
 

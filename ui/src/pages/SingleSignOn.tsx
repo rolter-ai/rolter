@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { KeyRound, Loader2, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
+import { KeyRound, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,6 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   createSsoGroupMapping,
   createSsoProvider,
+  updateSsoProvider,
   deleteSsoGroupMapping,
   deleteSsoProvider,
   fetchAuthPolicy,
@@ -387,11 +388,17 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
 function ProviderCard({
   provider,
   onDelete,
+  onEdit,
+  onToggle,
   deleting,
+  toggling,
 }: {
   provider: SsoProviderRow;
   onDelete: (provider: SsoProviderRow) => void;
+  onEdit: (provider: SsoProviderRow) => void;
+  onToggle: (provider: SsoProviderRow, enabled: boolean) => void;
   deleting: boolean;
+  toggling: boolean;
 }) {
   const { t } = useTranslation();
   // the login button's href, as the control plane builds it. absolute so it can
@@ -432,6 +439,22 @@ function ProviderCard({
               : t("pages.sso.providers.noDefaultRole")}
           </p>
         </div>
+        {/* taking a provider out of service is a routine act — an IdP
+            migration, a broken secret — and used to require deleting it,
+            which took its group mappings with it (#1233) */}
+        <Switch
+          checked={provider.enabled}
+          disabled={toggling}
+          onCheckedChange={(next) => onToggle(provider, next)}
+          aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
+        />
+        <RowIconButton
+          title={t("pages.sso.providers.edit")}
+          aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
+          onClick={() => onEdit(provider)}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </RowIconButton>
         <RowIconButton
           danger
           title={t("pages.sso.providers.delete")}
@@ -503,49 +526,98 @@ const EMPTY_DRAFT: Draft = {
   defaultRole: "",
 };
 
-// register a provider. the client secret is sealed with the KEK on the way in
-// and `#[serde(skip_serializing)]` on the way out, so this form is the only
-// place it is ever legible
-function AddProviderSheet({
+const draftFrom = (provider: SsoProviderRow): Draft => ({
+  name: provider.name,
+  slug: provider.slug,
+  issuer: provider.issuer,
+  clientId: provider.client_id,
+  // never prefilled: the sealed secret is not readable, so an empty field
+  // here means "leave the stored one alone" rather than "clear it"
+  clientSecret: "",
+  scopes: provider.scopes.join(" "),
+  groupClaim: provider.group_claim,
+  defaultRole: provider.default_role ?? "",
+});
+
+// register or edit a provider. the client secret is sealed with the KEK on the
+// way in and never serialized on the way out, so this form is the only place it
+// is ever legible.
+//
+// editing exists because the alternative was delete-and-recreate, which drops
+// every group mapping hanging off the provider and changes its id in the audit
+// trail — a heavy price for a rotated secret or a mistyped issuer (#1233)
+function ProviderSheet({
   open,
   onOpenChange,
   orgId,
-  onCreated,
+  provider,
+  onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   orgId: string;
-  onCreated: () => void;
+  /** the provider being edited, or null to register a new one */
+  provider: SsoProviderRow | null;
+  onSaved: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [draft, setDraft] = React.useState<Draft>(EMPTY_DRAFT);
+  const editing = !!provider;
+  const initial = React.useMemo(
+    () => (provider ? draftFrom(provider) : EMPTY_DRAFT),
+    [provider],
+  );
+  const [draft, setDraft] = React.useState<Draft>(initial);
 
   React.useEffect(() => {
-    if (open) setDraft(EMPTY_DRAFT);
-  }, [open]);
+    if (open) setDraft(initial);
+  }, [open, initial]);
 
-  const create = useMutation({
+  const scopeList = () =>
+    draft.scopes.trim()
+      ? draft.scopes.trim().split(/[\s,]+/).filter(Boolean)
+      : undefined;
+
+  const save = useMutation({
     mutationFn: () =>
-      createSsoProvider(orgId, {
-        name: draft.name.trim(),
-        slug: draft.slug.trim(),
-        issuer: draft.issuer.trim(),
-        client_id: draft.clientId.trim(),
-        // an omitted secret is a public client; an empty string is not sent so
-        // the server does not seal a blank
-        client_secret: draft.clientSecret.trim() || undefined,
-        scopes: draft.scopes.trim()
-          ? draft.scopes.trim().split(/[\s,]+/).filter(Boolean)
-          : undefined,
-        group_claim: draft.groupClaim.trim() || undefined,
-        default_role: draft.defaultRole || undefined,
-      }),
+      provider
+        ? updateSsoProvider(provider.id, {
+            name: draft.name.trim(),
+            issuer: draft.issuer.trim(),
+            client_id: draft.clientId.trim(),
+            // an untouched field leaves the sealed secret where it is; the
+            // form cannot show it, so it must not be able to erase it either
+            client_secret: draft.clientSecret ? draft.clientSecret.trim() : undefined,
+            scopes: scopeList(),
+            group_claim: draft.groupClaim.trim() || undefined,
+            default_role: draft.defaultRole || undefined,
+            enabled: provider.enabled,
+          })
+        : createSsoProvider(orgId, {
+            name: draft.name.trim(),
+            slug: draft.slug.trim(),
+            issuer: draft.issuer.trim(),
+            client_id: draft.clientId.trim(),
+            // an omitted secret is a public client; an empty string is not sent
+            // so the server does not seal a blank
+            client_secret: draft.clientSecret.trim() || undefined,
+            scopes: scopeList(),
+            group_claim: draft.groupClaim.trim() || undefined,
+            default_role: draft.defaultRole || undefined,
+          }),
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: draft.name.trim() }) });
-      onCreated();
+      toast.push({
+        tone: "success",
+        title: editing
+          ? t("toast.saved")
+          : t("toast.created", { what: draft.name.trim() }),
+        detail: editing
+          ? t("toast.savedDetail", { what: draft.name.trim() })
+          : undefined,
+      });
+      onSaved();
       onOpenChange(false);
     },
     onError: (error) => {
@@ -558,10 +630,12 @@ function AddProviderSheet({
   });
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
-  const dirty = Object.values(draft).some((v) => v !== "");
+  const dirty = editing
+    ? (Object.keys(draft) as (keyof Draft)[]).some((k) => draft[k] !== initial[k])
+    : Object.values(draft).some((v) => v !== "");
   const canSave =
     !!draft.name.trim() &&
-    !!draft.slug.trim() &&
+    (editing || !!draft.slug.trim()) &&
     !!draft.issuer.trim() &&
     !!draft.clientId.trim();
 
@@ -569,14 +643,16 @@ function AddProviderSheet({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.sso.create.title")}
-      subtitle={t("pages.sso.create.subtitle")}
+      title={editing ? t("pages.sso.edit.title") : t("pages.sso.create.title")}
+      subtitle={
+        editing ? t("pages.sso.edit.subtitle") : t("pages.sso.create.subtitle")
+      }
       dirty={dirty}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("pages.sso.create.save")}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={editing ? t("pages.sso.edit.save") : t("pages.sso.create.save")}
       canSave={canSave}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      saving={save.isPending}
+      onSave={() => save.mutate()}
     >
       <Field
         label={t("pages.sso.create.name")}
@@ -590,10 +666,15 @@ function AddProviderSheet({
       </Field>
       <Field
         label={t("pages.sso.create.slug")}
-        hint={t("pages.sso.create.slugHint")}
+        hint={
+          editing
+            ? t("pages.sso.edit.slugImmutable")
+            : t("pages.sso.create.slugHint")
+        }
       >
         <Input
           value={draft.slug}
+          disabled={editing}
           onChange={(e) => set({ slug: e.target.value })}
           placeholder={t("pages.sso.create.slugPlaceholder")}
         />
@@ -620,7 +701,11 @@ function AddProviderSheet({
       </Field>
       <Field
         label={t("pages.sso.create.clientSecret")}
-        hint={t("pages.sso.create.clientSecretHint")}
+        hint={
+          editing
+            ? t("pages.sso.edit.clientSecretHint")
+            : t("pages.sso.create.clientSecretHint")
+        }
       >
         <Input
           type="password"
@@ -712,7 +797,53 @@ export default function SingleSignOn() {
     onSuccess: invalidate,
   });
 
-  const [addOpen, setAddOpen] = React.useState(false);
+  // the switch on a card sends the row back unchanged except for `enabled`,
+  // and omits `client_secret` so the sealed one is left alone (#1233)
+  const toggle = useMutation({
+    mutationFn: ({
+      provider,
+      enabled,
+    }: {
+      provider: SsoProviderRow;
+      enabled: boolean;
+    }) =>
+      updateSsoProvider(provider.id, {
+        name: provider.name,
+        issuer: provider.issuer,
+        client_id: provider.client_id,
+        scopes: provider.scopes,
+        group_claim: provider.group_claim,
+        default_role: provider.default_role ?? undefined,
+        enabled,
+      }),
+    onSuccess: (updated) => {
+      invalidate();
+      toast.push({
+        tone: "success",
+        title: updated.enabled
+          ? t("pages.sso.providers.enabledToast", { name: updated.name })
+          : t("pages.sso.providers.disabledToast", { name: updated.name }),
+      });
+    },
+    onError: (error, { provider }) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: provider.name }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<SsoProviderRow | null>(null);
+  const openCreate = () => {
+    setEditing(null);
+    setSheetOpen(true);
+  };
+  const openEdit = (provider: SsoProviderRow) => {
+    setEditing(provider);
+    setSheetOpen(true);
+  };
   const [deleteTarget, setDeleteTarget] = React.useState<SsoProviderRow | null>(
     null,
   );
@@ -760,7 +891,7 @@ export default function SingleSignOn() {
           gate="sso_provider:create"
           className="ml-auto"
           disabled={!canManage}
-          onClick={() => setAddOpen(true)}
+          onClick={openCreate}
         >
           <Plus className="h-4 w-4" aria-hidden />
           {t("pages.sso.providers.add")}
@@ -783,7 +914,7 @@ export default function SingleSignOn() {
             title={t("pages.sso.empty.title")}
             description={t("pages.sso.empty.body")}
             actions={
-              <GatedButton gate="sso_provider:create" disabled={!canManage} onClick={() => setAddOpen(true)}>
+              <GatedButton gate="sso_provider:create" disabled={!canManage} onClick={openCreate}>
                 <Plus className="h-4 w-4" aria-hidden />
                 {t("pages.sso.providers.add")}
               </GatedButton>
@@ -796,18 +927,26 @@ export default function SingleSignOn() {
                 key={provider.id}
                 provider={provider}
                 deleting={remove.isPending && remove.variables === provider.id}
+                toggling={
+                  toggle.isPending && toggle.variables?.provider.id === provider.id
+                }
                 onDelete={startDelete}
+                onEdit={openEdit}
+                onToggle={(target, enabled) =>
+                  toggle.mutate({ provider: target, enabled })
+                }
               />
             ))}
           </div>
         ))}
 
       {orgId && (
-        <AddProviderSheet
-          open={addOpen}
-          onOpenChange={setAddOpen}
+        <ProviderSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
           orgId={orgId}
-          onCreated={invalidate}
+          provider={editing}
+          onSaved={invalidate}
         />
       )}
 

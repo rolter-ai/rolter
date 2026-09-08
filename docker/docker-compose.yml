@@ -91,6 +91,10 @@ services:
       # ROLTER_LOGIN_IP_MAX_FAILURES: "50"
       # ROLTER_LOGIN_LOCK_SECS: "60"
       # ROLTER_DB_ACQUIRE_TIMEOUT_SECS: "30"
+      # the control plane asks github once at boot and every six hours for the
+      # latest stable release, so the dashboard footer can hint at a newer one
+      # (#902). set "false" on a host that must make no outbound call
+      # ROLTER_UPDATE_CHECK: "false"
       ROLTER_REDIS_URL: redis://redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
     depends_on:

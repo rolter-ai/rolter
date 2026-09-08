@@ -4,7 +4,6 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -12,6 +11,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
   DialogDescription,
@@ -121,21 +121,19 @@ function CollectorConfigDialog({
                 <span className="font-mono text-xs text-[color:var(--text-subtle)]">
                   {t("pages.connectors.collectorConfig.endpoint")}
                 </span>
-                <CopyButton
-                  className="ml-auto"
-                  value={config.data}
-                  label={t("pages.connectors.collectorConfig.copy")}
-                />
               </div>
-              {/* focusable, because it scrolls: a keyboard user has to be able
-                  to reach the scroll container without a pointer */}
-              <pre
-                tabIndex={0}
-                aria-label={t("pages.connectors.collectorConfig.title")}
-                className="max-h-[380px] overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <code>{config.data}</code>
-              </pre>
+              {/* a collector document is YAML an operator pastes into a
+                  deployment: highlighted, numbered and copyable, because a
+                  badly indented exporter is the failure this screen exists to
+                  prevent (#949). CodeBlock owns the copy button and the
+                  focusable scroll region */}
+              <CodeBlock
+                value={config.data}
+                language="yaml"
+                label={t("pages.connectors.collectorConfig.title")}
+                maxHeight={380}
+                lineNumbers
+              />
               <p className="text-sm text-muted-foreground">
                 {t("pages.connectors.collectorConfig.deploy")}
               </p>

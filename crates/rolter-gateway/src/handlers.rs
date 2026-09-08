@@ -18,7 +18,9 @@ use tracing::Instrument;
 use rolter_balancer::complexity::POLICY_PARAM;
 use rolter_balancer::RouteContext;
 
-use crate::budgets::{decide_unpriced, ScopeIds, SpendRecorder, UnpricedDecision};
+use crate::budgets::{
+    decide_unpriced, resolve_unpriced_policy, ScopeIds, SpendRecorder, UnpricedDecision,
+};
 use crate::cache::{CachedResponse, ResponseCache};
 use crate::fake_llm;
 use crate::logging::RequestLog;
@@ -1534,7 +1536,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let price = snap.prices.get(&effective_model).cloned();
     // refuse before the upstream call when the operator will not serve traffic
     // they cannot account for (#974)
-    if let Some(refused) = unpriced_admission(&state, &snap, &effective_model, price.is_some()) {
+    if let Some(refused) =
+        unpriced_admission(&state, &snap, &scope, &effective_model, price.is_some())
+    {
         return refused;
     }
     // records this request's cost against its budgets once cost_usd is known
@@ -2420,7 +2424,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let price = snap.prices.get(&model).cloned();
     // see the chat path: refuse unaccountable traffic before spending upstream
     // tokens on it (#974)
-    if let Some(refused) = unpriced_admission(&state, &snap, &model, price.is_some()) {
+    if let Some(refused) = unpriced_admission(&state, &snap, &scope, &model, price.is_some()) {
         return refused;
     }
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
@@ -3368,17 +3372,24 @@ struct CacheHitLog {
 /// here, where the model is known and the upstream call has not been made, so
 /// nothing has to be undone.
 ///
+/// The policy applied is the most restrictive of the deployment-wide setting
+/// and any override on a budget matching this request's scope chain (#996), so
+/// one team can refuse unaccountable traffic without the whole deployment
+/// having to.
+///
 /// Returns the refusal response when the request must not be served.
 fn unpriced_admission(
     state: &AppState,
     snap: &Snapshot,
+    scope: &ScopeIds,
     model: &str,
     priced: bool,
 ) -> Option<Response> {
     if priced {
         return None;
     }
-    match decide_unpriced(snap.unpriced_policy, model, &state.unpriced_warns) {
+    let policy = resolve_unpriced_policy(snap.unpriced_policy, &snap.budgets, scope);
+    match decide_unpriced(policy, model, &state.unpriced_warns) {
         UnpricedDecision::Serve => {
             state.metrics.unpriced_served_total.fetch_add(1, Relaxed);
             None
@@ -3390,8 +3401,9 @@ fn unpriced_admission(
                     StatusCode::PAYMENT_REQUIRED,
                     format!(
                         "model '{model}' has no price, so its cost cannot be counted against a \
-                         budget. This deployment is configured to refuse traffic it cannot \
-                         account for; set a price for this model to serve it."
+                         budget. This deployment, or a budget that applies to this key, is \
+                         configured to refuse traffic it cannot account for; set a price for \
+                         this model to serve it."
                     ),
                 )
                 .with_code("model_unpriced")

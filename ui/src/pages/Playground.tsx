@@ -4,6 +4,7 @@ import {
   ImageIcon,
   Mic,
   Paperclip,
+  Pilcrow,
   Play,
   Plus,
   Send,
@@ -14,6 +15,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
+import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -244,7 +246,12 @@ function ChatColumn({
   removable: boolean;
   multimodal: boolean;
 }) {
+  const { t } = useTranslation();
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
+  // rendered by default, because that is what a model reply is *for*; raw is
+  // what an operator switches to when the question is what the model literally
+  // emitted — a stray delimiter, trailing whitespace, an unclosed fence (#955)
+  const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -306,6 +313,17 @@ function ChatColumn({
             prompt: lastPrompt || draft || "Hello!",
           }}
         />
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          aria-pressed={raw}
+          onClick={() => setRaw((v) => !v)}
+          aria-label={t("playground.rawOutput")}
+          title={t("playground.rawOutput")}
+        >
+          <Pilcrow className="h-3.5 w-3.5" />
+        </Button>
         {removable && (
           <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onRemove} aria-label="Remove column">
             <Trash2 className="h-3.5 w-3.5" />
@@ -330,7 +348,17 @@ function ChatColumn({
             <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[color:var(--text-subtle)]">
               {m.role}
             </span>
-            <span className={m.pending ? "opacity-50" : undefined}>{m.text}</span>
+            {/* markdown, unless the operator asked for the characters. the
+                renderer takes a partial reply as readily as a finished one, so
+                an unterminated fence mid-stream renders as the code block it
+                is about to become rather than breaking the column (#955) */}
+            {m.pending ? (
+              <span className="text-[color:var(--text-muted)]">{m.text}</span>
+            ) : raw ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs">{m.text}</pre>
+            ) : (
+              <Markdown source={m.text} />
+            )}
           </div>
         ))}
       </div>

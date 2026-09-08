@@ -19,11 +19,19 @@ export interface DialogProps {
    * control is the destructive button, `"first"` (default) for a form
    */
   initialFocus?: "first" | "panel";
+  /**
+   * panel width. `md` (default) is a form or a confirmation; `lg` is a
+   * *document* — a code snippet, a config file — where a long line wrapped
+   * mid-token costs the reader more than the extra width does (#948)
+   */
+  size?: "md" | "lg";
 }
+
+const SIZES = { md: "max-w-md", lg: "max-w-3xl" } as const;
 
 const LabelContext = React.createContext<{ titleId: string; descriptionId: string } | null>(null);
 
-export function Dialog({ open, onOpenChange, children, initialFocus }: DialogProps) {
+export function Dialog({ open, onOpenChange, children, initialFocus, size = "md" }: DialogProps) {
   const { t } = useTranslation();
   const panel = React.useRef<HTMLDivElement>(null);
   const titleId = React.useId();
@@ -43,7 +51,10 @@ export function Dialog({ open, onOpenChange, children, initialFocus }: DialogPro
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
-        className="relative z-10 w-full max-w-md rounded-lg border bg-[color:var(--surface-elevated)] p-6 shadow-lg focus-visible:outline-none"
+        className={cn(
+          "relative z-10 w-full rounded-lg border bg-[color:var(--surface-elevated)] p-6 shadow-lg focus-visible:outline-none",
+          SIZES[size],
+        )}
         {...a11y}
       >
         <LabelContext.Provider value={ids}>

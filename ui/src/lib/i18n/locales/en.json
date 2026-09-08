@@ -146,7 +146,8 @@
     "paramLockMode": "Parameter lock mode",
     "headerLockMode": "Header lock mode",
     "pricingDocs": "Rolter docs: how request cost is calculated ↗",
-    "advancedRejected": "The control plane refused this model's advanced configuration: {{message}}. Everything else was saved."
+    "advancedRejected": "The control plane refused this model's advanced configuration: {{message}}. Everything else was saved.",
+    "configPreview": "Config preview"
   },
   "nav": {
     "playground": "Playground",
@@ -666,7 +667,6 @@
         "title": "OpenTelemetry Collector config",
         "where": "This is the document your collector runs. Rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
         "endpoint": "GET /api/v1/connectors/collector-config",
-        "copy": "Copy collector config",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — or point the collector straight at the URL above with --config and reload it on a schedule."
@@ -969,7 +969,12 @@
         "delete": "Delete provider",
         "deleteNamed": "Delete provider {{name}}",
         "noSecret": "No client secret",
-        "noSecretHint": "No client secret is sealed for this provider, so the token exchange will fail at login. Re-register it with a secret, or check that ROLTER_KEK was set when it was created."
+        "noSecretHint": "No client secret is sealed for this provider, so the token exchange will fail at login. Re-register it with a secret, or check that ROLTER_KEK was set when it was created.",
+        "edit": "Edit provider",
+        "editNamed": "Edit provider {{name}}",
+        "toggleNamed": "Enable provider {{name}}",
+        "enabledToast": "{{name}} is now accepting sign-ins",
+        "disabledToast": "{{name}} is out of service"
       },
       "empty": {
         "title": "No identity provider yet",
@@ -1009,6 +1014,13 @@
         "defaultRoleHint": "Granted when no group mapping matches. Leave unset to refuse those users instead.",
         "defaultRoleNone": "Refuse the sign-in"
       },
+      "edit": {
+        "title": "Edit identity provider",
+        "subtitle": "Rotate the client secret, correct the issuer, or take the provider out of service. Group mappings and the provider's id are kept.",
+        "save": "Save changes",
+        "slugImmutable": "The slug is in the login URL, so it cannot be changed. A provider that needs a different one is a different provider.",
+        "clientSecretHint": "Leave empty to keep the stored secret. Enter a new one to rotate it. The stored secret is never shown, here or anywhere else."
+      },
       "mappings": {
         "title": "Group mappings",
         "empty": "No group is mapped and there is no default role, so every sign-in through this provider is refused until you map one.",
@@ -1037,7 +1049,8 @@
       "targetFilterAria": "Filter by target type",
       "actorFilterAria": "Filter by actor",
       "anyActor": "Any actor",
-      "actorPlaceholder": "Actor user id (full UUID)…"
+      "actorPlaceholder": "Actor user id (full UUID)…",
+      "detail": "Entry detail"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -1067,12 +1080,21 @@
       "uptimeMeta": "uptime · {{events}} events"
     },
     "limits": {
-      "budgetsEmptyTitle": "No budgets for this scope",
-      "budgetsEmptyBody": "A budget caps spend for the selected org, team, project or key over a period, and stops requests once it is reached.",
+      "budgetCreated": "Budget created",
+      "budgetDeleted": "Budget deleted",
+      "budgetNoun": "the budget",
       "budgetsEmptyAction": "Add budget",
-      "rateLimitsEmptyTitle": "No rate limits for this scope",
-      "rateLimitsEmptyBody": "A rate limit caps requests and tokens per minute for the selected scope, so one client cannot starve the rest.",
+      "budgetsEmptyBody": "A budget caps spend for the selected org, team, project or key over a period, and stops requests once it is reached.",
+      "budgetsEmptyTitle": "No budgets for this scope",
+      "budgetsHint": "Spend caps per org, team, project, virtual key, business unit, or customer",
+      "rateLimitCreated": "Rate limit created",
+      "rateLimitDeleted": "Rate limit deleted",
+      "rateLimitNoun": "the rate limit",
       "rateLimitsEmptyAction": "Add rate limit",
+      "rateLimitsEmptyBody": "A rate limit caps requests and tokens per minute for the selected scope, so one client cannot starve the rest.",
+      "rateLimitsEmptyTitle": "No rate limits for this scope",
+      "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
+      "scopeHint": "The {{type}} this cap applies to",
       "scopeTypes": {
         "org": "Organization",
         "team": "Team",
@@ -1083,15 +1105,15 @@
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
-      "budgetsHint": "Spend caps per org, team, project, virtual key, business unit, or customer",
-      "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
-      "budgetNoun": "the budget",
-      "rateLimitNoun": "the rate limit",
-      "budgetCreated": "Budget created",
-      "budgetDeleted": "Budget deleted",
-      "rateLimitCreated": "Rate limit created",
-      "rateLimitDeleted": "Rate limit deleted",
-      "scopeHint": "The {{type}} this cap applies to"
+      "unpriced": {
+        "inherit": "Inherit deployment setting",
+        "ignore": "Serve and ignore",
+        "warn": "Serve and warn",
+        "block": "Refuse"
+      },
+      "unpricedBadge": "unpriced: {{policy}}",
+      "unpricedHint": "What to do about a model with no price row: its spend is never counted, so it can never exhaust this budget. Inherit uses the deployment-wide setting; an override can only tighten it.",
+      "unpricedLabel": "Unpriced traffic"
     },
     "logs": {
       "emptyTitle": "Nothing logged yet",
@@ -1185,6 +1207,9 @@
       "captureOnSummary": "Stored: the raw prompt and completion body of each matching request, truncated at {{bytes}} bytes, kept for {{hours}} hours and then deleted. Redacted before writing: {{redacted}}. Models captured: {{models}}.",
       "everyModel": "every model",
       "nothing": "nothing"
+    },
+    "clientSettings": {
+      "exampleRequest": "Example request"
     }
   },
   "playground": {
@@ -1198,7 +1223,8 @@
       "saved": "Saved ✓",
       "hint": "A rolter virtual key, minted on the Virtual Keys screen. Not a provider key — those are configured on the provider and are never sent by clients."
     },
-    "snippet": "Code snippet"
+    "snippet": "Code snippet",
+    "rawOutput": "Show raw text"
   },
   "providerSheet": {
     "apiBase": {
@@ -1498,6 +1524,8 @@
     "closeNav": "Close navigation",
     "githubRepo": "GitHub repository",
     "reportBug": "Report a bug",
+    "updateAvailable": "v{{latest}} available",
+    "updateAvailableHint": "rolter v{{latest}} is available — open the release notes",
     "role": "Admin",
     "roleWithOrg": "{{role}} · {{org}}",
     "roles": {
@@ -1641,5 +1669,16 @@
     "needsRole": "Requires the {{role}} role",
     "needsSuperadmin": "Requires a superadmin",
     "needsPermission": "Your role does not permit this"
+  },
+  "code": {
+    "region": "{{language}} code",
+    "regionNamed": "{{label}} — {{language}} code",
+    "copy": "Copy code",
+    "copyNamed": "Copy {{label}}"
+  },
+  "markdown": {
+    "codeBlock": "Code block",
+    "table": "Table",
+    "imageBlocked": "Images in model output are not loaded"
   }
 }
