@@ -404,7 +404,7 @@ type SealedSessionRow = (
 
 /// OAuth consent grants and token sessions for MCP servers.
 ///
-/// Token material is sealed with the deployment KEK ([`super::crypto::Kek`])
+/// Token material is sealed with the deployment KEK ([`super::super::crypto::Kek`])
 /// before it is written and is only ever returned by [`Self::open_session`],
 /// which the future MCP proxy calls on the request path. Every other method
 /// returns metadata only, so an API handler cannot leak a token by reaching
