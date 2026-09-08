@@ -887,6 +887,46 @@ pub(crate) fn authenticate(
 }
 
 /// Shared proxy pipeline: parse, authenticate, balance, forward, stream back.
+/// Stage 2 of the proxy pipeline: the scope identity a request is attributed
+/// to (#1041).
+///
+/// Drives budget enforcement and log attribution both, which is why it is
+/// resolved once and shared rather than derived at each use. An unauthenticated
+/// request has no scope, and [`ScopeIds::default`] is the unattributed one.
+fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
+    vk.map(|v| ScopeIds {
+        org: v.org_id.clone(),
+        team: v.team_id.clone(),
+        project: v.project_id.clone(),
+        key: v.id.clone(),
+        business_unit: v.business_unit_id.clone(),
+        customer: v.customer_id.clone(),
+    })
+    .unwrap_or_default()
+}
+
+/// Stage 3 of the proxy pipeline: refuse before spending upstream tokens when
+/// any applicable budget is already spent (#1041).
+///
+/// Returns the refusal to hand back, or `None` to continue. Shared by `proxy`
+/// and `proxy_multipart`, which enforced this identically and had to be kept
+/// in step by hand.
+async fn budget_refusal(state: &AppState, snap: &Snapshot, scope: &ScopeIds) -> Option<Response> {
+    let exceeded = state.budgets.exceeded(&snap.budgets, scope).await?;
+    state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
+    Some(
+        crate::error::ApiError::new(
+            StatusCode::PAYMENT_REQUIRED,
+            format!(
+                "budget exceeded for {:?} '{}' (limit ${:.2})",
+                exceeded.scope, exceeded.id, exceeded.limit_usd
+            ),
+        )
+        .with_code("insufficient_quota")
+        .into_response(),
+    )
+}
+
 async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
     let started = Instant::now();
@@ -934,31 +974,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         }
     }
 
-    // scope identity drives both budget enforcement and log attribution
-    let scope = vk
-        .as_ref()
-        .map(|v| ScopeIds {
-            org: v.org_id.clone(),
-            team: v.team_id.clone(),
-            project: v.project_id.clone(),
-            key: v.id.clone(),
-            business_unit: v.business_unit_id.clone(),
-            customer: v.customer_id.clone(),
-        })
-        .unwrap_or_default();
+    let scope = request_scope(vk.as_ref());
 
     // block before spending upstream tokens when any applicable budget is spent
-    if let Some(exceeded) = state.budgets.exceeded(&snap.budgets, &scope).await {
-        state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
-        return crate::error::ApiError::new(
-            StatusCode::PAYMENT_REQUIRED,
-            format!(
-                "budget exceeded for {:?} '{}' (limit ${:.2})",
-                exceeded.scope, exceeded.id, exceeded.limit_usd
-            ),
-        )
-        .with_code("insufficient_quota")
-        .into_response();
+    if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     // pre_route plugins: consult before the route is resolved, while only the
@@ -2329,29 +2349,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         }
     }
 
-    let scope = vk
-        .as_ref()
-        .map(|v| ScopeIds {
-            org: v.org_id.clone(),
-            team: v.team_id.clone(),
-            project: v.project_id.clone(),
-            key: v.id.clone(),
-            business_unit: v.business_unit_id.clone(),
-            customer: v.customer_id.clone(),
-        })
-        .unwrap_or_default();
+    let scope = request_scope(vk.as_ref());
 
-    if let Some(exceeded) = state.budgets.exceeded(&snap.budgets, &scope).await {
-        state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
-        return crate::error::ApiError::new(
-            StatusCode::PAYMENT_REQUIRED,
-            format!(
-                "budget exceeded for {:?} '{}' (limit ${:.2})",
-                exceeded.scope, exceeded.id, exceeded.limit_usd
-            ),
-        )
-        .with_code("insufficient_quota")
-        .into_response();
+    if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
