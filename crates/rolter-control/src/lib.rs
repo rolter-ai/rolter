@@ -60,6 +60,7 @@ mod me;
 #[cfg(feature = "postgres")]
 mod model_defaults;
 mod open_mode;
+mod openapi;
 #[cfg(feature = "postgres")]
 mod plugins;
 mod proxy;
@@ -858,6 +859,10 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         .route("/api/v1/config/problems", get(get_config_problems))
         .merge(analytics::router())
         .merge(health::router())
+        // the served schema and its Scalar reference. mounted unconditionally:
+        // the document describes the surface this binary can serve, so it must
+        // not vary with whether a pool happened to be configured
+        .merge(openapi::router())
         // reverse-proxy the gateway data plane for the dashboard Playground;
         // authenticated by the virtual key the gateway itself checks
         .merge(proxy::router());

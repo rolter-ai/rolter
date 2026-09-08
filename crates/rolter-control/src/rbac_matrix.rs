@@ -1162,6 +1162,7 @@ mod tests {
         ("mcp_oauth_flow.rs", include_str!("mcp_oauth_flow.rs")),
         ("me.rs", include_str!("me.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
+        ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
         ("rbac.rs", include_str!("rbac.rs")),

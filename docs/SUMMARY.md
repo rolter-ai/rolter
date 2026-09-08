@@ -38,6 +38,7 @@
   - [ADR-0027 — End-to-end test harness](adr/2026-07-21-e2e-test-harness.md)
   - [ADR-0028 — Disaggregated prefill/decode routing](adr/2026-08-11-disaggregated-prefill-decode-routing.md)
   - [ADR-0029 — Hosted-provider host-pin opt-out](adr/2026-09-02-hosted-provider-host-pin-opt-out.md)
+  - [ADR-0030 — Control-plane OpenAPI document](adr/2026-09-08-control-plane-openapi-document.md)
 
 # API
 
