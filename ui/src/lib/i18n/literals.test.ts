@@ -72,7 +72,9 @@ describe("findLiterals", () => {
     const source = `
       // <p>Not actually rendered</p>
       /* <Field label="Also not rendered" /> */
+      /**
        * <span>Nor this one</span>
+       */
     `;
     expect(texts(source)).toEqual([]);
   });
@@ -187,4 +189,108 @@ test("reads the message of a thrown error", () => {
     "gateway request failed: ${res.status}",
   ]);
   expect(texts('throw new Error("scope-1");')).toEqual([]);
+});
+
+// the ratchet only holds if the detected set is a property of the code and not
+// of where the lines break (#1143)
+describe("findLiterals is independent of formatting", () => {
+  /** the same component, once as dense one-line JSX and once as a formatter
+   * would wrap it. nothing is added or removed, only whitespace moves */
+  const oneLine = `
+    export function Composer({ pick, busy, cancelLabel = "Cancel" }: Props) {
+      return <div className="flex gap-2"><input type="file" accept="image/*" onChange={pick} /><Button aria-label="Attach image"><Paperclip className="h-4 w-4" /></Button><Field label="Upstream model name" placeholder="Message…" /><p className="text-sm">Upload an audio file to transcribe.</p><Button disabled={busy}>{busy ? "Sending…" : "Send prompt"}</Button></div>;
+    }
+    /* ---------------- transcript ---------------- */
+  `;
+  const wrapped = `
+    export function Composer({
+      pick,
+      busy,
+      cancelLabel = "Cancel",
+    }: Props) {
+      return (
+        <div className="flex gap-2">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={pick}
+          />
+          <Button aria-label="Attach image">
+            <Paperclip className="h-4 w-4" />
+          </Button>
+          <Field
+            label="Upstream model name"
+            placeholder="Message…"
+          />
+          <p className="text-sm">
+            Upload an audio file to transcribe.
+          </p>
+          <Button disabled={busy}>
+            {busy ? "Sending…" : "Send prompt"}
+          </Button>
+        </div>
+      );
+    }
+    /* ---------------- transcript ---------------- */
+  `;
+
+  test("one-line and wrapped spellings yield the identical literal set", () => {
+    expect(new Set(texts(wrapped))).toEqual(new Set(texts(oneLine)));
+  });
+
+  test("and that set is the copy actually in the source", () => {
+    expect([...new Set(texts(wrapped))].sort()).toEqual([
+      "Attach image",
+      "Cancel",
+      "Message…",
+      "Send prompt",
+      "Sending…",
+      "Upload an audio file to transcribe.",
+      "Upstream model name",
+    ]);
+  });
+
+  // `accept="image/*"` opened a block comment for the comment-stripping regex,
+  // so every literal between it and the next `*/` — a hundred lines later in
+  // `Playground.tsx` — was invisible to the gate (#1143)
+  test("a `/*` inside a string literal does not open a comment", () => {
+    const source = `
+      <input accept="image/*" />
+      <Button aria-label="Attach image">Attach</Button>
+      /* ---------------- next section ---------------- */
+    `;
+    expect(texts(source)).toEqual(["Attach image", "Attach"]);
+  });
+
+  // `HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_\`|~-]+$/` in ClientSettings.tsx carries
+  // a quote, a backtick and a `*`: read as ordinary code it desynchronises
+  // everything after it
+  test("a regex literal is not read as a string, a comment or copy", () => {
+    const source = [
+      "const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;",
+      '<Field label="Header name" />',
+    ].join("\n");
+    expect(texts(source)).toEqual(["Header name"]);
+  });
+
+  // JSX prose is not code: an apostrophe in it does not open a string, and a
+  // URL in it does not open a comment
+  test("keeps reading prose that carries an apostrophe or a url", () => {
+    expect(texts("<p>The gateway&apos;s base URL</p>")).toEqual(["The gateway&apos;s base URL"]);
+    expect(texts("<code>https://your-rolter-host/scim/v2</code>")).toEqual([]);
+    expect(texts("<p>Paste it into your connector</p><p>Rotate the token</p>")).toEqual([
+      "Paste it into your connector",
+      "Rotate the token",
+    ]);
+  });
+
+  // a multi-line template literal is a value: its newlines are not formatting
+  test("leaves a multi-line template literal alone", () => {
+    const source = [
+      "const snippet = `curl ${base}/v1/chat/completions \\\\",
+      '  -H "Authorization: Bearer $KEY"`;',
+      '<Field label="Request preview" />',
+    ].join("\n");
+    expect(texts(source)).toEqual(["Request preview"]);
+  });
 });
