@@ -143,7 +143,9 @@ where ts >= now() - interval 24 hour;
 
 The dashboard reports the same two figures on `GET /api/v1/analytics/summary` (`unpriced_requests`, `unpriced_models`) and `GET /api/v1/analytics/by-model` (`unpriced_requests`), and shows a notice above the spend tile whenever a window contains unpriced traffic.
 
-The **LLM Logs** screen does the same per request: a row whose model has no price shows a muted **—** with an explanation on hover instead of `$0.0000`, because a zero there claims the request was free. It says so only once the price catalogue has actually been read — while that list is loading, or if it failed, the row keeps its figure rather than reporting every model as unpriced on no evidence.
+The flag is exposed **per invocation** too, not only in those summaries: every row from `GET /api/v1/analytics/invocations` carries `unpriced` beside its `cost_usd`, so a single request can be read the same way the totals are.
+
+The **LLM Logs** screen does the same per request: a row whose model has no price shows a muted **—** with an explanation on hover instead of `$0.0000`, because a zero there claims the request was free. It reads the row's own `unpriced` flag to decide, which is the judgement the gateway made against the price catalogue **as it was when the request was served**. That matters once prices change: a request served before you priced a model stays unpriced in the log even after you add the price, and one served under a price you later delete keeps the cost it was actually charged.
 
 The **Models** screen names the cause. A model with no price row shows **no price set** in the in/out price column instead of a dash, and an **Unpriced** filter chip above the table counts them and narrows the list to exactly those models — so the fix for an incomplete spend total is one click from the number that reported it. If the price catalogue itself cannot be read, the column falls back to plain figures rather than reporting every model as unpriced on no evidence.
 

@@ -34,6 +34,7 @@ import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
+import { useVersionStatus } from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
 import {
   UxScreenProvider,
@@ -315,6 +316,11 @@ function Shell() {
   useRouteTelemetry(email ? activeKey : "");
   useUxContext(scope);
 
+  // the running build and, when the control plane knows of one, the newer
+  // release for the rail footer (#902). the compiled version is the fallback
+  // while the endpoint is unreachable or the session is still being checked
+  const { version, update } = useVersionStatus(__APP_VERSION__, !!email && status !== "checking");
+
   // revoke the server-side session (if any) before clearing local state;
   // best-effort so a network hiccup still logs the user out locally
   const handleSignOut = () => {
@@ -386,7 +392,8 @@ function Shell() {
             },
           ]}
           footerExtra={(collapsed) => <LocalePicker collapsed={collapsed} />}
-          version={`v${__APP_VERSION__}`}
+          version={`v${version}`}
+          update={update}
           user={{
             name: email,
             role,

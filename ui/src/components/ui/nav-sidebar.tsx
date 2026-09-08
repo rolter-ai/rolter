@@ -1,4 +1,12 @@
-import { ChevronDown, ChevronsUpDown, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
+import {
+  ArrowUpCircle,
+  ChevronDown,
+  ChevronsUpDown,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Search,
+  X,
+} from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -43,6 +51,15 @@ export interface NavFooterLink {
   href?: string;
 }
 
+/* a newer stable release than the one running (#902). the footer shows it as
+   a small link beside the version; the folded rail as an icon with a dot,
+   named the same way. absent in every state with nothing to say — checking,
+   disabled, offline, current */
+export interface NavUpdateHint {
+  latest: string;
+  url: string;
+}
+
 export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
   brand?: React.ReactNode;
   logoSrc?: string;
@@ -65,6 +82,7 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
      receives the rail state so it can drop its label when collapsed. */
   footerExtra?: (collapsed: boolean) => React.ReactNode;
   version?: string;
+  update?: NavUpdateHint | null;
   /* when set, the right edge becomes a draggable, keyboard-operable splitter
      and the rail's width is remembered per browser under `storageKey`. the
      width is clamped to [NAV_MIN_WIDTH, NAV_MAX_WIDTH] on every path — drag,
@@ -130,6 +148,7 @@ export function NavSidebar({
   footerLinks,
   footerExtra,
   version,
+  update,
   resizable,
   storageKey = NAV_WIDTH_STORAGE_KEY,
   // `open` is taken by the expanded-parents map below, so the drawer's flag is
@@ -261,6 +280,10 @@ export function NavSidebar({
   // the drawer has room for labels whatever the rail was folded to before the
   // viewport shrank, so it always shows them
   const folded = collapsed && !isDrawer;
+  // one accessible name for the hint in both shapes of the rail
+  const updateHint = update
+    ? t("shell.updateAvailableHint", { latest: update.latest })
+    : undefined;
 
   // the splitter belongs to the `lg`-and-up rail: the icon rail has no edge
   // worth dragging and the drawer is sized by the viewport, not by the pointer
@@ -453,7 +476,7 @@ export function NavSidebar({
         })}
       </div>
 
-      {(footerLinks?.length || footerExtra || version) && (
+      {(footerLinks?.length || footerExtra || version || update) && (
         <div className={cn("flex flex-col gap-1.5", folded && "items-center")}>
           <div className={cn("flex items-center gap-1 px-1", folded && "flex-col px-0")}>
             {footerLinks?.map((l) =>
@@ -482,9 +505,42 @@ export function NavSidebar({
               ),
             )}
             {footerExtra?.(folded)}
+            {update && folded && (
+              <a
+                href={update.url}
+                target="_blank"
+                rel="noreferrer"
+                title={updateHint}
+                aria-label={updateHint}
+                className="relative rounded-md p-1.5 text-[color:var(--text-subtle)] transition-colors hover:bg-muted hover:text-foreground [&>svg]:h-4 [&>svg]:w-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <ArrowUpCircle aria-hidden="true" />
+                <span
+                  aria-hidden="true"
+                  className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--red-folk)]"
+                />
+              </a>
+            )}
             {version && !folded && (
-              <span className="ml-auto pr-1 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
-                {version}
+              <span className="ml-auto flex min-w-0 items-center gap-1.5 pr-1">
+                <span className="font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+                  {version}
+                </span>
+                {update && (
+                  <a
+                    href={update.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={updateHint}
+                    aria-label={updateHint}
+                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-[0.625rem] text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <ArrowUpCircle aria-hidden="true" className="h-3 w-3 flex-none" />
+                    <span className="truncate">
+                      {t("shell.updateAvailable", { latest: update.latest })}
+                    </span>
+                  </a>
+                )}
               </span>
             )}
           </div>

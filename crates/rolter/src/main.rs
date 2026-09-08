@@ -11,17 +11,21 @@
 //! rolter init               # generate a production config and its secrets
 //! rolter check              # pre-boot validation for a production deployment
 //! rolter kek verify         # does ROLTER_KEK open what the store already holds
+//! rolter config export      # the live config as an importable rolter.toml
 //! ```
 //!
 //! The `gateway`/`control` subcommands reuse the exact argument set of the
 //! standalone binaries via [`rolter_gateway::Args`] / [`rolter_control::Args`];
 //! `easy-up` composes both for a zero-config one-command bring-up.
 
+#[cfg(feature = "postgres")]
+mod config;
 mod easy_up;
 mod init;
 #[cfg(feature = "postgres")]
 mod kek;
 mod preflight;
+mod update_notice;
 
 use clap::{Parser, Subcommand};
 
@@ -54,12 +58,20 @@ enum Command {
     /// verify or rotate the key-encryption key against the control-plane store
     #[cfg(feature = "postgres")]
     Kek(kek::KekArgs),
+    /// export the live configuration as an importable rolter.toml
+    #[cfg(feature = "postgres")]
+    Config(config::ConfigArgs),
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = rolter_core::telemetry::init();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    // beside the command, never ahead of it: a one-line stderr notice when a
+    // newer release exists, cached for a day, silenced by
+    // ROLTER_UPDATE_CHECK=false (#901). the command's exit status is its own
+    update_notice::spawn();
+    match cli.command {
         Command::Gateway(args) => rolter_gateway::run(args).await,
         Command::Control(args) => rolter_control::run(args).await,
         Command::EasyUp(args) => easy_up::run(args).await,
@@ -67,5 +79,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Check(args) => preflight::run(args).await,
         #[cfg(feature = "postgres")]
         Command::Kek(args) => kek::run(args).await,
+        #[cfg(feature = "postgres")]
+        Command::Config(args) => config::run(args).await,
     }
 }

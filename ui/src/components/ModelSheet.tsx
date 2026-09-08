@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -1877,9 +1878,16 @@ export function ModelSheet({
           open={secOpen.preview}
           onToggle={() => toggleSec("preview")}
         >
-          <pre className="max-h-[280px] overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 font-mono text-[11px] leading-relaxed text-[color:var(--text-secondary)]">
-            {buildPreview(draft, providerName, advancedPayload)}
-          </pre>
+          {/* the draft as the config it will become, through the shared code
+              block so a mistyped key or a stray quote shows up here rather
+              than after saving (#949) */}
+          <CodeBlock
+            value={buildPreview(draft, providerName, advancedPayload)}
+            language="json"
+            label={t("modelSheet.configPreview")}
+            maxHeight={280}
+            density="compact"
+          />
         </Section>
       </SheetBody>
 

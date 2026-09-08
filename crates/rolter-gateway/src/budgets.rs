@@ -260,6 +260,36 @@ pub fn decide_unpriced(
     }
 }
 
+/// The unpriced-traffic policy in force for one request (#996).
+///
+/// `deployment` is the deployment-wide setting from #974; each budget matching
+/// the request's scope chain may carry its own override. The answer is the
+/// **most restrictive** of all of them, which is a `max` because
+/// [`UnpricedPolicy`] derives `Ord` as `Ignore < Warn < Block`.
+///
+/// Two consequences are deliberate:
+///
+/// - A budget can only tighten. A project budget set to `ignore` cannot undo an
+///   org budget set to `block`, the same way it cannot raise the org's cap. A
+///   cost control that a narrower scope could loosen would not be a control.
+/// - The deployment setting is a floor, not merely a fallback. An operator who
+///   set the deployment to `block` refuses unaccountable traffic everywhere;
+///   a tenant cannot opt back into serving it.
+///
+/// A request that matches no budget resolves to `deployment` unchanged, which
+/// is what makes this a strict extension of #974.
+pub fn resolve_unpriced_policy(
+    deployment: UnpricedPolicy,
+    budgets: &[BudgetConfig],
+    scope: &ScopeIds,
+) -> UnpricedPolicy {
+    scope
+        .applicable(budgets)
+        .into_iter()
+        .filter_map(|budget| budget.unpriced_policy)
+        .fold(deployment, UnpricedPolicy::max)
+}
+
 /// A prepared handle that adds a single request's cost to its applicable
 /// budgets. Built on the request path (which knows the scope + snapshot), then
 /// fired once from the response stream after `cost_usd` is known.
@@ -296,6 +326,14 @@ mod tests {
             id: id.to_string(),
             limit_usd: 10.0,
             period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
+        }
+    }
+
+    fn budget_with(scope: BudgetScope, id: &str, policy: UnpricedPolicy) -> BudgetConfig {
+        BudgetConfig {
+            unpriced_policy: Some(policy),
+            ..budget(scope, id)
         }
     }
 
@@ -333,6 +371,104 @@ mod tests {
         // exceeded() short-circuits to None without touching Redis
         assert!(enforcer.exceeded(&budgets, &scope).await.is_none());
         enforcer.record(&budgets, &scope, 5.0).await; // no panic
+    }
+
+    // ── per-budget unpriced-policy override (#996) ─────────────────────────
+
+    fn scope_ids() -> ScopeIds {
+        ScopeIds {
+            org: "org-1".into(),
+            team: "team-1".into(),
+            project: "proj-1".into(),
+            key: "vk-1".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_budget_with_no_override_inherits_the_deployment_policy() {
+        let budgets = vec![budget(BudgetScope::Org, "org-1")];
+        for deployment in [
+            UnpricedPolicy::Ignore,
+            UnpricedPolicy::Warn,
+            UnpricedPolicy::Block,
+        ] {
+            assert_eq!(
+                resolve_unpriced_policy(deployment, &budgets, &scope_ids()),
+                deployment
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_matching_no_budget_gets_the_deployment_policy() {
+        // a budget for someone else's org, and a scope chain that matches none
+        let budgets = vec![budget_with(
+            BudgetScope::Org,
+            "someone-else",
+            UnpricedPolicy::Block,
+        )];
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Warn, &budgets, &scope_ids()),
+            UnpricedPolicy::Warn
+        );
+    }
+
+    #[test]
+    fn a_project_budget_cannot_loosen_what_the_org_blocked() {
+        // the whole point of most-restrictive-wins: a narrower scope tightening
+        // is honoured, a narrower scope loosening is not
+        let budgets = vec![
+            budget_with(BudgetScope::Org, "org-1", UnpricedPolicy::Block),
+            budget_with(BudgetScope::Project, "proj-1", UnpricedPolicy::Ignore),
+        ];
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Ignore, &budgets, &scope_ids()),
+            UnpricedPolicy::Block
+        );
+    }
+
+    #[test]
+    fn a_single_budget_may_tighten_the_deployment_policy() {
+        let budgets = vec![
+            budget_with(BudgetScope::Team, "team-1", UnpricedPolicy::Block),
+            budget(BudgetScope::Org, "org-1"),
+        ];
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Ignore, &budgets, &scope_ids()),
+            UnpricedPolicy::Block
+        );
+    }
+
+    #[test]
+    fn the_deployment_setting_is_a_floor_no_budget_can_lower() {
+        let budgets = vec![
+            budget_with(BudgetScope::Org, "org-1", UnpricedPolicy::Ignore),
+            budget_with(BudgetScope::Key, "vk-1", UnpricedPolicy::Ignore),
+        ];
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Block, &budgets, &scope_ids()),
+            UnpricedPolicy::Block
+        );
+    }
+
+    /// `warn` sits between the two, so a `warn` override neither undoes a
+    /// deployment `block` nor is undone by an `ignore` sibling.
+    #[test]
+    fn warn_orders_between_ignore_and_block() {
+        let warn_on_team = vec![budget_with(
+            BudgetScope::Team,
+            "team-1",
+            UnpricedPolicy::Warn,
+        )];
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Ignore, &warn_on_team, &scope_ids()),
+            UnpricedPolicy::Warn
+        );
+        assert_eq!(
+            resolve_unpriced_policy(UnpricedPolicy::Block, &warn_on_team, &scope_ids()),
+            UnpricedPolicy::Block
+        );
     }
 
     // ── unpriced-traffic policy (#974) ──────────────────────────────────────

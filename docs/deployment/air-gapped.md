@@ -1,9 +1,9 @@
 # Air-gapped installation & operation
 
 rolter is designed to run in fully air-gapped environments — no public internet
-at build or run time. The runtime is egress-free by default: it talks only to the
-backends you configure (upstream providers, Postgres, Redis, ClickHouse) and to
-nothing else. This page covers how to install rolter behind an internal mirror,
+at build or run time. The runtime is egress-free apart from one opt-out release
+check (below): it talks only to the backends you configure (upstream providers,
+Postgres, Redis, ClickHouse) and to nothing else. This page covers how to install rolter behind an internal mirror,
 what the runtime does and does not reach, and how to verify the deployment offline.
 
 ## Runtime egress guarantees
@@ -18,6 +18,20 @@ rolter makes outbound network calls **only** to endpoints you configure:
 - **OTLP traces** — only when an `OTEL_EXPORTER_OTLP_ENDPOINT` /
   `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. With no `OTEL_*` env, no exporter
   is built and there is zero tracing egress.
+- **Release check** — the control plane asks
+  `https://api.github.com/repos/rolter-ai/rolter/releases/latest` once at boot
+  and every six hours whether a newer stable release exists, and the `rolter`
+  launcher does the same beside any command, at most once a day (cached in
+  `~/.cache/rolter/update-check.json`). One request, a 5-second timeout, a
+  `User-Agent: rolter/<version>` header and nothing else — no installation id,
+  config or credentials. It feeds `GET /api/v1/version` and the dashboard
+  footer's *v0.2.0 available* hint (#902), and the launcher's one-line stderr
+  notice (#901). Failures never log above `debug` and never delay a command.
+  **Set `ROLTER_UPDATE_CHECK=false`** to turn it off in an enclave; the
+  endpoint then reports `enabled: false` and the footer shows the running
+  version alone. Implemented in `crates/rolter-control/src/update_check.rs`
+  (the checker, the semver order and the endpoint) and
+  `crates/rolter/src/update_notice.rs` (the cache and the notice).
 
 Everything else is self-contained:
 
@@ -135,6 +149,8 @@ cargo build --workspace --release --offline
 - CDNs (`cdn.jsdelivr.net`, `fonts.scalar.com`, npm/unpkg) — rolter references none.
 - Telemetry endpoints — unless you deliberately set `OTEL_*` to an internal
   collector.
+- `api.github.com` — set `ROLTER_UPDATE_CHECK=false` so the release check is
+  not even attempted.
 - Provider status pages — leave `status_page_url` unset.
 
 ## Offline smoke test

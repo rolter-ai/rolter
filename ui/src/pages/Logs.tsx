@@ -12,6 +12,7 @@ import {
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
@@ -20,11 +21,11 @@ import {
   fetchCustomers,
   fetchInvocations,
   fetchLoggingSettings,
-  fetchModelPrices,
   fetchModels,
   type InvocationRow,
 } from "@/lib/api";
 import { useIsSuperadmin } from "@/lib/can";
+import type { CodeLanguage } from "@/lib/code";
 import { useCurrencyCode } from "@/lib/currency";
 import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
@@ -109,16 +110,6 @@ export default function Logs() {
     enabled: !!scope.orgId,
     retry: false,
   });
-  // the price table is what tells a zero cost apart from an unpriced one: the
-  // control plane records `unpriced` per request but does not return it on an
-  // invocation row, so the dashboard re-derives it from the same evidence the
-  // summary banner uses — a model with no price row (#969, #1182)
-  const prices = useQuery({
-    queryKey: ["model-prices"],
-    queryFn: fetchModelPrices,
-    retry: false,
-  });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -168,11 +159,10 @@ export default function Logs() {
   const unitName = (id: string) => units.data?.find((u) => u.id === id)?.name;
   const customerName = (id: string) =>
     customers.data?.find((c) => c.id === id)?.name;
-  // while the price table is loading, or if it failed, every model would
-  // otherwise be reported as unpriced on no evidence
-  const pricedModels = new Set((prices.data ?? []).map((p) => p.model));
-  const isUnpriced = (row: InvocationRow) =>
-    num(row.cost_usd) <= 0 && prices.isSuccess && !pricedModels.has(row.model);
+  // the gateway decided this per request, against the catalogue that applied
+  // when it was served. re-deriving it from today's model prices re-judges an
+  // old row against a price added or removed after the fact (#1226)
+  const isUnpriced = (row: InvocationRow) => num(row.unpriced) === 1;
   const cost = (row: InvocationRow) =>
     isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =
@@ -243,7 +233,7 @@ export default function Logs() {
         />
       </div>
       {selected.error && (
-        <DrawerBlock label="Error" content={selected.error} />
+        <DrawerBlock label="Error" content={selected.error} language="log" />
       )}
       <PayloadBlock label="Request" raw={selected.request_payload} />
       <PayloadBlock label="Response" raw={selected.response_payload} />
@@ -574,7 +564,9 @@ function PayloadBlock({ label, raw }: { label: string; raw: string | undefined }
     staleTime: 60_000,
   });
 
-  if (body !== null) return <DrawerBlock label={label} content={body} />;
+  if (body !== null) {
+    return <DrawerBlock label={label} content={body} language={payloadLanguage(raw)} />;
+  }
 
   const captureOff = settings.data ? !settings.data.payload_capture_enabled : undefined;
   const reason =
@@ -613,6 +605,19 @@ function pretty(raw: string | undefined): string | null {
   }
 }
 
+// a logged payload is JSON when it parses as JSON, and opaque text when it does
+// not — a multipart upload, a truncated body, or the "logging is off" notice.
+// highlighting the second as JSON would invent structure that is not there
+function payloadLanguage(raw: string | undefined): CodeLanguage {
+  if (!raw) return "text";
+  try {
+    JSON.parse(raw);
+    return "json";
+  } catch {
+    return "text";
+  }
+}
+
 function DrawerStat({
   label,
   value,
@@ -634,15 +639,25 @@ function DrawerStat({
   );
 }
 
-function DrawerBlock({ label, content }: { label: string; content: string }) {
+function DrawerBlock({
+  label,
+  content,
+  language,
+}: {
+  label: string;
+  content: string;
+  language: CodeLanguage;
+}) {
   return (
     <div>
       <div className="mb-1.5 text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
         {label}
       </div>
-      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 font-mono text-xs text-[color:var(--text-secondary)]">
-        {content}
-      </pre>
+      {/* the payload is the reason the drawer was opened: it reads through the
+          shared code block, so a malformed field is visible rather than hidden
+          in a wall of monospace (#949). soft-wrapped, because the drawer is
+          narrow and a body line is long */}
+      <CodeBlock value={content} language={language} label={label} wrap />
     </div>
   );
 }

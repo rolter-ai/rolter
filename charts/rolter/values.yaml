@@ -128,6 +128,12 @@ control:
     # overwrites X-Forwarded-For: an unverified header hands an attacker
     # unlimited budgets and the ability to spend somebody else's
     trustForwardedFor: false
+  # the control plane asks github once at boot and every six hours whether a
+  # newer stable rolter release exists, so the dashboard footer can hint at it
+  # (#902). one bounded request carrying nothing but a user-agent; offline is
+  # silent. set false for an air-gapped cluster or one that must make no
+  # outbound call
+  updateCheck: true
   extraEnv: []
 
 config:

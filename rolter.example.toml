@@ -18,6 +18,13 @@ port = 4000
 # oversized body gets an openai-style 413. defaults to 33554432 (32 MiB).
 # max_body_bytes = 33554432
 
+# --- update check ---
+# not a config key: the control plane and the `rolter` cli read the
+# ROLTER_UPDATE_CHECK environment variable. unset, they ask github once at boot
+# (and every six hours / once a day) whether a newer stable release exists, so
+# the dashboard footer and the cli can say so. ROLTER_UPDATE_CHECK=false turns
+# that off for an air-gapped deployment; offline is silent either way.
+
 # --- outbound TLS trust ---
 # PEM certificates in these files are added to the normal public-root trust
 # store. ROLTER_CA_BUNDLE overrides this global list with one container path.
@@ -330,6 +337,11 @@ disabled = false # revoke without deleting
 # id = "org-uuid"
 # limit_usd = 500.0
 # period = "monthly"   # monthly (default) | daily | total
+# this budget's own answer to unpriced traffic, overriding the deployment-wide
+# unpriced_policy below. omit it to inherit. resolution is most-restrictive-wins
+# across the scope chain and against the deployment setting, so a budget can
+# tighten what the deployment asked for but never loosen it:
+# unpriced_policy = "block"   # ignore | warn | block
 
 # what to do about traffic the gateway cannot price. a model with no
 # [[model_prices]] row accrues zero spend, so it can never exceed a budget no

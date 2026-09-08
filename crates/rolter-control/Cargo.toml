@@ -32,9 +32,13 @@ redis.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 clap.workspace = true
 subtle.workspace = true
+# the same embedded Scalar reference the gateway serves at /docs, so the
+# control-plane schema renders without a CDN in an air-gapped deployment
+scalar_api_reference = { version = "0.2.2", default-features = false }
 parking_lot.workspace = true
 async-trait.workspace = true
 sqlx = { workspace = true, optional = true }

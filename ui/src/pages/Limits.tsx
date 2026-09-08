@@ -31,7 +31,9 @@ import {
   fetchRateLimits,
   fetchVirtualKeys,
   SCOPE_TYPES,
+  UNPRICED_POLICIES,
   type BudgetRow,
+  type UnpricedPolicy,
   type RateLimitRow,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
@@ -384,6 +386,7 @@ function BudgetCard({
 }) {
   // budgets are denominated in the deployment's settlement currency, not in
   // dollars — the `_usd` in the column name is historic (#1182)
+  const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
   return (
@@ -393,6 +396,16 @@ function BudgetCard({
           {fmt.currency(Number(budget.limit_usd), currency)}
         </span>
         <Badge tone="outline">{budget.period}</Badge>
+        {/* an override is worth showing on the card because it changes what
+            the gateway will serve, not just what it counts (#996). a budget
+            without one inherits the deployment setting and says nothing */}
+        {budget.unpriced_policy && (
+          <Badge tone={budget.unpriced_policy === "block" ? "danger" : "warning"}>
+            {t("pages.limits.unpricedBadge", {
+              policy: t(`pages.limits.unpriced.${budget.unpriced_policy}`),
+            })}
+          </Badge>
+        )}
         <button
           type="button"
           title="Delete budget"
@@ -467,11 +480,14 @@ function AddBudgetDialog({
   const toast = useToast();
   const [limitUsd, setLimitUsd] = React.useState("100");
   const [period, setPeriod] = React.useState("30d");
+  // "" is the inherit case, which is what the API means by a null override
+  const [unpriced, setUnpriced] = React.useState<UnpricedPolicy | "">("");
 
   React.useEffect(() => {
     if (open) {
       setLimitUsd("100");
       setPeriod("30d");
+      setUnpriced("");
     }
   }, [open]);
 
@@ -482,6 +498,7 @@ function AddBudgetDialog({
         scope_id: scopeId,
         limit_usd: limitUsd,
         period,
+        unpriced_policy: unpriced === "" ? null : unpriced,
       }),
     onSuccess: () => {
       // the dialog closes on success, so the outcome is announced somewhere
@@ -505,7 +522,7 @@ function AddBudgetDialog({
       onOpenChange={onOpenChange}
       title="Add budget"
       subtitle={`Spend cap for ${scopeType}:${scopeId} — delete and recreate to change it`}
-      dirty={limitUsd !== "100" || period !== "30d"}
+      dirty={limitUsd !== "100" || period !== "30d" || unpriced !== ""}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       saveLabel="Create"
       canSave={Boolean(limitUsd.trim() && period.trim())}
@@ -524,6 +541,24 @@ function AddBudgetDialog({
         </Field>
         <Field label="Period" hint="e.g. 30d, 7d, 1d">
           <Input value={period} onChange={(e) => setPeriod(e.target.value)} />
+        </Field>
+        <Field
+          label={t("pages.limits.unpricedLabel")}
+          hint={t("pages.limits.unpricedHint")}
+          htmlFor="budget-unpriced-policy"
+        >
+          <Select
+            id="budget-unpriced-policy"
+            value={unpriced}
+            onChange={(e) => setUnpriced(e.target.value as UnpricedPolicy | "")}
+          >
+            <option value="">{t("pages.limits.unpriced.inherit")}</option>
+            {UNPRICED_POLICIES.map((policy) => (
+              <option key={policy} value={policy}>
+                {t(`pages.limits.unpriced.${policy}`)}
+              </option>
+            ))}
+          </Select>
         </Field>
       </div>
     </EditorSheet>

@@ -53,6 +53,18 @@ A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the
 
 The refresh button in every screen header re-reads everything on the screen. Screens that stream (LLM Logs, MCP Logs, Adaptive Routing) update on their own and show when they last did.
 
+## Reading structured output
+
+Anywhere the dashboard shows a payload — a request or response body in LLM Logs and MCP Logs, an audit entry's detail, the effective config, a model's config preview, the collector document, a copy-as-code snippet — it renders in a shared code block: syntax highlighted for its language, scrollable sideways rather than wrapped mid-token, reachable with the Tab key, and with a copy button in its corner. Highlighting is bundled with the dashboard, so it works with no internet access.
+
+A very large payload is shown without colour rather than kept waiting for it.
+
+## Markdown in the Playground
+
+Model replies render as markdown: headings, lists, tables, inline code, and fenced code blocks highlighted per their language tag with a copy button of their own. Use the **¶** button in the column header to switch to raw output when the question is exactly what the model emitted, including stray delimiters and whitespace.
+
+Replies are never treated as markup. HTML tags in a reply show as the characters they are, and an image in a reply is listed by its alt text instead of being fetched — nothing in a model reply causes the dashboard to reach the network.
+
 ## On a phone or a tablet
 
 | Screen width | Navigation |

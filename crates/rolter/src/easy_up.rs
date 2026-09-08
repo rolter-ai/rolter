@@ -128,6 +128,12 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
 }
 
 /// Build the control-plane args for `easy-up`.
+// `..Default::default()` rather than an exhaustive literal: this crate's
+// `postgres` feature turns on `rolter-control/postgres`, but not the other way
+// round, so `cargo check -p rolter --features rolter-control/postgres` compiles
+// this function against a wider `Args` than the cfgs below can see (#1295).
+// clippy sees the exhaustive half of that pair and calls the base redundant
+#[allow(clippy::needless_update)]
 fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_control::Args {
     // `database_url` only backs a field under the postgres feature
     #[cfg(not(feature = "postgres"))]
@@ -175,6 +181,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         login_max_lock_secs: env_or_num("ROLTER_LOGIN_MAX_LOCK_SECS", 900),
         login_max_delay_ms: env_or_num("ROLTER_LOGIN_MAX_DELAY_MS", 2000),
         login_trust_forwarded_for: env_flag("ROLTER_LOGIN_TRUST_FORWARDED_FOR"),
+        ..Default::default()
     }
 }
 

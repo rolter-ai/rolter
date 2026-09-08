@@ -142,7 +142,7 @@ When a request's scope chain matches multiple budget rules (e.g. both an org bud
 
 A budget can only block spend it can see. A model with no `[[model_prices]]` entry accrues **zero**, so it can never exhaust a budget however much is served — the control fails open on exactly the models you most recently added and are least likely to have priced.
 
-`unpriced_policy` is the deliberate decision about that. It is deployment-wide, since it governs what the gateway may serve at all rather than the state of any one counter:
+`unpriced_policy` is the deliberate decision about that. It is set deployment-wide, since it governs what the gateway may serve at all rather than the state of any one counter, and an individual budget may then ask for something stricter — see [Per-budget override](#per-budget-override):
 
 ```toml
 unpriced_policy = "block"   # ignore (default) | warn | block
@@ -157,7 +157,7 @@ unpriced_policy = "block"   # ignore (default) | warn | block
 ```json
 {
   "error": {
-    "message": "model 'llama-3.1-8b' has no price, so its cost cannot be counted against a budget. This deployment is configured to refuse traffic it cannot account for; set a price for this model to serve it.",
+    "message": "model 'llama-3.1-8b' has no price, so its cost cannot be counted against a budget. This deployment, or a budget that applies to this key, is configured to refuse traffic it cannot account for; set a price for this model to serve it.",
     "type": "invalid_request_error",
     "code": "model_unpriced",
     "param": "model"
@@ -173,6 +173,47 @@ unpriced_policy = "block"   # ignore (default) | warn | block
 
 <Note>
   The built-in `fake-llm` model is answered by the gateway before any price lookup, so `block` never makes it unreachable.
+</Note>
+
+#### Per-budget override
+
+`unpriced_policy` on `[gateway]` is the deployment's floor. A single budget can
+ask for something **stricter** than that floor without imposing it on the rest
+of the deployment:
+
+```toml
+[[budgets]]
+scope = "team"
+id = "platform"
+limit_usd = 500
+period = "monthly"
+unpriced_policy = "block"   # this team refuses what it cannot account for
+```
+
+In the dashboard the same field is on **Limits → Add budget**, as *Unpriced
+traffic*. Leaving it at *Inherit deployment setting* is what every budget does
+by default, and is how every budget created before this field existed behaves.
+
+Resolution is **most-restrictive-wins** (`ignore` < `warn` < `block`) across
+everything that applies to the request — the deployment setting and every
+budget matching the request's scope chain. Two consequences follow, and both
+are deliberate:
+
+- **A budget can only tighten.** A project budget set to `ignore` does not undo
+  an org budget set to `block`, the same way it cannot raise the org's spend
+  cap. A control a narrower scope could loosen would not be a control.
+- **The deployment setting is a floor, not merely a fallback.** If the
+  deployment is set to `block`, no budget can opt back into serving unpriced
+  traffic.
+
+A request that matches no budget at all is answered by the deployment setting,
+unchanged.
+
+<Note>
+  The override lives on the budget row, so it works for budgets defined in the
+  database through the control plane as well as for `rolter.toml` ones — a
+  setting only `rolter.toml` could reach would silently do nothing for the
+  deployments that use the dashboard.
 </Note>
 
 ## Step 3 — Configure rate limits

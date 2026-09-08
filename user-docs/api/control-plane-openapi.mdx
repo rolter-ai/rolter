@@ -1,0 +1,103 @@
+---
+title: "Control-Plane OpenAPI Schema and API Reference"
+sidebarTitle: "Control-plane schema"
+description: "The rolter control plane serves an OpenAPI 3.1 description of its management API at GET /openapi.json and renders it interactively at GET /docs — generate a client instead of hand-writing one."
+---
+
+The rolter control plane describes itself. `GET /openapi.json` returns an
+OpenAPI 3.1 document covering its whole management API — tenancy, users and
+RBAC, providers, routes, virtual keys, budgets and prices, guardrails, MCP,
+alerting, SSO, SCIM and the deployment settings the gateway reads back through
+`/internal/snapshot`. `GET /docs` renders the same document as an interactive
+reference you can read and try calls from in a browser.
+
+This is the same pair the gateway serves for its OpenAI/Anthropic-compatible
+surface, so a deployment has two schemas: one for the traffic your applications
+send, and one for the API your tooling manages the deployment with.
+
+## Fetching the schema
+
+```bash
+curl -s http://<your-control-plane-host>:4001/openapi.json > rolter-control.json
+```
+
+Both endpoints are unauthenticated. The document names endpoints and payload
+shapes and carries no tenant data, and a client that cannot read the schema
+before it holds a credential cannot generate against it either.
+
+The `info.version` field tracks the running binary's version, so a schema
+fetched from a live control plane always matches what that process serves.
+
+## Browsing it
+
+Open `http://<your-control-plane-host>:4001/docs`. The reference is rendered by
+Scalar from a JavaScript bundle embedded in the rolter binary — it makes no
+requests to a CDN, loads no remote fonts, and works in an air-gapped
+deployment, exactly like the gateway's `/docs`.
+
+Operations are grouped by tag: `tenancy`, `users`, `access-control`,
+`providers`, `routes`, `virtual-keys`, `governance`, `guardrails`, `mcp`,
+`alerting`, `analytics`, `settings`, `sso`, `scim` and the rest.
+
+## Generating a client
+
+Any OpenAPI generator works. For example, with
+[`openapi-generator`](https://openapi-generator.tech/):
+
+```bash
+openapi-generator generate \
+  -i http://localhost:4001/openapi.json \
+  -g python \
+  -o ./rolter-control-client
+```
+
+## Authentication
+
+Every operation except the probes, the schema endpoints, the login and SSO
+routes and the invitation-acceptance links takes a bearer token:
+
+```http
+Authorization: Bearer <token>
+```
+
+The token is a session token from `POST /api/v1/auth/login`, or the deployment
+admin token. `/scim/v2/*` takes a SCIM token instead, and `/internal/*` takes
+the internal token — the document declares one `bearerAuth` scheme covering all
+of them, because they occupy the same header.
+
+Authorization is enforced per handler against the RBAC capability matrix, which
+`GET /api/v1/rbac/matrix` publishes: holding a valid token is not the same as
+being allowed to make a given call.
+
+## What the schema does and does not promise
+
+<Note>
+  Every endpoint the control plane mounts is in the document. A test walks every
+  route registration in the control-plane crate and fails the build when one is
+  missing, so the path list cannot quietly fall behind the code.
+</Note>
+
+Request and response **bodies** are typed where the underlying handler has a
+stable shape — organizations, teams, projects, business units and customers,
+users and memberships, providers and provider groups, routes and route targets,
+virtual keys, budgets, rate limits and model prices all resolve to named
+entries under `components/schemas`.
+
+Endpoints whose payload is genuinely dynamic — the settings singletons,
+guardrail configurations, SCIM envelopes and analytics result rows — are
+described as open JSON objects for now. The call, its path parameters and its
+error response are still fully described; only the body's inner shape is left
+loose. Treat a generated model for those endpoints as a starting point rather
+than a contract.
+
+Errors use the shape every rolter surface renders:
+
+```json
+{
+  "error": {
+    "message": "provider not found",
+    "type": "not_found",
+    "code": "not_found"
+  }
+}
+```

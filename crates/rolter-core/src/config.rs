@@ -1635,6 +1635,16 @@ pub struct BudgetConfig {
     pub limit_usd: f64,
     #[serde(default)]
     pub period: BudgetPeriod,
+    /// this budget's own answer to unpriced traffic, overriding the
+    /// deployment-wide [`UnpricedPolicy`]; `None` inherits it (#996).
+    ///
+    /// Resolution is most-restrictive-wins across the scope chain *and*
+    /// against the deployment setting, the same way the caps themselves
+    /// compose: a project budget can tighten what the org asked for but never
+    /// loosen it. [`UnpricedPolicy`] derives `Ord` in that order, so the
+    /// resolution is a `max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpriced_policy: Option<UnpricedPolicy>,
 }
 
 /// A throughput cap applied to a scope over a rolling one-minute window. The

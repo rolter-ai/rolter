@@ -2,8 +2,8 @@ import { Code2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { CopyButton } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
   DialogDescription,
@@ -11,7 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Select } from "@/components/ui/select";
+import { Tabs } from "@/components/ui/tabs";
+import type { CodeLanguage } from "@/lib/code";
 import {
   renderSnippet,
   SNIPPET_LANGS,
@@ -25,6 +26,13 @@ const LABELS: Record<SnippetLang, string> = {
   javascript: "JavaScript",
 };
 
+/** what to highlight each snippet as — curl is a shell command line */
+const HIGHLIGHT: Record<SnippetLang, CodeLanguage> = {
+  curl: "bash",
+  python: "python",
+  javascript: "javascript",
+};
+
 /**
  * "Copy as code" for a Playground request.
  *
@@ -33,6 +41,13 @@ const LABELS: Record<SnippetLang, string> = {
  * therefore the code that reproduces it, not the reply — and rolter's whole
  * pitch is that the code is just the OpenAI SDK with a different `base_url`,
  * which is far more convincing shown than described.
+ *
+ * Which is why this dialog is the wide one and the snippet is highlighted
+ * (#948). It is the moment an operator stops clicking and starts integrating,
+ * and it used to render a wrapped, colourless block that looked worse than the
+ * terminal it was about to be pasted into. The tabs are `Tabs` rather than a
+ * `<select>` so all three languages are visible at once: the comparison is the
+ * argument.
  */
 export function CodeSnippetDialog({
   open,
@@ -59,38 +74,31 @@ export function CodeSnippetDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} size="lg">
       <DialogHeader>
         <DialogTitle>{t("playground.copyAsCode")}</DialogTitle>
         <DialogDescription>{t("playground.copyAsCodeHint")}</DialogDescription>
       </DialogHeader>
 
-      <div className="flex items-center gap-2">
-        <Select
-          value={lang}
-          onChange={(e) => setLang(e.target.value as SnippetLang)}
+      <div className="flex flex-col gap-3">
+        <Tabs
           aria-label={t("playground.language")}
-        >
-          {SNIPPET_LANGS.map((l) => (
-            <option key={l} value={l}>
-              {LABELS[l]}
-            </option>
-          ))}
-        </Select>
-        <CopyButton value={snippet} className="ml-auto" />
-      </div>
+          tabs={SNIPPET_LANGS.map((l) => ({ value: l, label: LABELS[l] }))}
+          value={lang}
+          onChange={(v) => setLang(v as SnippetLang)}
+        />
 
-      {/* a scrollable region has to be reachable from the keyboard, or the part
-          of the snippet below the fold is unreachable without a mouse (#1181).
-          tabIndex + a name make it a proper document region */}
-      <pre
-        tabIndex={0}
-        role="region"
-        aria-label={t("playground.snippet")}
-        className="max-h-[340px] overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <code>{snippet}</code>
-      </pre>
+        {/* the block scrolls sideways rather than wrapping: a snippet broken
+            mid-URL reads as two broken lines, not as one long one (#948).
+            CodeBlock owns the copy button, the focusable scroll region and
+            the name, so each language is copyable on its own terms */}
+        <CodeBlock
+          value={snippet}
+          language={HIGHLIGHT[lang]}
+          label={t("playground.snippet")}
+          maxHeight={420}
+        />
+      </div>
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>

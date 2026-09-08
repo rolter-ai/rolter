@@ -367,6 +367,7 @@ mod tests {
             id: id.to_string(),
             limit_usd: 10.0,
             period: Default::default(),
+            unpriced_policy: None,
         }
     }
 

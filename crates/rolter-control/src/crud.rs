@@ -3783,10 +3783,32 @@ struct CreateBudget {
     limit_usd: String,
     #[serde(default = "default_period")]
     period: String,
+    /// this budget's own answer to unpriced traffic, overriding the
+    /// deployment-wide setting; omitted or null inherits it (#996)
+    #[serde(default)]
+    unpriced_policy: Option<String>,
 }
 
 fn default_period() -> String {
     "30d".to_string()
+}
+
+const UNPRICED_POLICIES: [&str; 3] = ["ignore", "warn", "block"];
+
+/// Validate the optional per-budget unpriced-policy override.
+///
+/// The column carries the same check constraint, but a database error surfaces
+/// as a 500; a caller who sends `blocked` deserves a 400 that names the three
+/// values. Absent means "inherit the deployment-wide setting" and is always
+/// allowed.
+fn validate_unpriced_policy(value: Option<&str>) -> ApiResult<()> {
+    match value {
+        None => Ok(()),
+        Some(policy) if UNPRICED_POLICIES.contains(&policy) => Ok(()),
+        Some(_) => Err(ApiError::Core(Error::Config(format!(
+            "unpriced_policy must be one of {UNPRICED_POLICIES:?}"
+        )))),
+    }
 }
 
 async fn create_budget(
@@ -3803,12 +3825,14 @@ async fn create_budget(
             "limit_usd must be numeric".into(),
         )));
     }
+    validate_unpriced_policy(body.unpriced_policy.as_deref())?;
     let row = BudgetRepo(pool(&state))
         .create(
             &body.scope_type,
             body.scope_id,
             &body.limit_usd,
             &body.period,
+            body.unpriced_policy.as_deref(),
         )
         .await?;
     log_audit(
@@ -3818,7 +3842,14 @@ async fn create_budget(
         "budget.create",
         "budget",
         row.id,
-        serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "limit_usd": body.limit_usd}),
+        serde_json::json!({
+            "scope_type": body.scope_type,
+            "scope_id": body.scope_id,
+            "limit_usd": body.limit_usd,
+            // an override changes what the gateway will serve, so the audit
+            // row has to say when one was set (#996)
+            "unpriced_policy": body.unpriced_policy,
+        }),
     )
     .await;
     Ok(Json(row))

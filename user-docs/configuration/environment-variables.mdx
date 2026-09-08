@@ -47,6 +47,7 @@ These variables control the control-plane process (`rolter-control`), which mana
 | `ROLTER_LOGIN_MAX_DELAY_MS` | Ceiling on the delay added to a rejected sign-in. Default `2000`. |
 | `ROLTER_LOGIN_TRUST_FORWARDED_FOR` | Count failures against the `X-Forwarded-For` client instead of the socket peer. Default off. |
 | `ROLTER_LOGIN_THROTTLE_DISABLED` | Turn failed-login throttling off entirely. Default off. |
+| `ROLTER_UPDATE_CHECK` | Set to `false` to stop the control plane and the `rolter` CLI from asking GitHub whether a newer stable release exists. Default on; see [Update check](#update-check). |
 
 ### Sizing the connection pool
 
@@ -98,6 +99,23 @@ Every counter is keyed on the *submitted* address, never on an account that was 
 
   Once the database is populated, rotating this key requires re-encrypting all stored credentials. Treat it with the same care as a private CA key.
 </Warning>
+
+### Update check
+
+The control plane asks `https://api.github.com/repos/rolter-ai/rolter/releases/latest` once at boot and every six hours whether a newer **stable** release exists, and serves the answer from [`GET /api/v1/version`](/api/version) so the dashboard footer can show a small *v0.2.0 available* hint. The `rolter` CLI runs the same check beside whatever command you start, caches the answer in `~/.cache/rolter/update-check.json` for 24 hours, and prints one line to stderr:
+
+```text
+rolter 0.1.0 is installed; 0.2.0 is available: https://github.com/rolter-ai/rolter/releases/latest
+```
+
+What the check does and does not do:
+
+- One request, a 5-second timeout, carrying nothing but a `User-Agent: rolter/<version>` header. No installation id, no configuration, no credentials.
+- It never blocks a command, never changes an exit status, and never logs above `debug` when it fails. Offline, rate-limited and malformed answers all look the same: no hint, no notice.
+- Pre-release tags are never advertised. A pre-release build (`0.2.0-rc.1`) is told about the stable release it precedes; a build newer than the latest release stays quiet.
+- `rolter easy-up` supervises both planes in one process and prints the notice once.
+
+`ROLTER_UPDATE_CHECK=false` (also `0`, `no`, `off`) turns it off for both the control plane and the CLI. Set it in an air-gapped deployment, or in any script that must make no outbound call at all; the footer then shows the running version alone and `/api/v1/version` reports `"enabled": false`.
 
 ---
 

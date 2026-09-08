@@ -240,15 +240,17 @@ export const CollectorConfig: Story = {
 
     const dialog = within(await within(document.body).findByRole("dialog"));
     // the document itself, verbatim — one exporter and one pipeline per
-    // enabled connector
-    await waitFor(() =>
-      expect(dialog.getByText(/otlphttp\/signoz/)).toBeVisible(),
-    );
+    // enabled connector. asserted on the region rather than on a text node:
+    // the yaml is highlighted now, so a name is split across token spans (#949)
+    const document_ = dialog.getByRole("region", {
+      name: /OpenTelemetry Collector config/i,
+    });
+    await waitFor(() => expect(document_).toHaveTextContent("otlphttp/signoz"));
     // and where it goes, which is the part a connector row never said
     await expect(dialog.getByText(/collector\.compose\.yaml/)).toBeVisible();
     // copyable, because pasting it into a collector is the whole point
     await expect(
-      dialog.getByRole("button", { name: /^Copy collector config/ }),
+      dialog.getByRole("button", { name: /^Copy OpenTelemetry Collector config/ }),
     ).toBeVisible();
   },
 };

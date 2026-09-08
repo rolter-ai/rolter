@@ -5,6 +5,16 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 
 /**
+ * Naming the value only helps while the value is a name.
+ *
+ * A row of eleven "Copy" buttons is unusable without it, which is why the
+ * accessible name quotes the address. A code block's value is a whole payload,
+ * and reading a thousand characters of JSON as a button's name is worse than
+ * not naming it at all — past this length the label stands on its own (#949).
+ */
+const NAME_IN_LABEL_LIMIT = 80;
+
+/**
  * Small icon button that copies `value` to the clipboard and briefly shows a
  * checkmark. Used to make `provider-slug/model` addresses one-click copyable.
  */
@@ -56,7 +66,11 @@ export function CopyButton({
       variant="ghost"
       className={className}
       onClick={copy}
-      aria-label={t("common.copyValue", { label: copyLabel, value })}
+      aria-label={
+        value.length <= NAME_IN_LABEL_LIMIT
+          ? t("common.copyValue", { label: copyLabel, value })
+          : copyLabel
+      }
       title={title}
     >
       {copied ? (

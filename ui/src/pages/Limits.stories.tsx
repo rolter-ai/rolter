@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Limits from "./Limits";
 import {
@@ -25,7 +25,21 @@ const BUDGETS: BudgetRow[] = [
     scope_id: "project-1",
     limit_usd: "500.00",
     period: "30d",
+    // inherits the deployment-wide unpriced policy, which is the shape of
+    // every budget created before #996
+    unpriced_policy: null,
     created_at: "2026-07-01T00:00:00Z",
+  },
+  // this one refuses traffic it cannot account for, whatever the deployment
+  // setting says — an override can tighten, never loosen
+  {
+    id: "budget-2",
+    scope_type: "project",
+    scope_id: "project-1",
+    limit_usd: "50.00",
+    period: "1d",
+    unpriced_policy: "block",
+    created_at: "2026-07-02T00:00:00Z",
   },
 ];
 
@@ -183,6 +197,43 @@ export const AnUntouchedSeededBudgetFormClosesWithoutPrompting: Story = {
     await expect(within(sheet()).getByLabelText("Limit (USD)")).toHaveValue(100);
     await expect(within(sheet()).getByLabelText("Period")).toHaveValue("30d");
     await expectClosesWithoutPrompting();
+  },
+};
+
+/**
+ * #996: a budget may carry its own answer to unpriced traffic. The card says so
+ * only when there is an override — a budget that inherits the deployment-wide
+ * setting has nothing of its own to report — and the form defaults to inherit,
+ * so opening it and closing it cannot silently narrow what the gateway serves.
+ */
+export const ABudgetShowsItsUnpricedOverride: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("unpriced: Refuse")).toBeVisible());
+    // exactly one of the two budgets carries an override
+    await expect(canvas.getAllByText(/^unpriced: /)).toHaveLength(1);
+  },
+};
+
+export const TheUnpricedOverrideDefaultsToInherit: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const select = within(sheet()).getByLabelText("Unpriced traffic");
+    await expect(select).toHaveValue("");
+    // picking an override makes the form dirty, so closing it prompts rather
+    // than dropping a choice that changes what the gateway will serve
+    await userEvent.selectOptions(select, "block");
+    await expect(select).toHaveValue("block");
   },
 };
 

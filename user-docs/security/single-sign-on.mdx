@@ -56,7 +56,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
   </Step>
 
   <Step title="Paste the client secret">
-    The client secret is sealed with the deployment's key-encryption key the moment it is saved, and it is **never returned** — not on this screen, not through the API. To change it, delete the provider and register it again. Leave the field empty for a public client that relies on PKCE alone.
+    The client secret is sealed with the deployment's key-encryption key the moment it is saved, and it is **never returned** — not on this screen, not through the API. To rotate it later, edit the provider and type the new one; you never have to delete anything. Leave the field empty for a public client that relies on PKCE alone.
 
     The provider card still tells you whether one is stored: the **Client secret** row reads *Stored* or *Not set*, and a provider with none carries a **No client secret** badge. That comes from `has_client_secret` on `GET /api/v1/orgs/{org_id}/sso-providers`, a boolean derived from the sealed column — the secret itself stays where it is. A provider that needs a secret and has none will fail the token exchange at login, so the badge is the warning you want before a user finds it for you.
 
@@ -69,6 +69,42 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
     The provider's card shows the URL its sign-in button points at, `https://your-rolter-host/auth/sso/<slug>/start`. Copy it straight from the card to test the flow or to link it from an internal portal.
   </Step>
 </Steps>
+
+## Editing a provider
+
+A registered provider is editable in place — name, issuer, client ID, scopes,
+group claim, default role, and the client secret. Use the pencil on the
+provider's card, or `PUT /api/v1/sso-providers/{id}`.
+
+Three things are worth knowing about the edit:
+
+- **The slug is fixed.** It is in the login URL (`/auth/sso/<slug>/start`), which
+  is already in bookmarks, IdP redirect allowlists and runbooks. A provider that
+  needs a different slug is a different provider.
+- **An empty client secret field means "keep".** The stored secret is not
+  readable, so the form cannot show it — leaving the field alone leaves the
+  sealed secret exactly where it is. Type a new value to rotate it. To *clear*
+  it, turning the provider into a public PKCE client, send `client_secret: ""`
+  through the API.
+- **Group mappings survive.** They hang off the provider's id, and editing keeps
+  that id, so the roles your IdP groups grant are untouched.
+
+<Note>
+  Every edit is written to the audit log as `sso_provider.update`, recording
+  whether the client secret was left unchanged, rotated, or cleared — never the
+  secret itself.
+</Note>
+
+## Taking a provider out of service
+
+The switch on the provider card flips `enabled`. A disabled provider disappears
+from the login screen and from `GET /api/v1/auth/methods`, and its `/start` URL
+stops resolving — but the registration, its secret and its group mappings all
+stay. Flip it back and sign-in resumes.
+
+This is what you want during an IdP migration or while a broken secret is being
+chased down. Deleting the provider would also stop the logins, and would take
+the group mappings with it.
 
 ## Map groups to roles
 
@@ -112,7 +148,7 @@ The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped iss
 
 ## Removing a provider
 
-Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
+Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
 
 <Warning>
 If the org's policy has password sign-in turned off, deleting its only enabled provider leaves nobody but the superadmin able to sign in. Turn password sign-in back on first.

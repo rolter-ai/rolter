@@ -8,6 +8,7 @@ import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
 import { ListHeader, ListRow, ListTable, PageBody, Pill } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
@@ -20,10 +21,23 @@ import {
   MCP_TRANSPORTS,
   type McpLogRow,
 } from "@/lib/api";
+import type { CodeLanguage } from "@/lib/code";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
+
+// a tool payload is JSON when it parses as JSON, and opaque text when it does
+// not; highlighting the second as JSON would invent structure that is not there
+function payloadLanguage(value: string | null): CodeLanguage {
+  if (!value) return "text";
+  try {
+    JSON.parse(value);
+    return "json";
+  } catch {
+    return "text";
+  }
+}
 
 const STATUS_TONE: Record<string, [string, string]> = {
   success: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
@@ -313,8 +327,20 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             <DrawerStat label="Trace" value={d.trace_id || "—"} />
           </div>
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
-          {pretty(d.arguments) && <DrawerBlock label="Arguments" body={pretty(d.arguments)!} />}
-          {pretty(d.result) && <DrawerBlock label="Result" body={pretty(d.result)!} />}
+          {pretty(d.arguments) && (
+            <DrawerBlock
+              label="Arguments"
+              body={pretty(d.arguments)!}
+              language={payloadLanguage(d.arguments)}
+            />
+          )}
+          {pretty(d.result) && (
+            <DrawerBlock
+              label="Result"
+              body={pretty(d.result)!}
+              language={payloadLanguage(d.result)}
+            />
+          )}
         </>
       )}
     </>
@@ -368,18 +394,30 @@ function DrawerStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DrawerBlock({ label, body }: { label: string; body: string }) {
+function DrawerBlock({
+  label,
+  body,
+  language,
+}: {
+  label: string;
+  body: string;
+  language: CodeLanguage;
+}) {
   return (
     <div>
       <div className="mb-1 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
         {label}
       </div>
-      <pre
-        tabIndex={0}
-        className="max-h-[220px] overflow-auto rounded-[8px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-2.5 font-mono text-[0.6875rem] leading-relaxed text-[color:var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        {body}
-      </pre>
+      {/* tool arguments and results are JSON almost always and opaque text
+          occasionally; the shared block colours the first and leaves the
+          second alone (#949) */}
+      <CodeBlock
+        value={body}
+        language={language}
+        label={label}
+        maxHeight={220}
+        density="compact"
+      />
     </div>
   );
 }

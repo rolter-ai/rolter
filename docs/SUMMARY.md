@@ -38,6 +38,7 @@
   - [ADR-0027 — End-to-end test harness](adr/2026-07-21-e2e-test-harness.md)
   - [ADR-0028 — Disaggregated prefill/decode routing](adr/2026-08-11-disaggregated-prefill-decode-routing.md)
   - [ADR-0029 — Hosted-provider host-pin opt-out](adr/2026-09-02-hosted-provider-host-pin-opt-out.md)
+  - [ADR-0030 — Control-plane OpenAPI document](adr/2026-09-08-control-plane-openapi-document.md)
 
 # API
 
@@ -56,10 +57,12 @@
 - [Dashboard capability gating](development/rbac-gating.md)
 - [Dashboard navigation rail](development/dashboard-navigation.md)
 - [Dashboard theme](development/dashboard-theme.md)
+- [Dashboard code highlighting](development/highlighting.md)
 - [Commit conventions](development/commit-conventions.md)
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)
 - [API stability and the semver gate](development/api-stability.md)
+- [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 
 # Deployment
