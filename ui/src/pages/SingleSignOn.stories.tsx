@@ -138,6 +138,12 @@ function api({
     if (url.includes("/sso-providers")) {
       if (method === "POST") return json(provider({ id: "sso-new" }), 201);
       if (method === "DELETE") return noContent();
+      // an update answers with the saved row, the way the control plane does,
+      // so the screen re-renders from the server's version and not the draft
+      if (method === "PUT") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json(provider({ ...body, id: "sso-1" }), 200);
+      }
       return json(providers(), status);
     }
     if (url.includes("/auth-policy")) {
@@ -348,6 +354,83 @@ export const CreatesAProvider: Story = {
         // own defaults rather than being handed an empty string
       });
     });
+  },
+};
+
+// #1233: editing in place. before this, rotating a secret or fixing a typo
+// meant deleting the provider and registering it again, which dropped every
+// group mapping and changed the id in the audit trail
+const edits = record(api({ providers: () => [provider()] }));
+
+export const EditsAProviderInPlace: Story = {
+  render: () => (
+    <Harness fetchStub={edits.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit provider Acme Okta/);
+
+    const panel = within(sheet());
+    // the slug is in the login url, so it is shown but not editable
+    await expect(panel.getByLabelText("Slug")).toBeDisabled();
+    await expect(panel.getByText(/cannot be changed/)).toBeVisible();
+
+    // the sealed secret is not readable, so the field starts empty and an
+    // empty field must mean "keep", never "clear"
+    await expect(panel.getByLabelText("Client secret")).toHaveValue("");
+    await expect(panel.getByText(/Leave empty to keep/)).toBeVisible();
+
+    await userEvent.clear(panel.getByLabelText("Client ID"));
+    await userEvent.type(panel.getByLabelText("Client ID"), "0oa-rotated");
+    await userEvent.click(panel.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      const put = edits.calls.find((c) => c.method === "PUT");
+      expect(put).toBeDefined();
+      expect(put?.url).toContain("/api/v1/sso-providers/sso-1");
+      const body = put?.body as Record<string, unknown>;
+      expect(body.client_id).toBe("0oa-rotated");
+      expect(body.name).toBe("Acme Okta");
+      // the untouched secret field sends nothing at all, which is what tells
+      // the server to leave the sealed one alone
+      expect("client_secret" in body).toBe(false);
+      // and the slug is never sent, so it cannot be changed by accident
+      expect("slug" in body).toBe(false);
+    });
+  },
+};
+
+// a provider is taken out of service with a switch instead of a delete
+const toggles = record(api({ providers: () => [provider()] }));
+
+export const DisablesAProviderWithoutDeletingIt: Story = {
+  render: () => (
+    <Harness fetchStub={toggles.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("switch", {
+      name: "Enable provider Acme Okta",
+    });
+    await userEvent.click(toggle);
+
+    await waitFor(() => {
+      const put = toggles.calls.find((c) => c.method === "PUT");
+      expect(put).toBeDefined();
+      const body = put?.body as Record<string, unknown>;
+      expect(body.enabled).toBe(false);
+      // everything else rides along unchanged, and the secret is untouched
+      expect(body.name).toBe("Acme Okta");
+      expect("client_secret" in body).toBe(false);
+    });
+    // nothing was deleted: the group mappings that hang off this provider are
+    // exactly what delete-and-recreate used to destroy
+    await expect(
+      toggles.calls.some((c) => c.method === "DELETE"),
+    ).toBe(false);
   },
 };
 

@@ -1238,6 +1238,33 @@ pub struct SsoRepo<'a>(pub &'a PgPool);
 const SSO_PROVIDER_COLUMNS: &str = "id, org_id, name, slug, issuer, client_id, secret_ciphertext, \
      secret_nonce, scopes, group_claim, default_role, enabled, created_at";
 
+/// What to do with the sealed client secret on an update: leave the stored one
+/// alone, clear it (a provider that becomes a public PKCE client), or replace
+/// it with freshly sealed bytes (a rotation at the IdP).
+#[derive(Debug, Clone, Copy)]
+pub enum SecretUpdate<'a> {
+    Keep,
+    Clear,
+    Set(&'a [u8], &'a [u8]),
+}
+
+/// The mutable half of an `sso_providers` row.
+///
+/// A struct rather than an argument list because the row has eight editable
+/// columns and four of them are strings - positional arguments there are a
+/// silent swap waiting to happen.
+#[derive(Debug, Clone, Copy)]
+pub struct SsoProviderUpdate<'a> {
+    pub name: &'a str,
+    pub issuer: &'a str,
+    pub client_id: &'a str,
+    pub secret: SecretUpdate<'a>,
+    pub scopes: &'a [String],
+    pub group_claim: &'a str,
+    pub default_role: Option<&'a str>,
+    pub enabled: bool,
+}
+
 impl SsoRepo<'_> {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_provider(
@@ -1275,6 +1302,52 @@ impl SsoRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Update the mutable half of a provider row in place.
+    ///
+    /// `slug` is deliberately not updatable: it is in the login URL, so
+    /// changing it would break every bookmark, IdP redirect and org runbook
+    /// already pointing at it (#1233).
+    ///
+    /// The sealed secret is three-valued - kept, cleared, or replaced - which
+    /// the `case when $5` pair expresses in one statement, so a rotation can
+    /// never leave the row with a ciphertext from one write and a nonce from
+    /// another.
+    pub async fn update_provider(
+        &self,
+        id: Uuid,
+        update: SsoProviderUpdate<'_>,
+    ) -> Result<SsoProvider> {
+        let (replace, ciphertext, nonce) = match update.secret {
+            SecretUpdate::Keep => (false, None, None),
+            SecretUpdate::Clear => (true, None, None),
+            SecretUpdate::Set(c, n) => (true, Some(c), Some(n)),
+        };
+        sqlx::query_as(&format!(
+            "update sso_providers set \
+                    name = $2, issuer = $3, client_id = $4, \
+                    secret_ciphertext = case when $5 then $6 else secret_ciphertext end, \
+                    secret_nonce = case when $5 then $7 else secret_nonce end, \
+                    scopes = $8, group_claim = $9, default_role = $10, enabled = $11 \
+             where id = $1 \
+             returning {SSO_PROVIDER_COLUMNS}"
+        ))
+        .bind(id)
+        .bind(update.name)
+        .bind(update.issuer)
+        .bind(update.client_id)
+        .bind(replace)
+        .bind(ciphertext)
+        .bind(nonce)
+        .bind(update.scopes)
+        .bind(update.group_claim)
+        .bind(update.default_role)
+        .bind(update.enabled)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))
     }
 
     pub async fn list_providers(&self, org_id: Uuid) -> Result<Vec<SsoProvider>> {

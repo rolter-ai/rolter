@@ -41,7 +41,8 @@ use uuid::Uuid;
 use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{Membership, SsoGroupMapping, SsoProvider, User};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, MembershipRepo, OrgAuthPolicyRepo, SessionRepo, SsoRepo, UserRepo,
+    AuditLogRepo, MembershipRepo, OrgAuthPolicyRepo, SecretUpdate, SessionRepo, SsoProviderUpdate,
+    SsoRepo, UserRepo,
 };
 
 use crate::auth::session_pepper;
@@ -152,7 +153,7 @@ pub(crate) fn router() -> Router<ControlState> {
         )
         .route(
             "/api/v1/sso-providers/{id}",
-            axum::routing::delete(delete_provider),
+            axum::routing::put(update_provider).delete(delete_provider),
         )
         .route(
             "/api/v1/sso-providers/{id}/group-mappings",
@@ -800,6 +801,121 @@ async fn list_providers(
     )
     .await?;
     Ok(Json(SsoRepo(pool(&state)).list_providers(org_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSsoProvider {
+    name: String,
+    issuer: String,
+    client_id: String,
+    /// write-only and three-valued: absent leaves the sealed secret alone, an
+    /// empty string clears it (the provider becomes a public PKCE client), and
+    /// a value replaces it. That is what makes a rotation at the IdP possible
+    /// without deleting the provider and losing its group mappings (#1233).
+    #[serde(default)]
+    client_secret: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    group_claim: Option<String>,
+    /// role for a user in no mapped group; omit to refuse those users
+    #[serde(default)]
+    default_role: Option<String>,
+    /// taking a provider out of service without deleting it
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// Edit a registered provider in place.
+///
+/// `slug` is not accepted: it is in the login URL, so renaming it would break
+/// every bookmark and IdP redirect already pointing at the old one. A provider
+/// that genuinely needs a different slug is a different provider.
+async fn update_provider(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<UpdateSsoProvider>,
+) -> ApiResult<Json<SsoProvider>> {
+    let repo = SsoRepo(pool(&state));
+    let existing = repo.get_provider(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(existing.org_id),
+        cap!("sso_provider", Update),
+    )
+    .await?;
+    require_non_empty(&body.name, "name")?;
+    require_non_empty(&body.issuer, "issuer")?;
+    require_non_empty(&body.client_id, "client_id")?;
+    if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
+        return Err(invalid("issuer must be an http(s) url"));
+    }
+    if let Some(role) = &body.default_role {
+        parse_role(role)?;
+    }
+    // sealing happens before anything is written, so a missing ROLTER_KEK
+    // fails the whole request rather than half-applying the edit
+    let sealed = match &body.client_secret {
+        Some(secret) if !secret.is_empty() => {
+            let kek = Kek::from_env()
+                .ok_or_else(|| invalid("ROLTER_KEK must be configured to store a client secret"))?;
+            Some(kek.encrypt(secret)?)
+        }
+        _ => None,
+    };
+    let secret = match (&body.client_secret, &sealed) {
+        (Some(_), Some((ciphertext, nonce))) => SecretUpdate::Set(ciphertext, nonce),
+        (Some(_), None) => SecretUpdate::Clear,
+        (None, _) => SecretUpdate::Keep,
+    };
+    let scopes = body.scopes.clone().unwrap_or(existing.scopes.clone());
+    let issuer = body.issuer.trim_end_matches('/');
+    let provider = repo
+        .update_provider(
+            id,
+            SsoProviderUpdate {
+                name: &body.name,
+                issuer,
+                client_id: &body.client_id,
+                secret,
+                scopes: &scopes,
+                group_claim: body
+                    .group_claim
+                    .as_deref()
+                    .unwrap_or(existing.group_claim.as_str()),
+                default_role: body.default_role.as_deref(),
+                enabled: body.enabled,
+            },
+        )
+        .await?;
+    // the audit line says what moved, never what the secret is: whether it was
+    // rotated is the interesting fact, and the only one safe to record
+    log_audit(
+        &state,
+        &principal,
+        Some(provider.org_id),
+        "sso_provider.update",
+        "sso_provider",
+        provider.id,
+        json!({
+            "slug": provider.slug,
+            "issuer": provider.issuer,
+            "enabled": provider.enabled,
+            "client_secret": match secret {
+                SecretUpdate::Keep => "unchanged",
+                SecretUpdate::Clear => "cleared",
+                SecretUpdate::Set(..) => "rotated",
+            },
+        }),
+    )
+    .await;
+    Ok(Json(provider))
 }
 
 async fn delete_provider(

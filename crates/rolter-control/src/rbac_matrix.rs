@@ -441,7 +441,9 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: ADMIN,
         create: ADMIN,
-        update: NA,
+        // editing a provider can rotate its client secret and take it in and
+        // out of service, which is the same grant as registering one (#1233)
+        update: ADMIN,
         delete: ADMIN,
     },
     Capability {
