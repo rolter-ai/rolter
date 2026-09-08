@@ -261,7 +261,17 @@ function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }
     <UxScreenProvider screen={screen}>
       <div className="flex h-full min-h-0 flex-col">
         <ScreenHeader title={title} subtitle={subtitle} onOpenNav={onOpenNav} />
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* the screen scrolls here, so this container has to be reachable from
+            the keyboard or everything below the fold is mouse-only — the same
+            contract `ListTable` and `CodeBlock` sign, and the violation the
+            assembled-shell story caught the moment one existed (#1239). the
+            title names it, so it is a region rather than an unlabelled stop */}
+        <div
+          tabIndex={0}
+          role="region"
+          aria-label={title}
+          className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        >
           {forbidden ? (
             <ForbiddenScreen resource={t(`nav.${screen}`)} />
           ) : (
