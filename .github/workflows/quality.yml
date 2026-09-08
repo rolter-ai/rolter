@@ -111,6 +111,12 @@ jobs:
           tool: cargo-hack
       - name: cargo hack (each feature)
         run: cargo hack check --each-feature --workspace --all-targets
+      # --each-feature only ever turns on a package's *own* features, so it
+      # never builds a dependent against a dependency feature it does not
+      # itself enable. that gap let `rolter` stop compiling whenever
+      # `rolter-control/postgres` was on without `rolter/postgres` (#1295).
+      - name: cross-crate feature combination (dependency postgres only)
+        run: cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres
 
   # ── rust: doc warnings ──────────────────────────────────────────────────────
   # broken intra-doc links / invalid rustdoc are common agent mistakes.

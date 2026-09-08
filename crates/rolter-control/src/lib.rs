@@ -266,6 +266,53 @@ pub struct Args {
     pub allow_open_mode: bool,
 }
 
+/// Every value here mirrors the `default_value` on the field above it, so an
+/// embedder that hand-builds `Args` — `rolter easy-up` does — lands on exactly
+/// the configuration `rolter-control` would have parsed for itself.
+///
+/// It also lets that embedder write `..Default::default()` instead of an
+/// exhaustive literal, which is what keeps it compiling when `postgres` is
+/// enabled on this crate alone and the field set grows underneath it (#1295).
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 4001,
+            ui_dir: PathBuf::from("ui/dist"),
+            ui_otel_endpoint: None,
+            ui_otel_service_name: None,
+            gateway_url: "http://localhost:4000".to_string(),
+            config: None,
+            #[cfg(feature = "postgres")]
+            database_url: None,
+            #[cfg(feature = "postgres")]
+            db_max_connections: 10,
+            #[cfg(feature = "postgres")]
+            db_min_connections: 0,
+            #[cfg(feature = "postgres")]
+            db_acquire_timeout_secs: 30,
+            #[cfg(feature = "postgres")]
+            db_idle_timeout_secs: 600,
+            #[cfg(feature = "postgres")]
+            db_max_lifetime_secs: 1800,
+            redis_url: None,
+            login_throttle_disabled: false,
+            login_max_failures: 5,
+            login_ip_max_failures: 50,
+            login_failure_window_secs: 900,
+            login_lock_secs: 60,
+            login_max_lock_secs: 900,
+            login_max_delay_ms: 2000,
+            login_trust_forwarded_for: false,
+            clickhouse_url: None,
+            admin_token: None,
+            internal_token: None,
+            internal_addr: None,
+            allow_open_mode: false,
+        }
+    }
+}
+
 /// Names owned by the bootstrap config file: immutable at runtime,
 /// LiteLLM-style. The CRUD API rejects mutations that collide with them.
 // only read by the postgres-gated CRUD module
@@ -1937,6 +1984,93 @@ mod pool_config_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `Args::default()` restates clap's `default_value`s, so a knob retuned on
+    // the field but not in the impl would silently give an embedder a
+    // different budget than `rolter control` runs with. read the declared
+    // defaults off the `Command` rather than parsing an empty argv: parsing
+    // would pick up whatever `ROLTER_*` the test machine exports
+    #[test]
+    fn default_args_match_the_declared_clap_defaults() {
+        use clap::CommandFactory;
+
+        let command = Args::command();
+        let declared = |name: &str| -> Option<String> {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_id() == name)
+                .and_then(|arg| arg.get_default_values().first().cloned())
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+
+        let args = Args::default();
+        #[cfg_attr(not(feature = "postgres"), allow(unused_mut))]
+        let mut expected = vec![
+            ("host", args.host.clone()),
+            ("port", args.port.to_string()),
+            ("ui_dir", args.ui_dir.display().to_string()),
+            ("gateway_url", args.gateway_url.clone()),
+            (
+                "login_throttle_disabled",
+                args.login_throttle_disabled.to_string(),
+            ),
+            ("login_max_failures", args.login_max_failures.to_string()),
+            (
+                "login_ip_max_failures",
+                args.login_ip_max_failures.to_string(),
+            ),
+            (
+                "login_failure_window_secs",
+                args.login_failure_window_secs.to_string(),
+            ),
+            ("login_lock_secs", args.login_lock_secs.to_string()),
+            ("login_max_lock_secs", args.login_max_lock_secs.to_string()),
+            ("login_max_delay_ms", args.login_max_delay_ms.to_string()),
+            (
+                "login_trust_forwarded_for",
+                args.login_trust_forwarded_for.to_string(),
+            ),
+        ];
+        #[cfg(feature = "postgres")]
+        expected.extend([
+            ("db_max_connections", args.db_max_connections.to_string()),
+            ("db_min_connections", args.db_min_connections.to_string()),
+            (
+                "db_acquire_timeout_secs",
+                args.db_acquire_timeout_secs.to_string(),
+            ),
+            (
+                "db_idle_timeout_secs",
+                args.db_idle_timeout_secs.to_string(),
+            ),
+            (
+                "db_max_lifetime_secs",
+                args.db_max_lifetime_secs.to_string(),
+            ),
+        ]);
+
+        for (name, value) in expected {
+            assert_eq!(
+                declared(name).as_deref(),
+                Some(value.as_str()),
+                "Args::default().{name} drifted from the clap default_value on that field"
+            );
+        }
+
+        // the optional knobs carry no clap default, so `None`/`false` is the
+        // only answer that matches
+        assert!(args.admin_token.is_none());
+        assert!(args.internal_token.is_none());
+        assert!(args.internal_addr.is_none());
+        assert!(args.redis_url.is_none());
+        assert!(args.clickhouse_url.is_none());
+        assert!(args.config.is_none());
+        assert!(args.ui_otel_endpoint.is_none());
+        assert!(args.ui_otel_service_name.is_none());
+        assert!(!args.allow_open_mode);
+        #[cfg(feature = "postgres")]
+        assert!(args.database_url.is_none());
+    }
 
     // the dashboard config view answers without a session: nothing in it may
     // be a credential, however it got there
