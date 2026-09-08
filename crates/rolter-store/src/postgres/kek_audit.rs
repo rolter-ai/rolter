@@ -80,6 +80,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         holds: "MCP OAuth client secrets",
     },
     SealedColumn {
+        table: "mcp_servers",
+        ciphertext: "credential_ciphertext",
+        nonce: "credential_nonce",
+        holds: "MCP static bearer tokens and header api keys",
+    },
+    SealedColumn {
         table: "mcp_oauth_sessions",
         ciphertext: "access_ciphertext",
         nonce: "access_nonce",

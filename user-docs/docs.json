@@ -66,6 +66,7 @@
               "configuration/client-settings",
               "configuration/model-settings",
               "configuration/labels",
+              "configuration/mcp-servers",
               "configuration/gemini-interactions"
             ]
           },

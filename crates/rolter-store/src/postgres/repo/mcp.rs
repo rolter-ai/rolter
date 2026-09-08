@@ -24,7 +24,9 @@ pub struct McpServerRepo<'a>(pub &'a PgPool);
 const MCP_SERVER_COLUMNS: &str = "id, org_id, name, slug, url, transport, description, enabled, \
      tools, source, required_scopes, created_at, \
      authorize_url, token_url, client_id, default_scopes, \
-     (client_secret_ciphertext is not null) as has_client_secret";
+     auth_kind, auth_header_name, connect_timeout_ms, request_timeout_ms, max_retries, \
+     (client_secret_ciphertext is not null) as has_client_secret, \
+     (credential_ciphertext is not null) as has_credential";
 
 /// The immutable identity plus initial settings of a server being registered.
 /// A struct rather than ten positional arguments so a caller cannot silently
@@ -54,6 +56,26 @@ pub struct McpServerUpdate<'a> {
     pub enabled: bool,
     pub tools: &'a [String],
     pub required_scopes: &'a [String],
+    /// per-server overrides of `mcp_gateway_settings`; `None` inherits
+    pub connect_timeout_ms: Option<i32>,
+    pub request_timeout_ms: Option<i32>,
+    pub max_retries: Option<i32>,
+}
+
+/// How rolter authenticates to a server, as an operator is setting it.
+///
+/// `credential` follows the same three shapes as the OAuth client secret
+/// above, so an edit that is not changing the secret does not have to re-send
+/// it: `None` leaves what is stored, `Some("")` clears it, and any other
+/// `Some` replaces it. Moving to a kind that carries no credential clears it
+/// regardless — the `mcp_servers_auth_kind_shape` constraint would refuse the
+/// row otherwise, and silently keeping a credential a server no longer uses is
+/// exactly the kind of orphaned secret `rolter kek verify` exists to catch.
+#[derive(Debug, Clone, Copy)]
+pub struct McpAuthConfig<'a> {
+    pub auth_kind: &'a str,
+    pub auth_header_name: Option<&'a str>,
+    pub credential: Option<&'a str>,
 }
 
 /// The OAuth client rolter presents to a server's authorization server.
@@ -117,7 +139,8 @@ impl McpServerRepo<'_> {
         fetch_optional_or_not_found(
             sqlx::query_as(&format!(
                 "update mcp_servers set name = $2, url = $3, transport = $4, description = $5, \
-                 enabled = $6, tools = $7, required_scopes = $8 \
+                 enabled = $6, tools = $7, required_scopes = $8, connect_timeout_ms = $9, \
+                 request_timeout_ms = $10, max_retries = $11 \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
             ))
             .bind(id)
@@ -127,11 +150,89 @@ impl McpServerRepo<'_> {
             .bind(server.description)
             .bind(server.enabled)
             .bind(server.tools)
-            .bind(server.required_scopes),
+            .bind(server.required_scopes)
+            .bind(server.connect_timeout_ms)
+            .bind(server.request_timeout_ms)
+            .bind(server.max_retries),
             self.0,
             || format!("mcp server {id}"),
         )
         .await
+    }
+
+    /// Set how rolter authenticates to this server, sealing the credential
+    /// before it is written.
+    ///
+    /// The `case when` on the credential columns is what lets `None` mean
+    /// "leave it": binding the existing ciphertext back would need it read out
+    /// first, and reading a sealed credential to write it again is a decrypt
+    /// this path has no reason to perform.
+    pub async fn set_auth(
+        &self,
+        kek: &super::super::crypto::Kek,
+        id: Uuid,
+        auth: McpAuthConfig<'_>,
+    ) -> Result<McpServer> {
+        let carries_credential = matches!(auth.auth_kind, "bearer" | "header");
+        // same three shapes as set_oauth_client, plus: a kind that carries no
+        // credential always clears, whatever the caller sent
+        let sealed = match auth.credential {
+            _ if !carries_credential => Some((None, None)),
+            None => None,
+            Some("") => Some((None, None)),
+            Some(credential) => {
+                let (c, n) = kek.encrypt(credential)?;
+                Some((Some(c), Some(n)))
+            }
+        };
+        let (touch, ciphertext, nonce) = match sealed {
+            None => (false, None, None),
+            Some((c, n)) => (true, c, n),
+        };
+        let header_name = if auth.auth_kind == "header" {
+            auth.auth_header_name
+        } else {
+            None
+        };
+        fetch_optional_or_not_found(
+            sqlx::query_as(&format!(
+                "update mcp_servers set auth_kind = $2, auth_header_name = $3, \
+                 credential_ciphertext = case when $4 then $5 else credential_ciphertext end, \
+                 credential_nonce = case when $4 then $6 else credential_nonce end \
+                 where id = $1 returning {MCP_SERVER_COLUMNS}"
+            ))
+            .bind(id)
+            .bind(auth.auth_kind)
+            .bind(header_name)
+            .bind(touch)
+            .bind(ciphertext)
+            .bind(nonce),
+            self.0,
+            || format!("mcp server {id}"),
+        )
+        .await
+    }
+
+    /// Open the sealed static credential for `id`, or `None` when the server
+    /// stores none. The only caller that should reach for this is the code
+    /// actually dialling the server: the value is returned as a bare `String`
+    /// and never travels on a `Serialize` type.
+    pub async fn credential(
+        &self,
+        kek: &super::super::crypto::Kek,
+        id: Uuid,
+    ) -> Result<Option<String>> {
+        let row: Option<SealedSecretRow> = sqlx::query_as(
+            "select credential_ciphertext, credential_nonce from mcp_servers where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?;
+        let Some((Some(ciphertext), Some(nonce))) = row else {
+            return Ok(None);
+        };
+        Ok(Some(kek.decrypt(&ciphertext, &nonce)?))
     }
 
     /// Register (or replace) the OAuth client rolter presents to this server's

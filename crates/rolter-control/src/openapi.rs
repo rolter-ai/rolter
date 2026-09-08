@@ -1051,6 +1051,11 @@ fn operations() -> Vec<Op> {
                 "deleteMcpServer",
                 "Delete a registered MCP server",
             ),
+            Op::put(
+                "/api/v1/mcp-servers/{id}/auth",
+                "setMcpServerAuth",
+                "Set how rolter authenticates to an MCP server",
+            ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "getMcpOauthClient",

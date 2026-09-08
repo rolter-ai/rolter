@@ -510,7 +510,7 @@ pub struct McpServer {
     pub name: String,
     pub slug: String,
     pub url: String,
-    /// one of `stdio` | `sse` | `streamable_http` | `websocket`
+    /// one of `sse` | `streamable_http` | `websocket` (stdio was dropped in #783)
     pub transport: String,
     pub description: String,
     /// only enabled servers are projected into gateway snapshots
@@ -535,6 +535,25 @@ pub struct McpServer {
     /// whether a sealed client secret is stored, so a UI can show that the
     /// client is confidential without the control plane handing the secret out
     pub has_client_secret: bool,
+    /// how rolter authenticates to this server: `none` | `bearer` | `header` |
+    /// `oauth` (#952). `oauth` is the consent flow above; the other two present
+    /// a static credential that the schema requires to be present for them and
+    /// absent otherwise
+    pub auth_kind: String,
+    /// the header a `header`-kind api key is presented in, e.g. `X-Api-Key`.
+    /// never `Authorization` — that one belongs to the bearer path, and the
+    /// `mcp_servers_auth_header_name_shape` constraint refuses it
+    pub auth_header_name: Option<String>,
+    /// whether a sealed static credential is stored. the credential itself is
+    /// deliberately **not** on this struct, for the same reason the client
+    /// secret is not
+    pub has_credential: bool,
+    /// per-server overrides of the org's `mcp_gateway_settings`; `None`
+    /// inherits, so an operator changing the org default still moves every
+    /// server that never asked to differ
+    pub connect_timeout_ms: Option<i32>,
+    pub request_timeout_ms: Option<i32>,
+    pub max_retries: Option<i32>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE

@@ -93,3 +93,68 @@ The whole flow is drivable from the SPA (#1194), so an operator never has to rea
 - **MCP Catalog → Configure** carries an *OAuth client* section: authorize URL, token URL, client id, a write-only client secret and the default scopes. It reads `GET .../oauth-client` purely for `redirect_uri` — the callback is deployment-derived and cannot be worked out from the browser's origin — and writes through `PUT .../oauth-client` after the server row itself is saved, which is also how a client is registered on a server in the same action that creates it. The secret is never echoed back: a badge says whether one is stored, and a *Clear stored secret* toggle sends `""` to downgrade the client to a public one. The `PUT` is skipped entirely when nothing in the section changed, so re-saving a server does not fill `audit_log` with `mcp_oauth_client.update` entries nobody made.
 - **MCP Catalog → Connect** calls `POST .../oauth/authorize` and opens the returned URL in a new tab. The dashboard never navigates itself there: the consent screen belongs to a third party, and a blocked pop-up is reported rather than left silent, because the request has already succeeded by then.
 - **Auth Sessions → renew** calls `POST /api/v1/mcp/sessions/{id}/refresh` for one row, beside the background sweeper. Only a session that stored a refresh token offers it. A refusal is worth reading rather than retrying, since the control plane has already revoked the session by the time the error arrives.
+
+## Static credentials, beside OAuth
+
+OAuth is one of four things `mcp_servers.auth_kind` can name (#952). The others
+are `none`, `bearer` and `header` — one deployment-wide credential rather than a
+token minted per user — and they exist because most hosted MCP servers today
+issue a long-lived token or an API key rather than running an authorization
+server.
+
+The schema, not the handler, is what keeps the four coherent. `mcp_servers_auth_kind_shape`
+requires `bearer` and `header` to hold a sealed credential and forbids one to
+`none` and `oauth`, and requires a header name for `header` alone. So a row
+cannot claim to be unauthenticated while holding a secret, and `has_credential`
+in the read API cannot contradict what the row says it does. The handler checks
+the same rules first only so an operator gets a `400` naming the problem instead
+of a `500` from the constraint.
+
+`mcp_servers_auth_header_name_shape` restricts the header to an RFC 9110 field
+name and refuses ten reserved ones. `Authorization` is the one that matters:
+without that clause, header mode could present an API key exactly where the
+bearer path puts a token.
+
+The credential is sealed with the deployment KEK through the same
+[`Kek`](../deployment/backup-and-restore.md) helper as the OAuth client secret,
+registered in `SEALED_COLUMNS`, and projected as `has_credential` — the
+plaintext has no field on any `Serialize` type. Writes follow the same
+three-shape convention the client secret uses: absent leaves the stored value,
+`""` clears it, anything else replaces it. That is what lets an operator move a
+server from `bearer` to `header` without re-typing a secret the API gives them
+no way to read.
+
+Moving to a kind that carries no credential clears it rather than orphaning it,
+whatever the caller sent. A sealed secret nothing can use is one `rolter kek
+verify` would audit forever, and it is a credential still sitting in a backup
+for no reason.
+
+### Per-server transport overrides
+
+`connect_timeout_ms`, `request_timeout_ms` and `max_retries` are nullable on
+`mcp_servers` and fall back to the org's `mcp_gateway_settings`. Null means
+inherit rather than a copy taken at creation, so raising the org default still
+moves every server that never asked to differ.
+
+On the wire the `PATCH` distinguishes absent from null — leave the override
+versus drop it — which an `Option` alone cannot express. serde collapses both to
+`None` for an `Option<Option<T>>`, so the fields deserialize through
+`explicit_null`, which returns `Some(None)` for a present null. Without it
+"stop overriding" silently means "leave it".
+
+### Not supported, and why
+
+- **stdio** — removed as a transport in #783, since a hosted control plane
+  cannot dial a local subprocess. The MCP specification agrees from the other
+  side: stdio implementations *"SHOULD NOT"* use its authorization flow and
+  should *"retrieve credentials from the environment"*, so there is nothing here
+  to store for one.
+- **mTLS** — a client certificate is an identity, not a string, and there is no
+  certificate store to put one in.
+- **Dynamic Client Registration (RFC 7591)** — the specification now marks it
+  deprecated, retained only for authorization servers that do not support Client
+  ID Metadata Documents.
+
+`header` mode is deliberately outside the specification, which defines only
+`Authorization: Bearer`. It is an accommodation for real servers, and both the
+operator docs and this page say so rather than implying conformance.
