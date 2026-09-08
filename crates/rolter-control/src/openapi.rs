@@ -227,6 +227,11 @@ fn operations() -> Vec<Op> {
                 "Configuration problems detected in the assembled config",
             ),
             Op::get(
+                "/api/v1/config/export",
+                "exportConfig",
+                "The live configuration as an importable rolter.toml",
+            ),
+            Op::get(
                 "/api/v1/currency",
                 "getCurrency",
                 "Supported currencies and their conversion rates",
@@ -1387,6 +1392,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/sso-providers",
                 "createSsoProvider",
                 "Register an SSO provider",
+            ),
+            Op::put(
+                "/api/v1/sso-providers/{id}",
+                "updateSsoProvider",
+                "Update an SSO provider in place",
             ),
             Op::delete(
                 "/api/v1/sso-providers/{id}",
