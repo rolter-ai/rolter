@@ -214,7 +214,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/version",
                 "getVersion",
-                "Running version and any available update",
+                "Running version, any available update, and this build's experimental subsystems",
             ),
             Op::get(
                 "/api/v1/config",

@@ -1,14 +1,15 @@
 ---
-title: "Version and Update Check for the Rolter Control Plane"
+title: "Version, Update Check and Stability Markers"
 sidebarTitle: "Version"
-description: "GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint."
+description: "GET /api/v1/version reports the running rolter version, the latest stable release when the control plane has checked, and which of this build's subsystems are experimental."
 ---
 
-`GET /api/v1/version` answers two questions in one document: which rolter this
-control plane is, and whether a newer stable release exists. The dashboard reads
-it once per session for the small *v0.2.0 available* hint beside the version in
-its footer, so no browser ever calls GitHub itself and a deployment does not
-leak per-user egress.
+`GET /api/v1/version` answers three questions about the build in one document:
+which rolter this control plane is, whether a newer stable release exists, and
+which of its subsystems ship as experimental. The dashboard reads it once per
+session — for the small *v0.2.0 available* hint beside the version in its
+footer, and for the experimental markers it draws in the navigation — so no
+browser ever calls GitHub itself and a deployment does not leak per-user egress.
 
 The answer comes from a check the control plane runs on its own schedule — once
 at boot and every six hours — against
@@ -37,7 +38,15 @@ about the deployment, not about any tenant. An anonymous request is refused with
   "release_url": "https://github.com/rolter-ai/rolter/releases/tag/v0.2.0",
   "update_available": true,
   "checked_at": "2026-09-05T08:12:44.913Z",
-  "enabled": true
+  "enabled": true,
+  "experimental": [
+    {
+      "id": "mcp_tool_groups",
+      "stability": "experimental",
+      "note": "tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
+      "nav_keys": ["tool-groups"]
+    }
+  ]
 }
 ```
 
@@ -49,6 +58,7 @@ about the deployment, not about any tenant. An anonymous request is refused with
 | `update_available` | boolean | `latest` is strictly newer than `current` by semantic-version order |
 | `checked_at` | RFC 3339 or `null` | when the last successful check completed |
 | `enabled` | boolean | whether the check runs at all; `false` when `ROLTER_UPDATE_CHECK=false` |
+| `experimental` | array | the subsystems this build ships as experimental; see below |
 
 ### States
 
@@ -77,10 +87,37 @@ build metadata (`+…`) is dropped. Pre-releases are handled explicitly:
   `0.2.0` it precedes;
 - a `current` ahead of the latest release — a dev build — reports `false`.
 
+## Experimental subsystems
+
+Not every part of Rolter is equally settled. A subsystem listed in
+`experimental` **may change shape or be removed in a minor release** — a
+documented exemption from the compatibility promise the rest of the surface
+makes. It is not a warning about quality, support or reliability, and it does
+not mean the subsystem is turned off: everything listed is enabled and usable.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | stable identifier for the subsystem; never renamed once published |
+| `stability` | string | always `experimental` today. Sent explicitly so a reader never has to infer the level from list membership |
+| `note` | string | what specifically is unfinished, in one sentence, safe to render verbatim |
+| `nav_keys` | string[] | the dashboard navigation entries this subsystem appears under. Empty when it has no screen of its own — a gateway surface such as `/v1/realtime`, or a cross-cutting concept such as labels |
+
+Only the exceptions travel. A subsystem that is **absent** from the array is
+stable, and `"stability": "stable"` is never sent: absence is the signal, which
+is why the dashboard renders nothing for the overwhelming majority of screens.
+
+The list is a compile-time constant, so it is identical for every caller, never
+varies with a deployment's configuration, and changes only when you upgrade
+Rolter. An empty array is a valid and expected answer for a build with nothing
+outstanding, and the array is served whether or not the update check is enabled.
+
 ## Turning it off
 
 Set `ROLTER_UPDATE_CHECK=false` on the control plane. The endpoint keeps
-answering, with `enabled: false` and nothing else filled in, so a dashboard
-built against a checking deployment renders the same on an opted-out one. The
+answering, with `enabled: false` and nothing else from the *check* filled in, so
+a dashboard built against a checking deployment renders the same on an opted-out
+one. `current` and `experimental` are unaffected — neither needs the network,
+and an air-gapped deployment still needs to know what its build ships as
+experimental. The
 same variable silences the `rolter` CLI's stderr notice; see
 [Environment variables](/configuration/environment-variables#update-check).

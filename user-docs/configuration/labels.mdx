@@ -4,6 +4,14 @@ sidebarTitle: "Labels"
 description: "Attach your own labels to providers, provider groups, routes and models, and read the automatic labels Rolter derives — including what the timestamp on an automatic label does and does not promise."
 ---
 
+<Warning>
+  **Experimental.** Labels may change shape or be removed in a minor release.
+  They are display and filter only today; the change that makes a route select
+  its targets by label turns a label into configuration the gateway reads, and
+  that is a change in what a label *is*. Build reporting and filtering on them,
+  not automation you cannot revisit.
+</Warning>
+
 A label is a short fact attached to a provider, a provider group, a route or a
 model. Rolter stores two kinds, and the difference matters when you act on one.
 

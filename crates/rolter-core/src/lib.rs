@@ -14,6 +14,7 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod slug;
+pub mod stability;
 pub mod telemetry;
 
 pub use access_policy::ModelPolicy;
@@ -54,6 +55,7 @@ pub use prompt_templates::{
     PromptTemplateActivationScope, PromptTemplateRequestScope, PromptTemplatesConfig, RenderError,
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
 };
+pub use stability::{Stability, SubsystemStability, SUBSYSTEMS};
 
 /// Redis pub/sub channel the control plane publishes config-version bumps
 /// on; gateways subscribe to it to trigger an immediate snapshot poll.

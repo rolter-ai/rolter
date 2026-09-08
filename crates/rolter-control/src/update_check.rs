@@ -13,12 +13,20 @@
 //! set to a falsy value turns the whole thing off for air-gapped deployments,
 //! and the request carries nothing but a `User-Agent` — no installation id, no
 //! config, no credentials.
+//!
+//! The same answer carries the stability markers (#1385). Both are facts about
+//! the build rather than about a tenant, both are read by the dashboard shell
+//! once per session at the point where it also builds the nav, and both are
+//! already covered by the `version` capability every authenticated caller
+//! holds — so the marker rides here rather than paying for a second endpoint,
+//! a second capability row and a second round trip at app start.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
+use rolter_core::stability::{SubsystemStability, SUBSYSTEMS};
 use serde::Serialize;
 
 /// Environment variable that turns the check off. Anything falsy (`false`,
@@ -246,6 +254,17 @@ pub struct UpdateStatus {
     pub checked_at: Option<DateTime<Utc>>,
     /// whether the check runs at all in this deployment
     pub enabled: bool,
+    /// the subsystems this build ships as experimental (#1385).
+    ///
+    /// Only the exceptions travel: a subsystem absent from the list is stable,
+    /// which is what the dashboard renders nothing for. Compile-time, so it is
+    /// identical for every caller and changes only when the binary does.
+    ///
+    /// Named for the level rather than the axis on purpose. A future level
+    /// would arrive as its own field, so a client that only understands this
+    /// one cannot quietly read a `deprecated` entry as experimental — each
+    /// entry still carries its `stability` so the level is never inferred.
+    pub experimental: &'static [SubsystemStability],
 }
 
 #[derive(Default)]
@@ -310,6 +329,7 @@ impl UpdateChecker {
             update_available: release.is_some_and(|r| is_newer(&r.version, current)),
             checked_at: snapshot.checked_at,
             enabled: self.enabled,
+            experimental: SUBSYSTEMS,
         }
     }
 
@@ -501,8 +521,27 @@ mod tests {
                 update_available: false,
                 checked_at: None,
                 enabled: false,
+                // opting out of the network check does not opt out of knowing
+                // what this build ships as experimental
+                experimental: SUBSYSTEMS,
             }
         );
+    }
+
+    #[test]
+    fn the_status_carries_this_builds_stability_markers() {
+        let status = UpdateChecker::new(true).status();
+        assert_eq!(status.experimental, SUBSYSTEMS);
+        let json = serde_json::to_value(&status).expect("serializable");
+        let listed = json["experimental"].as_array().expect("an array");
+        assert_eq!(listed.len(), SUBSYSTEMS.len());
+        for entry in listed {
+            // the level rides on the wire so a reader never infers it from
+            // membership of the list alone
+            assert_eq!(entry["stability"], "experimental");
+            assert!(entry["id"].is_string());
+            assert!(entry["nav_keys"].is_array());
+        }
     }
 
     #[test]

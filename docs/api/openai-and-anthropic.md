@@ -26,7 +26,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/audio/speech` | OpenAI text-to-speech; binary audio response |
 | POST | `/v1/audio/transcriptions` | OpenAI speech-to-text; `multipart/form-data` upload |
 | POST | `/v1/audio/translations` | OpenAI audio translation; `multipart/form-data` upload |
-| GET | `/v1/realtime?model=…` | OpenAI-compatible Realtime API; WebSocket relay |
+| GET | `/v1/realtime?model=…` | OpenAI-compatible Realtime API; WebSocket relay. **Experimental** — see below |
 | GET, POST, DELETE | `/mcp/{server}/{path…}` | authenticated Streamable HTTP/SSE MCP proxy |
 | GET | `/v1/models` | lists configured public model names |
 | GET | `/openapi.json` | OpenAPI 3.1 description of this request surface (self-contained, no external assets) |
@@ -74,6 +74,8 @@ version a native client did state would silently change the protocol it asked
 for. Exactly one value is sent either way.
 
 ## Realtime WebSocket
+
+> **Experimental.** This surface carries the `realtime` [stability marker](../development/stability-markers.md): it may change shape or be withdrawn in a minor release. A session is admitted against the process-local caps in `[realtime]` and nothing else — budgets, rate limits, guardrails, usage recording and cost attribution all sit on the HTTP request path and do not see it, so spend through a realtime session is neither capped nor recorded. Treat it as a preview rather than something to meter a deployment on.
 
 Connect with the usual gateway bearer key and the public route model as a query parameter:
 
