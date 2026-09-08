@@ -128,7 +128,8 @@
               "api/models",
               "api/health-and-metrics",
               "api/ui-events",
-              "api/version"
+              "api/version",
+              "api/control-plane-openapi"
             ]
           }
         ]
