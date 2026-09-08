@@ -137,9 +137,11 @@ replacements cover every case the dashboard had:
 ## Every story is an accessibility test
 
 `ui/.storybook/test-runner.ts` runs axe over the whole document after each
-story's play function, and fails the story on any **serious** or **critical**
-violation (`wcag2a`, `wcag2aa`, `best-practice`; only `document-title` and
-`html-has-lang` are off, because that iframe is Storybook's own). Adding a
+story's play function, and fails the story on **any violation at any impact**
+(`wcag2a`, `wcag2aa`, `best-practice`; the disabled rules are named with their
+reasons in `DISABLED_RULES` — Storybook's own iframe, plus the three page-level
+landmark rules a single-component story cannot satisfy, see
+[Testing](testing.md#every-story-is-also-an-axe-test)). Adding a
 story therefore adds a contrast and a semantics check for whatever it renders,
 in every state it renders — empty, loading and error included.
 
