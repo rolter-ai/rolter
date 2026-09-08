@@ -61,9 +61,6 @@ const VERSION = {
   update_available: false,
   checked_at: null,
   enabled: false,
-  // nothing experimental by default: the marker is the exception, so the
-  // stories that are not about it get the rail every other build renders
-  experimental: [] as SubsystemStability[],
 };
 
 /**
@@ -82,9 +79,9 @@ export const EXPERIMENTAL_SUBSYSTEM: SubsystemStability = {
   nav_keys: ["plugins"],
 };
 
-/** The shell's chain with `experimental` answering with `subsystems`. */
+/** The shell's chain with `/api/v1/stability` answering with `subsystems`. */
 export function shellStubWithStability(subsystems: SubsystemStability[]): FetchStub {
-  return shellStub([["/api/v1/version", () => ({ ...VERSION, experimental: subsystems })]]);
+  return shellStub([["/api/v1/stability", () => subsystems]]);
 }
 
 const SUMMARY = {
@@ -120,6 +117,9 @@ export function shellStub(extra: [string, () => unknown][] = []): FetchStub {
       ["/api/v1/analytics", () => ({ data: [] })],
       ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
       ["/api/v1/version", () => VERSION],
+      // nothing experimental by default: the marker is the exception, so the
+      // stories that are not about it get the rail every other build renders
+      ["/api/v1/stability", () => [] as SubsystemStability[]],
     ]),
   );
 }

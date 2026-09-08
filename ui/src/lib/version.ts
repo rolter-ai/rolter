@@ -1,7 +1,12 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchVersion, type VersionStatus } from "@/lib/api";
+import {
+  fetchStability,
+  fetchVersion,
+  type SubsystemStability,
+  type VersionStatus,
+} from "@/lib/api";
 
 /**
  * What the rail footer needs to know about a newer release (#902).
@@ -62,10 +67,10 @@ export function useVersionStatus(
 export type ExperimentalNavKeys = ReadonlyMap<string, string>;
 
 export function experimentalNavKeysFrom(
-  status: VersionStatus | undefined,
+  subsystems: readonly SubsystemStability[] | undefined,
 ): ExperimentalNavKeys {
   const marked = new Map<string, string>();
-  for (const entry of status?.experimental ?? []) {
+  for (const entry of subsystems ?? []) {
     // the level rides on each entry, so membership of the list is never what
     // the marker is inferred from
     if (entry.stability !== "experimental") continue;
@@ -77,21 +82,21 @@ export function experimentalNavKeysFrom(
 /**
  * Which nav entries carry the experimental marker.
  *
- * Shares `useVersionStatus`'s query — same key, same fetch — so the shell pays
- * for one request rather than two, and deliberately tolerant of every way the
- * answer can fail to arrive: a 404 from an older control plane, a network
- * error, or a session still being checked all yield an empty map. Nothing is
- * marked and nothing is thrown, because a rail that will not render is a worse
- * outcome than a rail missing two badges.
+ * Its own request to `/api/v1/stability` (#1385): the answer is a fact about
+ * the binary, so it is read once per session and kept for an hour. Deliberately
+ * tolerant of every way the answer can fail to arrive: a 404 from an older
+ * control plane, a network error, or a session still being checked all yield
+ * an empty map. Nothing is marked and nothing is thrown, because a rail that
+ * will not render is a worse outcome than a rail missing two badges.
  */
 export function useStability(enabled: boolean): ExperimentalNavKeys {
   const query = useQuery({
-    queryKey: ["version"],
-    queryFn: fetchVersion,
+    queryKey: ["stability"],
+    queryFn: fetchStability,
     enabled,
     retry: false,
     staleTime: 60 * 60_000,
   });
-  const status = query.data;
-  return React.useMemo(() => experimentalNavKeysFrom(status), [status]);
+  const subsystems = query.data;
+  return React.useMemo(() => experimentalNavKeysFrom(subsystems), [subsystems]);
 }

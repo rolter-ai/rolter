@@ -1926,12 +1926,6 @@ export interface SubsystemStability {
  * boot and every few hours; the browser never does. `latest`, `release_url`
  * and `checked_at` are null until a check has succeeded, and `enabled` is
  * false when `ROLTER_UPDATE_CHECK=false` opted the deployment out.
- *
- * The same answer carries this build's stability markers (#1385): both are
- * facts about the binary rather than about a tenant, and the shell reads them
- * at the point where it also builds the nav. `experimental` is optional so a
- * dashboard served in front of an older control plane simply renders no
- * markers instead of failing.
  */
 export interface VersionStatus {
   current: string;
@@ -1940,11 +1934,20 @@ export interface VersionStatus {
   update_available: boolean;
   checked_at: string | null;
   enabled: boolean;
-  experimental?: SubsystemStability[];
 }
 
 export function fetchVersion(): Promise<VersionStatus> {
   return getJson<VersionStatus>("/api/v1/version");
+}
+
+/**
+ * `GET /api/v1/stability`: this build's experimental subsystems (#1385). Only
+ * the exceptions travel — an empty array is the healthy answer — and the
+ * capability behind it is held by every signed-in caller, so the nav can ask
+ * for a viewer as well as an admin.
+ */
+export function fetchStability(): Promise<SubsystemStability[]> {
+  return getJson<SubsystemStability[]>("/api/v1/stability");
 }
 
 /**

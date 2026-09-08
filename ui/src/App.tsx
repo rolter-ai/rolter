@@ -339,9 +339,9 @@ function Shell() {
   // while the endpoint is unreachable or the session is still being checked
   const { version, update } = useVersionStatus(__APP_VERSION__, !!email && status !== "checking");
 
-  // which nav entries this build ships as experimental (#1386). The same
-  // `/api/v1/version` answer the footer reads, so the shell still makes one
-  // request; tolerant by construction, since an empty map marks nothing.
+  // which nav entries this build ships as experimental (#1386), read from
+  // `/api/v1/stability` once per session; tolerant by construction, since an
+  // empty map marks nothing and a failed read is one too.
   const experimental = useStability(!!email && status !== "checking");
 
   // revoke the server-side session (if any) before clearing local state;

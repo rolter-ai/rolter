@@ -135,7 +135,7 @@ export const Mobile: Story = {
 };
 
 /**
- * The experimental marker, end to end (#1386): `/api/v1/version` names a
+ * The experimental marker, end to end (#1386): `/api/v1/stability` names a
  * subsystem and the nav leaves it maps to, and the rail marks exactly those
  * entries in place — no new section, no regrouping, every other entry
  * untouched.
