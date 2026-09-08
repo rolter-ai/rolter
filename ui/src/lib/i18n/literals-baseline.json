@@ -8,6 +8,7 @@
     "Add param",
     "Admin default inference params, applied reload-free on save.",
     "No default params.",
+    "Not a standard OpenAI/Anthropic param: {…}. Saved as-is — check the spelling if unintended.",
     "Overridable — callers may override; click to lock",
     "Override policy",
     "Param name",
@@ -19,6 +20,7 @@
     "Unrecognized param key"
   ],
   "src/components/ProviderGroupSheet.tsx": [
+    "A provider group unifies a fleet of providers behind one",
     "Add member",
     "Allow slug change",
     "Cancel",
@@ -77,8 +79,12 @@
     "Latency",
     "Live scores and decision modes reported by gateways using the adaptive strategy. Counts reset when a gateway rebuilds its routing snapshot.",
     "No target signals were included in this report.",
+    "Reported {…}",
     "Samples",
-    "Upstream"
+    "Target signals reported by {…}",
+    "Updated {…}",
+    "Upstream",
+    "{…} decisions"
   ],
   "src/pages/AdaptiveSettings.tsx": [
     "Adaptive Routing",
@@ -87,16 +93,26 @@
     "Each signal is scored in",
     "Exploration",
     "Exploration ratio",
+    "Governs {…} {…}:",
     "No route currently uses the adaptive strategy.",
     "Save Changes",
     "Saving…",
-    "Warm-up samples"
+    "The kill switch. Turning it off leaves every route on the",
+    "The share of traffic sent off the current best target to keep its score fresh, and how many samples a target needs before its score is trusted at all. Ratio is capped at {…}.",
+    "Warm-up samples",
+    "and combined as a weighted sum, so only the ratio between these matters — doubling all three changes nothing."
+  ],
+  "src/pages/Alerting.tsx": [
+    "{…} channels · webhook destinations for alert delivery",
+    "{…} notifications · newest first",
+    "{…} rules · evaluated every 60s against gateway analytics"
   ],
   "src/pages/AuditLog.tsx": [
     "All actions",
     "All targets",
     "Next",
-    "Prev"
+    "Prev",
+    "page {…} {…}"
   ],
   "src/pages/ClientSettings.tsx": [
     "Add header",
@@ -128,16 +144,22 @@
     "Default max tokens",
     "Save Changes",
     "Saving…",
-    "Sent as the"
+    "Sent as the",
+    "These fields only take effect after a gateway restart:",
+    "header on every request Rolter translates into the Anthropic dialect. Forwarded verbatim, so it must be a dated release.",
+    "while OpenAI treats it as optional. This value fills the gap when an OpenAI-shaped request that omits it is translated."
   ],
   "src/pages/ComplexityRouter.tsx": [
     "Add tier",
     "Complexity policy",
     "Edit policy",
-    "Save"
+    "Save",
+    "{…} of {…} routes have a complexity policy · requests are measured by input bytes and routed to the matching tier",
+    "{…} tiers"
   ],
   "src/pages/Config.tsx": [
     "API base",
+    "Admin-only · read-only view. Config is applied from",
     "Client settings",
     "Config hot-swaps with no restart — the gateway polls the control plane's snapshot endpoint.",
     "Effective config",
@@ -161,9 +183,12 @@
     "Endpoint URL",
     "Name",
     "OTLP/HTTP collector endpoint request logs are exported to.",
-    "Sampling (%)"
+    "Sampling (%)",
+    "{…} connectors · OTLP/HTTP sinks for request logs",
+    "{…}% sampled"
   ],
   "src/pages/CostAttribution.tsx": [
+    "+ New {…}",
     "Acme Corp",
     "Allow slug change",
     "Business unit",
@@ -173,11 +198,13 @@
     "Edit",
     "Name",
     "Platform Engineering",
+    "Rename the slug from",
     "Restore",
     "Retire",
     "Save",
     "Slug",
-    "Unassigned"
+    "Unassigned",
+    "{…} {…} · {…} active"
   ],
   "src/pages/FeatureFlags.tsx": [
     "Save Changes",
@@ -185,6 +212,7 @@
   ],
   "src/pages/Keys.tsx": [
     "Add Virtual Key",
+    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
     "Cancel",
     "Copy key prefix",
     "Create",
@@ -197,7 +225,12 @@
     "Search by name…",
     "The plaintext key is shown once, right after creation — copy it then",
     "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
-    "will stop authenticating immediately. This cannot be undone."
+    "will stop authenticating immediately. This cannot be undone.",
+    "{…} of {…} keys"
+  ],
+  "src/pages/Limits.tsx": [
+    "{…} rpm",
+    "{…} tpm"
   ],
   "src/pages/Logs.tsx": [
     "Close details",
@@ -217,7 +250,9 @@
     "Status",
     "Time",
     "Tokens",
-    "Virtual key"
+    "Virtual key",
+    "p{…}",
+    "{…} · {…} requests"
   ],
   "src/pages/LogsSettings.tsx": [
     "Anything longer is truncated. Maximum 1048576 (1 MiB).",
@@ -257,7 +292,8 @@
     "Time",
     "Tool",
     "Trace",
-    "Transport"
+    "Transport",
+    "{…} ms"
   ],
   "src/pages/McpManagement.tsx": [
     "Allow unlisted tools",
@@ -276,6 +312,7 @@
     "Defaults apply when registering new MCP servers. Runtime authorization still comes from server scopes and each user&apos;s OAuth session.",
     "Delete",
     "Delete server",
+    "Delete {…}?",
     "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
     "Deleting…",
     "Description",
@@ -311,7 +348,9 @@
     "These values are persisted for MCP-aware clients. The current HTTP proxy continues to use deployment-level transport timeouts.",
     "Tools",
     "Transport",
-    "Transport defaults"
+    "Transport defaults",
+    "{…} declared {…}",
+    "{…} enabled {…}"
   ],
   "src/pages/McpOAuth.tsx": [
     "A grant records consent, not credentials. No access or refresh token is ever sent to this dashboard — the sealed tokens stay inside the control plane, and revoking consent here is what makes them unusable.",
@@ -320,6 +359,7 @@
     "Expires",
     "Granted",
     "Last used",
+    "Org admins see every {…} in the org; members and viewers see — and may revoke — only their own.",
     "Owner",
     "Revoke consent",
     "Revoke this consent and every session under it",
@@ -329,7 +369,10 @@
     "Server",
     "Sessions",
     "Sessions are shown as metadata only. The access and refresh tokens are sealed with the deployment key and never leave the control plane, so this screen can tell you a session is renewable but never what it holds.",
-    "State"
+    "State",
+    "{…} Revoking this grant for",
+    "{…} grants · {…} active",
+    "{…} sessions · {…} live"
   ],
   "src/pages/ModelSettings.tsx": [
     "Apply defaults",
@@ -343,9 +386,11 @@
     "Saving…",
     "Settings &rsaquo; Performance Tuning",
     "Temperature",
-    "Top-p"
+    "Top-p",
+    "Upstream timeouts and the retry budget are deployment-wide and live under"
   ],
   "src/pages/Models.tsx": [
+    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
     "Cancel",
     "Delete",
     "Delete model",
@@ -357,10 +402,12 @@
     "Provider",
     "Search models",
     "Strategy",
+    "This removes all routes and targets for",
     "View",
     "Weight",
     "color-mix(in srgb, var(--status-success) 32%, transparent)",
-    "shipped in config · immutable"
+    "shipped in config · immutable",
+    "{…} models · {…} providers"
   ],
   "src/pages/Performance.tsx": [
     "Admission Queue",
@@ -382,7 +429,8 @@
   ],
   "src/pages/Playground.tsx": [
     "n=1",
-    "n=4"
+    "n=4",
+    "sample {…}"
   ],
   "src/pages/Pricing.tsx": [
     "Add price",
@@ -396,9 +444,18 @@
     "Model name",
     "Output price per Mtok",
     "Prices are per million tokens (Mtok); saving upserts by model name.",
-    "Save"
+    "Removes the pricing entry for",
+    "Save",
+    "cached {…} {…}/Mtok",
+    "in {…} {…}/Mtok",
+    "out {…} {…}/Mtok",
+    "{…} models · per-million-token pricing · currency set per model"
+  ],
+  "src/pages/PromptRepository.tsx": [
+    "v{…}"
   ],
   "src/pages/ProviderGroups.tsx": [
+    "Add/edit/delete is unavailable: {…}. Read-only view still works.",
     "Address",
     "Cancel",
     "Copy address prefix",
@@ -408,7 +465,8 @@
     "Name",
     "Search provider groups",
     "Strategy",
-    "address. Member providers are unaffected. This cannot be undone."
+    "address. Member providers are unaffected. This cannot be undone.",
+    "{…}/model"
   ],
   "src/pages/RoutingRules.tsx": [
     "Add route",
@@ -418,7 +476,8 @@
     "No targets yet.",
     "Public model name resolved to upstream targets by the chosen strategy.",
     "Strategy",
-    "Weight"
+    "Weight",
+    "{…} routes · public model names clients call, resolved to upstream targets"
   ],
   "src/pages/Security.tsx": [
     "/v1/models, /v1/ping",
@@ -439,13 +498,17 @@
     "X-Tenant-ID: acme, X-Custom-Header: value",
     "configured — enter to replace"
   ],
+  "src/pages/SkillsRepository.tsx": [
+    "v{…}"
+  ],
   "src/pages/Teams.tsx": [
     "Budget",
     "Create",
     "Group users, share budgets and access.",
     "Members",
     "New team",
-    "Team name"
+    "Team name",
+    "{…} teams · group users, share budgets and access"
   ],
   "src/pages/UserProvisioning.tsx": [
     "Cancel",
@@ -456,6 +519,7 @@
     "Issue token",
     "Name",
     "Okta production",
+    "Paste it into your identity provider's SCIM connector as the bearer token, alongside the base URL",
     "Provisioned accounts join this org as viewers and have no local password: SCIM decides who exists, you still decide what they may do.",
     "Provisioning tokens are visible to org admins only. Ask an admin to issue or revoke one for your identity provider.",
     "Revoke",
@@ -464,6 +528,7 @@
     "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
     "scim 2.0 · bearer credential",
     "stops authenticating on the very next request — there is no cache to wait out. Accounts it already provisioned are left exactly as they are: nobody is deactivated or logged out, the directory simply stops syncing until you point the IdP at a new token.",
-    "to create, update and deactivate accounts in this org."
+    "to create, update and deactivate accounts in this org.",
+    "{…} tokens · {…} active. Your identity provider presents one of these as a bearer token and drives"
   ]
 }

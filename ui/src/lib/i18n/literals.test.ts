@@ -294,3 +294,71 @@ describe("findLiterals is independent of formatting", () => {
     expect(texts(source)).toEqual(["Request preview"]);
   });
 });
+
+// prose that shares a text node with an interpolation was invisible to the
+// gate: `TEXT` matches a run that may not contain a brace, so a whole
+// grammatical class of copy — the class that most needs a catalog entry,
+// because interpolation order differs by language — never entered the ratchet
+// (#1355)
+describe("findLiterals sees prose beside an interpolation", () => {
+  test("reads text that follows an interpolation", () => {
+    expect(texts("<p>{active.name} owns external enforcement</p>")).toEqual([
+      "{…} owns external enforcement",
+    ]);
+  });
+
+  test("reads text that precedes an interpolation", () => {
+    expect(texts("<p>Charged to {team.name}</p>")).toEqual(["Charged to {…}"]);
+  });
+
+  test("reads text on both sides, and between two of them, as one sentence", () => {
+    expect(texts("<p>Charged to {name} monthly, {plan} plan</p>")).toEqual([
+      "Charged to {…} monthly, {…} plan",
+    ]);
+    expect(texts("<span>{used} of {limit} keys</span>")).toEqual(["{…} of {…} keys"]);
+  });
+
+  // a separator between two values is not copy, and a baseline full of `{…} ·
+  // {…}` would bury the sentences that are
+  test("ignores a run that is only punctuation or whitespace", () => {
+    expect(texts("<span>{a} · {b}</span>")).toEqual([]);
+    expect(texts("<span>{count} ({total})</span>")).toEqual([]);
+    expect(texts("<span>{first} — {second}</span>")).toEqual([]);
+    expect(texts("<Badge>{status}</Badge>")).toEqual([]);
+  });
+
+  // `{" "}` is how a formatter is told to keep a space; it is whitespace, not a
+  // value, so it does not become a placeholder in the middle of a sentence
+  test("treats the explicit JSX space as a space", () => {
+    const source = ['<p>', '  Governs {affected.length}{" "}', "  routes today", "</p>"].join("\n");
+    expect(texts(source)).toEqual(["Governs {…} routes today"]);
+  });
+
+  // the closing `>` of a generic is not the end of a tag. unlike `TEXT`, this
+  // pattern spans braces, so a misread `>` swallows whole statements — both of
+  // these reported code as copy while the check was missing
+  test("does not read a closing generic as a tag", () => {
+    const source = [
+      "const [rows, setRows] = React.useState<Row[]>({ ok: true });",
+      "async function getText(url: string): Promise<string> { return (await fetch(url)).text(); }",
+      "export interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {",
+      "  label: React.ReactNode;",
+      "}",
+      "const ARROWS: Record<string, string> = { up: '^' };",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  // half a sentence through the catalogs is still half a sentence hardcoded
+  test("reports the prose left beside a translated fragment", () => {
+    expect(texts('<p>{t("pages.x.owner", { name })} today</p>')).toEqual(["{…} today"]);
+    expect(texts('<p>{t("pages.x.a")} {t("pages.x.b")}</p>')).toEqual([]);
+  });
+
+  test("reports the sentence once, on the line the text starts", () => {
+    const found = findLiterals("\n<p>Charged to {name} monthly</p>", "src/x.tsx");
+    expect(found).toEqual([
+      { file: "src/x.tsx", line: 2, text: "Charged to {…} monthly", kind: "text" },
+    ]);
+  });
+});
