@@ -63,7 +63,12 @@ export function LoadError({
         <p className="text-sm font-medium text-foreground">
           {t(`errors.load.${kind}.title`, { resource })}
         </p>
-        <p className="text-sm text-muted-foreground">{t(`errors.load.${kind}.body`)}</p>
+        {/* the body carries {{resource}} in five of the eight kinds, so it
+            needs the same interpolation the title gets — without it the reader
+            saw the raw placeholder on screen (#1362) */}
+        <p className="text-sm text-muted-foreground">
+          {t(`errors.load.${kind}.body`, { resource })}
+        </p>
         {detail && (
           // the control plane's own words. The whole point of #962 is that the
           // dashboard's summary was the only thing on screen and it was wrong

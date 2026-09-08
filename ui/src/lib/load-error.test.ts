@@ -1,7 +1,15 @@
 import { describe, expect, it } from "bun:test";
 
 import { AnalyticsUnavailableError, ApiError } from "@/lib/api";
-import { classifyLoadError, isRetryable, needsSignIn } from "@/lib/load-error";
+import { flatten, placeholders, type Catalog } from "@/lib/i18n/parity";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  classifyLoadError,
+  isRetryable,
+  needsSignIn,
+  type LoadErrorKind,
+} from "@/lib/load-error";
 
 describe("classifyLoadError", () => {
   // the #942 case that motivated #962: every /api/v1/me/* route returned 401
@@ -98,4 +106,52 @@ describe("noAnalytics", () => {
     expect(isRetryable("noAnalytics")).toBe(false);
     expect(needsSignIn("noAnalytics")).toBe(false);
   });
+});
+
+// LoadError renders exactly two strings per kind and hands both the same one
+// variable. Five bodies carry {{resource}}, so a body rendered without it put
+// the raw placeholder on screen (#1362) — and catalog parity cannot catch that,
+// because the placeholder is present in every locale and it is the call site
+// that drops it. This holds the copy to what the component can actually fill.
+describe("errors.load copy", () => {
+  const KINDS: LoadErrorKind[] = [
+    "unauthenticated",
+    "forbidden",
+    "openMode",
+    "noStore",
+    "noAnalytics",
+    "unreachable",
+    "server",
+    "unknown",
+  ];
+  const catalogs: Record<string, Catalog> = { en: en as Catalog, ru: ru as Catalog };
+
+  for (const [locale, catalog] of Object.entries(catalogs)) {
+    const flat = flatten(catalog);
+
+    it(`${locale} interpolates nothing LoadError does not pass`, () => {
+      for (const kind of KINDS) {
+        for (const part of ["title", "body"] as const) {
+          const key = `errors.load.${kind}.${part}`;
+          const value = flat.get(key);
+          expect(value).toBeString();
+          expect([...placeholders(value!)].sort()).toEqual(
+            value!.includes("{{resource}}") ? ["{{resource}}"] : [],
+          );
+        }
+      }
+    });
+
+    it(`${locale} leaves no placeholder unresolved once resource is filled`, () => {
+      for (const kind of KINDS) {
+        for (const part of ["title", "body"] as const) {
+          const rendered = flat
+            .get(`errors.load.${kind}.${part}`)!
+            .split("{{resource}}")
+            .join("virtual keys");
+          expect(rendered).not.toInclude("{{");
+        }
+      }
+    });
+  }
 });
