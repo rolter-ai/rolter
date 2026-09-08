@@ -14,7 +14,8 @@
     "test": "bun test src scripts",
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
-    "check:literals": "bun scripts/check-literals.ts"
+    "check:literals": "bun scripts/check-literals.ts",
+    "gen:rbac": "bun scripts/gen-rbac-capabilities.ts"
   },
   "//overrides": "@storybook/test-runner pulls its own playwright, which asks for a browser revision `playwright install` (resolved from @playwright/test) never downloads. pin both to one version so a single install step serves both. see #737 uuid is pinned to the patched 11.1.1 because @storybook/test-runner reaches it through jest-junit and istanbul-lib-processinfo, which both still ask for ^8.3.2 (dependabot alert #8).",
   "overrides": {

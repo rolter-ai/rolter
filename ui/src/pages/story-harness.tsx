@@ -3,16 +3,11 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
-import type {
-  RbacAction,
-  RbacActionView,
-  RbacEffective,
-  RbacMatrix,
-  Role,
-} from "@/lib/api";
+import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
+import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
 import { ToastProvider } from "@/lib/toast";
 
 // Shared fetch-stub harness for screen stories (#879).
@@ -120,168 +115,24 @@ export function Harness({
 /** The four kinds of caller the gating stories are written for. */
 export type StoryRole = Role | "superadmin";
 
-// the capability table, as much of it as the stories need
-// (crates/rolter-control/src/rbac_matrix.rs). read is a viewer's and mutations
-// are an admin's for everything with a tenancy scope; everything without one is
-// the superadmin's alone
-const SCOPED_RESOURCES = [
-  "org",
-  "team",
-  "project",
-  "provider",
-  "provider_group",
-  "plugin",
-  "route",
-  "virtual_key",
-  "budget",
-  "rate_limit",
-  "business_unit",
-  "customer",
-  "prompt_template",
-  "skill",
-  "user",
-  "membership",
-  "custom_role",
-  "access_profile",
-  "access_profile_assignment",
-  "mcp_server",
-  "mcp_tool_group",
-  "mcp_settings",
-  "mcp_oauth_grant",
-  "mcp_oauth_session",
-];
-
-// the two deployment-wide catalogs, which are neither scoped nor an admin's:
-// the effective model list and the pricing table carry no tenant's data, so
-// every authenticated caller reads them, and there is no deployment membership
-// a role floor could be measured against, so every mutation is the
-// superadmin's alone (crates/rolter-control/src/rbac_matrix.rs). the actions
-// they do not have — a price is upserted, never created; a model row is only
-// ever deleted — are absent here for the same reason they are absent there
-const CATALOG_ACTIONS: Record<string, RbacAction[]> = {
-  model: ["delete"],
-  model_price: ["update", "delete"],
-};
-
-// an admin read: the rows name the IdPs and the invitations, not just the data
-const ADMIN_RESOURCES = [
-  "scim_token",
-  "scim_group_mapping",
-  "audit_log",
-  "invitation",
-  "sso_provider",
-  "sso_group_mapping",
-  "org_auth_policy",
-  "mcp_oauth_client",
-];
-
-const DEPLOYMENT_RESOURCES = [
-  "feature_flags",
-  "runtime_policy",
-  "logging_settings",
-  "compatibility_policy",
-  "client_settings",
-  "model_defaults",
-  "adaptive_routing_policy",
-  "adaptive_routing_telemetry",
-  "guardrail_rule",
-  "guardrail_provider",
-  "cluster_node",
-  "security_settings",
-  "connector",
-  "alert_channel",
-  "alert_rule",
-  "alert_history",
-  "mcp_log",
-];
-
-const ACTIONS: RbacAction[] = ["read", "create", "update", "delete"];
-
-/** What the control plane would answer for a caller holding `role`. */
+/**
+ * What the control plane would answer for a caller holding `role`, derived
+ * from its own capability table (#1298).
+ *
+ * The table used to be copied out by hand here, and the copy drifted: #1258
+ * found it calling `model` and `model_price` org-scoped admin resources when
+ * both are deployment-wide catalogs a superadmin alone writes, which let two
+ * screens gate on capabilities the control plane does not define while their
+ * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
+ * generated copy of `CAPABILITIES` instead, and a test fails the build when
+ * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ */
 export function effectiveFor(role: StoryRole): RbacEffective {
-  const allowed: string[] = [];
-  if (role !== "superadmin") {
-    for (const resource of SCOPED_RESOURCES) {
-      allowed.push(`${resource}:read`);
-      if (role === "admin") {
-        for (const action of ACTIONS) allowed.push(`${resource}:${action}`);
-      }
-    }
-    // the catalogs are every authenticated caller's read, an admin's included,
-    // and nobody's write short of a superadmin
-    for (const resource of Object.keys(CATALOG_ACTIONS)) allowed.push(`${resource}:read`);
-    // a key a member mints for themself, which is the one create a non-admin has
-    if (role !== "viewer") allowed.push("my_virtual_key:create");
-    if (role === "admin") {
-      for (const resource of ADMIN_RESOURCES) {
-        for (const action of ACTIONS) allowed.push(`${resource}:${action}`);
-      }
-    }
-  }
-  return {
-    superadmin: role === "superadmin",
-    role: role === "superadmin" ? "admin" : role,
-    // a superadmin's list is empty on the wire too: `decide` short-circuits on
-    // the flag rather than enumerating every pair
-    allowed: role === "superadmin" ? [] : allowed,
-    custom_roles: [],
-    model_policy: null,
-  };
+  return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
 }
 
 /** The published rules, which is where a disabled control reads its role from. */
-export function matrixFixture(): RbacMatrix {
-  const actions = (minimum: Role | null): RbacActionView[] =>
-    ACTIONS.map((action) => ({
-      action,
-      minimum_role: minimum === null ? null : action === "read" ? "viewer" : minimum,
-      superadmin_only: minimum === null,
-      authenticated_only: false,
-    }));
-  return {
-    roles: [
-      { role: "viewer", rank: 0 },
-      { role: "member", rank: 1 },
-      { role: "admin", rank: 2 },
-    ],
-    resources: [
-      ...SCOPED_RESOURCES.map((resource) => ({
-        resource,
-        scope: "org",
-        actions: actions("admin"),
-      })),
-      ...ADMIN_RESOURCES.map((resource) => ({
-        resource,
-        scope: "org",
-        actions: actions("admin"),
-      })),
-      ...Object.entries(CATALOG_ACTIONS).map(([resource, mutations]) => ({
-        resource,
-        scope: "deployment",
-        actions: [
-          {
-            action: "read" as RbacAction,
-            minimum_role: null,
-            superadmin_only: false,
-            authenticated_only: true,
-          },
-          ...mutations.map((action) => ({
-            action,
-            minimum_role: null,
-            superadmin_only: true,
-            authenticated_only: false,
-          })),
-        ],
-      })),
-      ...DEPLOYMENT_RESOURCES.map((resource) => ({
-        resource,
-        scope: "deployment",
-        actions: actions(null),
-      })),
-    ],
-    custom_roles: [],
-  };
-}
+export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
 export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub {
