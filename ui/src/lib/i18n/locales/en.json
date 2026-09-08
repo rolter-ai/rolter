@@ -133,7 +133,8 @@
       "toolGroups": "tool groups",
       "rbacMatrix": "the permission matrix",
       "attributionSpend": "attribution spend",
-      "customRoles": "custom roles"
+      "customRoles": "custom roles",
+      "orgScope": "teams and projects"
     }
   },
   "locale": {
@@ -1224,9 +1225,6 @@
         "groupLabel": "IdP group",
         "groupPlaceholder": "platform-engineering",
         "scopeLabel": "Where the role applies",
-        "scopeOrg": "Whole organization",
-        "scopeTeams": "Teams",
-        "scopeProjects": "Projects",
         "roleLabel": "Role to grant",
         "add": "Map group",
         "remove": "Remove mapping",
@@ -1361,6 +1359,12 @@
       "noTeam": "no team configured — create one to get started",
       "projectsFailed": "failed to load projects",
       "noProject": "no project configured — create one to get started"
+    },
+    "picker": {
+      "org": "Whole organization",
+      "teams": "Teams",
+      "teamProjects": "Projects in {{team}}",
+      "empty": "This organization has no teams yet, so the only scope to pick is the organization itself."
     }
   },
   "screens": {

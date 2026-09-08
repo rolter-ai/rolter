@@ -70,7 +70,7 @@ Every provisioning action is written to the [audit log](/observability/logs-and-
 
 A group arriving from your identity provider grants nothing on its own. **You** decide what it is worth, by writing a mapping — the identity provider never gets to name a role.
 
-**Governance → User Provisioning** carries a **Group mappings** panel under the token list. Type the group's display name, pick where the role applies — the whole organization, a team, or a project — pick the role, and press **Map group**. The panel lists every mapping the org has with its scope and role, and removing one asks first, because it withdraws that role from everyone in the group. Until a mapping exists the panel says so plainly: the groups your IdP pushes grant nothing, and every provisioned account stays a viewer.
+**Governance → User Provisioning** carries a **Group mappings** panel under the token list. Type the group's display name, pick where the role applies — the whole organization, a team, or a project — pick the role, and press **Map group**. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team it belongs to, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself. The panel lists every mapping the org has with its scope and role, and removing one asks first, because it withdraws that role from everyone in the group. Until a mapping exists the panel says so plainly: the groups your IdP pushes grant nothing, and every provisioned account stays a viewer.
 
 The same thing over the API:
 

@@ -8,6 +8,13 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
+import {
+  OrgScopePicker,
+  scopeTargetIds,
+  useOrgScope,
+  type OrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import { CopyButton } from "@/components/CopyButton";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +47,7 @@ import {
   type ScimTokenRow,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
-import { useScope, type ScopeResult } from "@/lib/scope";
+import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -72,23 +79,15 @@ function roleLabel(t: TFunction, role: string): string {
 }
 
 // the scope a mapping grants at, as the reader knows it. the most specific
-// non-null id wins, exactly as `scim_groups.rs` resolves it; an id the current
-// scope selection does not cover is shown raw rather than hidden
+// non-null id wins, exactly as `scim_groups.rs` resolves it, and the name is
+// looked up org-wide — a mapping onto a project in another team is named rather
+// than shown as a raw id (#1249)
 function scopeLabel(
   t: TFunction,
-  scope: ScopeResult,
+  scope: OrgScope,
   mapping: ScimGroupMappingRow,
 ): string {
-  if (mapping.project_id) {
-    return (
-      scope.projects.find((p) => p.id === mapping.project_id)?.name ??
-      mapping.project_id
-    );
-  }
-  if (mapping.team_id) {
-    return scope.teams.find((x) => x.id === mapping.team_id)?.name ?? mapping.team_id;
-  }
-  return t("pages.userProvisioning.mappings.scopeOrg");
+  return scope.nameFor(mapping) ?? t("scope.picker.org");
 }
 
 /**
@@ -99,15 +98,16 @@ function scopeLabel(
  * operator says what a group is worth, and the control plane reconciles
  * everyone in it on the spot rather than at the next sync.
  *
- * The scope select offers the org, every team in it, and the projects of the
- * team the scope switcher currently has selected: those are the ids
- * `useScope()` has names for, and a mapping may never grant outside its own org
- * anyway.
+ * The scope select is the shared `OrgScopePicker`: the org, every team in it,
+ * and every project in any of those teams, so a mapping onto a project in a
+ * team the scope switcher does not currently have selected can be written
+ * without moving the switcher first (#1249). A mapping may never grant outside
+ * its own org anyway.
  */
 function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const scope = useScope();
+  const scope = useOrgScope(orgId);
   const toast = useToast();
 
   const mappings = useQuery({
@@ -124,16 +124,14 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
   const [group, setGroup] = React.useState("");
   const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
   // "" is the org; otherwise "team:<id>" or "project:<id>"
-  const [target, setTarget] = React.useState("");
+  const [target, setTarget] = React.useState<ScopeTarget>("");
 
   const create = useMutation({
     mutationFn: () => {
-      const [kind, id] = target.split(":");
       return createScimGroupMapping(orgId, {
         group_name: group.trim(),
         role,
-        team_id: kind === "team" ? id : undefined,
-        project_id: kind === "project" ? id : undefined,
+        ...scopeTargetIds(target),
       });
     },
     // the failure stays inline, beside the form that caused it; the success is
@@ -238,32 +236,12 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
             aria-label={t("pages.userProvisioning.mappings.groupLabel")}
             placeholder={t("pages.userProvisioning.mappings.groupPlaceholder")}
           />
-          <Select
-            className="h-8 w-[164px]"
+          <OrgScopePicker
+            orgId={orgId}
             value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            aria-label={t("pages.userProvisioning.mappings.scopeLabel")}
-          >
-            <option value="">{t("pages.userProvisioning.mappings.scopeOrg")}</option>
-            {scope.teams.length > 0 && (
-              <optgroup label={t("pages.userProvisioning.mappings.scopeTeams")}>
-                {scope.teams.map((team) => (
-                  <option key={team.id} value={`team:${team.id}`}>
-                    {team.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {scope.projects.length > 0 && (
-              <optgroup label={t("pages.userProvisioning.mappings.scopeProjects")}>
-                {scope.projects.map((project) => (
-                  <option key={project.id} value={`project:${project.id}`}>
-                    {project.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </Select>
+            onChange={setTarget}
+            label={t("pages.userProvisioning.mappings.scopeLabel")}
+          />
           <Select
             className="h-8 w-[132px]"
             value={role}
