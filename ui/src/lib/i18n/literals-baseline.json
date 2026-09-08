@@ -550,7 +550,9 @@
     "Workers"
   ],
   "src/pages/Playground.tsx": [
+    "Add model",
     "Add text",
+    "Attach image",
     "Channel open",
     "Connected",
     "Embed &amp; project",
@@ -560,6 +562,7 @@
     "Frames sent and received",
     "Generate",
     "Idle",
+    "Message…",
     "No session",
     "Output",
     "Remove attachment",
@@ -568,10 +571,14 @@
     "Send",
     "Send a text frame…",
     "Session",
+    "Single",
     "Start session",
     "Stop session",
     "Synthesize",
     "Synthesize to hear the result.",
+    "Transcript",
+    "Upload an audio file to transcribe.",
+    "Upload audio",
     "WebSocket · bidirectional audio + text",
     "n=1",
     "n=4"
