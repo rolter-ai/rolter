@@ -32,13 +32,14 @@ use rolter_store::postgres::models::{
     McpGatewaySettings, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
 };
 use rolter_store::postgres::repo::{
-    McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo, McpServerUpdate,
-    McpToolGroupRepo, NewMcpServer,
+    McpAuthConfig, McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo,
+    McpServerUpdate, McpToolGroupRepo, NewMcpServer,
 };
 
 use crate::crud::{
     log_audit, pool, publish_config_change, require_non_empty, ApiError, ApiResult, SafeJson,
 };
+use crate::mcp_oauth_flow::kek;
 use crate::rbac::{authorize, holds_admin, Principal, ScopeChain};
 use crate::rbac_matrix::{cap, Requirement};
 use crate::ControlState;
@@ -52,6 +53,10 @@ pub(crate) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/mcp-servers/{id}",
             delete(delete_server).patch(update_server),
+        )
+        .route(
+            "/api/v1/mcp-servers/{id}/auth",
+            axum::routing::put(set_auth),
         )
         .route("/api/v1/orgs/{org_id}/mcp/grants", get(list_grants))
         .route("/api/v1/mcp/grants/{id}", delete(revoke_grant))
@@ -259,6 +264,41 @@ struct UpdateMcpServer {
     enabled: Option<bool>,
     tools: Option<Vec<String>>,
     required_scopes: Option<Vec<String>>,
+    // doubly optional so a PATCH can tell "leave it" (absent) from "stop
+    // overriding, inherit the org default again" (explicit null); a plain
+    // Option would make the second unsayable
+    #[serde(default, deserialize_with = "explicit_null")]
+    connect_timeout_ms: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "explicit_null")]
+    request_timeout_ms: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "explicit_null")]
+    max_retries: Option<Option<i32>>,
+}
+
+/// Deserialize a present-but-null field as `Some(None)` rather than `None`.
+///
+/// serde collapses both "absent" and "null" to `None` for an `Option<Option<T>>`,
+/// which for a PATCH silently turns "clear this override" into "leave it
+/// alone" — the field is only reached when the key is present, so wrapping in
+/// `Some` here is what makes the two distinguishable.
+fn explicit_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
+}
+
+/// A per-server override and the range the org-wide setting already uses.
+/// Checked here so a bad value is a 400 naming the bound rather than a 500
+/// from the check constraint.
+fn validate_override(value: Option<i32>, field: &str, lo: i32, hi: i32) -> ApiResult<()> {
+    match value {
+        Some(value) if !(lo..=hi).contains(&value) => Err(invalid(format!(
+            "{field} must be between {lo} and {hi}, or null to inherit the org default"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 async fn update_server(
@@ -303,6 +343,16 @@ async fn update_server(
         .map_err(invalid)?;
     validate_required_scopes(required_scopes)?;
     validate_tools(tools)?;
+    let connect_timeout_ms = body
+        .connect_timeout_ms
+        .unwrap_or(current.connect_timeout_ms);
+    let request_timeout_ms = body
+        .request_timeout_ms
+        .unwrap_or(current.request_timeout_ms);
+    let max_retries = body.max_retries.unwrap_or(current.max_retries);
+    validate_override(connect_timeout_ms, "connect_timeout_ms", 100, 60_000)?;
+    validate_override(request_timeout_ms, "request_timeout_ms", 1_000, 300_000)?;
+    validate_override(max_retries, "max_retries", 0, 5)?;
     let server = repo
         .update(
             id,
@@ -314,6 +364,9 @@ async fn update_server(
                 enabled,
                 tools,
                 required_scopes,
+                connect_timeout_ms,
+                request_timeout_ms,
+                max_retries,
             },
         )
         .await?;
@@ -326,6 +379,145 @@ async fn update_server(
         "mcp_server",
         server.id,
         serde_json::json!({"required_scopes": server.required_scopes}),
+    )
+    .await;
+    Ok(Json(server))
+}
+
+/// How rolter should authenticate to a server.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetMcpAuth {
+    /// `none` | `bearer` | `header` | `oauth`
+    auth_kind: String,
+    /// required for `header`, refused otherwise
+    auth_header_name: Option<String>,
+    /// absent leaves the stored credential, `""` clears it, anything else
+    /// replaces it — so an operator renaming a header need not re-type a
+    /// secret they cannot read back
+    credential: Option<String>,
+}
+
+/// Header names rolter refuses to carry an api key in, mirroring the
+/// `mcp_servers_auth_header_name_shape` constraint. `authorization` is the
+/// important one: allowing it would let header mode forge the bearer path.
+const RESERVED_AUTH_HEADERS: [&str; 10] = [
+    "authorization",
+    "host",
+    "content-length",
+    "content-type",
+    "connection",
+    "transfer-encoding",
+    "upgrade",
+    "te",
+    "trailer",
+    "proxy-authorization",
+];
+
+fn validate_header_name(name: &str) -> ApiResult<()> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(invalid(
+            "auth_header_name must be between 1 and 64 characters",
+        ));
+    }
+    // RFC 9110 field-name: a token, so no spaces, colons or separators
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"!#$%&\'*+.^_`|~-".contains(&b))
+    {
+        return Err(invalid("auth_header_name must be a valid HTTP field name"));
+    }
+    if RESERVED_AUTH_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+        return Err(invalid(format!(
+            "auth_header_name must not be '{name}': rolter sets that header itself"
+        )));
+    }
+    Ok(())
+}
+
+/// Set a server's authentication. Separate from `PATCH /mcp-servers/{id}`
+/// because it is the only part of a server that takes a secret, and keeping it
+/// on its own route means the general edit path never has a credential in its
+/// body to leak into a log or an audit entry.
+async fn set_auth(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<SetMcpAuth>,
+) -> ApiResult<Json<McpServer>> {
+    let repo = McpServerRepo(pool(&state));
+    let current = repo.get(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(current.org_id),
+        cap!("mcp_server", Update),
+    )
+    .await?;
+    if !matches!(
+        body.auth_kind.as_str(),
+        "none" | "bearer" | "header" | "oauth"
+    ) {
+        return Err(invalid("auth_kind must be none, bearer, header or oauth"));
+    }
+    let carries_credential = matches!(body.auth_kind.as_str(), "bearer" | "header");
+    match (body.auth_kind.as_str(), body.auth_header_name.as_deref()) {
+        ("header", None) => {
+            return Err(invalid(
+                "auth_kind 'header' requires auth_header_name, e.g. X-Api-Key",
+            ))
+        }
+        ("header", Some(name)) => validate_header_name(name)?,
+        (_, Some(_)) => {
+            return Err(invalid(
+                "auth_header_name is only meaningful for auth_kind 'header'",
+            ))
+        }
+        (_, None) => {}
+    }
+    if !carries_credential && body.credential.as_deref().is_some_and(|c| !c.is_empty()) {
+        return Err(invalid(format!(
+            "auth_kind '{}' carries no credential",
+            body.auth_kind
+        )));
+    }
+    // a kind that needs one and has none stored would be refused by the check
+    // constraint as a 500; say so as a 400 instead
+    if carries_credential
+        && !current.has_credential
+        && body.credential.as_deref().unwrap_or("").is_empty()
+    {
+        return Err(invalid(format!(
+            "auth_kind '{}' requires a credential",
+            body.auth_kind
+        )));
+    }
+    let server = repo
+        .set_auth(
+            &kek()?,
+            id,
+            McpAuthConfig {
+                auth_kind: &body.auth_kind,
+                auth_header_name: body.auth_header_name.as_deref(),
+                credential: body.credential.as_deref(),
+            },
+        )
+        .await?;
+    publish_config_change(&state).await?;
+    // the credential is deliberately not in the audit payload; what changed is
+    // which mechanism is in use, which is the reviewable fact
+    log_audit(
+        &state,
+        &principal,
+        Some(server.org_id),
+        "mcp_server.set_auth",
+        "mcp_server",
+        server.id,
+        serde_json::json!({
+            "auth_kind": server.auth_kind,
+            "auth_header_name": server.auth_header_name,
+            "has_credential": server.has_credential,
+        }),
     )
     .await;
     Ok(Json(server))

@@ -92,12 +92,17 @@ fn invalid(message: impl Into<String>) -> ApiError {
 }
 
 /// The deployment KEK, or a client-visible configuration error. Never a silent
-/// plaintext fallback: this module exists to put tokens at rest sealed.
-fn kek() -> ApiResult<Kek> {
+/// plaintext fallback: every MCP secret — exchanged tokens, and the static
+/// credentials of #952 — is put at rest sealed or not stored at all.
+///
+/// `pub(crate)` so the registry's auth endpoint seals with the same helper and
+/// reports the same message; two copies of this would be two messages to keep
+/// in step.
+pub(crate) fn kek() -> ApiResult<Kek> {
     Kek::from_env().ok_or_else(|| {
         invalid(format!(
-            "the MCP OAuth exchange requires the {KEK_ENV} environment variable on the \
-             control plane to seal token material at rest"
+            "storing an MCP credential requires the {KEK_ENV} environment variable on the \
+             control plane to seal it at rest"
         ))
     })
 }

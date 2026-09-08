@@ -8159,3 +8159,265 @@ async fn labels_are_scoped_by_the_subject_they_describe() {
         .unwrap();
     assert_eq!(bad_key.status(), 400);
 }
+
+/// A static MCP credential is sealed at rest, never comes back out of the read
+/// API, and the auth kind and the credential columns cannot disagree (#952).
+/// Runs in its own process (nextest), so setting the KEK env var here cannot
+/// race other tests.
+#[tokio::test]
+async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", "mcp-credential-test-kek");
+
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({
+            "name": "Search",
+            "slug": "search",
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable_http",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        server["auth_kind"], "none",
+        "a server registers unauthenticated until told otherwise: {server}"
+    );
+    assert_eq!(server["has_credential"], false);
+
+    const TOKEN: &str = "mcp-upstream-token-value";
+    let armed: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "bearer", "credential": TOKEN}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(armed["auth_kind"], "bearer");
+    assert_eq!(armed["has_credential"], true);
+    assert!(
+        !armed.to_string().contains(TOKEN),
+        "the credential must not come back in the write response"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !listed.to_string().contains(TOKEN),
+        "the credential must not come back in the read API"
+    );
+
+    // sealed at rest: the row holds ciphertext, and the plaintext appears
+    // nowhere in the column
+    let stored: (Option<Vec<u8>>, Option<Vec<u8>>) = sqlx::query_as(
+        "select credential_ciphertext, credential_nonce from mcp_servers where id = $1::uuid",
+    )
+    .bind(&server_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let ciphertext = stored.0.expect("ciphertext stored");
+    assert!(stored.1.is_some(), "nonce stored beside the ciphertext");
+    assert!(
+        !String::from_utf8_lossy(&ciphertext).contains(TOKEN),
+        "the credential must not be recoverable from the stored bytes"
+    );
+
+    // renaming nothing but the kind keeps the stored credential: an operator
+    // cannot read it back, so requiring a re-type would make it unchangeable
+    let to_header: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "X-Api-Key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(to_header["auth_kind"], "header");
+    assert_eq!(to_header["auth_header_name"], "X-Api-Key");
+    assert_eq!(to_header["has_credential"], true);
+
+    // header mode must not be able to forge the bearer path
+    let forged = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "Authorization"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        forged.status(),
+        400,
+        "an api key must not be presentable as Authorization"
+    );
+
+    let malformed = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "X Api Key"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), 400);
+
+    let headerless = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        headerless.status(),
+        400,
+        "header mode without a header name is not a usable configuration"
+    );
+
+    // dropping to 'none' clears the credential rather than orphaning it, so
+    // `rolter kek verify` is not left auditing a secret nothing can use
+    let disarmed: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "none"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(disarmed["auth_kind"], "none");
+    assert_eq!(disarmed["has_credential"], false);
+    let cleared: (Option<Vec<u8>>,) =
+        sqlx::query_as("select credential_ciphertext from mcp_servers where id = $1::uuid")
+            .bind(&server_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(cleared.0.is_none(), "the sealed credential must be gone");
+
+    // and a kind that needs one cannot be armed without supplying it
+    let empty_handed = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "bearer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty_handed.status(), 400);
+}
+
+/// Per-server transport overrides, and the null that gives one back to the org
+/// default (#952).
+#[tokio::test]
+async fn mcp_transport_overrides_are_per_server_and_revertible() {
+    skip_without_db!();
+    let addr = serve(fresh_app().await).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({
+            "name": "Slow",
+            "slug": "slow",
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable_http",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    assert!(
+        server["request_timeout_ms"].is_null(),
+        "a new server inherits rather than pinning a copy of the org default"
+    );
+
+    let slowed: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": 120000}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(slowed["request_timeout_ms"], 120000);
+
+    // an unrelated PATCH must not disturb the override
+    let renamed: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"description": "the slow one"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        renamed["request_timeout_ms"], 120000,
+        "absent means leave it, not clear it"
+    );
+
+    let out_of_range = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out_of_range.status(), 400);
+
+    // explicit null is how an operator gives the server back to the org default
+    let reverted: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": null}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        reverted["request_timeout_ms"].is_null(),
+        "null must clear the override: {reverted}"
+    );
+}

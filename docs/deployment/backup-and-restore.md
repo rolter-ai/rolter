@@ -139,6 +139,7 @@ reversible, so a pepper change is a reissue, not a rotation.
 | `observability_connectors` | observability connector credentials |
 | `user_totp_factors` | TOTP second-factor shared secrets |
 | `mcp_servers` | MCP OAuth client secrets |
+| `mcp_servers` | MCP static bearer tokens and header api keys |
 | `mcp_oauth_login_states` | in-flight MCP OAuth PKCE verifiers |
 | `mcp_oauth_sessions` | MCP access and refresh tokens |
 
