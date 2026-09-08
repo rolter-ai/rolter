@@ -10,6 +10,7 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Badge } from "@/components/ui/badge";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,15 @@ export interface NavItem {
   icon?: React.ReactNode;
   count?: number;
   children?: NavItem[];
+  /* the subsystem behind this screen is shipped experimental (#1386): it may
+     change shape or be removed in a minor release. the rail marks the entry in
+     place — no separate section, no regrouping — with a badge beside the label
+     at full width and a dot on the icon once folded. the caller decides this
+     from the control plane's answer, never from a list kept here */
+  experimental?: boolean;
+  /* one sentence naming what is unfinished, straight from the build, shown as
+     the marker's tooltip. absent is fine; the marker then explains itself */
+  experimentalNote?: string;
 }
 
 export interface NavGroup {
@@ -301,12 +311,19 @@ export function NavSidebar({
     const hasKids = (it.children?.length ?? 0) > 0;
     const active = it.key === activeKey;
     const expanded = hasKids && isOpen(it);
+    // folded the button has no text, so `title` is what names it; the marker
+    // has to ride in there or a screen reader on the icon rail hears only the
+    // screen's name. expanded the badge is real text inside the button, so the
+    // accessible name picks it up on its own and the note becomes the tooltip
+    const foldedTitle = it.experimental
+      ? t("shell.experimentalItem", { label: it.label })
+      : it.label;
     return (
       <React.Fragment key={it.key}>
         <button
           aria-current={active ? "page" : undefined}
           aria-expanded={hasKids ? expanded : undefined}
-          title={folded ? it.label : undefined}
+          title={folded ? foldedTitle : undefined}
           onClick={() => {
             if (hasKids) {
               setOpen((o) => ({ ...o, [it.key]: !isOpen(it) }));
@@ -325,7 +342,26 @@ export function NavSidebar({
           )}
         >
           {it.icon}
+          {/* folded, the marker is a dot on the corner of the icon — the same
+              shape the footer's update hint uses, so "there is something to
+              know here" reads the same way twice. decorative: `title` above
+              already carries the word */}
+          {folded && it.experimental && (
+            <span
+              aria-hidden="true"
+              className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]"
+            />
+          )}
           {!folded && <span className="min-w-0 truncate">{it.label}</span>}
+          {!folded && it.experimental && (
+            <Badge
+              tone="warning"
+              title={it.experimentalNote}
+              className="ml-auto flex-none"
+            >
+              {t("shell.experimental")}
+            </Badge>
+          )}
           {!folded && it.count != null && (
             <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
               {it.count}

@@ -4,6 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { NAV_MAX_WIDTH, NAV_MIN_WIDTH, NavSidebar, type NavSidebarProps } from "./nav-sidebar";
+import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const meta = {
@@ -280,6 +281,86 @@ export const TabletIconRail: Story = {
     const nav = canvasElement.querySelector("nav") as HTMLElement;
     await waitFor(() => expect(nav.getBoundingClientRect().width).toBe(52));
     await expect(canvas.queryByRole("separator")).toBeNull();
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the experimental marker (#1386): the rail marks an individual entry in place
+// — the grouping is untouched and there is no "experimental" section — so the
+// story that matters is a group holding both kinds of item at once.
+const EXPERIMENTAL_NOTE =
+  "tool-group manifests are stored, but the proxy does not enforce group membership";
+
+const mixedGroups = [
+  {
+    items: [
+      { key: "playground", label: "Playground", icon: <Play /> },
+      {
+        key: "tool-groups",
+        label: "Tool groups",
+        icon: <Boxes />,
+        experimental: true,
+        experimentalNote: EXPERIMENTAL_NOTE,
+      },
+      { key: "keys", label: "Keys", icon: <KeyRound /> },
+    ],
+  },
+];
+
+export const ExperimentalItems: Story = {
+  args: { groups: mixedGroups, activeKey: "playground" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the badge is inside the button, so the entry names itself and its
+    // stability in one accessible name
+    const marked = canvas.getByRole("button", {
+      name: `Tool groups ${en.shell.experimental}`,
+    });
+    await expect(marked).toBeVisible();
+    // the note the build sent explains what is unfinished, without spending a
+    // line of a 232px rail on it
+    const badge = within(marked).getByText(en.shell.experimental);
+    await expect(badge).toHaveAttribute("title", EXPERIMENTAL_NOTE);
+    // an unmarked sibling is exactly as it was
+    await expect(canvas.getByRole("button", { name: "Keys" })).toBeVisible();
+    await expect(canvas.getAllByText(en.shell.experimental)).toHaveLength(1);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// folded there is no room for a word. The dot is decorative and the tooltip
+// carries the meaning — on a button with no text content, that tooltip is also
+// what a screen reader announces.
+export const ExperimentalItemsCollapsed: Story = {
+  args: { groups: mixedGroups, activeKey: "playground", defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(en.shell.experimental)).toBeNull();
+    const marked = canvas.getByRole("button", {
+      name: en.shell.experimentalItem.replace("{{label}}", "Tool groups"),
+    });
+    await expect(marked).toBeVisible();
+    // an unmarked entry still names itself and nothing more
+    await expect(canvas.getByRole("button", { name: "Keys" })).toBeVisible();
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the narrowest the rail can be dragged is where a badge would crowd a label
+// if it were allowed to: the marker holds its size and the label truncates,
+// which is the same bargain every long entry already makes at this width
+export const ExperimentalItemsNarrow: Story = {
+  args: { ...resizable("experimental"), groups: mixedGroups, activeKey: "playground" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    const handle = canvas.getByRole("separator", { name: /resize/i });
+    handle.focus();
+    await userEvent.keyboard("{Home}");
+    await expectWidth(nav, NAV_MIN_WIDTH);
+    await expect(
+      canvas.getByRole("button", { name: `Tool groups ${en.shell.experimental}` }),
+    ).toBeVisible();
     await expectNoHorizontalOverflow();
   },
 };

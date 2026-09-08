@@ -2,6 +2,7 @@ import * as React from "react";
 import { MemoryRouter } from "react-router";
 
 import App from "@/App";
+import type { SubsystemStability } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
 import {
   Harness,
@@ -62,6 +63,27 @@ const VERSION = {
   enabled: false,
 };
 
+/**
+ * One subsystem the build ships as experimental, mapped onto a nav leaf (#1386).
+ *
+ * `plugins` rather than one of the subsystems actually listed in
+ * `crates/rolter-core/src/stability.rs`: those sit under a collapsed parent,
+ * and the story is about the shell reading `nav_keys` at all, not about which
+ * corners of this particular build are unfinished. Which list the marker comes
+ * from is the control plane's business, and the stub is standing in for it.
+ */
+export const EXPERIMENTAL_SUBSYSTEM: SubsystemStability = {
+  id: "plugins",
+  stability: "experimental",
+  note: "plugin manifests are stored but the gateway does not load them yet",
+  nav_keys: ["plugins"],
+};
+
+/** The shell's chain with `/api/v1/stability` answering with `subsystems`. */
+export function shellStubWithStability(subsystems: SubsystemStability[]): FetchStub {
+  return shellStub([["/api/v1/stability", () => subsystems]]);
+}
+
 const SUMMARY = {
   requests: 132,
   tokens: 1_284_000,
@@ -95,6 +117,9 @@ export function shellStub(extra: [string, () => unknown][] = []): FetchStub {
       ["/api/v1/analytics", () => ({ data: [] })],
       ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
       ["/api/v1/version", () => VERSION],
+      // nothing experimental by default: the marker is the exception, so the
+      // stories that are not about it get the rail every other build renders
+      ["/api/v1/stability", () => [] as SubsystemStability[]],
     ]),
   );
 }
