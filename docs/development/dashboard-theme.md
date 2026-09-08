@@ -140,7 +140,8 @@ replacements cover every case the dashboard had:
 story's play function, and fails the story on **any violation at any impact**
 (`wcag2a`, `wcag2aa`, `best-practice`; the disabled rules are named with their
 reasons in `DISABLED_RULES` — Storybook's own iframe, plus the three page-level
-landmark rules a single-component story cannot satisfy, see
+landmark rules a single-component story cannot satisfy, which the two stories
+that mount a whole page switch back on, see
 [Testing](testing.md#every-story-is-also-an-axe-test)). Adding a
 story therefore adds a contrast and a semantics check for whatever it renders,
 in every state it renders — empty, loading and error included.
