@@ -272,7 +272,14 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/auth/login",
                 "login",
-                "Exchange email and password for a session token",
+                "Exchange email and password for a session token, or for a \
+                 second-factor challenge when the account has one armed",
+            )
+            .public(),
+            Op::post(
+                "/api/v1/auth/mfa/verify",
+                "verifyMfaChallenge",
+                "Redeem a second-factor challenge for a session token",
             )
             .public(),
             Op::post(
@@ -739,6 +746,31 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/usage",
                 "getMyUsage",
                 "Spend and usage for the calling account's keys",
+            ),
+            Op::get(
+                "/api/v1/me/mfa",
+                "getMyMfa",
+                "Second-factor state and policy for the calling account",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/enroll",
+                "beginMyMfaEnrolment",
+                "Issue a TOTP secret for the calling account (shown once)",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/confirm",
+                "confirmMyMfaEnrolment",
+                "Arm the second factor with a code, returning recovery codes",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/recovery-codes",
+                "regenerateMyRecoveryCodes",
+                "Replace the calling account's recovery codes",
+            ),
+            Op::delete(
+                "/api/v1/me/mfa",
+                "disableMyMfa",
+                "Remove the calling account's second factor",
             ),
         ],
     ));

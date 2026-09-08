@@ -57,6 +57,10 @@ mod mcp_oauth;
 mod mcp_oauth_flow;
 #[cfg(feature = "postgres")]
 mod me;
+/// TOTP second factor for local accounts (#1078). `pub` for the break-glass
+/// reset the `rolter` launcher's `mfa reset` subcommand runs.
+#[cfg(feature = "postgres")]
+pub mod mfa;
 #[cfg(feature = "postgres")]
 mod model_defaults;
 mod open_mode;
@@ -933,6 +937,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(alerting::router())
             .merge(auth::router())
             .merge(auth_policy::router())
+            .merge(mfa::router())
             .merge(invitations::router())
             .merge(crud::router())
             .merge(me::router())

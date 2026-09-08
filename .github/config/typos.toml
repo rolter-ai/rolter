@@ -42,6 +42,11 @@ extend-ignore-re = [
   # unrecognised key is warned about and still saved. correcting it would
   # delete the story's subject
   "temperture",
+  # "fo": RFC 4648 section 10 gives the base32 vectors as "", "f", "fo", "foo",
+  # ... — the empty-to-six-byte progression that pins the padding rules. the
+  # dictionary reads the third one as a typo for "of"; correcting it would
+  # delete the vector
+  '"fo"',
   # SigNoz's own dashboard schema misspells this field. the provisioned
   # dashboards (#956) are parsed by SigNoz, not by us — correcting the spelling
   # would make the import silently drop the setting

@@ -84,6 +84,7 @@
               "security/authentication",
               "security/rbac",
               "security/single-sign-on",
+              "security/two-factor-authentication",
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",

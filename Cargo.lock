@@ -2817,7 +2817,9 @@ name = "rolter-auth"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hmac 0.13.0",
  "serde",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "subtle",
  "thiserror 2.0.20",
