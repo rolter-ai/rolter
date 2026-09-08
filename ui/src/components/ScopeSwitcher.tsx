@@ -296,7 +296,13 @@ function CreateScopeDialog({
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={level === "org" ? "Acme Inc" : level === "team" ? "Platform" : "prod"}
+            placeholder={t(
+              level === "org"
+                ? "scope.namePlaceholder.org"
+                : level === "team"
+                  ? "scope.namePlaceholder.team"
+                  : "scope.namePlaceholder.project",
+            )}
           />
         </Field>
         {create.isError && (

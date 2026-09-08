@@ -125,7 +125,7 @@ export function FilterSearchList({
       </label>
       {shown.length === 0 ? (
         <div className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2.5 py-2 text-sm text-[color:var(--text-subtle)]">
-          No results
+          {t("common.noResults")}
         </div>
       ) : (
         <FilterCheckListInner options={shown} selected={selected} onChange={onChange} />

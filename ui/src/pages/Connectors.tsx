@@ -203,7 +203,9 @@ function ConnectorsScreen() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {connectors.data?.length ?? 0} connectors · OTLP/HTTP sinks for request logs
+          {t("pages.connectors.summary", {
+            count: connectors.data?.length ?? 0,
+          })}
         </span>
         {/* the config sits beside "add", because it is the other half of the
             job: a connector row does nothing until a collector runs this */}
@@ -216,7 +218,9 @@ function ConnectorsScreen() {
           <FileCode2 className="h-4 w-4" aria-hidden />
           {t("pages.connectors.collectorConfig.open")}
         </Button>
-        <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>+ Add connector</GatedButton>
+        <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>
+          + {t("pages.connectors.add")}
+        </GatedButton>
       </Toolbar>
 
       {connectors.isLoading && <CardGridSkeleton cards={3} height={186} min={380} />}
@@ -276,11 +280,13 @@ function ConnectorsScreen() {
                   {c.health_status}
                 </Pill>
                 <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                  {Math.round(c.sampling_rate * 100)}% sampled
+                  {t("pages.connectors.sampled", {
+                    percent: Math.round(c.sampling_rate * 100),
+                  })}
                 </Pill>
                 {c.auth_secret_configured && (
                   <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
-                    secret set
+                    {t("pages.connectors.secretSet")}
                   </Pill>
                 )}
               </div>
@@ -314,7 +320,7 @@ function ConnectorsScreen() {
                   ) : (
                     <FlaskConical className="h-3.5 w-3.5" />
                   )}
-                  Test delivery
+                  {t("pages.connectors.testDelivery")}
                 </GatedButton>
                 {c.health_checked_at && (
                   <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
@@ -443,20 +449,20 @@ function AddConnectorDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add connector"
-      subtitle="OTLP/HTTP collector endpoint request logs are exported to."
+      title={t("pages.connectors.add")}
+      subtitle={t("pages.connectors.addSubtitle")}
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={!!name.trim() && !!endpoint.trim()}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Name">
+        <Field label={t("pages.connectors.form.name")}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="datadog" />
         </Field>
-        <Field label="Endpoint URL">
+        <Field label={t("pages.connectors.form.endpoint")}>
           <Input
             className="font-mono"
             value={endpoint}
@@ -465,7 +471,7 @@ function AddConnectorDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Sampling (%)">
+          <Field label={t("pages.connectors.form.sampling")}>
             <Input
               type="number"
               min={0}
@@ -474,12 +480,12 @@ function AddConnectorDialog({
               onChange={(e) => setSampling(e.target.value)}
             />
           </Field>
-          <Field label="Bearer secret (optional)">
+          <Field label={t("pages.connectors.form.secret")}>
             <Input
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
-              placeholder="stored encrypted"
+              placeholder={t("pages.connectors.form.secretPlaceholder")}
             />
           </Field>
         </div>

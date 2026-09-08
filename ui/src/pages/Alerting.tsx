@@ -92,7 +92,9 @@ function AlertChannelsScreen() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {channels.data?.length ?? 0} channels · webhook destinations for alert delivery
+          {t("pages.alerting.channelSummary", {
+            count: channels.data?.length ?? 0,
+          })}
         </span>
         <GatedButton gate="alert_channel:create" className="ml-auto" onClick={() => setAddOpen(true)}>
           + Add channel
@@ -364,7 +366,7 @@ function AlertRulesScreen() {
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {rules.data?.length ?? 0} rules · evaluated every 60s against gateway analytics
+          {t("pages.alerting.ruleSummary", { count: rules.data?.length ?? 0 })}
         </span>
         <GatedButton gate="alert_rule:create" className="ml-auto" onClick={() => setAddOpen(true)}>
           + Add rule
@@ -671,7 +673,9 @@ function AlertHistoryScreen() {
   return (
     <PageBody>
       <span className="text-sm text-muted-foreground">
-        {history.data?.length ?? 0} notifications · newest first
+        {t("pages.alerting.historySummary", {
+          count: history.data?.length ?? 0,
+        })}
       </span>
       {history.isLoading && <TableSkeleton rows={5} />}
       {history.isError && (

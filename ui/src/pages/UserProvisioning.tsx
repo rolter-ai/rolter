@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { BookUser, Loader2, Plus, Trash2, Users } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
@@ -342,13 +342,18 @@ export default function UserProvisioning() {
   const canManage = !!orgId && !forbidden;
 
   const columns: TableColumn<ScimTokenRow & Record<string, unknown>>[] = [
-    { key: "name", header: "Token" },
+    { key: "name", header: t("pages.userProvisioning.columns.token") },
     {
       key: "revoked_at",
-      header: "Status",
+      header: t("pages.userProvisioning.columns.status"),
       render: (_v, row) =>
         row.revoked_at ? (
-          <Badge tone="danger" title={`revoked ${stamp(fmt, row.revoked_at)}`}>
+          <Badge
+            tone="danger"
+            title={t("pages.userProvisioning.revokedAt", {
+              when: stamp(fmt, row.revoked_at),
+            })}
+          >
             REVOKED
           </Badge>
         ) : (
@@ -359,17 +364,19 @@ export default function UserProvisioning() {
     },
     {
       key: "last_used_at",
-      header: "Last sync",
+      header: t("pages.userProvisioning.columns.lastSync"),
       render: (_v, row) =>
         row.last_used_at ? (
           stamp(fmt, row.last_used_at)
         ) : (
-          <span className="text-[color:var(--text-subtle)]">never used</span>
+          <span className="text-[color:var(--text-subtle)]">
+            {t("pages.userProvisioning.neverUsed")}
+          </span>
         ),
     },
     {
       key: "created_at",
-      header: "Created",
+      header: t("pages.userProvisioning.columns.created"),
       align: "right",
       // "created" is a day, not an instant — the short date, as everywhere else
       render: (_v, row) => fmt.date(row.created_at) || "—",
@@ -389,7 +396,9 @@ export default function UserProvisioning() {
           disabled={!!row.revoked_at || revoke.isPending}
           onClick={() => setRevokeTarget(row)}
         >
-          {row.revoked_at ? "Revoked" : "Revoke"}
+          {row.revoked_at
+            ? t("pages.userProvisioning.revoked")
+            : t("pages.userProvisioning.revoke")}
         </GatedButton>
       ),
     },
@@ -410,23 +419,24 @@ export default function UserProvisioning() {
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">
-          {rows.length} tokens · {active} active. Your identity provider presents
-          one of these as a bearer token and drives{" "}
-          <code className="font-mono text-xs">/scim/v2/Users</code> to create,
-          update and deactivate accounts in this org.
+          <Trans
+            i18nKey="pages.userProvisioning.lead"
+            count={rows.length}
+            values={{ active }}
+            components={[<code key="path" className="font-mono text-xs" />]}
+          />
         </span>
         <div className="ml-auto">
           <GatedButton gate="scim_token:create" disabled={!canManage} onClick={() => setIssueOpen(true)}>
             <Plus className="h-4 w-4" />
-            Issue token
+            {t("pages.userProvisioning.issueToken")}
           </GatedButton>
         </div>
       </div>
 
       {forbidden && (
         <p className="text-sm text-muted-foreground">
-          Provisioning tokens are visible to org admins only. Ask an admin to
-          issue or revoke one for your identity provider.
+          {t("pages.userProvisioning.forbidden")}
         </p>
       )}
       {tokens.isError && !forbidden && (
@@ -481,18 +491,18 @@ export default function UserProvisioning() {
         onOpenChange={(open) => !open && setRevokeTarget(null)}
       >
         <DialogHeader>
-          <DialogTitle>Revoke provisioning token</DialogTitle>
+          <DialogTitle>{t("pages.userProvisioning.revokeTitle")}</DialogTitle>
           <DialogDescription>
-            <span className="font-mono">{revokeTarget?.name}</span> stops
-            authenticating on the very next request — there is no cache to wait
-            out. Accounts it already provisioned are left exactly as they are:
-            nobody is deactivated or logged out, the directory simply stops
-            syncing until you point the IdP at a new token.
+            <Trans
+              i18nKey="pages.userProvisioning.revokeBody"
+              values={{ name: revokeTarget?.name }}
+              components={[<span key="name" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => setRevokeTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -518,7 +528,7 @@ export default function UserProvisioning() {
             }}
           >
             {revoke.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Revoke
+            {t("pages.userProvisioning.revoke")}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -540,6 +550,7 @@ function IssueTokenSheet({
   orgId: string;
   onIssued: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const [issued, setIssued] = React.useState<CreatedScimToken | null>(null);
 
@@ -561,8 +572,12 @@ function IssueTokenSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetHeader
-        title={issued ? "Copy the token now" : "Issue provisioning token"}
-        subtitle={issued ? issued.name : "scim 2.0 · bearer credential"}
+        title={
+          issued
+            ? t("pages.userProvisioning.sheet.copyTitle")
+            : t("pages.userProvisioning.sheet.issueTitle")
+        }
+        subtitle={issued ? issued.name : t("pages.userProvisioning.sheet.subtitle")}
         onClose={() => onOpenChange(false)}
       />
       <SheetBody>
@@ -576,39 +591,36 @@ function IssueTokenSheet({
                 >
                   {issued.secret}
                 </code>
-                <CopyButton value={issued.secret} label="Copy provisioning token" />
+                <CopyButton
+                  value={issued.secret}
+                  label={t("pages.userProvisioning.copyToken")}
+                />
               </div>
             </div>
             <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
-              This is the only time this token is shown. Rolter stores a hash of
-              it and cannot display or recover it again — if you lose it, issue a
-              new token and revoke this one.
+              {t("pages.userProvisioning.onceWarning")}
             </p>
             <p className="text-sm text-muted-foreground">
-              Paste it into your identity provider's SCIM connector as the bearer
-              token, alongside the base URL{" "}
-              <code className="font-mono text-xs">
-                https://your-rolter-host/scim/v2
-              </code>
-              . The token carries the org, so no tenant id goes in the URL.
+              <Trans
+                i18nKey="pages.userProvisioning.pasteHint"
+                components={[<code key="url" className="font-mono text-xs" />]}
+              />
             </p>
           </>
         ) : (
           <>
             <Field
-              label="Name"
-              hint="how you will recognise it later — usually the identity provider it belongs to"
+              label={t("pages.userProvisioning.nameLabel")}
+              hint={t("pages.userProvisioning.nameHint")}
             >
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Okta production"
+                placeholder={t("pages.userProvisioning.namePlaceholder")}
               />
             </Field>
             <p className="text-sm text-muted-foreground">
-              Provisioned accounts join this org as viewers and have no local
-              password: SCIM decides who exists, you still decide what they may
-              do.
+              {t("pages.userProvisioning.viewerNote")}
             </p>
             {create.isError && (
               <p className="text-sm text-[color:var(--status-danger-text)]">
@@ -621,11 +633,11 @@ function IssueTokenSheet({
       <SheetFooter>
         <div className="flex justify-end gap-2 px-[22px] py-3">
           {issued ? (
-            <Button onClick={() => onOpenChange(false)}>Done</Button>
+            <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
           ) : (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 disabled={!name.trim() || create.isPending}
@@ -634,7 +646,7 @@ function IssueTokenSheet({
                 {create.isPending && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 )}
-                Issue token
+                {t("pages.userProvisioning.issueToken")}
               </Button>
             </>
           )}

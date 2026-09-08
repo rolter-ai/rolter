@@ -150,7 +150,7 @@ function FeatureFlagsScreen() {
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         <Button disabled={save.isPending} onClick={() => save.mutate(form)}>
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

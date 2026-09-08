@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
@@ -38,27 +38,30 @@ const fromDto = (dto: AdaptiveRoutingPolicyDto): FormState => ({
   minSamples: String(dto.min_samples),
 });
 
+// each weight names its catalog keys; the copy itself lives in en.json
 const WEIGHTS = [
-  ["latencyWeight", "Latency", "How strongly observed latency pulls traffic."],
-  ["costWeight", "Cost", "How strongly per-token cost pulls traffic."],
-  ["loadWeight", "Load", "How strongly in-flight load pushes traffic away."],
+  ["latencyWeight", "latency"],
+  ["costWeight", "cost"],
+  ["loadWeight", "load"],
 ] as const;
 
 // mirrors the server's validation so a bad blend is caught before the round
-// trip; the server stays the authority and its message is surfaced on reject
+// trip; the server stays the authority and its message is surfaced on reject.
+// it names a catalog key rather than carrying english copy — the screen renders
+// it, which is where `t` lives
 function validate(form: FormState): string | null {
   const weights = WEIGHTS.map(([key]) => Number(form[key]));
   if (weights.some((w) => !Number.isFinite(w) || w < 0 || w > MAX_ADAPTIVE_WEIGHT)) {
-    return `Each weight must be between 0 and ${MAX_ADAPTIVE_WEIGHT}.`;
+    return "pages.adaptiveSettings.validation.weightRange";
   }
   // an all-zero blend does not stop adaptive routing, it turns the strategy
   // into a random balancer — a much less obvious thing to read off a dashboard
   if (weights.every((w) => w <= 0)) {
-    return "At least one weight must be positive. Use the kill switch to stop adaptive routing.";
+    return "pages.adaptiveSettings.validation.weightPositive";
   }
   const ratio = Number(form.explorationRatio);
   if (!Number.isFinite(ratio) || ratio < 0 || ratio > MAX_EXPLORATION_RATIO) {
-    return `Exploration ratio must be between 0 and ${MAX_EXPLORATION_RATIO}.`;
+    return "pages.adaptiveSettings.validation.ratioRange";
   }
   const samples = Number(form.minSamples);
   if (
@@ -66,7 +69,7 @@ function validate(form: FormState): string | null {
     samples < 0 ||
     samples > MAX_ADAPTIVE_MIN_SAMPLES
   ) {
-    return `Warm-up samples must be a whole number between 0 and ${MAX_ADAPTIVE_MIN_SAMPLES}.`;
+    return "pages.adaptiveSettings.validation.samplesRange";
   }
   return null;
 }
@@ -150,7 +153,14 @@ function AdaptiveSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  const localErrorKey = validate(form);
+  const localError = localErrorKey
+    ? t(localErrorKey, {
+        maxWeight: MAX_ADAPTIVE_WEIGHT,
+        maxRatio: MAX_EXPLORATION_RATIO,
+        maxSamples: MAX_ADAPTIVE_MIN_SAMPLES,
+      })
+    : null;
   const affected = policy.data?.affected_routes ?? [];
   const total = WEIGHTS.reduce((a, [key]) => a + (Number(form[key]) || 0), 0);
 
@@ -158,23 +168,27 @@ function AdaptiveSettingsScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex-1">
-          <span className="text-sm font-medium">Adaptive Routing</span>
+          <span className="text-sm font-medium">
+            {t("pages.adaptiveSettings.title")}
+          </span>
           <p className="mt-1 text-sm text-muted-foreground">
-            The kill switch. Turning it off leaves every route on the{" "}
-            <code className="font-mono text-xs">adaptive</code> strategy serving
-            from its static target weights instead.
+            <Trans
+              i18nKey="pages.adaptiveSettings.killSwitch"
+              components={[<code key="strategy" className="font-mono text-xs" />]}
+            />
           </p>
           {/* the blast radius, so the switch is never flipped blind */}
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
             {affected.length === 0 ? (
               <span className="text-xs text-muted-foreground">
-                No route currently uses the adaptive strategy.
+                {t("pages.adaptiveSettings.noAffectedRoutes")}
               </span>
             ) : (
               <>
                 <span className="text-xs text-muted-foreground">
-                  Governs {affected.length}{" "}
-                  {affected.length === 1 ? "route" : "routes"}:
+                  {t("pages.adaptiveSettings.governsRoutes", {
+                    count: affected.length,
+                  })}
                 </span>
                 {affected.map((model) => (
                   <Badge key={model} tone="outline" className="font-mono">
@@ -186,7 +200,7 @@ function AdaptiveSettingsScreen() {
           </div>
         </div>
         <Switch
-          aria-label="Adaptive routing enabled"
+          aria-label={t("pages.adaptiveSettings.toggleAria")}
           checked={form.enabled}
           onCheckedChange={(enabled) => set({ enabled })}
         />
@@ -194,14 +208,19 @@ function AdaptiveSettingsScreen() {
 
       <section className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Blend Weights</span>
+          <span className="text-sm font-medium">
+            {t("pages.adaptiveSettings.weightsTitle")}
+          </span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Each signal is scored in <span className="font-mono text-xs">[0, 1]</span>{" "}
-            and combined as a weighted sum, so only the ratio between these
-            matters — doubling all three changes nothing.
+            <Trans
+              i18nKey="pages.adaptiveSettings.weightsDesc"
+              components={[<span key="range" className="font-mono text-xs" />]}
+            />
           </p>
         </div>
-        {WEIGHTS.map(([key, label, hint]) => {
+        {WEIGHTS.map(([key, name]) => {
+          const label = t(`pages.adaptiveSettings.weights.${name}.label`);
+          const hint = t(`pages.adaptiveSettings.weights.${name}.hint`);
           const value = Number(form[key]) || 0;
           const share = total > 0 ? Math.round((value / total) * 100) : 0;
           return (
@@ -216,7 +235,7 @@ function AdaptiveSettingsScreen() {
               <Input
                 className="w-[92px]"
                 inputMode="decimal"
-                aria-label={`${label} weight`}
+                aria-label={t("pages.adaptiveSettings.weightAria", { label })}
                 value={form[key]}
                 onChange={(e) => set({ [key]: e.target.value } as Partial<FormState>)}
               />
@@ -227,29 +246,35 @@ function AdaptiveSettingsScreen() {
 
       <section className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Exploration</span>
+          <span className="text-sm font-medium">
+            {t("pages.adaptiveSettings.explorationTitle")}
+          </span>
           <p className="mt-1 text-sm text-muted-foreground">
-            The share of traffic sent off the current best target to keep its
-            score fresh, and how many samples a target needs before its score is
-            trusted at all. Ratio is capped at {MAX_EXPLORATION_RATIO}.
+            {t("pages.adaptiveSettings.explorationDesc", {
+              maxRatio: MAX_EXPLORATION_RATIO,
+            })}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">Exploration ratio</span>
+          <span className="flex-1 text-sm">
+            {t("pages.adaptiveSettings.explorationRatio")}
+          </span>
           <Input
             className="w-[92px]"
             inputMode="decimal"
-            aria-label="Exploration ratio"
+            aria-label={t("pages.adaptiveSettings.explorationRatio")}
             value={form.explorationRatio}
             onChange={(e) => set({ explorationRatio: e.target.value })}
           />
         </div>
         <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">Warm-up samples</span>
+          <span className="flex-1 text-sm">
+            {t("pages.adaptiveSettings.warmUpSamples")}
+          </span>
           <Input
             className="w-[92px]"
             inputMode="numeric"
-            aria-label="Warm-up samples"
+            aria-label={t("pages.adaptiveSettings.warmUpSamples")}
             value={form.minSamples}
             onChange={(e) => set({ minSamples: e.target.value })}
           />
@@ -262,7 +287,7 @@ function AdaptiveSettingsScreen() {
           disabled={save.isPending || localError !== null}
           onClick={() => save.mutate(form)}
         >
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

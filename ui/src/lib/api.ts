@@ -1,3 +1,5 @@
+import i18n from "@/lib/i18n";
+
 // typed fetch helpers for the rolter control api (proxied at /api in dev)
 
 export interface TargetDto {
@@ -199,7 +201,7 @@ async function apiError(res: Response): Promise<ApiError> {
     // not json, fall through
   }
   return new ApiError(
-    `request failed: ${res.status}`,
+    i18n.t("errors.requestFailed", { status: res.status }),
     res.status,
     undefined,
     retryAfter,

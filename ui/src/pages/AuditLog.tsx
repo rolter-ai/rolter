@@ -291,7 +291,7 @@ export default function AuditLog() {
               value={action}
               onChange={(e) => setAction(e.target.value)}
             >
-              <option value="">All actions</option>
+              <option value="">{t("pages.auditLog.allActions")}</option>
               {ACTIONS.map((a) => (
                 <option key={a} value={a}>
                   {a}
@@ -304,7 +304,7 @@ export default function AuditLog() {
               value={target}
               onChange={(e) => setTarget(e.target.value)}
             >
-              <option value="">All targets</option>
+              <option value="">{t("pages.auditLog.allTargets")}</option>
               {TARGET_TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -370,8 +370,8 @@ export default function AuditLog() {
           {(rows.length > 0 || cursors.length > 0) && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                page {cursors.length + 1}
-                {total != null && ` · ${total} total`}
+                {t("pages.auditLog.page", { page: cursors.length + 1 })}
+                {total != null && t("pages.auditLog.totalSuffix", { total })}
               </span>
               <div className="flex gap-1">
                 <button
@@ -381,7 +381,7 @@ export default function AuditLog() {
                   onClick={() => setCursors((c) => c.slice(0, -1))}
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
-                  Prev
+                  {t("pages.auditLog.prev")}
                 </button>
                 <button
                   type="button"
@@ -393,7 +393,7 @@ export default function AuditLog() {
                   }
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
-                  Next
+                  {t("pages.auditLog.next")}
                 </button>
               </div>
             </div>

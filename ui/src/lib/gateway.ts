@@ -1,3 +1,5 @@
+import i18n from "@/lib/i18n";
+
 // client for the rolter-gateway data plane (/v1/*), used by the Playground.
 //
 // the dashboard is served by the control plane, but chat/embeddings/image/audio
@@ -42,9 +44,8 @@ async function gwError(res: Response): Promise<Error> {
   } catch {
     // not json
   }
-  if (res.status === 401)
-    return new Error("unauthorized — set a valid virtual key");
-  return new Error(`gateway request failed: ${res.status}`);
+  if (res.status === 401) return new Error(i18n.t("errors.gateway.unauthorized"));
+  return new Error(i18n.t("errors.gateway.requestFailed", { status: res.status }));
 }
 
 /** One addressable id from the gateway's own catalogue. */
