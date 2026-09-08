@@ -471,6 +471,19 @@ export function fetchConfigProblems(): Promise<string[]> {
   );
 }
 
+/**
+ * The whole deployment's configuration as an importable `rolter.toml` (#1082).
+ *
+ * Text rather than a record: the endpoint renders a document
+ * (`crates/rolter-control/src/config_export.rs`), and the dashboard hands it
+ * to the browser unchanged rather than parsing a file it only means to save.
+ * Superadmin-only — one document spans every org — so the caller gates on
+ * `config_export:read` before it ever asks.
+ */
+export function exportConfigToml(): Promise<string> {
+  return getText("/api/v1/config/export");
+}
+
 export function fetchRoles(): Promise<string[]> {
   return getJson<string[]>("/api/v1/roles");
 }

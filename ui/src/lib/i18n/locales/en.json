@@ -99,6 +99,7 @@
       "modelPrices": "model prices",
       "models": "models",
       "config": "the effective config",
+      "configExport": "the configuration export",
       "providers": "providers",
       "plugins": "plugins",
       "analytics": "analytics",
@@ -1746,6 +1747,10 @@
         "entries_other": "{{count}} entries",
         "fields_one": "{{count}} field",
         "fields_other": "{{count}} fields"
+      },
+      "export": {
+        "action": "Export rolter.toml",
+        "pending": "Exporting…"
       }
     },
     "mcpSettings": {
@@ -2333,7 +2338,8 @@
     "saveFailed": "Could not save {{what}}",
     "deleted": "{{what}} deleted",
     "deleteFailed": "Could not delete {{what}}",
-    "created": "{{what}} created"
+    "created": "{{what}} created",
+    "exportFailed": "Could not export {{what}}"
   },
   "rbac": {
     "needsRole": "Requires the {{role}} role",

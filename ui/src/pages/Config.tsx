@@ -1,13 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Check, ShieldCheck } from "lucide-react";
+import { ArrowRight, Check, Download, ShieldCheck } from "lucide-react";
 import { Link } from "react-router";
 
 import { CopyButton } from "@/components/CopyButton";
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchConfig, type GatewayConfigDto } from "@/lib/api";
+import { exportConfigToml, fetchConfig, type GatewayConfigDto } from "@/lib/api";
+import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const SECTION_TH =
@@ -41,6 +43,7 @@ export default function Config() {
             <span className="h-[7px] w-[7px] rounded-full bg-[color:var(--status-success)]" />
             reload-free
           </span>
+          <ExportButton />
         </div>
         <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground">
           <ShieldCheck className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
@@ -132,6 +135,59 @@ export default function Config() {
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * Save the deployment's configuration as an importable `rolter.toml` (#1313).
+ *
+ * The document is rendered by the control plane, not by this screen: what the
+ * viewer above shows is the *effective* config the gateway runs, and what
+ * `rolter-seed --import` accepts is a narrower file. Downloading the rendered
+ * JSON would hand the operator something that looks importable and is not.
+ *
+ * Gated on `config_export:read` — the whole-deployment, superadmin-only pair
+ * the endpoint itself enforces (`crates/rolter-control/src/rbac_matrix.rs`).
+ */
+function ExportButton() {
+  const { t } = useTranslation();
+  const toast = useToast();
+
+  const exportConfig = useMutation({
+    mutationFn: exportConfigToml,
+    onSuccess: (toml) => {
+      // an object URL rather than a data URI: the document is the whole
+      // deployment's config and can run to hundreds of kilobytes, which some
+      // browsers refuse to navigate to as a URI
+      const url = URL.createObjectURL(new Blob([toml], { type: "application/toml" }));
+      const a = document.createElement("a");
+      a.href = url;
+      // dated, because the reason to keep one of these is to diff it against
+      // the next; `rolter.toml` alone would overwrite the last export
+      a.download = `rolter-config-${new Date().toISOString().slice(0, 10)}.toml`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.exportFailed", { what: t("errors.resources.configExport") }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+
+  return (
+    <GatedButton
+      gate="config_export:read"
+      variant="outline"
+      size="sm"
+      disabled={exportConfig.isPending}
+      onClick={() => exportConfig.mutate()}
+    >
+      <Download className="h-3.5 w-3.5" />
+      {exportConfig.isPending ? t("pages.config.export.pending") : t("pages.config.export.action")}
+    </GatedButton>
   );
 }
 

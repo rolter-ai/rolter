@@ -80,6 +80,14 @@ Identity is always a slug or a public model name, never a database id, which is 
 
 ---
 
+### From the dashboard
+
+**Settings → Effective Config** carries an **Export rolter.toml** button beside the header. It calls the same endpoint and saves the document as `rolter-config-YYYY-MM-DD.toml`, dated so successive exports of one deployment sit side by side instead of overwriting each other.
+
+The button is superadmin-only, matching the endpoint. A scoped role sees it disabled with a tooltip saying so rather than a "forbidden" error after the click. If the export fails, the dashboard says why in a notification — a browser download that produces nothing has no other way to report it.
+
+---
+
 ### From the API
 
 The control plane serves the same document over HTTP:
