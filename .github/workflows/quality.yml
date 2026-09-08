@@ -419,10 +419,15 @@ jobs:
             | tee /tmp/resp.json
           grep -q '"choices"' /tmp/resp.json
           echo "== fake-llm chat (streaming) =="
-          curl -fsS -N http://127.0.0.1:4000/v1/chat/completions \
+          # write to a file rather than piping into grep -q: grep exits on the
+          # first match and closes the pipe, so curl fails writing the rest of
+          # the SSE stream (exit 23) and `set -o pipefail` fails the step
+          curl -fsS -N --max-time 30 http://127.0.0.1:4000/v1/chat/completions \
             -H 'content-type: application/json' \
             -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
-            | grep -q 'data:'
+            -o /tmp/stream.txt
+          cat /tmp/stream.txt
+          grep -q 'data:' /tmp/stream.txt
 
   # ── full-stack smoke: the production-shaped docker compose topology ──────────
   # boots postgres, redis, clickhouse, gateway and control together via
