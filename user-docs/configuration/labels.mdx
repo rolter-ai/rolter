@@ -1,0 +1,112 @@
+---
+title: "Labels: Tagging Providers, Routes and Models"
+sidebarTitle: "Labels"
+description: "Attach your own labels to providers, provider groups, routes and models, and read the automatic labels Rolter derives — including what the timestamp on an automatic label does and does not promise."
+---
+
+A label is a short fact attached to a provider, a provider group, a route or a
+model. Rolter stores two kinds, and the difference matters when you act on one.
+
+| | Custom | Automatic |
+|---|---|---|
+| Who sets it | you | Rolter |
+| Examples | `eu-only`, `prod`, `cheap`, `owner:platform-team` | `priced` |
+| Can you edit it | yes | no |
+| Carries a timestamp | no | yes |
+
+---
+
+## Custom labels
+
+A custom label means whatever you need it to mean. Rolter stores and displays
+it and never interprets it — nothing routes differently because a provider is
+labelled `prod`.
+
+A label is a key with an optional value. A key alone reads as a flag
+(`eu-only`); a key with a value reads as a field (`owner: platform-team`).
+Keys are lowercase and may contain letters, digits, and `.` `_` `:` `-`, up to
+63 characters. Values are up to 128 characters.
+
+Attach one to a provider, provider group or route:
+
+```bash
+curl -X POST https://rolter.example.com/api/v1/orgs/$ORG_ID/labels \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"subject_type": "provider", "subject_id": "'$PROVIDER_ID'", "key": "owner", "value": "platform-team"}'
+```
+
+`subject_type` is `provider`, `provider_group` or `route`. Reading an org's
+labels takes the `viewer` role; adding, changing or removing one takes `admin`.
+
+Models are labelled through a separate endpoint, because a model belongs to the
+deployment-wide pricing catalog rather than to one org — labelling one is a
+superadmin action:
+
+```bash
+curl -X POST https://rolter.example.com/api/v1/model-labels \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "key": "cheap"}'
+```
+
+Re-using a key on the same subject returns `409 Conflict` rather than
+overwriting what is there. Change the value with `PUT`, or remove the label
+with `DELETE`, using the label's id.
+
+Deleting a provider, provider group or route deletes its labels with it.
+
+---
+
+## Automatic labels
+
+An automatic label is a fact Rolter established itself. It carries **when** it
+was established and **what** established it, and both are shown to you.
+
+<Warning>
+An automatic label reflects an observation with a time attached. It is not a
+guarantee about the next request. `priced` means a price existed in the catalog
+when Rolter last looked — not that a call you make now will be billed at that
+rate.
+</Warning>
+
+Today one automatic label ships: `priced` on a model, whose value is the
+currency the price is quoted in, recorded from the pricing catalog. Adding a
+price to a model records it; removing the price withdraws it.
+
+You cannot edit or delete an automatic label — those requests answer `404`. The
+only thing that changes one is Rolter observing again. This is deliberate: a
+label you could hand-edit would stop being evidence of anything.
+
+You **can** set a custom label with the same key. It does not overwrite the
+automatic one; both are stored and both are shown, marked with their source, so
+your annotation and Rolter's observation are never confused for each other.
+
+---
+
+## Filtering
+
+List endpoints narrow on any combination of `subject_type`, `subject_id`,
+`key`, `value` and `source`:
+
+```bash
+# every provider, group and route in this org labelled eu-only
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://rolter.example.com/api/v1/orgs/$ORG_ID/labels?key=eu-only"
+
+# only the labels you set, not Rolter's own
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://rolter.example.com/api/v1/orgs/$ORG_ID/labels?source=custom"
+```
+
+---
+
+## What labels do not do yet
+
+Labels are display and filter only. A route cannot select its targets by label
+— you cannot yet write a route that sends traffic to whichever providers are
+labelled `eu-only`. Routing still targets providers explicitly.
+
+That is a deliberate first cut: making labels selectable turns them into
+configuration the data plane consumes. The storage is shaped so it can be added
+without a migration rewrite.

@@ -45,6 +45,8 @@ mod guardrails;
 mod health;
 #[cfg(feature = "postgres")]
 mod invitations;
+#[cfg(feature = "postgres")]
+mod labels;
 pub mod ldap;
 #[cfg(feature = "postgres")]
 mod logging_settings;
@@ -948,6 +950,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(mcp_oauth_flow::router())
             .merge(feature_flags::router())
             .merge(guardrails::router())
+            .merge(labels::router())
             .merge(logging_settings::router())
             .merge(runtime_policy::router())
             .merge(compatibility_policy::router())

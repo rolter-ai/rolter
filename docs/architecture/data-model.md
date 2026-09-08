@@ -27,6 +27,7 @@ erDiagram
 - **Routes** belong to a project and map a public `model` to `route_targets` with a `strategy`.
 - **Virtual keys** belong to a project, store only a hash of the key plus a display prefix, and carry an optional model allow-list.
 - **MCP servers** belong to an org and declare required OAuth scopes and exposed tool names. Only enabled servers reach gateway snapshots. Grants bind a user to a server; sealed token sessions belong to a grant. **MCP tool groups** persist named server/tool manifests, while **MCP gateway settings** hold organization defaults for registration and MCP-aware clients; neither is currently a request-path authorization boundary.
+- **Labels** (`labels`) attach a `(key, value?)` fact to a provider, provider group, route or model. `source` separates an operator's `custom` label from an `auto` one Rolter derived, and is part of the uniqueness constraint so the two never overwrite each other; `auto` rows additionally carry `observed_at`/`observation`. `subject_id` is text because a model is addressed by name, which rules out a foreign key — three `after delete` triggers sweep a subject's labels instead. See [labels.md](labels.md).
 
 ## Cost & limits
 

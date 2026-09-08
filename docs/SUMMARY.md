@@ -9,6 +9,7 @@
 - [Caching](architecture/caching.md)
 - [Config & hot reload](architecture/config-and-hot-reload.md)
 - [Data model](architecture/data-model.md)
+- [Labels](architecture/labels.md)
 - [RBAC & auth](architecture/rbac-and-auth.md)
 - [Invitations](architecture/invitations.md)
 - [Single sign-on (OIDC)](architecture/sso.md)

@@ -965,6 +965,52 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "labels",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/labels",
+                "listOrgLabels",
+                "List labels on an org's providers, provider groups and routes",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/labels",
+                "createOrgLabel",
+                "Attach a custom label to a provider, provider group or route",
+            ),
+            Op::put(
+                "/api/v1/orgs/{org_id}/labels/{id}",
+                "updateOrgLabel",
+                "Change a custom label's value",
+            ),
+            Op::delete(
+                "/api/v1/orgs/{org_id}/labels/{id}",
+                "deleteOrgLabel",
+                "Remove a custom label",
+            ),
+            Op::get(
+                "/api/v1/model-labels",
+                "listModelLabels",
+                "List model labels",
+            ),
+            Op::post(
+                "/api/v1/model-labels",
+                "createModelLabel",
+                "Attach a custom label to a model",
+            ),
+            Op::put(
+                "/api/v1/model-labels/{id}",
+                "updateModelLabel",
+                "Change a custom model label's value",
+            ),
+            Op::delete(
+                "/api/v1/model-labels/{id}",
+                "deleteModelLabel",
+                "Remove a custom model label",
+            ),
+        ],
+    ));
+
+    ops.extend(tagged(
         "plugins",
         vec![
             Op::get(
@@ -1606,6 +1652,7 @@ fn tags() -> Value {
         {"name": "prompt-templates", "description": "versioned prompt templates and their scope bindings"},
         {"name": "skills", "description": "versioned skills and their published slugs"},
         {"name": "guardrails", "description": "guardrail providers and the rules that apply them"},
+        {"name": "labels", "description": "custom and automatic labels on providers, provider groups, routes and models"},
         {"name": "plugins", "description": "installed request/response plugins"},
         {"name": "mcp", "description": "MCP servers, tool groups, OAuth sessions and the tool-call log"},
         {"name": "alerting", "description": "alert channels, rules and delivery history"},

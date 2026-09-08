@@ -65,6 +65,7 @@
               "configuration/compatibility",
               "configuration/client-settings",
               "configuration/model-settings",
+              "configuration/labels",
               "configuration/gemini-interactions"
             ]
           },
