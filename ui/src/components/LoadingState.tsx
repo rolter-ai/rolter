@@ -145,3 +145,18 @@ export function StatGridSkeleton({
     </LoadingRegion>
   );
 }
+
+/** one form control standing in for itself, for a select whose options are still loading */
+export function ControlSkeleton({
+  width = 164,
+  className,
+}: {
+  width?: number | string;
+  className?: string;
+}) {
+  return (
+    <LoadingRegion className={cn("inline-block", className)}>
+      <Skeleton width={width} height={32} radius={6} />
+    </LoadingRegion>
+  );
+}

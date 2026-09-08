@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
-import { expectSkeleton } from "./story-harness";
+import { expectLoadError, expectSkeleton } from "./story-harness";
 import type { ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
@@ -56,20 +56,39 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
+// two teams, and a project under each: the scope switcher only ever has one
+// team selected, so "payments/checkout" is the project outside it that the
+// mapping form still has to be able to name (#1249)
+const TEAMS = [
+  { id: "team-1", org_id: ORG.id, name: "core", created_at: NOW },
+  { id: "team-2", org_id: ORG.id, name: "payments", created_at: NOW },
+];
+
+const PROJECTS: Record<string, { id: string; team_id: string; name: string; created_at: string }[]> = {
+  "team-1": [{ id: "proj-1", team_id: "team-1", name: "prod", created_at: NOW }],
+  "team-2": [{ id: "proj-2", team_id: "team-2", name: "checkout", created_at: NOW }],
+};
+
 // the screen resolves its org through useScope(), which fetches orgs, teams and
 // projects before the token list is even enabled — so every stub has to route
 // by url rather than answer one shape
 function scoped(
   tokens: (init?: RequestInit) => Promise<Response>,
   mappings: (init?: RequestInit) => Promise<Response> = async () => json([]),
+  chain: { teams?: () => Promise<Response>; projects?: () => Promise<Response> } = {},
 ): FetchStub {
   return async (input, init) => {
     const url = String(input);
+    const path = new URL(url, "http://localhost").pathname;
     if (url.includes("scim-group-mappings")) return mappings(init);
     if (url.includes("scim-tokens")) return tokens(init);
-    if (url.endsWith("/api/v1/orgs")) return json([ORG]);
-    if (url.includes("/teams")) return json([{ id: "team-1", org_id: ORG.id, name: "core", slug: "core", created_at: NOW }]);
-    if (url.includes("/projects")) return json([{ id: "proj-1", team_id: "team-1", name: "prod", slug: "prod", created_at: NOW }]);
+    if (path === "/api/v1/orgs") return json([ORG]);
+    // the projects route also contains "/teams", so it is matched first
+    const projects = /^\/api\/v1\/teams\/([^/]+)\/projects$/.exec(path);
+    if (projects) return (chain.projects ?? (async () => json(PROJECTS[projects[1]] ?? [])))();
+    if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) {
+      return (chain.teams ?? (async () => json(TEAMS)))();
+    }
     return json([]);
   };
 }
@@ -343,5 +362,108 @@ export const RemoveMappingConfirmsFirst: Story = {
     await waitFor(() =>
       expect(canvas.queryByText("platform-engineering")).toBeNull(),
     );
+  },
+};
+
+// the bug #1249 was filed for: the scope select used to list only the projects
+// of the team the switcher had selected, so a mapping onto a project in another
+// team could not be written without moving the switcher first. the picker now
+// groups every project under its own team, and posts that project's id
+export const MapGroupToAProjectInAnotherTeam: Story = {
+  render: () => {
+    postedMappings.length = 0;
+    const stub = scoped(
+      async () => json(TOKENS),
+      async (init) => {
+        if (init?.method === "POST") {
+          postedMappings.push(JSON.parse(String(init.body)));
+          return json(
+            mapping({
+              id: "map-new",
+              group_name: "checkout-oncall",
+              role: "member",
+              project_id: "proj-2",
+            }),
+          );
+        }
+        return json(
+          postedMappings.length
+            ? [
+                mapping({
+                  id: "map-new",
+                  group_name: "checkout-oncall",
+                  role: "member",
+                  project_id: "proj-2",
+                }),
+              ]
+            : [],
+        );
+      },
+    );
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByLabelText("Where the role applies");
+    // grouped by team, so two teams may each have a "prod" without the reader
+    // having to guess which one an option means
+    await waitFor(() =>
+      expect(within(scope).getByRole("group", { name: "Projects in payments" })).toBeInTheDocument(),
+    );
+    await userEvent.type(await canvas.findByLabelText("IdP group"), "checkout-oncall");
+    await userEvent.selectOptions(scope, "project:proj-2");
+    await userEvent.selectOptions(canvas.getByLabelText("Role to grant"), "member");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+    await waitFor(() => expect(postedMappings).toHaveLength(1));
+    await expect(postedMappings[0]).toEqual({
+      group_name: "checkout-oncall",
+      role: "member",
+      project_id: "proj-2",
+    });
+    // and the listed mapping names that project, not its raw id
+    await waitFor(() =>
+      expect(canvas.getByText("checkout-oncall").closest("li")).toHaveTextContent(
+        "checkout",
+      ),
+    );
+  },
+};
+
+// an org with no teams can only be mapped org-wide, and the form says so rather
+// than offering a select with one option and no explanation
+export const ScopePickerHasNoTeams: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json([]),
+        { teams: async () => json([]) },
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(/no teams yet/)).toBeVisible(),
+    );
+  },
+};
+
+// the teams the picker fans out over can fail on their own: the narrower scopes
+// go away, the org-wide mapping the operator was probably writing does not
+export const ScopePickerCannotListTeams: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json([]),
+        { teams: async () => json({ error: { message: "boom" } }, 500) },
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /teams and projects/);
+    await expect(canvas.getByLabelText("Where the role applies")).toBeVisible();
   },
 };
