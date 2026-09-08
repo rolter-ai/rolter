@@ -216,6 +216,8 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 
 Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per gateway process; set a value to `0` to disable that limit.
 
+The `/v1/realtime` relay carries the `realtime` [stability marker](../development/stability-markers.md), so these keys may change shape in a minor release. They are also the *only* limits a realtime session meets: budgets, rate limits and usage recording sit on the HTTP request path and do not see it.
+
 - `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame

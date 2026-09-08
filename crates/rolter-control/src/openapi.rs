@@ -242,6 +242,12 @@ fn operations() -> Vec<Op> {
                 "Provider kinds this build can talk to",
             ),
             Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
+            Op::get(
+                "/api/v1/stability",
+                "getStability",
+                "Subsystems this build marks experimental; absence means stable",
+            )
+            .ok(Payload::List("SubsystemStability")),
             Op::post(
                 "/api/v1/ui-events",
                 "ingestUiEvent",
@@ -1794,12 +1800,30 @@ fn schemas() -> Value {
         routing_schemas(&p),
         virtual_key_schemas(&p),
         governance_schemas(&p),
+        stability_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
         }
     }
     Value::Object(out)
+}
+
+/// The stability marker (#1385). `stable` is in the enum for completeness, but
+/// the endpoint never emits it: absence from the array is what "stable" means.
+fn stability_schemas(p: &Prim) -> Value {
+    let string = &p.string;
+    json!({
+        "SubsystemStability": {
+            "type": "object",
+            "required": ["subsystem", "stability", "note"],
+            "properties": {
+                "subsystem": string,
+                "stability": {"type": "string", "enum": ["stable", "experimental"]},
+                "note": string
+            }
+        }
+    })
 }
 
 fn error_schemas(p: &Prim) -> Value {

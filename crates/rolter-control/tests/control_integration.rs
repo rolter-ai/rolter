@@ -1578,6 +1578,69 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     assert_eq!(as_admin.status(), 200);
 }
 
+/// `GET /api/v1/stability` is the dashboard's one source for the nav's
+/// experimental markers (#1385): the least-privileged signed-in caller reads it
+/// — a viewer sees the nav too — an anonymous one does not, and every row it
+/// returns is an exception, because absence is what "stable" means.
+#[tokio::test]
+async fn stability_endpoint_lists_only_experimental_subsystems() {
+    skip_without_db!();
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let denied = client
+        .get(format!("{base}/api/v1/stability"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+
+    let viewer = seed_user(&pool, "stability-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "stabilityviewer").await;
+    let resp = client
+        .get(format!("{base}/api/v1/stability"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let rows = body.as_array().expect("an array of markers");
+    assert_eq!(rows.len(), rolter_core::SUBSYSTEMS.len());
+    for row in rows {
+        assert_eq!(
+            row["stability"], "experimental",
+            "a stable subsystem must be absent, not listed: {row}"
+        );
+        let id = row["id"].as_str().expect("a subsystem id");
+        assert!(
+            rolter_core::subsystem(id).is_some(),
+            "{id} is not in the core table"
+        );
+        assert!(
+            !row["note"].as_str().unwrap_or_default().is_empty(),
+            "{id} must say why it is experimental"
+        );
+    }
+    // a stable subsystem is nowhere in the payload
+    assert!(!rows
+        .iter()
+        .any(|row| row["id"] == "providers" || row["id"] == "virtual_keys"));
+
+    let as_admin = client
+        .get(format!("{base}/api/v1/stability"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(as_admin.status(), 200);
+}
+
 /// The `/me/*` 401 distinguishes "you are not signed in" from "this deployment
 /// has no accounts to sign in to" (#942).
 ///
@@ -4730,7 +4793,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "model_label:read",
             "model_price:read",
             "model:read",
-            "version:read"
+            "version:read",
+            "stability:read"
         ]
     );
 

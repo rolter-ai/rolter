@@ -74,6 +74,12 @@ None of those are checked here — `cargo-semver-checks` cannot see them.
 Deciding what each of them guarantees at 1.0 is #922, and this page is the
 Rust-crate half of the answer it will need.
 
+The other half of what #922 needs is the list of subsystems the promise does
+*not* cover. That is a separate axis, set per subsystem rather than per crate,
+and it lives in [Stability markers](stability-markers.md): an `experimental`
+marker is a documented exemption saying the subsystem may change shape or be
+removed in a minor release.
+
 ## At 1.0
 
 Two things change, both in #922's scope:

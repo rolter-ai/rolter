@@ -14,6 +14,7 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod slug;
+pub mod stability;
 pub mod telemetry;
 
 pub use access_policy::ModelPolicy;
@@ -53,6 +54,9 @@ pub use prompt_templates::{
     CompiledTemplates, Decorator, DecoratorPosition, DecoratorRole, PromptTemplate,
     PromptTemplateActivationScope, PromptTemplateRequestScope, PromptTemplatesConfig, RenderError,
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
+};
+pub use stability::{
+    stability_of, stability_of_nav_key, subsystem, Stability, SubsystemStability, SUBSYSTEMS,
 };
 
 /// Redis pub/sub channel the control plane publishes config-version bumps

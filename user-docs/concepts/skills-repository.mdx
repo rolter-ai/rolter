@@ -3,6 +3,14 @@ title: "Skills repository"
 description: "Share immutable agent skills across an organization with role and team access policies, inline content or artifact references, and safe rollback."
 ---
 
+<Warning>
+  **Experimental.** The skills repository may change shape or be removed in a
+  minor release. A skill resolves only through the control-plane API today —
+  the gateway serves no skill surface — so how a client addresses and fetches
+  one is not settled. The versioning and access model is usable now; treat the
+  resolution contract as provisional.
+</Warning>
+
 The Skills Repository gives agents and teams one governed source for reusable instructions. Each skill has a stable slug, a mutable access policy, and an immutable version history. Publishing selects which saved version callers resolve; it never rewrites that version.
 
 ## Create and share a skill

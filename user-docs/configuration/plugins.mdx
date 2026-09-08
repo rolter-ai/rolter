@@ -3,6 +3,15 @@ title: "Plugins"
 description: "Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline."
 ---
 
+<Warning>
+  **Experimental.** Plugins may change shape or be removed in a minor release.
+  The webhook payload Rolter posts to a plugin carries no version of its own, so
+  a change to that payload cannot be made compatibly — an endpoint written
+  against today's fields may need editing when it moves. The stored
+  configuration (slug, scope, order, failure policy, endpoint) is the settled
+  part; the request body is not.
+</Warning>
+
 Open **Plugins** to arrange desired request and response middleware across three stages:
 
 - **Pre-route** — before Rolter selects a route.

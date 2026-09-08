@@ -278,6 +278,17 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // which subsystems this build marks experimental (#1385): a fact about the
+    // code, identical for every caller, and read by the nav rail every signed-in
+    // user sees — so anyone authenticated may read it and nobody may write it
+    Capability {
+        resource: "stability",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -1109,7 +1120,10 @@ mod tests {
                 "model_label:read",
                 "model_price:read",
                 "model:read",
-                "version:read"
+                "version:read",
+                // which subsystems this build calls experimental (#1385): a
+                // property of the code, so it has no scope either
+                "stability:read"
             ]
         );
     }
@@ -1207,6 +1221,7 @@ mod tests {
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
         ("sso.rs", include_str!("sso.rs")),
+        ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
         ("ui_config.rs", include_str!("ui_config.rs")),
         ("ui_events.rs", include_str!("ui_events.rs")),
