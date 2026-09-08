@@ -3,6 +3,8 @@ import { getStoryContext } from "@storybook/test-runner";
 import { appendFileSync } from "node:fs";
 import { checkA11y, getViolations, injectAxe } from "axe-playwright";
 
+import { PAGE_A11Y_RULE_IDS, PAGE_A11Y_STORY_ID } from "../src/lib/story-a11y.ts";
+
 // The viewport addon sizes the preview iframe inside the Storybook UI. The test
 // runner drives the iframe directly, where nothing does, so a "fits at 375px"
 // story would otherwise be measured at the browser default and assert nothing.
@@ -55,13 +57,36 @@ const config: TestRunnerConfig = {
   async postVisit(page, context) {
     const story = await getStoryContext(page, context);
     const a11y = story.parameters?.a11y as
-      | { disable?: boolean; rules?: Record<string, { enabled: boolean }> }
+      | {
+          disable?: boolean;
+          expectRules?: readonly string[];
+          rules?: Record<string, { enabled: boolean }>;
+        }
       | undefined;
     if (a11y?.disable) return;
     // a story that mounts a whole page re-enables the page-level rules above
     // by name; its map wins over the defaults, so an override is additive and
     // never silently loosens the gate for everything else
     const rules = { ...DISABLED_RULES, ...(a11y?.rules ?? {}) };
+    // a dropped `parameters` spread is the one failure a gate cannot survive:
+    // the story runs, the override is gone and the run is green while nothing
+    // is asserted (#1373). two claims are checked against the merged map above
+    // — `parameters.a11y.expectRules`, which `withPageA11y` carries so a
+    // fixture that arrived says which rules it bought, and the story id, so a
+    // page story that lost the fixture entirely (and with it its own claim)
+    // still fails
+    const expectRules = PAGE_A11Y_STORY_ID.test(context.id)
+      ? PAGE_A11Y_RULE_IDS
+      : (a11y?.expectRules ?? []);
+    const missing = expectRules.filter((rule) => !rules[rule]?.enabled);
+    if (missing.length > 0) {
+      throw new Error(
+        `${context.id}: axe rules ${missing.join(", ")} should be enabled for this story but are not. ` +
+          "spread `withPageA11y` from src/lib/story-a11y.ts *inside* the meta's `parameters` object " +
+          "(`parameters: { ...withPageA11y }`) — spread as a bare story or meta field it is replaced " +
+          "by the docgen transform and the story passes asserting nothing (#1373).",
+      );
+    }
     // ROLTER_AXE_TALLY=<path> re-measures the whole band (#1244): every
     // violation at every impact is appended as one JSON line per story so the
     // per-rule table in docs/development/testing.md can be regenerated. it
