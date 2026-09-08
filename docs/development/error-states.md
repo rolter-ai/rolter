@@ -26,8 +26,13 @@ Never render a load failure by hand. Use `LoadError`:
 )}
 ```
 
-`resource` is the translated noun for what failed — it is interpolated into the
-title, so it reads as a sentence in every locale. Pass `onRetry` whenever the
+`resource` is the translated noun for what failed — it is interpolated into
+both the title and the body, so each reads as a sentence in every locale. Five
+of the eight bodies name it, so a call site that filled only the title showed
+the reader a raw `{{resource}}` (#1362); catalog parity cannot catch that,
+because the placeholder is present in every locale and it is the render that
+drops it. `src/lib/load-error.test.ts` holds the copy to the one variable the
+component passes, and the `EveryKind` story asserts no `{{` survives to the DOM. Pass `onRetry` whenever the
 caller holds a query handle; the component decides whether offering it is
 honest.
 
