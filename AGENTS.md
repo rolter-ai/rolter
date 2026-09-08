@@ -105,6 +105,7 @@ the repo: on first use of a machine, tell the session "this machine is
 - Postgres tests must run in an isolated schema (per-test `search_path`); the coverage job runs plain `cargo test` against a shared database and will race otherwise.
 - `rolter-control` CRUD tests only build under `--features postgres`. Check both feature sets before pushing.
 - `cargo hack check --each-feature --workspace` runs in CI: every feature must compile alone, so never let a feature-gated item leak into a default-feature path.
+- A crate's `postgres` feature enables its dependencies', never the other way round, so `rolter-control/postgres` can be on while `rolter/postgres` is off. Never write an exhaustive struct literal of a dependency's type whose fields that dependency feature-gates — use `..Default::default()`, since your own `#[cfg]` cannot see the dependency's feature (#1295). The `cross-crate feature combination` step in `quality.yml` builds that combination.
 
 ## Maintenance matrix
 
