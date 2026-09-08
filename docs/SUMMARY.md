@@ -61,6 +61,7 @@
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)
 - [API stability and the semver gate](development/api-stability.md)
+- [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 
 # Deployment

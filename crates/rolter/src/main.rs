@@ -11,12 +11,15 @@
 //! rolter init               # generate a production config and its secrets
 //! rolter check              # pre-boot validation for a production deployment
 //! rolter kek verify         # does ROLTER_KEK open what the store already holds
+//! rolter config export      # the live config as an importable rolter.toml
 //! ```
 //!
 //! The `gateway`/`control` subcommands reuse the exact argument set of the
 //! standalone binaries via [`rolter_gateway::Args`] / [`rolter_control::Args`];
 //! `easy-up` composes both for a zero-config one-command bring-up.
 
+#[cfg(feature = "postgres")]
+mod config;
 mod easy_up;
 mod init;
 #[cfg(feature = "postgres")]
@@ -55,6 +58,9 @@ enum Command {
     /// verify or rotate the key-encryption key against the control-plane store
     #[cfg(feature = "postgres")]
     Kek(kek::KekArgs),
+    /// export the live configuration as an importable rolter.toml
+    #[cfg(feature = "postgres")]
+    Config(config::ConfigArgs),
 }
 
 #[tokio::main]
@@ -73,5 +79,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Check(args) => preflight::run(args).await,
         #[cfg(feature = "postgres")]
         Command::Kek(args) => kek::run(args).await,
+        #[cfg(feature = "postgres")]
+        Command::Config(args) => config::run(args).await,
     }
 }

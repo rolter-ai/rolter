@@ -560,6 +560,17 @@ const CAPABILITIES: &[Capability] = &[
         update: SUPER,
         delete: NA,
     },
+    // the configuration export spans every org's providers, groups and routes
+    // in one document (#1082), so there is no tenancy scope narrow enough to
+    // delegate it — and it names every `api_key_env` the deployment reads
+    Capability {
+        resource: "config_export",
+        scope: "deployment",
+        read: SUPER,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
     // outbound telemetry export is a deployment-wide egress decision, so it
     // sits at the same level as the security settings above rather than being
     // delegable per org (#511)
@@ -1132,6 +1143,7 @@ mod tests {
             "compatibility_policy.rs",
             include_str!("compatibility_policy.rs"),
         ),
+        ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("crud.rs", include_str!("crud.rs")),
