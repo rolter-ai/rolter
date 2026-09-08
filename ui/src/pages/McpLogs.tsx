@@ -121,13 +121,13 @@ function McpLogsScreen() {
   return (
     <PageBody className="h-full min-h-0">
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-        <McpStat label="Calls (24h)" value={summary.data ? String(summary.data.calls) : "—"} />
+        <McpStat label={t("pages.mcpLogs.calls24h")} value={summary.data ? String(summary.data.calls) : "—"} />
         <McpStat
-          label="Failures"
+          label={t("pages.mcpLogs.failures")}
           value={summary.data ? String(summary.data.failures) : "—"}
         />
-        <McpStat label="Avg latency" value={latencyStat(summary.data?.avg_latency_ms)} />
-        <McpStat label="p95 latency" value={latencyStat(summary.data?.p95_latency_ms)} />
+        <McpStat label={t("pages.mcpLogs.avgLatency")} value={latencyStat(summary.data?.avg_latency_ms)} />
+        <McpStat label={t("pages.mcpLogs.p95Latency")} value={latencyStat(summary.data?.p95_latency_ms)} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
@@ -140,7 +140,7 @@ function McpLogsScreen() {
             resetPaging();
           }}
         >
-          <option value="">all statuses</option>
+          <option value="">{t("pages.mcpLogs.allStatuses")}</option>
           {MCP_STATUSES.map((s) => (
             <option key={s} value={s}>
               {s}
@@ -156,7 +156,7 @@ function McpLogsScreen() {
             resetPaging();
           }}
         >
-          <option value="">all transports</option>
+          <option value="">{t("pages.mcpLogs.allTransports")}</option>
           {MCP_TRANSPORTS.map((t) => (
             <option key={t} value={t}>
               {t}
@@ -170,7 +170,7 @@ function McpLogsScreen() {
             disabled={cursors.length === 0}
             onClick={() => setCursors((c) => c.slice(0, -1))}
           >
-            ← Prev
+            {t("pages.mcpLogs.prev")}
           </Button>
           <Button
             size="sm"
@@ -180,7 +180,7 @@ function McpLogsScreen() {
               logs.data?.next_cursor && setCursors((c) => [...c, logs.data.next_cursor as string])
             }
           >
-            Next →
+            {t("pages.mcpLogs.next")}
           </Button>
         </div>
       </div>
@@ -217,12 +217,12 @@ function McpLogsScreen() {
           {rows.length > 0 && (
             <ListTable className="max-h-full overflow-y-auto">
               <ListHeader grid={GRID} className="sticky top-0 z-10">
-                <span>Time</span>
-                <span>Server</span>
-                <span>Tool</span>
-                <span>Status</span>
-                <span>Transport</span>
-                <span className="text-right">Latency</span>
+                <span>{t("pages.mcpLogs.time")}</span>
+                <span>{t("pages.mcpLogs.server")}</span>
+                <span>{t("pages.mcpLogs.tool")}</span>
+                <span>{t("pages.mcpLogs.status")}</span>
+                <span>{t("pages.mcpLogs.transport")}</span>
+                <span className="text-right">{t("pages.mcpLogs.latency")}</span>
               </ListHeader>
               {rows.map((r) => (
                 <McpRow key={r.event_id} row={r} onSelect={() => setSelected(r.event_id)} />
@@ -319,24 +319,24 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
       {d && (
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <DrawerStat label="Status" value={d.status} />
-            <DrawerStat label="Latency" value={`${d.latency_ms} ms`} />
-            <DrawerStat label="Transport" value={d.transport} />
-            <DrawerStat label="Time" value={fmt.dateTime(d.ts)} />
-            <DrawerStat label="Request" value={d.request_id || "—"} />
-            <DrawerStat label="Trace" value={d.trace_id || "—"} />
+            <DrawerStat label={t("pages.mcpLogs.status")} value={d.status} />
+            <DrawerStat label={t("pages.mcpLogs.latency")} value={`${d.latency_ms} ms`} />
+            <DrawerStat label={t("pages.mcpLogs.transport")} value={d.transport} />
+            <DrawerStat label={t("pages.mcpLogs.time")} value={fmt.dateTime(d.ts)} />
+            <DrawerStat label={t("pages.mcpLogs.request")} value={d.request_id || "—"} />
+            <DrawerStat label={t("pages.mcpLogs.trace")} value={d.trace_id || "—"} />
           </div>
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
           {pretty(d.arguments) && (
             <DrawerBlock
-              label="Arguments"
+              label={t("pages.mcpLogs.arguments")}
               body={pretty(d.arguments)!}
               language={payloadLanguage(d.arguments)}
             />
           )}
           {pretty(d.result) && (
             <DrawerBlock
-              label="Result"
+              label={t("pages.mcpLogs.result")}
               body={pretty(d.result)!}
               language={payloadLanguage(d.result)}
             />
@@ -371,7 +371,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
         </span>
         <button
           type="button"
-          aria-label="Close MCP log details"
+          aria-label={t("pages.mcpLogs.closeDetails")}
           onClick={onClose}
           className="ml-auto text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >

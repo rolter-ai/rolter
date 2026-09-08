@@ -195,24 +195,27 @@ export default function Logs() {
   const detail = selected && (
     <>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <DrawerStat label="Model" value={selected.model} />
-        <DrawerStat label="Provider" value={selected.provider || "—"} />
+        <DrawerStat label={t("pages.logs.model")} value={selected.model} />
+        <DrawerStat label={t("common.provider")} value={selected.provider || "—"} />
         <DrawerStat
-          label="Latency"
+          label={t("pages.logs.latency")}
           value={t("analytics.ms", {
             value: fmt.number(Math.round(num(selected.latency_ms))),
           })}
         />
         <DrawerStat
-          label="Cost"
+          label={t("pages.logs.cost")}
           value={cost(selected) ?? t("analytics.unpriced")}
           title={isUnpriced(selected) ? t("analytics.unpricedHint") : undefined}
         />
         <DrawerStat
-          label="Tokens"
-          value={`${num(selected.prompt_tokens)} in · ${num(selected.completion_tokens)} out`}
+          label={t("pages.logs.tokens")}
+          value={t("pages.logs.tokensInOut", {
+            in: num(selected.prompt_tokens),
+            out: num(selected.completion_tokens),
+          })}
         />
-        <DrawerStat label="Virtual key" value={selected.virtual_key_id || "—"} />
+        <DrawerStat label={t("pages.logs.virtualKey")} value={selected.virtual_key_id || "—"} />
         {/* where this request's spend was charged; a uuid with no row behind
             it still beats hiding the attribution entirely */}
         <DrawerStat
@@ -233,10 +236,10 @@ export default function Logs() {
         />
       </div>
       {selected.error && (
-        <DrawerBlock label="Error" content={selected.error} language="log" />
+        <DrawerBlock label={t("pages.logs.error")} content={selected.error} language="log" />
       )}
-      <PayloadBlock label="Request" raw={selected.request_payload} />
-      <PayloadBlock label="Response" raw={selected.response_payload} />
+      <PayloadBlock label={t("pages.logs.request")} raw={selected.request_payload} />
+      <PayloadBlock label={t("pages.logs.response")} raw={selected.response_payload} />
     </>
   );
 
@@ -256,12 +259,12 @@ export default function Logs() {
           )}
           {...(railOverlays ? filterA11y : {})}
         >
-          <FilterPanel title="Filters" onHide={() => setFiltersOpen(false)}>
-            <FilterSection title="Status" defaultOpen count={statusSelected.length}>
+          <FilterPanel title={t("common.filters")} onHide={() => setFiltersOpen(false)}>
+            <FilterSection title={t("pages.logs.status")} defaultOpen count={statusSelected.length}>
               <FilterCheckList
                 options={[
-                  { value: "success", label: "2xx OK" },
-                  { value: "error", label: "Errors" },
+                  { value: "success", label: t("pages.logs.statusOk") },
+                  { value: "error", label: t("pages.logs.statusErrors") },
                 ]}
                 selected={statusSelected}
                 onChange={(sel) =>
@@ -269,7 +272,7 @@ export default function Logs() {
                 }
               />
             </FilterSection>
-            <FilterSection title="Model" defaultOpen count={modelSel.length}>
+            <FilterSection title={t("pages.logs.model")} defaultOpen count={modelSel.length}>
               <FilterSearchList
                 options={(models.data ?? []).map((m) => ({
                   value: m.model,
@@ -277,7 +280,7 @@ export default function Logs() {
                 }))}
                 selected={modelSel}
                 onChange={(sel) => setModelSel(sel.slice(-1))}
-                placeholder="Filter models"
+                placeholder={t("pages.logs.filterModels")}
               />
             </FilterSection>
             {(units.data ?? []).length > 0 && (
@@ -334,7 +337,7 @@ export default function Logs() {
             )}
           >
             <Filter className="h-3.5 w-3.5" />
-            Filters
+            {t("common.filters")}
             {filterCount > 0 && ` · ${filterCount}`}
           </button>
           <span className="inline-flex items-center gap-[7px] text-xs text-muted-foreground">
@@ -344,17 +347,18 @@ export default function Logs() {
                 streaming ? "rl-pulse bg-[color:var(--status-success)]" : "bg-[color:var(--text-subtle)]",
               )}
             />
-            {streaming ? "Streaming" : "Paused"} · {rows.length} requests
+            {streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} ·{" "}
+            {t("pages.logs.requests", { count: rows.length })}
           </span>
           <div className="ml-auto flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
-              {streaming ? "Pause" : "Resume"}
+              {streaming ? t("pages.logs.pause") : t("pages.logs.resume")}
             </Button>
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                title="Previous page"
-                aria-label="Previous page"
+                title={t("pages.logs.prevPage")}
+                aria-label={t("pages.logs.prevPage")}
                 disabled={page === 0}
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 className="flex rounded-md border border-[color:var(--border-subtle)] p-[5px] text-[color:var(--text-subtle)] transition-colors enabled:hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -364,8 +368,8 @@ export default function Logs() {
               <span className="font-mono text-xs text-muted-foreground">p{page + 1}</span>
               <button
                 type="button"
-                title="Next page"
-                aria-label="Next page"
+                title={t("pages.logs.nextPage")}
+                aria-label={t("pages.logs.nextPage")}
                 disabled={!hasMore}
                 onClick={() => setPage((p) => p + 1)}
                 className="flex rounded-md border border-[color:var(--border-subtle)] p-[5px] text-[color:var(--text-subtle)] transition-colors enabled:hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -390,13 +394,13 @@ export default function Logs() {
             </colgroup>
             <thead>
               <tr>
-                <th scope="col" className={TH}>Time</th>
-                <th scope="col" className={TH}>Model</th>
-                <th scope="col" className={TH}>Provider</th>
-                <th scope="col" className={TH}>Status</th>
-                <th scope="col" className={cn(TH, "text-right")}>Latency</th>
-                <th scope="col" className={cn(TH, "text-right")}>Tokens</th>
-                <th scope="col" className={cn(TH, "text-right")}>Cost</th>
+                <th scope="col" className={TH}>{t("pages.logs.time")}</th>
+                <th scope="col" className={TH}>{t("pages.logs.model")}</th>
+                <th scope="col" className={TH}>{t("common.provider")}</th>
+                <th scope="col" className={TH}>{t("pages.logs.status")}</th>
+                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.latency")}</th>
+                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.tokens")}</th>
+                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.cost")}</th>
                 <th scope="col" className={TH}>
                   <span className="sr-only">{t("analytics.details")}</span>
                 </th>
@@ -520,7 +524,7 @@ export default function Logs() {
               </span>
               <button
                 type="button"
-                aria-label="Close details"
+                aria-label={t("pages.logs.closeDetails")}
                 onClick={() => setSelected(null)}
                 className="ml-auto flex text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >

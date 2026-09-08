@@ -153,12 +153,13 @@ function SecurityScreen() {
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span id="security-auth-label" className="text-sm font-medium">Password protect the dashboard</span>
+              <span id="security-auth-label" className="text-sm font-medium">
+                {t("pages.security.dashboardAuth")}
+              </span>
               <Badge tone="info">BETA</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Require a credential to open the dashboard. Provide either an external
-              secret-manager reference or a managed secret stored encrypted.
+              {t("pages.security.dashboardAuthHint")}
             </p>
           </div>
           <Switch
@@ -176,7 +177,7 @@ function SecurityScreen() {
           style={{ opacity: disabledAuth ? 0.55 : 1 }}
         >
           <label htmlFor="security-credential-ref" className="text-xs font-medium text-[color:var(--text-secondary)]">
-            Credential reference
+            {t("pages.security.credentialRef")}
           </label>
           <Input
             id="security-credential-ref"
@@ -192,7 +193,7 @@ function SecurityScreen() {
           style={{ opacity: disabledAuth ? 0.55 : 1 }}
         >
           <label htmlFor="security-managed-secret" className="text-xs font-medium text-[color:var(--text-secondary)]">
-            Managed secret
+            {t("pages.security.managedSecret")}
           </label>
           <Input
             id="security-managed-secret"
@@ -200,54 +201,56 @@ function SecurityScreen() {
             value={form.managedSecret}
             disabled={disabledAuth}
             placeholder={
-              secretConfigured ? "configured — enter to replace" : "Enter a secret to store"
+              secretConfigured
+                ? t("pages.security.secretConfigured")
+                : t("pages.security.secretPlaceholder")
             }
             onChange={(e) => set({ managedSecret: e.target.value })}
           />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-            Write-only: the secret is encrypted server-side and never shown again.
+            {t("pages.security.secretHint")}
           </span>
         </fieldset>
       </section>
 
       <ToggleCard
-        title="Enforce Virtual Keys on Inference"
-        desc="Require a virtual key for all inference requests."
+        title={t("pages.security.enforceVk")}
+        desc={t("pages.security.enforceVkHint")}
         checked={form.enforceVk}
         onChange={(v) => set({ enforceVk: v })}
       />
       <TextCard
-        title="Allowed Origins"
-        desc="Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly."
+        title={t("pages.security.allowedOrigins")}
+        desc={t("pages.security.allowedOriginsHint")}
         value={form.allowedOrigins}
-        placeholder="https://app.example.com, https://console.example.com"
+        placeholder={t("pages.security.allowedOriginsPlaceholder")}
         onChange={(v) => set({ allowedOrigins: v })}
       />
       <TextCard
-        title="Allowed Headers"
-        desc="Comma-separated list of allowed headers for CORS."
+        title={t("pages.security.allowedHeaders")}
+        desc={t("pages.security.allowedHeadersHint")}
         value={form.allowedHeaders}
-        placeholder="X-Stainless-Timeout"
+        placeholder={t("pages.security.allowedHeadersPlaceholder")}
         onChange={(v) => set({ allowedHeaders: v })}
       />
       <TextCard
-        title="Required Headers"
-        desc="Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected."
+        title={t("pages.security.requiredHeaders")}
+        desc={t("pages.security.requiredHeadersHint")}
         value={form.requiredHeaders}
-        placeholder="X-Tenant-ID: acme, X-Custom-Header: value"
+        placeholder={t("pages.security.requiredHeadersPlaceholder")}
         onChange={(v) => set({ requiredHeaders: v })}
       />
       <TextCard
-        title="Auth Bypass Routes"
-        desc="Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open."
+        title={t("pages.security.bypassRoutes")}
+        desc={t("pages.security.bypassRoutesHint")}
         value={form.bypassRoutes}
-        placeholder="/v1/models, /v1/ping"
+        placeholder={t("pages.security.bypassRoutesPlaceholder")}
         onChange={(v) => set({ bypassRoutes: v })}
       />
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         <Button disabled={save.isPending} onClick={() => save.mutate(form)}>
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>
