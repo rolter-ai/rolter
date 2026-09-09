@@ -171,6 +171,29 @@ Two Prometheus counters track this: `rolter_unpriced_served_total` (requests ser
 
 Rows written before the `unpriced` column existed default to `0`. That under-reports the unpriced share of historical data rather than inventing one.
 
+## Paging the invocation log
+
+`GET /api/v1/analytics/invocations` returns one page of requests plus the cursor that resumes it:
+
+```json
+{ "data": [ /* newest first */ ], "next_cursor": "2026-07-19 12:00:01.000|req-1" }
+```
+
+Ask for the next page by handing that value straight back as `cursor`:
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  "https://control.example.com/api/v1/analytics/invocations?limit=50&cursor=2026-07-19%2012%3A00%3A01.000%7Creq-1"
+```
+
+The cursor is a position in the list's sort key — `(ts, request_id)`, newest first — not a row number, and this is what makes paging a live log correct. `request_logs` is written continuously by the gateway, so requests land above the window while you read: a row offset would count them in and either serve you a row you already saw or skip one entirely. A keyset bound cannot be moved by rows above it, so every request that existed when you started paging is returned exactly once. `request_id` breaks ties, so two requests logged in the same millisecond still have one order.
+
+Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50.
+
+<Note>
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+</Note>
+
 ## Built-in dashboard
 
 The Rolter control plane's dashboard queries ClickHouse directly to give you usage, spend, latency percentiles, and error rates — all sliced by model, project, and virtual key. No extra ETL or data pipeline is needed: the rows Rolter writes are the source of truth for the dashboard.

@@ -1,6 +1,7 @@
 //! Usage/cost aggregation over the ClickHouse `request_logs` table for the
 //! dashboard. All endpoints are read-only and return ClickHouse's `FORMAT JSON`
-//! `data` array straight through.
+//! `data` array straight through; the keyset-paged invocation list adds a
+//! `next_cursor` beside it.
 //!
 //! Injection safety: time bounds are passed as ClickHouse query **parameters**
 //! (`{since:DateTime64}` / `param_since=…`), never interpolated into SQL. The
@@ -234,6 +235,64 @@ pub(crate) fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(50).clamp(1, 200)
 }
 
+/// Decode an opaque `timestamp|id` keyset cursor into the two values its
+/// predicate binds.
+///
+/// An absent or empty cursor decodes to a pair of empty strings, which
+/// [`keyset_predicate`] short-circuits on: the first page asks for no bound at
+/// all rather than for a bound that happens to sort before every row.
+///
+/// `id_label` only names the id half in the rejection message, so each list
+/// tells the caller which column its cursor is over.
+pub(crate) fn parse_keyset_cursor(
+    cursor: Option<&str>,
+    id_label: &str,
+) -> Result<(String, String), String> {
+    let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
+        return Ok((String::new(), String::new()));
+    };
+    let malformed = || format!("cursor must be timestamp|{id_label}");
+    let Some((timestamp, id)) = cursor.split_once('|') else {
+        return Err(malformed());
+    };
+    if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > 256 {
+        return Err(malformed());
+    }
+    Ok((timestamp.to_string(), id.to_string()))
+}
+
+/// The `where` fragment that resumes a page ordered `ts desc, <id_column> desc`
+/// after the row the cursor names, binding `{cursor_ts}` and `{cursor_id}`.
+///
+/// A keyset bound is what makes paging a table that is still being written
+/// lossless: an offset counts rows from the top, so every row ingested between
+/// two pages shifts the window and pushes a row the caller already saw onto the
+/// next page — or hides one it has not. The bound is a position in the sort
+/// key instead, which newer rows cannot move.
+///
+/// The parse is the `OrZero` variant on purpose: ClickHouse evaluates the parse
+/// of the bound constant even though the `= ''` disjunct already short-circuits
+/// the predicate, so a strict parse failed every first page with "Cannot read
+/// DateTime" (#1177).
+pub(crate) fn keyset_predicate(id_column: &str) -> String {
+    format!(
+        "({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+              or (ts = parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+                  and {id_column} < {{cursor_id:String}}))"
+    )
+}
+
+/// The cursor that resumes paging after the last row of `rows`, or `None` when
+/// the page came back empty and there is nothing left to resume from.
+pub(crate) fn next_keyset_cursor(rows: &[Value], id_column: &str) -> Option<String> {
+    let row = rows.last()?;
+    Some(format!(
+        "{}|{}",
+        row.get("ts")?.as_str()?,
+        row.get(id_column)?.as_str()?
+    ))
+}
+
 #[allow(clippy::result_large_err)]
 pub(crate) fn client_or_503(state: &crate::ControlState) -> Result<&ClickHouseClient, Response> {
     state.clickhouse.as_ref().ok_or_else(|| {
@@ -435,8 +494,9 @@ pub struct InvocationsQuery {
     pub(crate) status: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
-    /// row offset for pagination (defaults to 0)
-    pub(crate) offset: Option<u32>,
+    /// opaque `timestamp|request_id` cursor returned as the preceding page's
+    /// `next_cursor`; omitted for the first page
+    pub(crate) cursor: Option<String>,
 }
 
 /// Build the per-invocation list query for a whitelisted `status_expr`.
@@ -465,7 +525,15 @@ pub struct InvocationsQuery {
 /// it is set. The gateway decides that per request, against the catalogue that
 /// applied at the time, so a caller that instead re-derives it from today's
 /// model prices re-judges old rows against new prices and drifts (#1226).
+///
+/// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
+/// is written continuously by the gateway, so rows land above the window
+/// between one page and the next; counting from the top then shows a row twice
+/// or skips it entirely, which for this screen is the normal case rather than
+/// an edge case (#1394). `request_id` makes the sort key total, so tied
+/// timestamps have one order and the cursor names exactly one row.
 fn invocations_sql(status_expr: &str) -> String {
+    let cursor = keyset_predicate("request_id");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -486,14 +554,19 @@ fn invocations_sql(status_expr: &str) -> String {
            and ({{customer:String}} = '' \
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
            and {status_expr} \
-         order by ts desc \
-         limit {{limit:UInt32}} offset {{offset:UInt32}} format JSON"
+           and {cursor} \
+         order by ts desc, request_id desc \
+         limit {{limit:UInt32}} format JSON"
     )
 }
 
 /// Individual gateway invocations, newest first. Returns every persisted column
 /// of `request_logs` plus any short-retention raw payload row, so the dashboard
 /// can render both the list row and its optional detail bodies.
+///
+/// Answers `{data, next_cursor}`: feeding `next_cursor` back as `cursor` walks
+/// the list without an offset, so rows the gateway writes while an operator
+/// reads cannot shift the window under them.
 async fn invocations(
     State(state): State<crate::ControlState>,
     Query(q): Query<InvocationsQuery>,
@@ -510,8 +583,17 @@ async fn invocations(
         )
             .into_response();
     };
+    let (cursor_ts, cursor_id) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
+        Ok(cursor) => cursor,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"message": message}})),
+            )
+                .into_response()
+        }
+    };
     let limit = clamp_limit(q.limit);
-    let offset = q.offset.unwrap_or(0);
     let sql = invocations_sql(status_expr);
     let mut params = window_params(&WindowQuery {
         since: q.since.clone(),
@@ -531,9 +613,16 @@ async fn invocations(
         "param_customer".to_string(),
         q.customer.clone().unwrap_or_default(),
     ));
+    params.push(("param_cursor_ts".to_string(), cursor_ts));
+    params.push(("param_cursor_id".to_string(), cursor_id));
     params.push(("param_limit".to_string(), limit.to_string()));
-    params.push(("param_offset".to_string(), offset.to_string()));
-    run(ch.query(&sql, &params).await)
+    match ch.query(&sql, &params).await {
+        Ok(data) => {
+            let next_cursor = next_keyset_cursor(&data, "request_id");
+            Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
+        }
+        Err(error) => query_failed("analytics query failed", &error),
+    }
 }
 
 /// The two `alter table … modify ttl` statements that put the admin-configured
@@ -557,6 +646,7 @@ fn retention_statements(retention_days: u32, payload_retention_hours: u32) -> [S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn bucket_fn_whitelists() {
@@ -629,9 +719,71 @@ mod tests {
         assert!(sql.contains("{model:String}"));
         assert!(sql.contains("{key:String}"));
         assert!(sql.contains("{limit:UInt32}"));
-        assert!(sql.contains("{offset:UInt32}"));
+        assert!(sql.contains("{cursor_ts:String}"));
+        assert!(sql.contains("{cursor_id:String}"));
         // the shared window clause is inlined, so it must be empty-safe here too
         assert!(!sql.contains("parseDateTime64BestEffort("));
+    }
+
+    #[test]
+    fn invocations_sql_pages_on_a_keyset_over_a_total_sort_key() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // an offset counts rows from the top of a table the gateway is still
+        // writing to, so a row ingested between two pages repeats or hides one
+        // (#1394)
+        assert!(!sql.contains("offset"));
+        assert!(sql.contains(&keyset_predicate("request_id")));
+        // request_id is what makes the sort key total: without it tied
+        // timestamps have no defined order and the cursor names no single row
+        assert!(sql.contains("order by ts desc, request_id desc"));
+    }
+
+    #[test]
+    fn an_absent_invocations_cursor_is_never_strict_parsed() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // clickhouse evaluates the parse of the bound constant even when the
+        // `= ''` disjunct short-circuits it, so a strict parse fails the whole
+        // first page (#1177)
+        assert!(!sql.contains("parseDateTime64BestEffort("));
+        // two for the shared window bounds, two for the keyset cursor
+        assert_eq!(sql.matches("parseDateTime64BestEffortOrZero(").count(), 4);
+        assert_eq!(
+            parse_keyset_cursor(None, "request_id"),
+            Ok((String::new(), String::new()))
+        );
+        assert_eq!(
+            parse_keyset_cursor(Some(""), "request_id"),
+            Ok((String::new(), String::new()))
+        );
+    }
+
+    #[test]
+    fn an_invocations_cursor_requires_a_timestamp_and_a_request_id() {
+        assert_eq!(
+            parse_keyset_cursor(Some("2026-07-19 12:00:00.000|req-7"), "request_id"),
+            Ok(("2026-07-19 12:00:00.000".to_string(), "req-7".to_string()))
+        );
+        // the rejection names the column this list's cursor is over
+        assert_eq!(
+            parse_keyset_cursor(Some("not-a-cursor"), "request_id"),
+            Err("cursor must be timestamp|request_id".to_string())
+        );
+        assert!(parse_keyset_cursor(Some("|req-7"), "request_id").is_err());
+        assert!(parse_keyset_cursor(Some("2026-07-19 12:00:00.000|"), "request_id").is_err());
+    }
+
+    #[test]
+    fn the_next_cursor_names_the_last_row_of_the_page() {
+        let rows = vec![
+            json!({"ts": "2026-07-19 12:00:01.000", "request_id": "req-2"}),
+            json!({"ts": "2026-07-19 12:00:00.000", "request_id": "req-1"}),
+        ];
+        assert_eq!(
+            next_keyset_cursor(&rows, "request_id").as_deref(),
+            Some("2026-07-19 12:00:00.000|req-1")
+        );
+        // an empty page has nothing to resume from
+        assert_eq!(next_keyset_cursor(&[], "request_id"), None);
     }
 
     #[test]
@@ -701,6 +853,116 @@ mod tests {
         // input that could close the interval and append another statement
         let [logs, _] = retention_statements(u32::MAX, 1);
         assert!(logs.ends_with(&format!("interval {} day", u32::MAX)));
+    }
+
+    /// One row of the sort key `invocations_sql` pages on.
+    type KeyRow = (&'static str, &'static str);
+
+    /// The page `invocations_sql` asks ClickHouse for, modelled: order by
+    /// `ts desc, request_id desc`, keep only what sorts strictly after the
+    /// cursor, take `limit`. Rust's tuple comparison stands in for ClickHouse's
+    /// because the fixture's timestamps are fixed-width, so lexicographic order
+    /// and chronological order agree.
+    fn keyset_page(table: &[KeyRow], cursor: Option<KeyRow>, limit: usize) -> Vec<KeyRow> {
+        let mut rows = table.to_vec();
+        rows.sort_by(|a, b| b.cmp(a));
+        rows.into_iter()
+            .filter(|(ts, id)| match cursor {
+                None => true,
+                Some((cursor_ts, cursor_id)) => {
+                    *ts < cursor_ts || (*ts == cursor_ts && *id < cursor_id)
+                }
+            })
+            .take(limit)
+            .collect()
+    }
+
+    /// The same page the way it used to be asked for: count `offset` rows down
+    /// from the top of the same ordering.
+    fn offset_page(table: &[KeyRow], offset: usize, limit: usize) -> Vec<KeyRow> {
+        let mut rows = table.to_vec();
+        rows.sort_by(|a, b| b.cmp(a));
+        rows.into_iter().skip(offset).take(limit).collect()
+    }
+
+    fn four_logged_requests() -> Vec<KeyRow> {
+        vec![
+            ("2026-07-19 12:00:04.000", "req-4"),
+            ("2026-07-19 12:00:03.000", "req-3"),
+            ("2026-07-19 12:00:02.000", "req-2"),
+            ("2026-07-19 12:00:01.000", "req-1"),
+        ]
+    }
+
+    #[test]
+    fn keyset_paging_neither_repeats_nor_skips_a_row_under_ingestion() {
+        let mut table = four_logged_requests();
+        let page = keyset_page(&table, None, 2);
+        assert_eq!(
+            page,
+            vec![
+                ("2026-07-19 12:00:04.000", "req-4"),
+                ("2026-07-19 12:00:03.000", "req-3"),
+            ]
+        );
+
+        // the gateway keeps logging while the operator reads the first page
+        table.push(("2026-07-19 12:00:06.000", "req-6"));
+        table.push(("2026-07-19 12:00:05.000", "req-5"));
+
+        let cursor = *page.last().expect("the first page is not empty");
+        let next = keyset_page(&table, Some(cursor), 2);
+        // the bound is a position in the sort key, so the two new rows above it
+        // move nothing: paging resumes exactly where it stopped
+        assert_eq!(
+            next,
+            vec![
+                ("2026-07-19 12:00:02.000", "req-2"),
+                ("2026-07-19 12:00:01.000", "req-1"),
+            ]
+        );
+
+        let seen: Vec<KeyRow> = page.iter().chain(next.iter()).copied().collect();
+        let unique: BTreeSet<KeyRow> = seen.iter().copied().collect();
+        assert_eq!(
+            seen.len(),
+            unique.len(),
+            "a row was returned twice: {seen:?}"
+        );
+        assert_eq!(
+            unique,
+            four_logged_requests().into_iter().collect::<BTreeSet<_>>(),
+            "every row that existed when paging started came back exactly once"
+        );
+    }
+
+    #[test]
+    fn offset_paging_would_have_repeated_the_rows_the_keyset_walks_past() {
+        let mut table = four_logged_requests();
+        let page = offset_page(&table, 0, 2);
+        table.push(("2026-07-19 12:00:06.000", "req-6"));
+        table.push(("2026-07-19 12:00:05.000", "req-5"));
+        // two rows landed above the window, so counting two down from the top
+        // lands on the page just served — and req-2/req-1 are never reachable
+        assert_eq!(offset_page(&table, 2, 2), page);
+    }
+
+    #[test]
+    fn a_tied_timestamp_still_pages_forward() {
+        // two requests logged in the same millisecond: ts alone cannot separate
+        // them, so the cursor would stall on its own timestamp forever without
+        // request_id in the key
+        let table = vec![
+            ("2026-07-19 12:00:00.000", "req-c"),
+            ("2026-07-19 12:00:00.000", "req-b"),
+            ("2026-07-19 12:00:00.000", "req-a"),
+        ];
+        let page = keyset_page(&table, None, 2);
+        let cursor = *page.last().expect("the first page is not empty");
+        assert_eq!(
+            keyset_page(&table, Some(cursor), 2),
+            vec![("2026-07-19 12:00:00.000", "req-a")]
+        );
     }
 
     #[test]
