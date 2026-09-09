@@ -26,6 +26,15 @@
 //! user consented to. [`authorize_call`] is the guard that enforces this per
 //! request; it has no caller yet, because the MCP request path it belongs on
 //! is #423.
+//!
+//! Since #1347 the flow also carries the three client-side requirements the
+//! MCP specification has made MUST since #707 landed, which live in
+//! [`crate::mcp_oauth_discovery`]: RFC 9728 discovery of the authorization
+//! server, an RFC 8707 `resource` parameter on both the authorization and the
+//! token request, and RFC 9207 `iss` validation on the callback. All three fail
+//! closed — a resource that cannot be canonicalised, a discovery result that
+//! does not match the server it claims to be about, or an `iss` that does not
+//! match what was recorded ends the flow rather than warning and continuing.
 
 use std::collections::HashSet;
 
@@ -40,12 +49,14 @@ use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{McpOAuthSession, McpServer};
 use rolter_store::postgres::repo::{
-    McpOAuthClient, McpOAuthRepo, McpServerRepo, McpSessionContext, McpSessionMaterial, NewMcpLogin,
+    McpDiscoveredEndpoints, McpOAuthClient, McpOAuthRepo, McpServerRepo, McpSessionContext,
+    McpSessionMaterial, NewMcpLogin,
 };
 
 use crate::crud::{
     log_audit, pool, require_allowed_egress, require_non_empty, ApiError, ApiResult, SafeJson,
 };
+use crate::mcp_oauth_discovery::{self, ResourceUri};
 use crate::rbac::{authorize, holds_admin, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
 use crate::sso::{pkce_pair, public_base_url, random_token, urlencode};
@@ -118,11 +129,29 @@ pub(crate) fn callback_uri() -> String {
 // client registration
 // ---------------------------------------------------------------------------
 
+/// `oauth_discovery` values: try RFC 9728 discovery first and fall back, or
+/// never probe and use what the operator typed.
+const DISCOVERY_AUTO: &str = "auto";
+const DISCOVERY_MANUAL: &str = "manual";
+
 #[derive(Debug, Deserialize)]
 struct OAuthClientBody {
-    authorize_url: String,
-    token_url: String,
+    /// optional since #1347: a server whose authorization server is discoverable
+    /// needs neither endpoint. Both or neither, since half a pair is not a
+    /// fallback anybody can use
+    #[serde(default)]
+    authorize_url: Option<String>,
+    #[serde(default)]
+    token_url: Option<String>,
     client_id: String,
+    /// the authorization server's issuer identifier, for a server that
+    /// publishes no metadata. Without it a returned `iss` has nothing
+    /// authentic to be compared against and the callback refuses the exchange
+    #[serde(default)]
+    issuer: Option<String>,
+    /// `auto` (the default) or `manual`
+    #[serde(default)]
+    discovery: Option<String>,
     /// omitted leaves the stored secret alone; `""` clears it, which is how a
     /// confidential client is downgraded to a public one
     #[serde(default)]
@@ -139,11 +168,23 @@ struct OAuthClientView {
     authorize_url: Option<String>,
     token_url: Option<String>,
     client_id: Option<String>,
+    issuer: Option<String>,
+    discovery: String,
     default_scopes: Vec<String>,
     has_client_secret: bool,
     /// the redirect URI the operator must register with the upstream; returned
     /// so it never has to be guessed from the deployment's configuration
     redirect_uri: String,
+    /// the RFC 8707 resource identifier every request for this server carries,
+    /// so an operator can see the audience their tokens are bound to rather
+    /// than infer it from the server URL
+    resource: Option<String>,
+    /// what the last successful discovery resolved, so a misconfigured
+    /// authorization server is visible without reading a log
+    discovered_issuer: Option<String>,
+    discovered_authorize_url: Option<String>,
+    discovered_token_url: Option<String>,
+    discovered_at: Option<DateTime<Utc>>,
 }
 
 impl From<McpServer> for OAuthClientView {
@@ -153,9 +194,18 @@ impl From<McpServer> for OAuthClientView {
             authorize_url: server.authorize_url,
             token_url: server.token_url,
             client_id: server.client_id,
+            issuer: server.oauth_issuer,
+            discovery: server.oauth_discovery,
             default_scopes: server.default_scopes,
             has_client_secret: server.has_client_secret,
             redirect_uri: callback_uri(),
+            resource: ResourceUri::parse(&server.url)
+                .ok()
+                .map(|resource| resource.to_string()),
+            discovered_issuer: server.oauth_discovered_issuer,
+            discovered_authorize_url: server.oauth_discovered_authorize_url,
+            discovered_token_url: server.oauth_discovered_token_url,
+            discovered_at: server.oauth_discovered_at,
         }
     }
 }
@@ -175,25 +225,62 @@ async fn set_oauth_client(
         cap!("mcp_oauth_client", Update),
     )
     .await?;
-    require_non_empty(&body.authorize_url, "authorize_url")?;
-    require_non_empty(&body.token_url, "token_url")?;
     require_non_empty(&body.client_id, "client_id")?;
-    require_https(&body.authorize_url, "authorize_url")?;
-    require_https(&body.token_url, "token_url")?;
-    // the control plane will POST the token endpoint itself, so it is held to
-    // the same egress policy as any other upstream: an SSRF target must not
-    // reach the database in the first place
-    require_allowed_egress(&state, &body.authorize_url, "authorize_url")?;
-    require_allowed_egress(&state, &body.token_url, "token_url")?;
+    // the resource identifier is derived from the server URL and travels on
+    // every request this client makes, so a URL that has no canonical form is
+    // refused here rather than at the first consent
+    let resource = ResourceUri::parse(&server.url).map_err(|e| invalid(e.to_string()))?;
+    let discovery = match body.discovery.as_deref() {
+        None | Some(DISCOVERY_AUTO) => DISCOVERY_AUTO,
+        Some(DISCOVERY_MANUAL) => DISCOVERY_MANUAL,
+        Some(other) => {
+            return Err(invalid(format!(
+                "discovery must be '{DISCOVERY_AUTO}' or '{DISCOVERY_MANUAL}', not '{other}'"
+            )))
+        }
+    };
+    let endpoints = match (
+        body.authorize_url.as_deref().filter(|u| !u.is_empty()),
+        body.token_url.as_deref().filter(|u| !u.is_empty()),
+    ) {
+        (Some(authorize_url), Some(token_url)) => {
+            require_https(authorize_url, "authorize_url")?;
+            require_https(token_url, "token_url")?;
+            // the control plane will POST the token endpoint itself, so it is
+            // held to the same egress policy as any other upstream: an SSRF
+            // target must not reach the database in the first place
+            require_allowed_egress(&state, authorize_url, "authorize_url")?;
+            require_allowed_egress(&state, token_url, "token_url")?;
+            Some((authorize_url, token_url))
+        }
+        (None, None) if discovery == DISCOVERY_AUTO => None,
+        (None, None) => {
+            return Err(invalid(
+                "discovery 'manual' needs authorize_url and token_url, since nothing will be \
+                 discovered to fall back on",
+            ))
+        }
+        _ => {
+            return Err(invalid(
+                "authorize_url and token_url must be given together or left out together",
+            ))
+        }
+    };
+    let issuer = body.issuer.as_deref().filter(|i| !i.is_empty());
+    if let Some(issuer) = issuer {
+        require_https(issuer, "issuer")?;
+    }
     let scopes = body.default_scopes.unwrap_or_default();
     let updated = repo
         .set_oauth_client(
             &kek()?,
             id,
             McpOAuthClient {
-                authorize_url: &body.authorize_url,
-                token_url: &body.token_url,
+                authorize_url: endpoints.map(|(authorize_url, _)| authorize_url),
+                token_url: endpoints.map(|(_, token_url)| token_url),
                 client_id: &body.client_id,
+                issuer,
+                discovery,
                 client_secret: body.client_secret.as_deref(),
                 default_scopes: &scopes,
             },
@@ -208,6 +295,9 @@ async fn set_oauth_client(
         id,
         serde_json::json!({
             "token_url": updated.token_url,
+            "issuer": updated.oauth_issuer,
+            "discovery": updated.oauth_discovery,
+            "resource": resource.as_str(),
             "has_client_secret": updated.has_client_secret,
         }),
     )
@@ -234,7 +324,10 @@ async fn get_oauth_client(
 /// An OAuth endpoint must be `https`, with `http` allowed only on loopback so
 /// a developer can run a stub locally. A bearer token crossing plaintext to a
 /// non-local host is not a thing to make configurable.
-fn require_https(url: &str, field: &str) -> ApiResult<()> {
+///
+/// `pub(crate)` so discovery holds every URL it fetches to the same rule; a
+/// second copy of this would be a second rule to keep in step.
+pub(crate) fn require_https(url: &str, field: &str) -> ApiResult<()> {
     if url.starts_with("https://") {
         return Ok(());
     }
@@ -298,7 +391,11 @@ async fn start_authorize(
             "MCP consent is granted by a user; a superadmin token has no identity to grant it",
         ));
     };
-    let client = require_client(&server)?;
+    let resource = ResourceUri::parse(&server.url).map_err(|e| invalid(e.to_string()))?;
+    // the interactive path is the one place that probes an upstream: a person
+    // is waiting on this request, and what it resolves is cached for the
+    // background paths that must not
+    let client = resolve_client(&state, &server, &resource, true).await?;
     let requested = body
         .and_then(|SafeJson(b)| b.scopes)
         .unwrap_or_else(|| server.default_scopes.clone());
@@ -316,9 +413,32 @@ async fn start_authorize(
                 code_verifier: &verifier,
                 scopes: &requested,
                 redirect_uri: &redirect,
+                // recorded before the browser leaves, which is the only point
+                // at which RFC 9207 §2.4 can be given something authentic to
+                // judge the callback against
+                expected_issuer: client.issuer.as_deref(),
+                iss_supported: client.iss_supported,
+                resource: resource.as_str(),
+                token_url: &client.token_url,
             },
         )
         .await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(server.org_id),
+        "mcp_oauth_grant.authorize",
+        "mcp_server",
+        server.id,
+        serde_json::json!({
+            "user_id": user.id,
+            "endpoints": client.source,
+            "issuer": client.issuer,
+            "resource": resource.as_str(),
+            "scopes": requested,
+        }),
+    )
+    .await;
     Ok(Json(AuthorizeStarted {
         authorization_url: authorization_url(
             &client.authorize_url,
@@ -327,40 +447,148 @@ async fn start_authorize(
             &csrf_state,
             &challenge,
             &requested,
+            &resource,
         ),
         state: csrf_state,
         expires_in: LOGIN_STATE_TTL_SECS,
     }))
 }
 
-/// The registered OAuth client of a server, or a 400 naming what is missing.
-struct RegisteredClient {
+/// The endpoints a flow will actually use, with the two facts RFC 9207 §2.4
+/// needs to judge the callback and a note of where they came from.
+struct ResolvedClient {
     authorize_url: String,
     token_url: String,
     client_id: String,
+    /// `None` only for a hand-configured server whose operator pinned no
+    /// issuer: nothing was learned from an authenticated source, so a returned
+    /// `iss` will be refused rather than compared against a guess
+    issuer: Option<String>,
+    iss_supported: bool,
+    /// `discovery`, `cache` or `configured`, for the audit line
+    source: &'static str,
 }
 
-fn require_client(server: &McpServer) -> ApiResult<RegisteredClient> {
-    match (
-        server.authorize_url.clone(),
-        server.token_url.clone(),
-        server.client_id.clone(),
-    ) {
-        (Some(authorize_url), Some(token_url), Some(client_id)) => Ok(RegisteredClient {
-            authorize_url,
-            token_url,
-            client_id,
-        }),
-        _ => Err(invalid(format!(
+/// Resolve a server's OAuth endpoints.
+///
+/// Preference order, which is the specification's with the operator's typing
+/// kept as the last resort:
+///
+/// 1. what RFC 9728 discovery resolves right now (`probe`, and the row is not
+///    pinned to `manual`);
+/// 2. what the last successful discovery cached on the row;
+/// 3. the hand-configured `authorize_url` / `token_url`.
+///
+/// `probe` is false on every path that runs without a user in front of it — the
+/// background refresher and the token exchange — so a slow or hostile upstream
+/// cannot be reached from a sweep.
+async fn resolve_client(
+    state: &ControlState,
+    server: &McpServer,
+    resource: &ResourceUri,
+    probe: bool,
+) -> ApiResult<ResolvedClient> {
+    let Some(client_id) = server.client_id.clone().filter(|id| !id.is_empty()) else {
+        return Err(invalid(format!(
             "mcp server '{}' has no oauth client registered; PUT its \
              /api/v1/mcp-servers/{}/oauth-client first",
             server.slug, server.id
+        )));
+    };
+    if server.oauth_discovery != DISCOVERY_MANUAL {
+        if probe {
+            // bounded whole: several candidate URLs against a black-holed host
+            // would otherwise add their timeouts together on an endpoint a
+            // person is waiting on
+            let discovered = tokio::time::timeout(
+                mcp_oauth_discovery::DISCOVERY_BUDGET,
+                mcp_oauth_discovery::discover(state, resource),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(mcp_oauth_discovery::DiscoveryError::Refused(
+                    "discovery did not finish within its budget".to_string(),
+                ))
+            });
+            match discovered {
+                Ok(endpoints) => {
+                    // cached for the refresher and the exchange, which never
+                    // probe; a failure to cache is not a failure to authorize
+                    if let Err(error) = McpServerRepo(pool(state))
+                        .record_discovery(
+                            server.id,
+                            McpDiscoveredEndpoints {
+                                issuer: &endpoints.issuer,
+                                authorize_url: &endpoints.authorize_url,
+                                token_url: &endpoints.token_url,
+                                iss_supported: endpoints.iss_supported,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            server = %server.slug,
+                            %error,
+                            "could not cache discovered mcp oauth endpoints"
+                        );
+                    }
+                    return Ok(ResolvedClient {
+                        authorize_url: endpoints.authorize_url,
+                        token_url: endpoints.token_url,
+                        client_id,
+                        issuer: Some(endpoints.issuer),
+                        iss_supported: endpoints.iss_supported,
+                        source: "discovery",
+                    });
+                }
+                Err(error) => tracing::info!(
+                    server = %server.slug,
+                    %error,
+                    "mcp oauth discovery found nothing; falling back to what is configured"
+                ),
+            }
+        }
+        if let (Some(issuer), Some(authorize_url), Some(token_url)) = (
+            server.oauth_discovered_issuer.clone(),
+            server.oauth_discovered_authorize_url.clone(),
+            server.oauth_discovered_token_url.clone(),
+        ) {
+            return Ok(ResolvedClient {
+                authorize_url,
+                token_url,
+                client_id,
+                issuer: Some(issuer),
+                iss_supported: server.oauth_discovered_iss_supported,
+                source: "cache",
+            });
+        }
+    }
+    match (server.authorize_url.clone(), server.token_url.clone()) {
+        (Some(authorize_url), Some(token_url)) => Ok(ResolvedClient {
+            authorize_url,
+            token_url,
+            client_id,
+            issuer: server.oauth_issuer.clone(),
+            // nothing advertised anything: no metadata was read. row four of
+            // the RFC 9207 table, where a response with no `iss` proceeds
+            iss_supported: false,
+            source: "configured",
+        }),
+        _ => Err(invalid(format!(
+            "mcp server '{}' publishes no protected resource metadata and has no authorize_url \
+             and token_url configured to fall back to",
+            server.slug
         ))),
     }
 }
 
 /// Build the authorization URL. Split out from the handler so the parameter set
 /// can be asserted without a live authorization server.
+///
+/// `resource` is RFC 8707 §2 and is not optional: the MCP specification says a
+/// client MUST send it whether or not the authorization server is known to
+/// support it, and taking a [`ResourceUri`] rather than a string is what keeps
+/// it identical to the one the token request will carry.
 fn authorization_url(
     endpoint: &str,
     client_id: &str,
@@ -368,15 +596,17 @@ fn authorization_url(
     csrf_state: &str,
     challenge: &str,
     scopes: &[String],
+    resource: &ResourceUri,
 ) -> String {
     let sep = if endpoint.contains('?') { '&' } else { '?' };
     let mut url = format!(
         "{endpoint}{sep}response_type=code&client_id={}&redirect_uri={}&state={}\
-         &code_challenge={}&code_challenge_method=S256",
+         &code_challenge={}&code_challenge_method=S256&resource={}",
         urlencode(client_id),
         urlencode(redirect),
         urlencode(csrf_state),
         urlencode(challenge),
+        urlencode(resource.as_str()),
     );
     // an empty scope set means "whatever the server defaults to"; sending
     // `scope=` would ask for nothing instead, which is not the same request
@@ -392,6 +622,14 @@ struct CallbackQuery {
     state: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+    /// read only so that it is visibly *not* echoed: RFC 9207 §2.4 says a
+    /// client must not act on or display an error whose `iss` did not check out,
+    /// and `error_uri` is the one that would send an operator somewhere
+    #[allow(dead_code)]
+    error_uri: Option<String>,
+    /// RFC 9207 issuer identification, present on success and error responses
+    /// alike
+    iss: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -405,23 +643,21 @@ struct ConsentCompleted {
 }
 
 /// Redeem the authorization code and store the grant plus its first session.
+///
+/// The order of the checks here is itself the specification: the login state is
+/// resolved and RFC 9207 §2.4 applied *before* anything else in the response is
+/// read, because a response whose issuer does not check out may not be acted on
+/// or displayed — not its code, and not its `error`, `error_description` or
+/// `error_uri` either.
 async fn callback(
     State(state): State<ControlState>,
     Query(query): Query<CallbackQuery>,
 ) -> ApiResult<Json<ConsentCompleted>> {
-    if let Some(error) = query.error {
-        // the authorization server's own words, but only its words: a
-        // description is echoed, nothing of ours is added to it
-        let detail = query
-            .error_description
-            .map(|d| format!(": {d}"))
-            .unwrap_or_default();
-        return Err(invalid(format!(
-            "authorization server refused consent ({error}){detail}"
-        )));
-    }
-    let (Some(code), Some(csrf_state)) = (query.code, query.state) else {
-        return Err(invalid("callback requires both 'code' and 'state'"));
+    // without a state there is no recorded issuer, so nothing about this
+    // response can be validated — including whether its error is really from
+    // the server this flow was started against
+    let Some(csrf_state) = query.state else {
+        return Err(invalid("callback requires 'state'"));
     };
     let kek = kek()?;
     let repo = McpOAuthRepo(pool(&state));
@@ -436,7 +672,60 @@ async fn callback(
         .ok_or_else(|| invalid("unknown, expired or already-redeemed consent state"))?;
 
     let server = McpServerRepo(pool(&state)).get(login.server_id).await?;
-    let client = require_client(&server)?;
+    // RFC 9207 §2.4, before the code goes anywhere near a token endpoint
+    if let Err(rejection) = mcp_oauth_discovery::validate_issuer(
+        login.expected_issuer.as_deref(),
+        login.iss_supported,
+        query.iss.as_deref(),
+    ) {
+        log_audit_system(
+            &state,
+            server.org_id,
+            "mcp_oauth_grant.issuer_rejected",
+            "mcp_server",
+            server.id,
+            serde_json::json!({
+                "user_id": login.user_id,
+                "expected_issuer": login.expected_issuer,
+                // the issuer that arrived is the whole point of the audit line,
+                // and it is not a credential
+                "received_issuer": query.iss,
+                "reason": rejection.to_string(),
+            }),
+        )
+        .await;
+        return Err(invalid(rejection.to_string()));
+    }
+    if let Some(error) = query.error {
+        // the authorization server's own words, but only its words: a
+        // description is echoed, nothing of ours is added to it
+        let detail = query
+            .error_description
+            .map(|d| format!(": {d}"))
+            .unwrap_or_default();
+        return Err(invalid(format!(
+            "authorization server refused consent ({error}){detail}"
+        )));
+    }
+    let Some(code) = query.code else {
+        return Err(invalid("callback requires both 'code' and 'state'"));
+    };
+
+    // the resource and the token endpoint recorded when the browser left, so
+    // the token request cannot carry a different audience than the
+    // authorization request did, or reach a different server than the one whose
+    // issuer was just validated
+    let resource = match login.resource.as_deref() {
+        Some(recorded) => ResourceUri::parse(recorded),
+        None => ResourceUri::parse(&server.url),
+    }
+    .map_err(|e| invalid(e.to_string()))?;
+    // never probes: whatever this resolves, the recorded endpoint wins. it is
+    // consulted for the client id, and for the token endpoint of a login row
+    // written before #1347 recorded one
+    let client = resolve_client(&state, &server, &resource, false).await?;
+    let token_url = login.token_url.clone().unwrap_or(client.token_url);
+    let client_id = client.client_id;
     let secret = McpServerRepo(pool(&state))
         .client_secret(&kek, server.id)
         .await?;
@@ -445,10 +734,10 @@ async fn callback(
         ("grant_type", "authorization_code".to_string()),
         ("code", code),
         ("redirect_uri", login.redirect_uri.clone()),
-        ("client_id", client.client_id.clone()),
+        ("client_id", client_id),
         ("code_verifier", login.code_verifier.clone()),
     ];
-    let tokens = post_token(&state, &client.token_url, form, secret.as_deref())
+    let tokens = post_token(&state, &token_url, form, secret.as_deref(), &resource)
         .await
         .map_err(|e| e.into_api())?;
 
@@ -585,17 +874,45 @@ fn classify(status: u16, body: &str) -> TokenError {
     TokenError::Transient(message)
 }
 
+/// Refuse a token request that carries no RFC 8707 `resource`.
+///
+/// [`post_token`] adds the parameter itself, so this can only fire if somebody
+/// later gives the function another way to build a form. That is exactly the
+/// refactor worth failing on: a token minted without an audience is one a
+/// compliant MCP server is entitled to refuse, and the failure would otherwise
+/// be silent until an upstream started enforcing it.
+fn require_resource_parameter(form: &[(&'static str, String)]) -> Result<(), TokenError> {
+    if form
+        .iter()
+        .any(|(key, value)| *key == "resource" && !value.is_empty())
+    {
+        return Ok(());
+    }
+    Err(TokenError::Refused(
+        "refusing to send a token request with no RFC 8707 'resource' parameter".to_string(),
+    ))
+}
+
 /// POST a grant to an authorization server's token endpoint.
 ///
 /// The response body is never logged or surfaced: it carries a bearer token on
 /// success, and on failure it is the upstream's prose, which has no business in
 /// a rolter error. Only the status crosses back.
+///
+/// `resource` is required rather than optional because the MCP specification
+/// makes it a MUST on *every* token request — code, refresh and exchange alike
+/// — regardless of whether the authorization server is known to support it.
+/// Taking a [`ResourceUri`] means the value is the same one the authorization
+/// request carried; there is no other way to construct one.
 async fn post_token(
     state: &ControlState,
     token_url: &str,
     mut form: Vec<(&'static str, String)>,
     client_secret: Option<&str>,
+    resource: &ResourceUri,
 ) -> Result<TokenResponse, TokenError> {
+    form.push(("resource", resource.as_str().to_string()));
+    require_resource_parameter(&form)?;
     if let Some(secret) = client_secret {
         form.push(("client_secret", secret.to_string()));
     }
@@ -668,12 +985,21 @@ pub(crate) async fn refresh_session(
         .get(material.server_id)
         .await
         .map_err(|e| TokenError::Transient(e.to_string()))?;
-    let client = require_client(&server).map_err(|_| {
-        TokenError::Refused(format!(
-            "mcp server '{}' no longer has an oauth client registered",
-            server.slug
-        ))
+    let resource = ResourceUri::parse(&server.url).map_err(|e| {
+        // the row would have been refused at registration, so this is a URL
+        // that changed under a live session: a permanent answer, not a blip
+        TokenError::Refused(e.to_string())
     })?;
+    // the sweeper runs with nobody watching, so it never probes an upstream for
+    // metadata: it uses what the last interactive consent cached
+    let client = resolve_client(state, &server, &resource, false)
+        .await
+        .map_err(|_| {
+            TokenError::Refused(format!(
+                "mcp server '{}' no longer has an oauth client registered",
+                server.slug
+            ))
+        })?;
     let secret = McpServerRepo(pool(state))
         .client_secret(&kek, server.id)
         .await
@@ -686,25 +1012,26 @@ pub(crate) async fn refresh_session(
         // ask for what the session already holds, never more
         ("scope", material.scopes.join(" ")),
     ];
-    let tokens = match post_token(state, &client.token_url, form, secret.as_deref()).await {
-        Ok(tokens) => tokens,
-        Err(TokenError::Refused(message)) => {
-            // the answer is permanent: stop holding a token the server will
-            // never honour again, and stop asking
-            let _ = repo.revoke_session(session_id).await;
-            log_audit_system(
-                state,
-                server.org_id,
-                "mcp_oauth_session.refresh_refused",
-                "mcp_oauth_session",
-                session_id,
-                serde_json::json!({"server_id": server.id, "reason": message}),
-            )
-            .await;
-            return Err(TokenError::Refused(message));
-        }
-        Err(transient) => return Err(transient),
-    };
+    let tokens =
+        match post_token(state, &client.token_url, form, secret.as_deref(), &resource).await {
+            Ok(tokens) => tokens,
+            Err(TokenError::Refused(message)) => {
+                // the answer is permanent: stop holding a token the server will
+                // never honour again, and stop asking
+                let _ = repo.revoke_session(session_id).await;
+                log_audit_system(
+                    state,
+                    server.org_id,
+                    "mcp_oauth_session.refresh_refused",
+                    "mcp_oauth_session",
+                    session_id,
+                    serde_json::json!({"server_id": server.id, "reason": message}),
+                )
+                .await;
+                return Err(TokenError::Refused(message));
+            }
+            Err(transient) => return Err(transient),
+        };
 
     // a rotated refresh token replaces the old one; a server that returns none
     // means "keep using the one you have", so it is carried forward rather
@@ -835,7 +1162,10 @@ async fn exchange_endpoint(
         .await?
         .ok_or_else(|| invalid("session is revoked, expired, or its consent was withdrawn"))?;
     let server = McpServerRepo(pool(&state)).get(context.server_id).await?;
-    let client = require_client(&server)?;
+    let resource = ResourceUri::parse(&server.url).map_err(|e| invalid(e.to_string()))?;
+    // a service-to-service call has nobody waiting on a discovery round trip
+    // either, so it reads the cache rather than probing
+    let client = resolve_client(&state, &server, &resource, false).await?;
     let secret = McpServerRepo(pool(&state))
         .client_secret(&kek, server.id)
         .await?;
@@ -856,9 +1186,15 @@ async fn exchange_endpoint(
     if let Some(audience) = body.as_ref().and_then(|b| b.audience.clone()) {
         form.push(("audience", audience));
     }
-    let tokens = post_token(&state, &client.token_url, form, secret.as_deref())
-        .await
-        .map_err(|e| e.into_api())?;
+    let tokens = post_token(
+        &state,
+        &client.token_url,
+        form,
+        secret.as_deref(),
+        &resource,
+    )
+    .await
+    .map_err(|e| e.into_api())?;
 
     let granted = narrow_to(&tokens.granted_scopes(&requested), &context.grant_scopes);
     let now = Utc::now();
@@ -1038,6 +1374,11 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    /// The canonical resource of the server the fixtures below talk to.
+    fn resource() -> ResourceUri {
+        ResourceUri::parse("https://mcp.example.com/mcp/").expect("canonical resource")
+    }
+
     #[test]
     fn the_authorization_url_carries_pkce_and_state() {
         let url = authorization_url(
@@ -1047,6 +1388,7 @@ mod tests {
             "state-xyz",
             "challenge-123",
             &s(&["tools:read", "tools:write"]),
+            &resource(),
         );
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=client-abc"));
@@ -1058,6 +1400,9 @@ mod tests {
             url.contains("redirect_uri=https%3A%2F%2Frolter.example.com%2Fauth%2Fmcp%2Fcallback")
         );
         assert!(url.contains("scope=tools%3Aread%20tools%3Awrite"));
+        // RFC 8707: the audience the token is being asked for, canonical and
+        // encoded, on the authorization request as well as the token request
+        assert!(url.contains("resource=https%3A%2F%2Fmcp.example.com%2Fmcp"));
     }
 
     #[test]
@@ -1069,10 +1414,70 @@ mod tests {
             "st",
             "ch",
             &[],
+            &resource(),
         );
         assert!(url.contains("?tenant=acme&response_type=code"));
         // asking for no scopes must not send `scope=`, which asks for none
-        assert!(!url.contains("scope="));
+        assert!(!url.contains("&scope="));
+        assert!(url.contains("&resource="));
+    }
+
+    #[test]
+    fn the_authorization_and_token_requests_name_the_same_resource() {
+        // the drift this guards is silent: an authorization request for one
+        // audience and a token request for another yields a token bound to
+        // neither, and a compliant server refuses it at some later date
+        let resource = resource();
+        let url = authorization_url(
+            "https://mcp.example.com/authorize",
+            "c",
+            "https://r/cb",
+            "st",
+            "ch",
+            &[],
+            &resource,
+        );
+        let from_authorization = url_parameter(&url, "resource");
+        let token_form = [
+            ("grant_type", "authorization_code".to_string()),
+            ("resource", resource.as_str().to_string()),
+        ];
+        let from_token = token_form
+            .iter()
+            .find(|(key, _)| *key == "resource")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        assert_eq!(from_authorization, from_token);
+        assert_eq!(from_token, "https://mcp.example.com/mcp");
+    }
+
+    #[test]
+    fn a_token_request_without_a_resource_parameter_is_refused() {
+        // this is what post_token asserts about the form it is about to send;
+        // a request that lost the parameter must not go out
+        let without = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", "r".to_string()),
+        ];
+        assert!(matches!(
+            require_resource_parameter(&without),
+            Err(TokenError::Refused(_))
+        ));
+        // an empty one is no better than an absent one
+        let empty = vec![("resource", String::new())];
+        assert!(require_resource_parameter(&empty).is_err());
+        let with = vec![("resource", "https://mcp.example.com/mcp".to_string())];
+        assert!(require_resource_parameter(&with).is_ok());
+    }
+
+    /// Read one query parameter back out of a built URL, percent-decoded just
+    /// enough for the values this module produces.
+    fn url_parameter(url: &str, key: &str) -> String {
+        let needle = format!("{key}=");
+        url.split(['?', '&'])
+            .find_map(|pair| pair.strip_prefix(&needle))
+            .map(|value| value.replace("%3A", ":").replace("%2F", "/"))
+            .unwrap_or_default()
     }
 
     #[test]
