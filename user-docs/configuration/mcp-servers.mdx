@@ -1,18 +1,30 @@
 ---
 title: "MCP Server Credentials and Transport Settings"
 sidebarTitle: "MCP Credentials"
-description: "How Rolter authenticates to an MCP server — bearer tokens, header API keys, or the OAuth consent flow — how those credentials are sealed at rest, and the per-server timeout overrides."
+description: "How an MCP server's credentials are recorded and sealed at rest — bearer tokens, header API keys, or the OAuth consent flow — which of them the proxy reads today, and the per-server timeout overrides."
 ---
 
-An MCP server Rolter dials usually wants to know who is calling. Rolter supports
+An MCP server Rolter dials usually wants to know who is calling. Rolter records
 four answers, set per server under `auth_kind`.
 
-| `auth_kind` | Rolter sends | Use it when |
+| `auth_kind` | What the server row records | Use it when |
 |---|---|---|
-| `none` | nothing | the server is open, or reachable only inside your network |
-| `bearer` | `Authorization: Bearer <credential>` | the server issued you a long-lived token |
-| `header` | `<your header>: <credential>` | the server wants an API key in its own header |
+| `none` | no credential | the server is open, or reachable only inside your network |
+| `bearer` | a sealed token, to be sent as `Authorization: Bearer <credential>` | the server issued you a long-lived token |
+| `header` | a sealed API key, to be sent as `<your header>: <credential>` | the server wants an API key in its own header |
 | `oauth` | a token minted per user by the consent flow | the server supports OAuth and you want per-user attribution |
+
+<Warning>
+  **Only `oauth` reaches the request path today.** `bearer` and `header` store a
+  credential — sealed under the KEK, audited, reported back as
+  `has_credential` — but nothing reads it out again: the stored value never
+  enters the gateway snapshot, and `/mcp/{server}` still requires a live OAuth
+  session for the calling user, failing with `mcp_session_unauthorized` when
+  there is none. Setting a bearer or header credential therefore will not make
+  an otherwise unauthorized MCP call succeed. Spending the stored credential on
+  the proxy path is tracked in
+  [#952](https://github.com/rolter-ai/rolter/issues/952).
+</Warning>
 
 `oauth` is the flow described in [MCP OAuth](/security/mcp-oauth) and is unchanged
 by any of this — pick it when each user should act as themselves. The other three
@@ -77,8 +89,17 @@ stored credential and sending none returns `400`.
 ## Per-server timeouts
 
 `connect_timeout_ms`, `request_timeout_ms` and `max_retries` are set for the
-whole org under **MCP Gateway → Settings**. A single slow server can override
-them without moving everyone:
+whole org under **MCP Gateway → Settings**. A single slow server can record an
+override without moving everyone:
+
+<Warning>
+  **These values are stored, not yet applied.** Neither the org default nor a
+  per-server override reaches the request path — the MCP proxy dials with the
+  deployment-level transport timeouts configured for the gateway. Saving one
+  records the intent for when the proxy starts reading it, which is tracked with
+  the rest of the per-server transport work in
+  [#952](https://github.com/rolter-ai/rolter/issues/952).
+</Warning>
 
 ```bash
 curl -X PATCH https://rolter.example.com/api/v1/mcp-servers/$SERVER_ID \
@@ -96,9 +117,9 @@ Send an explicit `null` to give the server back to the org default:
 Omitting the field entirely leaves the override as it is. The distinction
 matters: **absent means "leave it", `null` means "stop overriding"**.
 
-An unset override inherits, rather than copying the org value at creation time —
-so raising the org-wide timeout still moves every server that never asked to
-differ.
+An unset override is stored as null and inherits, rather than copying the org
+value at creation time — so once the proxy does read these, raising the org-wide
+timeout will still move every server that never asked to differ.
 
 ---
 
