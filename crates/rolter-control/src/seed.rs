@@ -733,6 +733,7 @@ mod tests {
         Decorator, DecoratorPosition, DecoratorRole, PromptTemplate, TemplateVariable,
     };
     use rolter_store::postgres::repo::{ProviderRepo, RouteRepo, RouteTargetRepo};
+    use rolter_store::postgres::test_schema::TestSchema;
     use std::collections::HashMap;
     use uuid::Uuid;
 
@@ -748,9 +749,10 @@ mod tests {
     /// which reads as a bad key rather than as config that was never applied.
     #[tokio::test]
     async fn reimporting_an_edited_file_applies_the_edits() {
-        let Some(pool) = scratch_db("reimport").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
 
         let dir = tempdir("reimport");
@@ -868,9 +870,10 @@ weight = 7
     /// exactly as the dashboard left it.
     #[tokio::test]
     async fn a_declared_capture_policy_lands_in_logging_settings() {
-        let Some(pool) = scratch_db("capture").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
         let settings = rolter_store::postgres::repo::LoggingSettingsRepo(&pool);
 
@@ -928,9 +931,10 @@ models = ["gpt-4o"]
     /// clobber it.
     #[tokio::test]
     async fn a_reimport_leaves_a_dashboard_sealed_credential_alone() {
-        let Some(pool) = scratch_db("sealed").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
 
         let dir = tempdir("sealed");
@@ -993,24 +997,14 @@ api_key_env = "OPENAI_API_KEY"
     }
 
     /// A schema of its own per test: the coverage job runs plain `cargo test`
-    /// against a shared database and would otherwise race.
-    async fn scratch_db(label: &str) -> Option<sqlx::PgPool> {
+    /// against a shared database and would otherwise race. The guard drops the
+    /// schema when the test finishes, panic included (#1364).
+    async fn scratch_db() -> Option<TestSchema> {
         let url = std::env::var("ROLTER_TEST_DATABASE_URL").ok().or_else(|| {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             None
         })?;
-        let schema = format!("seed_{label}_{}", Uuid::new_v4().simple());
-        let admin = rolter_store::postgres::connect(&url).await.unwrap();
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-        let separator = if url.contains('?') { '&' } else { '?' };
-        let scoped = format!("{url}{separator}options=-c%20search_path%3D{schema}");
-        let pool = rolter_store::postgres::connect(&scoped).await.unwrap();
-        rolter_store::postgres::run_migrations(&pool).await.unwrap();
-        Some(pool)
+        Some(TestSchema::migrated(&url).await)
     }
 
     async fn bootstrap_org(pool: &sqlx::PgPool) -> (Uuid, Uuid) {
@@ -1033,21 +1027,10 @@ api_key_env = "OPENAI_API_KEY"
 
     #[tokio::test]
     async fn prompt_template_seed_is_idempotent_and_rejects_version_drift() {
-        let Ok(url) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        let Some(db) = scratch_db().await else {
             return;
         };
-        let schema = format!("seed_test_{}", Uuid::new_v4().simple());
-        let admin = rolter_store::postgres::connect(&url).await.unwrap();
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-        let separator = if url.contains('?') { '&' } else { '?' };
-        let scoped_url = format!("{url}{separator}options=-c%20search_path%3D{schema}");
-        let pool = rolter_store::postgres::connect(&scoped_url).await.unwrap();
-        rolter_store::postgres::run_migrations(&pool).await.unwrap();
+        let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
         )

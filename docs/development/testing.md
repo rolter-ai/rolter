@@ -82,6 +82,86 @@ the Postgres-backed `rolter-store`/`rolter-control` suites share one database an
 reset the schema per test, so they run in a single-threaded group to avoid
 clobbering each other.
 
+## The Postgres test database
+
+The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
+a database they may write to:
+
+```bash
+ROLTER_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/rolter_test \
+  cargo nextest run -p rolter-store -p rolter-control --features postgres
+```
+
+Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
+`search_path`, because plain `cargo test` — which the coverage job runs — puts
+every test in one process as a thread, and a shared `public` schema would race
+on DDL. Build it through
+[`rolter_store::postgres::test_schema::TestSchema`](../../crates/rolter-store/src/postgres/test_schema.rs)
+rather than by hand; other crates reach it through the store's `test-support`
+feature, which `rolter-control` already carries as a dev-dependency.
+
+**Hold the guard for the whole test.** The schema is dropped when `TestSchema`
+is, so a binding let go early takes the tables with it:
+
+```rust
+let db = TestSchema::migrated(&url).await;   // guard lives to the end of the test
+let pool = db.pool().clone();
+```
+
+Cleanup runs from `Drop`, which also runs while a panicking test unwinds, so a
+failing test reclaims its schema too. Two cases still leave residue, and both
+are handled by a sweep the first `TestSchema` in a process performs:
+
+- a process killed hard — SIGKILL, a `nextest` timeout, a laptop losing power —
+  never runs `Drop` at all
+- runs predating this mechanism (before #1364) never dropped anything
+
+The sweep drops every `test_<pid>_<seq>` schema whose pid is not a live
+process, in batches: each schema carries the full migration set, and dropping
+thousands in one transaction runs the lock table out of shared memory. It is
+deliberately one-sided — a schema whose pid *is* live is always kept, so a suite
+running concurrently in another process can never lose its schema, and a pid the
+operating system has recycled only defers a drop to a later run.
+
+So the database needs occasional attention rather than none: a crash-heavy
+afternoon can leave schemas behind until the next run reclaims them, and a
+database that has not been used for tests since #1364 landed still carries
+whatever earlier runs orphaned. Check what is there with:
+
+```sql
+select count(*) from information_schema.schemata where schema_name like 'test\_%';
+```
+
+Schemas from the older helpers used `seed_*` and `export_*` names with no pid in
+them, so the sweep cannot prove they are dead and leaves them alone. Nothing
+creates those names any more, so drop them once by hand — in batches, for the
+same lock-table reason:
+
+```sql
+do $$
+declare victim text;
+begin
+  loop
+    select schema_name::text into victim
+    from information_schema.schemata
+    where schema_name like 'seed\_%' or schema_name like 'export\_%'
+    limit 1;
+    exit when victim is null;
+    execute 'drop schema ' || quote_ident(victim) || ' cascade';
+    commit;
+  end loop;
+end $$;
+```
+
+One schema per statement is deliberate. A migrated schema holds around 210
+relations and `cascade` locks every one of them, so even ten schemas in a
+single transaction exhausts the lock table — the `out of shared memory` the
+issue describes is reachable at far fewer schemas than it sounds.
+
+When a failing test's rows *are* the evidence, set `ROLTER_TEST_KEEP_SCHEMA=1`:
+the guard then keeps every schema it creates (printing each name) and skips the
+sweep, so nothing is reclaimed until you drop it yourself.
+
 ## Layout
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.

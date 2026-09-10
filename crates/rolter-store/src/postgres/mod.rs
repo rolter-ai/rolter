@@ -155,62 +155,12 @@ pub async fn pending_migrations(pool: &PgPool) -> Result<Vec<i64>> {
 /// Test-only helpers for building isolated, migrated pools. Every test gets its
 /// own schema pinned via `search_path`, so plain `cargo test` (which runs tests
 /// as threads in one process — e.g. the coverage job) never races on a shared
-/// `public` schema during DDL.
-#[cfg(test)]
-pub(crate) mod test_support {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    use sqlx::PgPool;
-
-    use super::{connect, run_migrations};
-
-    static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
-
-    /// Isolated schema name unique to this process and call, safe to
-    /// interpolate (only ascii digits and underscores).
-    fn unique_schema() -> String {
-        let n = SCHEMA_SEQ.fetch_add(1, Ordering::Relaxed);
-        format!("test_{}_{}", std::process::id(), n)
-    }
-
-    /// `url` with the connection pinned to `schema` via `search_path`, so
-    /// migrations and queries land in the isolated schema rather than `public`.
-    pub(crate) fn with_search_path(url: &str, schema: &str) -> String {
-        let sep = if url.contains('?') { '&' } else { '?' };
-        // percent-encode the space and `=` inside the libpq options string
-        format!("{url}{sep}options=-c%20search_path%3D{schema}")
-    }
-
-    /// Create a fresh isolated schema and return a migrated pool scoped to it.
-    pub(crate) async fn fresh_scoped_pool(url: &str) -> PgPool {
-        fresh_scoped_pool_named(url).await.0
-    }
-
-    /// As [`fresh_scoped_pool`], also returning the schema name. A test that
-    /// shells out to `pg_dump` needs the name; one that only queries does not.
-    pub(crate) async fn fresh_scoped_pool_named(url: &str) -> (PgPool, String) {
-        let schema = unique_schema();
-
-        // (re)create the isolated schema over a default-search_path connection
-        let admin = connect(url).await.expect("connect");
-        sqlx::query(&format!("drop schema if exists {schema} cascade"))
-            .execute(&admin)
-            .await
-            .expect("reset schema");
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
-            .await
-            .expect("create schema");
-        admin.close().await;
-
-        // app pool scoped to the isolated schema so migrations run there
-        let pool = connect(&with_search_path(url, &schema))
-            .await
-            .expect("connect scoped");
-        run_migrations(&pool).await.expect("run migrations");
-        (pool, schema)
-    }
-}
+/// `public` schema during DDL, and gets it back when the test finishes.
+///
+/// Available to other crates' tests behind the `test-support` feature; see
+/// `docs/development/testing.md`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_schema;
 
 #[derive(FromRow)]
 struct ProviderRow {
@@ -1514,9 +1464,11 @@ mod tests {
         );
     }
 
-    async fn fresh_pool() -> PgPool {
+    /// An isolated, migrated schema of this test's own. Bind the guard for the
+    /// whole test: the schema is dropped with it.
+    async fn fresh_db() -> super::test_schema::TestSchema {
         let url = database_url().expect("ROLTER_TEST_DATABASE_URL not set; skipping");
-        super::test_support::fresh_scoped_pool(&url).await
+        super::test_schema::TestSchema::migrated(&url).await
     }
 
     #[tokio::test]
@@ -1525,7 +1477,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
 
         let org_id: Uuid = sqlx::query_scalar(
@@ -1587,7 +1540,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let (_user_id, project_id) = tenancy_with_owned_key(&pool, "unrelated-existing-key").await;
 
         let before = current_version(&pool).await.unwrap();
@@ -1745,7 +1699,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let store = PostgresConfigStore {
             pool: pool.clone(),
             kek: None,
@@ -1777,7 +1732,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let store = PostgresConfigStore {
             pool: pool.clone(),
             kek: None,
@@ -1811,7 +1767,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let store = PostgresConfigStore {
             pool: pool.clone(),
             kek: None,
@@ -1876,7 +1833,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let (user_id, project_id) = tenancy_with_owned_key(&pool, "hash-bump").await;
         let team_id: Uuid = sqlx::query_scalar("select team_id from projects where id = $1")
             .bind(project_id)
@@ -1930,7 +1888,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
 
         let org_id: Uuid = sqlx::query_scalar(
@@ -1993,7 +1952,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
 
         let org_id: Uuid = sqlx::query_scalar(
@@ -2038,7 +1998,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
@@ -2114,7 +2075,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
@@ -2197,7 +2159,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         sqlx::query(
             "update logging_settings set
                 sample_rate = 0.4,
@@ -2237,7 +2200,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         sqlx::query(
             "update runtime_policy set
                 retry_max_retries = 5,
@@ -2279,7 +2243,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         sqlx::query(
             "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
@@ -2308,7 +2273,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
@@ -2474,7 +2440,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
@@ -2507,7 +2474,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
@@ -2573,7 +2541,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         // the shipped defaults leave adaptive routing off
         let config = PostgresConfigStore::new(pool.clone()).load().await.unwrap();
@@ -2603,7 +2572,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         sqlx::query(
             "insert into guardrail_rules \
              (name, source_type, builtin, stage, action, replacement, position) \
@@ -2654,7 +2624,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
         )
@@ -2749,7 +2720,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
         )
@@ -2793,7 +2765,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         // defaults preserve the previous hardcoded behavior
         let config = PostgresConfigStore::new(pool.clone()).load().await.unwrap();
@@ -2819,7 +2792,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let store = PostgresConfigStore::new(pool);
         assert!(store.save(GatewayConfig::default()).await.is_err());
     }

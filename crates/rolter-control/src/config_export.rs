@@ -533,6 +533,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod round_trip {
         use rolter_store::postgres::crypto::Kek;
+        use rolter_store::postgres::test_schema::TestSchema;
         use rolter_store::postgres::PostgresConfigStore;
         use rolter_store::ConfigStore;
         use uuid::Uuid;
@@ -612,9 +613,10 @@ models = ["gpt-4o"]
 
         #[tokio::test]
         async fn an_export_reimports_to_a_byte_identical_export() {
-            let Some(pool) = scratch_db("export").await else {
+            let Some(db) = scratch_db().await else {
                 return;
             };
+            let pool = db.pool().clone();
             let (org_id, project_id) = bootstrap_org(&pool).await;
             let dir = tempdir("export");
             let path = dir.join("rolter.toml");
@@ -700,23 +702,13 @@ models = ["gpt-4o"]
 
         /// A schema of its own per test: the coverage job runs plain
         /// `cargo test` against a shared database and would otherwise race.
-        async fn scratch_db(label: &str) -> Option<sqlx::PgPool> {
+        /// The guard drops the schema when the test finishes (#1364).
+        async fn scratch_db() -> Option<TestSchema> {
             let url = std::env::var("ROLTER_TEST_DATABASE_URL").ok().or_else(|| {
                 eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
                 None
             })?;
-            let schema = format!("export_{label}_{}", Uuid::new_v4().simple());
-            let admin = rolter_store::postgres::connect(&url).await.unwrap();
-            sqlx::query(&format!("create schema {schema}"))
-                .execute(&admin)
-                .await
-                .unwrap();
-            admin.close().await;
-            let separator = if url.contains('?') { '&' } else { '?' };
-            let scoped = format!("{url}{separator}options=-c%20search_path%3D{schema}");
-            let pool = rolter_store::postgres::connect(&scoped).await.unwrap();
-            rolter_store::postgres::run_migrations(&pool).await.unwrap();
-            Some(pool)
+            Some(TestSchema::migrated(&url).await)
         }
 
         async fn bootstrap_org(pool: &sqlx::PgPool) -> (Uuid, Uuid) {
