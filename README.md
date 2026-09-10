@@ -135,6 +135,28 @@ rolter stands on the shoulders of great open-source projects and research. See o
 - `docs/`, `user-docs/` — architecture/ADRs and the user documentation site
 - `migrations/`, `clickhouse/` — database schemas
 
+> **The library crates are internal.** `rolter-core`, `rolter-auth`,
+> `rolter-balancer`, `rolter-proxy`, `rolter-store`, `rolter-gateway` and
+> `rolter-control` are published to crates.io only because `cargo install rolter`
+> cannot resolve otherwise. They offer **no stable Rust API**: any public item may
+> change or disappear in any release, including a patch release, and they share
+> the product's version number rather than carrying one of their own. Build
+> against rolter's HTTP surfaces — the gateway API, the control API, the config
+> file — which do carry a compatibility promise. See
+> [Versioning & compatibility](user-docs/community/versioning.mdx) and
+> [ADR-0032](docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+
+## Compatibility
+
+What a major version guarantees, per surface — the OpenAI/Anthropic gateway API,
+the control API, config files, the database schema and the crates — is written
+down in [Versioning & compatibility](user-docs/community/versioning.mdx), with
+the reasoning in [ADR-0032](docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+Short version: `/api/v1/*` is additive and nothing is removed without two minor
+releases and 90 days of notice; `/v1/*` guarantees fidelity to the OpenAI and
+Anthropic dialects rather than a frozen schema; the Rust crates guarantee
+nothing.
+
 ## Development
 
 ```bash

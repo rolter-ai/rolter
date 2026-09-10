@@ -129,6 +129,7 @@
           {
             "group": "Project",
             "pages": [
+              "community/versioning",
               "community/brand"
             ]
           }
