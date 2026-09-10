@@ -189,9 +189,13 @@ impl McpServerRepo<'_> {
     }
 
     /// Apply an operator's edit, invalidating the OAuth discovery cache when
-    /// the edit moves the server's URL. See
-    /// [`CLEAR_DISCOVERY_ON_URL_CHANGE`] for why that clause rides along on
-    /// this statement instead of following it.
+    /// the edit moves the server's URL — the cached endpoints belong to the
+    /// authorization server the old URL named, so a refresh before the next
+    /// interactive authorize would otherwise use them (#1416).
+    ///
+    /// The clearing rides on this statement rather than following it because
+    /// `mcp_servers` carries a statement-level `bump_config_version()` trigger;
+    /// see `CLEAR_DISCOVERY_ON_URL_CHANGE` above for the whole argument.
     pub async fn update(&self, id: Uuid, server: McpServerUpdate<'_>) -> Result<McpServer> {
         fetch_optional_or_not_found(
             sqlx::query_as(&format!(
