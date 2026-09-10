@@ -77,6 +77,30 @@ async fn serve(app: axum::Router) -> SocketAddr {
     addr
 }
 
+/// Serve a control-plane app that knows its own ephemeral address as the
+/// deployment's public base URL (#1418).
+///
+/// The SSO and MCP OAuth flows derive their redirect URI from that URL, and it
+/// used to arrive through `ROLTER_PUBLIC_URL`. The environment is process-wide:
+/// under `cargo nextest` each test owns its process and that is harmless, but
+/// the coverage job runs plain `cargo test`, where every test in this binary is
+/// a thread sharing one environment — so one test's listener address became
+/// another test's redirect URI, and the failure landed on whichever flow
+/// happened to be mid-exchange. Binding the listener first and passing the
+/// address into the app keeps each test's value its own.
+async fn serve_with_public_url(pool: sqlx::PgPool, admin_token: Option<String>) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app =
+        rolter_control::test_app_with_public_url(pool, admin_token, &format!("http://{addr}"))
+            .await
+            .expect("build app");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
 /// The one KEK every test in this file installs (#1351).
 ///
 /// `std::env::set_var` is process-wide. The main test job runs `cargo nextest`,
@@ -3332,13 +3356,9 @@ async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
 async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     skip_without_db!();
     let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
     // the redirect uri is deployment-owned, so the control plane must know its
     // own public url for the flow to be coherent
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -5371,11 +5391,7 @@ async fn self_service_key_lifecycle() {
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
     let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -6455,11 +6471,7 @@ mod stub_authz {
 async fn mcp_oauth_consent_refresh_and_exchange() {
     skip_without_db!();
     let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
