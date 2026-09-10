@@ -156,12 +156,14 @@ SDK author sees it too.
 
 ## Relationship to the 1.0.0 guarantees (#922)
 
-#922 decides what each *stable* surface guarantees at 1.0 — the `/v1/*` gateway
-surface, the `/api/v1/*` control API, the config keys and environment variables,
-and the database schema. This page does not write that table and does not
-pre-empt it.
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) decides
+what each *stable* surface guarantees at 1.0 — the `/v1/*` gateway surface, the
+`/api/v1/*` control API, the config keys and environment variables, the database
+schema and the Rust crates. This page does not restate it. It is named there as
+**the** exemption route: a subsystem carrying the `experimental` marker is
+outside every promise the ADR makes, and no second mechanism exists beside it.
 
-What it does is make the table writable. A 1.0 that promises compatibility
+What this page does is make that table writable. A 1.0 that promises compatibility
 across the whole surface either over-promises or is held hostage to the
 least-finished corner of the product; naming the exemptions is the honest,
 cheap third option. Each row above is one line #922 does not have to argue
