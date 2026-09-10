@@ -110,8 +110,8 @@ pub(crate) fn kek() -> ApiResult<Kek> {
 /// Where an authorization server sends the code back. Deployment-derived, so a
 /// spoofed `Host` header cannot redirect a code elsewhere, and constant across
 /// servers so an operator registers one URI with each upstream.
-pub(crate) fn callback_uri() -> String {
-    format!("{}/auth/mcp/callback", public_base_url())
+pub(crate) fn callback_uri(state: &ControlState) -> String {
+    format!("{}/auth/mcp/callback", public_base_url(state))
 }
 
 // ---------------------------------------------------------------------------
@@ -146,8 +146,11 @@ struct OAuthClientView {
     redirect_uri: String,
 }
 
-impl From<McpServer> for OAuthClientView {
-    fn from(server: McpServer) -> Self {
+impl OAuthClientView {
+    /// The redirect URI is deployment-owned, so it comes from the state rather
+    /// than from the row being rendered — which is why this is a constructor
+    /// and not a `From` impl.
+    fn new(server: McpServer, state: &ControlState) -> Self {
         Self {
             server_id: server.id,
             authorize_url: server.authorize_url,
@@ -155,7 +158,7 @@ impl From<McpServer> for OAuthClientView {
             client_id: server.client_id,
             default_scopes: server.default_scopes,
             has_client_secret: server.has_client_secret,
-            redirect_uri: callback_uri(),
+            redirect_uri: callback_uri(state),
         }
     }
 }
@@ -212,7 +215,7 @@ async fn set_oauth_client(
         }),
     )
     .await;
-    Ok(Json(updated.into()))
+    Ok(Json(OAuthClientView::new(updated, &state)))
 }
 
 async fn get_oauth_client(
@@ -228,7 +231,7 @@ async fn get_oauth_client(
         cap!("mcp_oauth_client", Read),
     )
     .await?;
-    Ok(Json(server.into()))
+    Ok(Json(OAuthClientView::new(server, &state)))
 }
 
 /// An OAuth endpoint must be `https`, with `http` allowed only on loopback so
@@ -305,7 +308,7 @@ async fn start_authorize(
 
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
-    let redirect = callback_uri();
+    let redirect = callback_uri(&state);
     McpOAuthRepo(pool(&state))
         .start_login(
             &kek()?,
