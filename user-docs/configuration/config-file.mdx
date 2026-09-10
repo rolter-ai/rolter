@@ -12,6 +12,35 @@ cp rolter.example.toml rolter.toml
 
 ---
 
+## Unknown keys are ignored — and reported
+
+Rolter never rejects a `rolter.toml` over a key it does not recognise. That is what keeps the file compatible in both directions: a config written for a newer release still loads on an older binary, so rolling a release back is not an outage.
+
+The trade-off is that a typo is silent. `connect_sesc` under `[timeouts]` produces no error and no warning at startup — the default simply applies, and a misspelled `api_key_env` leaves a provider with no credential until the first upstream `401`.
+
+`rolter check` closes that gap without changing what the gateway accepts:
+
+```bash
+rolter check --config rolter.toml
+```
+
+```
+warn   unrecognised config key providers[0].api_key_evn
+       `providers[0].api_key_evn` is not a key rolter reads. It is ignored rather
+       than rejected, so the setting it looks like it configures is silently at
+       its default. Did you mean `api_key_env`?
+```
+
+It reports the full path to every unrecognised key, including keys nested inside tables and inside arrays of tables, and suggests the nearest real key when one is close enough to be a likely typo.
+
+These are warnings: the file is valid and the gateway will start. Add `--strict` to turn them into a non-zero exit, which is what you want in CI when a config change is under review.
+
+```bash
+rolter check --config rolter.toml --strict
+```
+
+---
+
 ### \[server\]
 
 The `[server]` section controls how the gateway process binds and exposes its built-in endpoints.
