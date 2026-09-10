@@ -358,6 +358,26 @@ impl ConfigOwned {
     }
 }
 
+/// Default externally reachable base URL when `ROLTER_PUBLIC_URL` is unset.
+const DEFAULT_PUBLIC_URL: &str = "http://localhost:4001";
+
+/// Normalize a configured public base URL: blank counts as unset, and the
+/// trailing slash is dropped so callers can always append an absolute path.
+fn normalize_public_url(configured: Option<String>) -> String {
+    configured
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_PUBLIC_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Read `ROLTER_PUBLIC_URL` once, at startup, for [`ControlState::public_url`].
+fn public_url_from_env() -> Arc<String> {
+    Arc::new(normalize_public_url(
+        std::env::var("ROLTER_PUBLIC_URL").ok(),
+    ))
+}
+
 #[derive(Clone)]
 struct ControlState {
     store: Arc<dyn ConfigStore>,
@@ -394,6 +414,14 @@ struct ControlState {
     http: reqwest::Client,
     /// base URL of the rolter-gateway the `/gw/*` proxy forwards to
     gateway_url: Arc<String>,
+    /// the control plane's own externally reachable base URL, from
+    /// `ROLTER_PUBLIC_URL`. Resolved once here rather than read from the
+    /// environment inside each handler: the SSO redirect URI, the MCP OAuth
+    /// callback and an invitation's accept link must all agree for the whole
+    /// life of a flow, and a value that can change between two reads of the
+    /// same request is one more thing that can disagree (#1418)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    public_url: Arc<String>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -594,6 +622,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         internal_token,
         http,
         gateway_url,
+        public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
         login_throttle: login_throttle.clone(),
@@ -613,6 +642,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         internal_token,
         http,
         gateway_url,
+        public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
         login_throttle: login_throttle.clone(),
@@ -1071,18 +1101,45 @@ pub async fn test_app_with_admin_token(
     admin_token: Option<String>,
 ) -> anyhow::Result<Router> {
     rolter_store::postgres::run_migrations(&pool).await?;
-    Ok(build_app_with(test_state(pool, admin_token), true))
+    Ok(build_app_with(test_state(pool, admin_token, None), true))
+}
+
+/// [`test_app_with_admin_token`] with the control plane's public base URL
+/// injected instead of read from `ROLTER_PUBLIC_URL`.
+///
+/// The SSO and MCP OAuth flows derive their redirect URI from that URL, and a
+/// test that needs it to name its own ephemeral listener used to `set_var` it.
+/// The environment is process-wide: under `cargo nextest` each test owns its
+/// process and that is harmless, but the coverage job runs plain `cargo test`,
+/// where every test in this binary is a thread sharing one environment, so one
+/// test's address became another test's redirect URI. Passing the value in
+/// makes the two runners behave identically (#1418).
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_public_url(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    public_url: &str,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    Ok(build_app_with(
+        test_state(pool, admin_token, Some(public_url.to_string())),
+        true,
+    ))
 }
 
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
 pub fn test_app_unmigrated(pool: sqlx::PgPool) -> Router {
-    build_app_with(test_state(pool, None), true)
+    build_app_with(test_state(pool, None, None), true)
 }
 
 #[cfg(feature = "postgres")]
-fn test_state(pool: sqlx::PgPool, admin_token: Option<String>) -> ControlState {
+fn test_state(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    public_url: Option<String>,
+) -> ControlState {
     let store: Arc<dyn ConfigStore> =
         Arc::new(rolter_store::PostgresConfigStore::new(pool.clone()));
     ControlState {
@@ -1096,6 +1153,7 @@ fn test_state(pool: sqlx::PgPool, admin_token: Option<String>) -> ControlState {
         internal_token: None,
         http: reqwest::Client::new(),
         gateway_url: Arc::new("http://localhost:4000".to_string()),
+        public_url: Arc::new(normalize_public_url(public_url)),
         cors: Arc::default(),
         metrics: Default::default(),
         // real, with production defaults: the wiring is part of what these
@@ -2413,6 +2471,7 @@ mod tests {
             internal_token: internal.map(|t| Arc::new(t.to_string())),
             http: reqwest::Client::new(),
             gateway_url: Arc::new("http://localhost:4000".to_string()),
+            public_url: Arc::new(DEFAULT_PUBLIC_URL.to_string()),
             cors: Arc::default(),
             metrics: Default::default(),
             login_throttle: Default::default(),
@@ -2421,6 +2480,29 @@ mod tests {
             #[cfg(feature = "postgres")]
             pool: None,
         }
+    }
+
+    /// The public base URL is resolved once, from a value the caller supplies,
+    /// so the normalization is a pure function with no environment behind it
+    /// (#1418).
+    #[test]
+    fn the_public_url_is_normalized_once_from_the_value_it_is_given() {
+        // a trailing slash would double up against the paths appended to it
+        assert_eq!(
+            normalize_public_url(Some("https://rolter.example.com/".to_string())),
+            "https://rolter.example.com"
+        );
+        assert_eq!(
+            normalize_public_url(Some("https://rolter.example.com".to_string())),
+            "https://rolter.example.com"
+        );
+        // blank is a misconfiguration, not an origin: it must not build
+        // `"/auth/sso/x/callback"` and call that a redirect uri
+        assert_eq!(
+            normalize_public_url(Some("   ".to_string())),
+            DEFAULT_PUBLIC_URL
+        );
+        assert_eq!(normalize_public_url(None), DEFAULT_PUBLIC_URL);
     }
 
     /// #947: the dashboard has to state, per kind, whether `/v1` belongs in
