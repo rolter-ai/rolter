@@ -525,6 +525,9 @@ impl ControlHistograms {
 }
 
 /// Collapse an HTTP status into its class, as a `'static` label.
+// gated with its only caller in `record_crud`: without otlp there is no
+// attribute set to build, so an ungated helper is dead code (#1399)
+#[cfg(feature = "otlp")]
 fn status_class(status: u16) -> &'static str {
     match status / 100 {
         1 => "1xx",
@@ -533,6 +536,24 @@ fn status_class(status: u16) -> &'static str {
         4 => "4xx",
         5 => "5xx",
         _ => "other",
+    }
+}
+
+#[cfg(all(test, feature = "otlp"))]
+mod status_class_tests {
+    use super::status_class;
+
+    #[test]
+    fn every_status_collapses_to_a_bounded_label() {
+        assert_eq!(status_class(100), "1xx");
+        assert_eq!(status_class(204), "2xx");
+        assert_eq!(status_class(304), "3xx");
+        assert_eq!(status_class(404), "4xx");
+        assert_eq!(status_class(503), "5xx");
+        // anything outside the HTTP ranges must still land on one label rather
+        // than opening a new time series
+        assert_eq!(status_class(0), "other");
+        assert_eq!(status_class(999), "other");
     }
 }
 
