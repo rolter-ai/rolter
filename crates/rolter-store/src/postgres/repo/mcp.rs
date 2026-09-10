@@ -114,6 +114,35 @@ pub struct McpDiscoveredEndpoints<'a> {
     pub iss_supported: bool,
 }
 
+/// Assignments that drop the discovery cache when, and only when, the update
+/// is actually moving the server's URL (#1416).
+///
+/// The cache is keyed by the server's canonical resource identifier, which is
+/// derived from `url`; pointing the row at a different server leaves endpoints
+/// belonging to the old one behind. A refresh landing between the edit and the
+/// next interactive authorize would then post to the *old* authorization
+/// server's token endpoint while naming the *new* canonical URI in the RFC 8707
+/// `resource` parameter.
+///
+/// `$3` is the new URL, and the bare `url` on the right-hand side is the row's
+/// value before this statement — Postgres evaluates every `set` expression
+/// against the old row, so one statement can both write the URL and compare
+/// against what it replaced. Folding this into the existing update rather than
+/// issuing a second one is deliberate: `mcp_servers` carries a
+/// statement-level `bump_config_version()` trigger, so a separate clearing
+/// statement would bump the snapshot version twice for one logical edit.
+const CLEAR_DISCOVERY_ON_URL_CHANGE: &str = "\
+    oauth_discovered_issuer = case when url is distinct from $3 \
+        then null else oauth_discovered_issuer end, \
+    oauth_discovered_authorize_url = case when url is distinct from $3 \
+        then null else oauth_discovered_authorize_url end, \
+    oauth_discovered_token_url = case when url is distinct from $3 \
+        then null else oauth_discovered_token_url end, \
+    oauth_discovered_iss_supported = case when url is distinct from $3 \
+        then false else oauth_discovered_iss_supported end, \
+    oauth_discovered_at = case when url is distinct from $3 \
+        then null else oauth_discovered_at end";
+
 impl McpServerRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<McpServer>> {
         sqlx::query_as(&format!(
@@ -159,12 +188,17 @@ impl McpServerRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Apply an operator's edit, invalidating the OAuth discovery cache when
+    /// the edit moves the server's URL. See
+    /// [`CLEAR_DISCOVERY_ON_URL_CHANGE`] for why that clause rides along on
+    /// this statement instead of following it.
     pub async fn update(&self, id: Uuid, server: McpServerUpdate<'_>) -> Result<McpServer> {
         fetch_optional_or_not_found(
             sqlx::query_as(&format!(
                 "update mcp_servers set name = $2, url = $3, transport = $4, description = $5, \
                  enabled = $6, tools = $7, required_scopes = $8, connect_timeout_ms = $9, \
-                 request_timeout_ms = $10, max_retries = $11 \
+                 request_timeout_ms = $10, max_retries = $11, \
+                 {CLEAR_DISCOVERY_ON_URL_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
             ))
             .bind(id)
