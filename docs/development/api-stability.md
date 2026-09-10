@@ -74,6 +74,15 @@ None of those are checked here — `cargo-semver-checks` cannot see them.
 Deciding what each of them guarantees at 1.0 is #922, and this page is the
 Rust-crate half of the answer it will need.
 
+The configuration-file half already has one property that a 1.0 promise will
+have to keep: rolter's config types carry no `deny_unknown_fields`, so a
+`rolter.toml` written for any build loads on any other build of the same major,
+including an older one it is rolled back onto. That is why an unknown key can
+only ever be a warning, and why the warning lives in `rolter check` rather than
+in the deserializer —
+[Unrecognised keys in `rolter.toml`](../deployment/preflight-validation.md#unrecognised-keys-in-roltertoml-1424)
+covers what it reports and how `--strict` turns it into a CI gate.
+
 The other half of what #922 needs is the list of subsystems the promise does
 *not* cover. That is a separate axis, set per subsystem rather than per crate,
 and it lives in [Stability markers](stability-markers.md): an `experimental`

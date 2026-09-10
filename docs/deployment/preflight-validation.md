@@ -67,6 +67,7 @@ that looks healthy while quietly not doing what it was configured to do.
 | Datastores accept a connection (with `--connect`) | error / warning | A URL that parses but resolves to nothing fails at first use rather than at rollout |
 | `ROLTER_KEK` opens the store (with `--connect`, postgres builds) | error | Every other KEK rule reads the environment alone, so all of them pass on a database restored under a *different* KEK — a failure with no startup symptom at all |
 | Config file parses (with `--config`) | error | A config that fails to load leaves the gateway on whatever it last had |
+| Every key in the config file is recognised (with `--config`) | warning | An unknown key is ignored rather than rejected, so a typo is silence and a default rather than an error |
 
 `--connect` is opt-in because a check that opens sockets cannot be the default
 for a command meant to run offline and without side effects. It is a TCP
@@ -92,6 +93,50 @@ Use `--strict` in an environment where they are not.
 Anything resembling credentials in a URL is redacted before printing, since this
 output routinely lands in CI logs.
 
+## Unrecognised keys in `rolter.toml` (#1424)
+
+None of rolter's config types carry serde's `deny_unknown_fields`, and that is a
+deliberate, load-bearing choice rather than an oversight. It is what makes the
+configuration file forward *and* backward compatible: a `rolter.toml` written
+against a newer build stays loadable by an older one, so rolling a release back
+does not turn into an outage over a key the previous binary has never heard of.
+Nothing in this section changes that — the gateway and the control plane still
+accept and ignore every key they do not know.
+
+The price of that promise is silence. `connect_sesc = 3` under `[timeouts]` is
+not an error and not a log line; the default applies and the operator is left
+debugging a timeout they believe they configured. A key that names a credential
+is worse: a misspelled `api_key_env` produces a provider with no credential at
+all, and the first symptom is a 401 from the upstream.
+
+So `rolter check --config rolter.toml` reports them, with the path to each and,
+where one is close enough to be a plausible typo, the key it probably meant:
+
+```
+warn   unrecognised config key providers[0].api_key_evn
+       `providers[0].api_key_evn` is not a key rolter reads. It is ignored rather
+       than rejected, so the setting it looks like it configures is silently at
+       its default. Did you mean `api_key_env`?
+```
+
+Nested tables and arrays of tables are covered, so the path is the full one —
+`routes[0].targets[0].wieght`, not `wieght`.
+
+These are **warnings**, always. The file is still valid and the process will
+still start, so an unknown key may never block a boot; that would be
+`deny_unknown_fields` by another name. `--strict` promotes them to failures,
+which is what a CI job that lints a config in review wants:
+
+```bash
+rolter check --config rolter.toml --strict
+```
+
+The detection lives in `crates/rolter-core/src/config_lint.rs` and works by
+deserializing the document a second time through `serde_ignored`, which reports
+every key the real `Deserialize` impls dropped. It is deliberately not a list of
+valid keys: a hand-maintained list drifts within a release, and it drifts in the
+direction that reports a brand-new key as a typo. The suggestion comes from a
+plain Levenshtein distance against the sibling keys the type actually has.
 
 ## Generating the configuration (`rolter init`)
 
