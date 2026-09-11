@@ -407,6 +407,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:read".to_string()],
+            auth_kind: rolter_core::McpAuthKind::Oauth,
+            ..Default::default()
         });
         db.mcp_oauth_sessions
             .push(rolter_core::McpOAuthSessionConfig {

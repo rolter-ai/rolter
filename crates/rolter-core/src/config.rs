@@ -1454,8 +1454,47 @@ pub struct VirtualKeyRecord {
     pub access_policy: Option<crate::access_policy::ModelPolicy>,
 }
 
+/// How the gateway authenticates to an MCP server.
+///
+/// The string form is the `auth_kind` column of `mcp_servers`, whose check
+/// constraint is the authority on the set (migration `0069`). An unrecognised
+/// value deserializes to [`McpAuthKind::None`] rather than failing the whole
+/// snapshot: a newer control plane may name a kind this gateway predates, and
+/// refusing to authenticate is the safe reading of "I do not know what this
+/// is" — the alternative is a gateway that drops every server on the snapshot
+/// floor because one row is from the future.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthKind {
+    /// no credential is presented; the server is open or network-restricted
+    #[default]
+    None,
+    /// `Authorization: Bearer <credential>`
+    Bearer,
+    /// `<auth_header_name>: <credential>`
+    Header,
+    /// a token minted per user by the consent flow, not a stored credential
+    Oauth,
+    /// a kind this build does not know; treated as [`McpAuthKind::None`]
+    #[serde(other)]
+    Unknown,
+}
+
 /// An organization-scoped MCP endpoint available to the gateway.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `credential` is plaintext. It is unsealed from the KEK when the snapshot is
+/// built and travels over `/internal/snapshot`, which is already the
+/// credential-bearing control-to-data-plane channel — the same route
+/// [`McpOAuthSessionConfig::access_token`] takes. The [`std::fmt::Debug`] impl
+/// below redacts it so it cannot reach a log line or a crash dump through the
+/// snapshot being formatted (#952).
+///
+/// `Default` exists for the fixtures that construct this everywhere, so a test
+/// naming one field does not have to spell out the rest; the production mapping
+/// in `rolter-store` still writes every field out. The default is the
+/// unauthenticated server with no overrides, matching the `auth_kind` column's
+/// own default.
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub id: String,
     pub org_id: String,
@@ -1465,6 +1504,46 @@ pub struct McpServerConfig {
     /// OAuth scopes every call through this server must carry.
     #[serde(default)]
     pub required_scopes: Vec<String>,
+    /// how to authenticate; `oauth` keeps the per-user consent flow
+    #[serde(default)]
+    pub auth_kind: McpAuthKind,
+    /// the header an API key is presented in, for [`McpAuthKind::Header`]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header_name: Option<String>,
+    /// the unsealed static credential, absent for `none`/`oauth` and for a row
+    /// whose ciphertext could not be decrypted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    /// per-server transport overrides; `None` inherits the deployment default
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpServerConfig")
+            .field("id", &self.id)
+            .field("org_id", &self.org_id)
+            .field("slug", &self.slug)
+            .field("url", &self.url)
+            .field("transport", &self.transport)
+            .field("required_scopes", &self.required_scopes)
+            .field("auth_kind", &self.auth_kind)
+            .field("auth_header_name", &self.auth_header_name)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("request_timeout_ms", &self.request_timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.
@@ -5178,6 +5257,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:read".to_string()],
+            auth_kind: McpAuthKind::Oauth,
+            ..Default::default()
         });
         config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
             id: "session-1".to_string(),
@@ -5190,6 +5271,76 @@ mod tests {
         assert!(config.validate().is_ok(), "{:?}", config.validate());
     }
 
+    /// The credential travels in the snapshot as plaintext, so the one thing
+    /// that must never happen is it reaching a log line because something
+    /// formatted the config. `Debug` is how that would happen (#952).
+    #[test]
+    fn an_mcp_credential_is_redacted_in_debug_output() {
+        let server = McpServerConfig {
+            id: "server-1".to_string(),
+            slug: "docs".to_string(),
+            auth_kind: McpAuthKind::Bearer,
+            credential: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+        let rendered = format!("{server:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "the credential leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("REDACTED"), "{rendered}");
+        // the absent case must be distinguishable from the redacted one, or a
+        // server with no credential reads as one whose secret was withheld
+        let open = McpServerConfig {
+            slug: "open".to_string(),
+            ..Default::default()
+        };
+        assert!(format!("{open:?}").contains("credential: None"));
+    }
+
+    /// A kind from a newer control plane must not deserialize to something
+    /// this build would act on. It lands on `Unknown`, which the proxy refuses
+    /// rather than treating as an open server (#952).
+    #[test]
+    fn an_unrecognised_mcp_auth_kind_deserializes_to_unknown() {
+        let parsed: McpServerConfig = serde_json::from_str(
+            r#"{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                "transport":"streamable_http","auth_kind":"mtls"}"#,
+        )
+        .expect("an unknown kind must not fail the whole snapshot");
+        assert_eq!(parsed.auth_kind, McpAuthKind::Unknown);
+
+        // and the four it does know still round-trip
+        for (raw, expected) in [
+            ("none", McpAuthKind::None),
+            ("bearer", McpAuthKind::Bearer),
+            ("header", McpAuthKind::Header),
+            ("oauth", McpAuthKind::Oauth),
+        ] {
+            let json = format!(
+                r#"{{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                     "transport":"streamable_http","auth_kind":"{raw}"}}"#
+            );
+            let parsed: McpServerConfig = serde_json::from_str(&json).expect(raw);
+            assert_eq!(parsed.auth_kind, expected, "{raw}");
+        }
+    }
+
+    /// A snapshot from a control plane that predates #952 carries no auth
+    /// fields at all. It must still load — that is the forward/backward
+    /// compatibility the config model promises.
+    #[test]
+    fn an_mcp_server_from_an_older_control_plane_still_deserializes() {
+        let parsed: McpServerConfig = serde_json::from_str(
+            r#"{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                "transport":"streamable_http","required_scopes":["tools:read"]}"#,
+        )
+        .expect("the pre-#952 shape must still load");
+        assert_eq!(parsed.auth_kind, McpAuthKind::None);
+        assert!(parsed.credential.is_none());
+        assert!(parsed.request_timeout_ms.is_none());
+    }
+
     #[test]
     fn validate_rejects_mcp_session_missing_required_scope() {
         let mut config = GatewayConfig::default();
@@ -5200,6 +5351,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:execute".to_string()],
+            auth_kind: McpAuthKind::Oauth,
+            ..Default::default()
         });
         config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
             id: "session-1".to_string(),

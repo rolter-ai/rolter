@@ -269,21 +269,39 @@ whatever the caller sent. A sealed secret nothing can use is one `rolter kek
 verify` would audit forever, and it is a credential still sitting in a backup
 for no reason.
 
-All of the above is storage only. `repo::mcp::credential()` has no caller,
-`McpServerConfig` carries no auth fields, so nothing crosses `/internal/snapshot`,
-and `mcp_proxy` still refuses a request with no live OAuth session
-(`mcp_session_unauthorized`) whatever `auth_kind` says. Spending a stored
-credential on the proxy path is the remainder of #952.
+A stored credential reaches the data plane through `/internal/snapshot` (#952).
+`load_mcp_servers` unseals it with the KEK and puts the plaintext on
+`McpServerConfig`, the same route an OAuth access token already takes — that
+endpoint is the credential-bearing control-to-data-plane channel, so this adds a
+secret to it rather than opening a new path for one. `McpServerConfig`'s `Debug`
+redacts the field so formatting a snapshot cannot spill it into a log or a crash
+dump, and the header form marks the value sensitive before it reaches the wire.
+
+A row whose credential cannot be unsealed — `ROLTER_KEK` unset or rotated —
+keeps its other fields and loses only the secret, and the proxy then refuses
+that server with `mcp_credential_unavailable` rather than calling it
+unauthenticated. Dropping the server from the snapshot instead would make a
+misconfigured KEK look like a server that was never registered.
 
 ### Per-server transport overrides
 
 `connect_timeout_ms`, `request_timeout_ms` and `max_retries` are nullable on
-`mcp_servers` and are meant to fall back to the org's `mcp_gateway_settings`.
-Null means inherit rather than a copy taken at creation, so raising the org
-default will still move every server that never asked to differ. That
-resolution is not performed yet: neither the row nor `mcp_gateway_settings`
-reaches the data plane, and the proxy dials on the gateway's deployment-level
-transport timeouts.
+`mcp_servers`, and the proxy reads them (#952). Null means inherit rather than a
+copy taken at creation, so the value a server never overrode still moves when
+the value it inherits does.
+
+What it inherits is the *deployment* transport timeout, not the org's
+`mcp_gateway_settings`: those org defaults are still not read by the data plane,
+which is what the `mcp_settings` stability marker records and what #1404 closes.
+Until then a per-server override is the only way to give one server its own
+budget.
+
+reqwest bakes the connect timeout into the client rather than the request, so a
+per-server `connect_timeout_ms` means a client per distinct value; they are
+built once and cached, and there are only ever a handful. `max_retries` repeats
+only a send that failed to connect: an MCP call is frequently a tool invocation
+and is not idempotent, so a request the server may have seen — including one
+that timed out — is reported rather than replayed.
 
 On the wire the `PATCH` distinguishes absent from null — leave the override
 versus drop it — which an `Option` alone cannot express. serde collapses both to

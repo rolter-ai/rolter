@@ -10,11 +10,12 @@ use chrono::{DateTime, Utc};
 use rolter_core::{
     BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, BuiltinRule,
     Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig, GroupMember, GuardAction,
-    GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, McpOAuthSessionConfig,
-    McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute, PluginInstanceConfig, PluginStage,
-    PluginsConfig, PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig,
-    ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, Target,
-    TemplateVariable, UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
+    GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, McpAuthKind,
+    McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
+    PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
+    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
+    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, UnpricedPolicy,
+    VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
@@ -389,6 +390,24 @@ struct OwnerPolicyRow {
     denied_routes: Vec<String>,
 }
 
+/// Map the `auth_kind` column onto the config enum.
+///
+/// The column's check constraint is the authority on the set, and a value
+/// outside it can only mean this binary predates a kind the control plane
+/// knows. That maps to [`McpAuthKind::Unknown`], which the proxy refuses
+/// rather than guesses at — presenting no credential to a server that expects
+/// one fails visibly, whereas picking the wrong scheme could leak the
+/// credential into the wrong header.
+fn parse_mcp_auth_kind(raw: &str) -> McpAuthKind {
+    match raw {
+        "none" => McpAuthKind::None,
+        "bearer" => McpAuthKind::Bearer,
+        "header" => McpAuthKind::Header,
+        "oauth" => McpAuthKind::Oauth,
+        _ => McpAuthKind::Unknown,
+    }
+}
+
 #[derive(FromRow)]
 struct McpServerSnapshotRow {
     id: Uuid,
@@ -397,6 +416,13 @@ struct McpServerSnapshotRow {
     url: String,
     transport: String,
     required_scopes: Vec<String>,
+    auth_kind: String,
+    auth_header_name: Option<String>,
+    credential_ciphertext: Option<Vec<u8>>,
+    credential_nonce: Option<Vec<u8>>,
+    connect_timeout_ms: Option<i32>,
+    request_timeout_ms: Option<i32>,
+    max_retries: Option<i32>,
 }
 
 #[derive(FromRow)]
@@ -907,23 +933,78 @@ impl PostgresConfigStore {
             .collect())
     }
 
+    /// MCP servers for the snapshot, with any static credential unsealed.
+    ///
+    /// The credential is sealed at rest under the KEK and the data plane needs
+    /// the plaintext to present it, so it is decrypted here and travels over
+    /// `/internal/snapshot` — the same route an MCP OAuth access token already
+    /// takes, and the channel that already exists to carry secrets from the
+    /// control plane to the gateway (#952).
+    ///
+    /// A row whose credential cannot be unsealed keeps its other fields and
+    /// loses only the secret. The server is *not* dropped from the snapshot:
+    /// the proxy refuses a `bearer`/`header` server with no credential with a
+    /// message naming the problem, which beats the server silently not
+    /// existing. A missing KEK is the same case for every row at once, so it is
+    /// logged once rather than per server.
     async fn load_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
-            "select id, org_id, slug, url, transport, required_scopes \
+            "select id, org_id, slug, url, transport, required_scopes, \
+                    auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
+                    connect_timeout_ms, request_timeout_ms, max_retries \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
+        if self.kek.is_none() && rows.iter().any(|row| row.credential_ciphertext.is_some()) {
+            tracing::warn!(
+                "MCP servers carry static credentials but {} is unset; they are omitted from the \
+                 snapshot and those servers will be refused at the proxy",
+                crypto::KEK_ENV
+            );
+        }
         Ok(rows
             .into_iter()
-            .map(|row| McpServerConfig {
-                id: row.id.to_string(),
-                org_id: row.org_id.to_string(),
-                slug: row.slug,
-                url: row.url,
-                transport: row.transport,
-                required_scopes: row.required_scopes,
+            .map(|row| {
+                let credential = match (
+                    self.kek.as_ref(),
+                    row.credential_ciphertext.as_ref(),
+                    row.credential_nonce.as_ref(),
+                ) {
+                    (Some(kek), Some(ciphertext), Some(nonce)) => {
+                        match kek.decrypt(ciphertext, nonce) {
+                            Ok(plaintext) => Some(plaintext),
+                            Err(error) => {
+                                tracing::warn!(
+                                    server_id = %row.id,
+                                    error = %error,
+                                    "stored MCP credential could not be decrypted; omitting it"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                McpServerConfig {
+                    id: row.id.to_string(),
+                    org_id: row.org_id.to_string(),
+                    slug: row.slug,
+                    url: row.url,
+                    transport: row.transport,
+                    required_scopes: row.required_scopes,
+                    auth_kind: parse_mcp_auth_kind(&row.auth_kind),
+                    auth_header_name: row.auth_header_name,
+                    credential,
+                    // the check constraints in migration 0069 bound each of
+                    // these to a sane range, so a negative value means the row
+                    // was written around them; clamp at zero rather than
+                    // wrapping into an enormous timeout
+                    connect_timeout_ms: row.connect_timeout_ms.map(|ms| ms.max(0) as u64),
+                    request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
+                    max_retries: row.max_retries.map(|n| n.max(0) as u32),
+                }
             })
             .collect())
     }
