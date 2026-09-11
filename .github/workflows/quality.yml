@@ -98,6 +98,14 @@ jobs:
   feature-matrix:
     name: feature matrix
     runs-on: ubuntu-latest
+    # `cargo check` without this only fails on hard errors, so a lint that fires
+    # in exactly one feature combination — `dead_code` on an item reachable only
+    # under `--no-default-features`, say — passed this gate silently while the
+    # clippy job above never saw it, since that job only builds default features
+    # (#1399). RUSTFLAGS is capped to `allow` for registry dependencies, so this
+    # denies warnings in workspace crates only.
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

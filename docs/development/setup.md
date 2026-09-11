@@ -82,6 +82,17 @@ prek run --all-files
 prek run --all-files --hook-stage pre-push
 ```
 
+The clippy line above only builds the *default* feature set, so it cannot see a
+lint that fires under one feature combination alone — `dead_code` on a helper
+whose only caller is `#[cfg(feature = "otlp")]`, for instance. CI closes that
+gap in the `feature matrix` job, which runs `cargo hack` with
+`RUSTFLAGS=-D warnings`. Reproduce a failure from it with:
+
+```bash
+cargo install cargo-hack
+RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets
+```
+
 The hooks add staged-file hygiene and secret scanning, Conventional Commit
 validation, Rust/workflow/TOML/spelling checks, workspace tests, dependency
 policy checks, and UI lint/build checks. Install the system tools used by the
