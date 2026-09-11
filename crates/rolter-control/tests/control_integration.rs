@@ -8511,3 +8511,167 @@ async fn mcp_transport_overrides_are_per_server_and_revertible() {
         "null must clear the override: {reverted}"
     );
 }
+
+/// `GET /api/v1/orgs/{org_id}/projects` answers for the whole org in one
+/// request, which is the point of it (#1357).
+///
+/// Covers what the per-team fan-out it replaces could get wrong: projects from
+/// every team, each carrying the team that owns it so a caller can still group
+/// by team, ordered team-then-project, and nothing from a sibling org.
+#[tokio::test]
+async fn org_projects_lists_every_team_in_the_org_and_no_other() {
+    skip_without_db!();
+    let pool = fresh_pool().await;
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+
+    let org = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme-org-projects"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+
+    // teams created out of alphabetical order, so an ordering that merely
+    // followed insertion would fail below
+    let mut teams = Vec::new();
+    for name in ["Zulu", "Alpha"] {
+        let team = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/teams"),
+            json!({ "name": name }),
+        )
+        .await;
+        teams.push((
+            name,
+            team["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap(),
+        ));
+    }
+
+    // both teams own a "prod": an org-wide list that dropped the team would
+    // offer the operator two indistinguishable options
+    for (_, team) in &teams {
+        for project in ["prod", "staging"] {
+            post_as(
+                &client,
+                format!("{base}/api/v1/teams/{team}/projects"),
+                json!({ "name": project }),
+            )
+            .await;
+        }
+    }
+
+    // a sibling org with a project of its own, which must not leak in
+    let other = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Other", "slug": "other-org-projects"}),
+    )
+    .await;
+    let other_org = other["id"].as_str().unwrap().to_string();
+    let other_team = post_as(
+        &client,
+        format!("{base}/api/v1/orgs/{other_org}/teams"),
+        json!({"name": "Elsewhere"}),
+    )
+    .await;
+    let other_team_id = other_team["id"].as_str().unwrap().to_string();
+    post_as(
+        &client,
+        format!("{base}/api/v1/teams/{other_team_id}/projects"),
+        json!({"name": "secret"}),
+    )
+    .await;
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/projects"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = listed.as_array().expect("an array of projects");
+    let named: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["team_name"].as_str().unwrap(),
+                row["name"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            ("Alpha", "prod"),
+            ("Alpha", "staging"),
+            ("Zulu", "prod"),
+            ("Zulu", "staging"),
+        ],
+        "ordered by team then project, and scoped to this org: {listed}"
+    );
+
+    // every row names the team it belongs to by id as well as by name
+    let alpha = teams
+        .iter()
+        .find(|(name, _)| *name == "Alpha")
+        .expect("the alpha team")
+        .1;
+    assert_eq!(rows[0]["team_id"], alpha.to_string());
+    assert!(rows[0]["id"].is_string());
+    assert!(rows[0]["created_at"].is_string());
+
+    // read is a viewer's, at the org: the answer spans every team, so a
+    // membership in one team is not enough
+    let org_viewer = seed_user(&pool, "org-viewer@example.com", false).await;
+    seed_membership(&pool, org_viewer, Some(org_uuid), None, None, "viewer").await;
+    let org_token = seed_session(&pool, org_viewer, "org-projects-viewer").await;
+    let allowed = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/projects"))
+        .bearer_auth(&org_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), 200);
+
+    let team_viewer = seed_user(&pool, "team-viewer@example.com", false).await;
+    seed_membership(
+        &pool,
+        team_viewer,
+        Some(org_uuid),
+        Some(alpha),
+        None,
+        "viewer",
+    )
+    .await;
+    let team_token = seed_session(&pool, team_viewer, "org-projects-team-viewer").await;
+    let refused = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/projects"))
+        .bearer_auth(&team_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+}

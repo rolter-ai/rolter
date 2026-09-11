@@ -51,6 +51,11 @@ export const scopeResponse = (url: string): Response | null => {
   if (path === "/api/v1/orgs") return json([ORG]);
   if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) return json([TEAM]);
   if (/^\/api\/v1\/teams\/[^/]+\/projects$/.test(path)) return json([PROJECT]);
+  // the org-wide list `OrgScopePicker` reads, which carries the owning team's
+  // name so the picker can group without a request per team (#1357)
+  if (/^\/api\/v1\/orgs\/[^/]+\/projects$/.test(path)) {
+    return json([{ ...PROJECT, team_name: TEAM.name }]);
+  }
   return null;
 };
 
