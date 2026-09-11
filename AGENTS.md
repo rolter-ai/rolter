@@ -189,7 +189,8 @@ This repo uses **Conventional Commits** for commit messages and PR titles. Forma
 ```
 
 - **types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`
-- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`, `release`, `e2e`
+- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`, `deps-dev`, `release`, `e2e`
+  - `deps-dev` is dependabot's prefix for a devDependency bump and exists so those land unedited. A grouped bump is titled `chore(deps)`; a **major** bump falls outside the `minor`/`patch` groups in `.github/dependabot.yml` and arrives on its own as `chore(deps-dev)` (#1453). Write `deps` by hand — reach for `deps-dev` only when a bot already did.
 - subject is imperative, lowercase, ≤ 72 chars, no trailing period
 - breaking changes: add `!` after the scope (`feat(core)!: ...`) and a `BREAKING CHANGE:` footer
 
