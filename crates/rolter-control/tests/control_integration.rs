@@ -46,6 +46,30 @@ async fn serve(app: axum::Router) -> SocketAddr {
     addr
 }
 
+/// Serve a control-plane app that knows its own ephemeral address as the
+/// deployment's public base URL (#1418).
+///
+/// The SSO and MCP OAuth flows derive their redirect URI from that URL, and it
+/// used to arrive through `ROLTER_PUBLIC_URL`. The environment is process-wide:
+/// under `cargo nextest` each test owns its process and that is harmless, but
+/// the coverage job runs plain `cargo test`, where every test in this binary is
+/// a thread sharing one environment — so one test's listener address became
+/// another test's redirect URI, and the failure landed on whichever flow
+/// happened to be mid-exchange. Binding the listener first and passing the
+/// address into the app keeps each test's value its own.
+async fn serve_with_public_url(pool: sqlx::PgPool, admin_token: Option<String>) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app =
+        rolter_control::test_app_with_public_url(pool, admin_token, &format!("http://{addr}"))
+            .await
+            .expect("build app");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
 /// The one KEK every test in this file installs (#1351).
 ///
 /// `std::env::set_var` is process-wide. The main test job runs `cargo nextest`,
@@ -3332,13 +3356,9 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
     // the redirect uri is deployment-owned, so the control plane must know its
     // own public url for the flow to be coherent
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -5380,11 +5400,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -6432,31 +6448,104 @@ mod stub_authz {
     }
 
     pub async fn serve_stub() -> (String, Stub) {
+        serve_stub_with_metadata(true).await
+    }
+
+    /// The same stub, plus the RFC 8414 metadata document discovery reads
+    /// (#1347). `iss_supported` is what the metadata advertises, which is the
+    /// row of the RFC 9207 §2.4 table a response with no `iss` is judged by.
+    pub async fn serve_stub_with_metadata(iss_supported: bool) -> (String, Stub) {
         let stub = Stub::default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = Router::new().route(
-            "/token",
-            axum::routing::post({
-                let stub = stub.clone();
-                move |body: String| {
+        let issuer = format!("http://{addr}");
+        let metadata = json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "authorization_response_iss_parameter_supported": iss_supported,
+            "response_types_supported": ["code"],
+        });
+        let app = Router::new()
+            .route(
+                "/.well-known/oauth-authorization-server",
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { axum::Json(metadata) }
+                }),
+            )
+            .route(
+                "/token",
+                axum::routing::post({
                     let stub = stub.clone();
-                    async move {
-                        *stub.last_form.lock().unwrap() = body;
-                        *stub.calls.lock().unwrap() += 1;
-                        let (status, payload) = stub.next.lock().unwrap().clone();
-                        (
-                            axum::http::StatusCode::from_u16(status).unwrap(),
-                            axum::Json(payload),
-                        )
+                    move |body: String| {
+                        let stub = stub.clone();
+                        async move {
+                            *stub.last_form.lock().unwrap() = body;
+                            *stub.calls.lock().unwrap() += 1;
+                            let (status, payload) = stub.next.lock().unwrap().clone();
+                            (
+                                axum::http::StatusCode::from_u16(status).unwrap(),
+                                axum::Json(payload),
+                            )
+                        }
                     }
-                }
-            }),
-        );
+                }),
+            );
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (format!("http://{addr}"), stub)
+        (issuer, stub)
+    }
+}
+
+/// A stub MCP server that publishes RFC 9728 protected resource metadata
+/// (#1347): an unauthenticated request is challenged with a
+/// `resource_metadata` URL, and that document names the authorization server.
+mod stub_resource {
+    use super::*;
+    use axum::Router;
+
+    /// Serve a protected resource at `/mcp` whose metadata points at
+    /// `authorization_server`. Returns the resource's canonical URI.
+    pub async fn serve_stub(authorization_server: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let resource = format!("http://{addr}/mcp");
+        let metadata = json!({
+            "resource": resource,
+            "authorization_servers": [authorization_server],
+            "scopes_supported": ["tools:read", "tools:write"],
+            "bearer_methods_supported": ["header"],
+        });
+        let challenge = format!(
+            "Bearer resource_metadata=\"http://{addr}/.well-known/oauth-protected-resource/mcp\", \
+             scope=\"tools:read\""
+        );
+        let app = Router::new()
+            .route(
+                "/mcp",
+                axum::routing::get(move || {
+                    let challenge = challenge.clone();
+                    async move {
+                        (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            [(axum::http::header::WWW_AUTHENTICATE, challenge)],
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { axum::Json(metadata) }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        resource
     }
 }
 
@@ -6470,11 +6559,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -6587,7 +6672,10 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
             "token_url": format!("{authz}/token"),
             "client_id": "rolter",
             "client_secret": "cli3nt-s3cret",
-            "default_scopes": ["tools:read", "tools:write"]
+            "default_scopes": ["tools:read", "tools:write"],
+            // this server publishes no metadata, so it is pinned to the
+            // hand-configured endpoints and nothing is probed (#1347)
+            "discovery": "manual"
         }))
         .send()
         .await
@@ -6876,6 +6964,327 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
             "missing audit event {expected} in {actions:?}"
         );
     }
+}
+
+/// The three client-side MUSTs of the current MCP specification (#1347), end to
+/// end: the authorization server is discovered from what the MCP server
+/// publishes rather than typed in, both requests carry the RFC 8707 `resource`,
+/// and the callback applies RFC 9207 §2.4 — including the two failures that
+/// would otherwise be silent, a wrong `iss` and an absent one from a server
+/// that advertises it.
+#[tokio::test]
+async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    // deliberately *not* setting ROLTER_PUBLIC_URL: it is process-wide, and
+    // under plain `cargo test` (the coverage job) one test's value is read by
+    // another test's in-flight request. nothing here asserts on the redirect
+    // uri, so whatever the deployment default is will do
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    // an authorization server that publishes metadata and says it returns `iss`
+    let (authz, stub) = stub_authz::serve_stub_with_metadata(true).await;
+    let resource = stub_resource::serve_stub(&authz).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "DiscoOrg", "slug": "disco-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple")
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("insert into users (email, password_hash) values ($1, $2) returning id")
+            .bind("grace@example.com")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+        .bind(user_id)
+        .bind(uuid::Uuid::parse_str(&org_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "grace@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Disco", "slug": "disco", "url": resource}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+
+    // a client id and nothing else: no endpoint is typed in, because the
+    // server publishes where its authorization server is
+    let registered: Value = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"client_id": "rolter", "default_scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(registered["authorize_url"], Value::Null);
+    assert_eq!(registered["token_url"], Value::Null);
+    assert_eq!(registered["resource"], json!(resource));
+
+    // one consent start, used three times over: each callback consumes its own
+    // login state, so every case below asks for a fresh one
+    let start = || async {
+        let started: Value = client
+            .post(format!(
+                "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+            ))
+            .bearer_auth(&token)
+            .json(&json!({"scopes": ["tools:read"]}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        started
+    };
+
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    // the endpoint came from the authorization server's metadata, not from a
+    // column an operator filled in
+    assert!(
+        auth_url.starts_with(&format!("{authz}/authorize?")),
+        "authorization url must come from discovery: {auth_url}"
+    );
+    // RFC 8707 on the authorization request
+    assert_eq!(
+        url_param(&auth_url, "resource"),
+        resource.replace(':', "%3A").replace('/', "%2F"),
+        "the authorization request must carry the canonical resource: {auth_url}"
+    );
+
+    // -- RFC 9207: a wrong issuer ------------------------------------------
+    let wrong = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-1&state={}&iss=https%3A%2F%2Fevil.example.com",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 400, "a mismatched iss must be rejected");
+    assert_eq!(
+        stub.calls(),
+        0,
+        "the authorization code must never reach a token endpoint after an iss mismatch"
+    );
+
+    // -- RFC 9207: an absent issuer from a server that advertises one -------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    let absent = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-2&state={}",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        absent.status(),
+        400,
+        "an absent iss must be rejected when the metadata advertises it"
+    );
+    assert_eq!(stub.calls(), 0);
+
+    // -- and an error response whose issuer does not check out --------------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    let refused = client
+        .get(format!(
+            "{base}/auth/mcp/callback?error=access_denied&error_description=go-here-instead\
+             &state={}&iss=https%3A%2F%2Fevil.example.com",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body = refused.text().await.unwrap();
+    assert!(
+        !body.contains("go-here-instead") && !body.contains("access_denied"),
+        "an unvalidated error response must not be displayed: {body}"
+    );
+
+    // nothing above created a grant
+    let grants: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/grants"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants.as_array().map(Vec::len), Some(0), "{grants}");
+
+    // -- the happy path -----------------------------------------------------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    stub.answer(
+        200,
+        json!({
+            "access_token": "access-1",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "tools:read"
+        }),
+    );
+    let consented = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-3&state={}&iss={}",
+            url_param(&auth_url, "state"),
+            authz.replace(':', "%3A").replace('/', "%2F")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        consented.status(),
+        200,
+        "{}",
+        consented.text().await.unwrap()
+    );
+    // RFC 8707 on the token request, carrying the very same identifier
+    let form = stub.form();
+    assert!(
+        form.contains(&format!(
+            "resource={}",
+            resource.replace(':', "%3A").replace('/', "%2F")
+        )),
+        "the token request must carry the same canonical resource: {form}"
+    );
+
+    // -- the hand-configured fallback still works ---------------------------
+    // a server that publishes nothing at all: discovery fails against a dead
+    // port and the operator's endpoints are used instead
+    let quiet: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Quiet", "slug": "quiet", "url": "http://127.0.0.1:1/mcp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let quiet_id = quiet["id"].as_str().unwrap().to_string();
+    let quiet_client = client
+        .put(format!("{base}/api/v1/mcp-servers/{quiet_id}/oauth-client"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "authorize_url": format!("{authz}/authorize"),
+            "token_url": format!("{authz}/token"),
+            "client_id": "rolter"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(quiet_client.status(), 200);
+    let started: Value = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{quiet_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    assert!(
+        auth_url.starts_with(&format!("{authz}/authorize?")),
+        "the configured endpoint must be the fallback: {auth_url}"
+    );
+    // the resource parameter is not conditional on discovery having worked
+    assert_eq!(
+        url_param(&auth_url, "resource"),
+        "http%3A%2F%2F127.0.0.1%3A1%2Fmcp"
+    );
+    // nothing was discovered and no issuer was pinned, so a returned `iss` has
+    // nothing authentic to be checked against and the exchange is refused
+    let unverifiable = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-4&state={}&iss={}",
+            url_param(&auth_url, "state"),
+            authz.replace(':', "%3A").replace('/', "%2F")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unverifiable.status(), 400);
+
+    // while a response with no `iss` at all is row four of the table, and
+    // proceeds exactly as it did before this flow knew about RFC 9207
+    let started: Value = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{quiet_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    stub.answer(
+        200,
+        json!({"access_token": "access-2", "token_type": "Bearer", "expires_in": 3600}),
+    );
+    let legacy = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-5&state={}",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 200, "{}", legacy.text().await.unwrap());
 }
 
 /// Cross-tenant isolation on the exchange path: a member of another org may not

@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "shared config model, domain types, errors and telemetry for rolter"
+description = "shared config model, domain types, errors and telemetry for rolter — internal crate, no stable rust api"
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+serde_ignored.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 regex.workspace = true

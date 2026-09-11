@@ -304,6 +304,22 @@ fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&
 mod tests {
     use super::*;
 
+    /// Serializes every test that touches an environment key [`control_args`]
+    /// reads.
+    ///
+    /// `set_var` is process-wide. Under `cargo nextest` each test owns its
+    /// process, but the coverage job runs plain `cargo test`, where the whole
+    /// binary is one process and tests are threads — so the value one test
+    /// installs under a real key like `ROLTER_DB_MAX_CONNECTIONS` is visible to
+    /// any sibling reading it at the same moment (#1418). Poison is ignored:
+    /// a test that panicked holding this must not brick every later one.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn bundled_example_config_matches_workspace_root() {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rolter.example.toml");
@@ -384,6 +400,9 @@ mod tests {
 
     #[test]
     fn the_open_mode_acknowledgement_reaches_the_control_plane() {
+        // control_args reads the pool keys out of the environment, so this must
+        // not run beside the test that installs one of them
+        let _guard = env_lock();
         // easy-up builds control args by hand, so a flag that is parsed but not
         // forwarded would silently refuse to start on --host 0.0.0.0
         let mut args = EasyUpArgs {
@@ -413,6 +432,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn env_or_falls_back_on_absent_and_unparsable_values() {
+        let _guard = env_lock();
         // keys unique to this test so nothing else in the binary can race it
         let absent = "ROLTER_TEST_EASY_UP_ABSENT";
         let bad = "ROLTER_TEST_EASY_UP_BAD";
@@ -433,6 +453,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn control_args_reads_the_pool_settings_from_the_environment() {
+        let _guard = env_lock();
         // `easy-up` hand-builds Args, so clap's `env =` never runs for them and
         // an unwired field is silently ignored rather than failing to compile
         // once a default exists. this is the #805 failure mode, for #1052.

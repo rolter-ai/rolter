@@ -141,7 +141,7 @@ async fn create_invitation(
     .await;
 
     Ok(Json(CreatedInvitation {
-        accept_url: accept_url(&token),
+        accept_url: accept_url(crate::sso::public_base_url(&state), &token),
         invitation,
         token,
     }))
@@ -386,8 +386,8 @@ fn generate_invite_token() -> (String, String) {
     (token, hash)
 }
 
-fn accept_url(token: &str) -> String {
-    format!("{}/invite/{token}", crate::sso::public_base_url())
+fn accept_url(base: &str, token: &str) -> String {
+    format!("{base}/invite/{token}")
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -413,11 +413,11 @@ mod tests {
 
     #[test]
     fn the_accept_url_is_built_from_configuration_not_a_request() {
-        std::env::set_var("ROLTER_PUBLIC_URL", "https://rolter.example");
+        // the base is the deployment's own public url, injected rather than
+        // taken from the request that asked for the invitation
         assert_eq!(
-            accept_url("rolter_invite_abc"),
+            accept_url("https://rolter.example", "rolter_invite_abc"),
             "https://rolter.example/invite/rolter_invite_abc"
         );
-        std::env::remove_var("ROLTER_PUBLIC_URL");
     }
 }

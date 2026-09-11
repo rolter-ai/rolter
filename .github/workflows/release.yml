@@ -75,17 +75,34 @@ jobs:
           # verdict; only a real non-success, or the timeout, is fatal.
           deadline=$(( $(date -u +%s) + 45 * 60 ))
           while :; do
-            runs="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
-              -q '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"')"
+            # "<timestamp>\t<name>\t<status>\t<conclusion>" per check-run. the
+            # timestamp is completed_at, falling back to started_at while a run
+            # has not finished, so an in-flight re-run still sorts above the
+            # attempt it replaces
+            all="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
+              -q '.check_runs[]
+                  | [(.completed_at // .started_at // ""), .name, .status, (.conclusion // "")]
+                  | @tsv')"
+            # a sha can carry several check-runs under one name — a re-run, or
+            # the duplicate `ci-ok` of #1328 — and `grep -F -m1` used to take
+            # whichever the api listed first, so the gate could be decided by a
+            # stale verdict. group by name, newest first, and keep one row per
+            # name. sort and awk both drain their input, so nothing here closes
+            # a pipe early the way `| head -1` does (#1306)
+            runs="$(printf '%s\n' "$all" \
+              | LC_ALL=C sort -t$'\t' -k2,2 -k1,1r \
+              | awk -F'\t' 'NF && !seen[$2]++')"
             fail=0; pending=""
             for name in "${names[@]}"; do
               name="$(echo "$name" | sed 's/^ *//;s/ *$//')"
               [ -z "$name" ] && continue
-              line="$(echo "$runs" | grep -F -m1 "$(printf '%s\t' "$name")" || true)"
+              # exact match on the name field; a substring grep would let
+              # "ci-ok" be answered by a check called "extra ci-ok"
+              line="$(awk -F'\t' -v want="$name" '$2 == want { print; exit }' <<< "$runs")"
               if [ -z "$line" ]; then
                 pending="$pending $name(absent)"; continue
               fi
-              status="$(echo "$line" | cut -f2)"; conclusion="$(echo "$line" | cut -f3)"
+              status="$(echo "$line" | cut -f3)"; conclusion="$(echo "$line" | cut -f4)"
               if [ "$status" != "completed" ]; then
                 pending="$pending $name($status)"; continue
               fi
@@ -93,10 +110,10 @@ jobs:
                 echo "::error::required check '$name' concluded '$conclusion' for $SHA (need success)"; fail=1
               fi
             done
-            [ "$fail" -ne 0 ] && { echo "check-runs for $SHA:"; echo "$runs"; exit 1; }
+            [ "$fail" -ne 0 ] && { echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"; exit 1; }
             [ -z "$pending" ] && break
             if [ "$(date -u +%s)" -ge "$deadline" ]; then
-              echo "check-runs for $SHA:"; echo "$runs"
+              echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
               echo "::error::still waiting on:$pending after 45m (fail-closed). if a scanner was renamed or reconfigured, update the RELEASE_REQUIRED_CHECKS repo variable to match the check-run names listed above"
               exit 1
             fi
@@ -104,7 +121,7 @@ jobs:
             sleep 30
           done
 
-          echo "check-runs for $SHA:"; echo "$runs"
+          echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
           echo "all required checks succeeded for $SHA"
 
   # ── build maturin wheels ────────────────────────────────────────────────────

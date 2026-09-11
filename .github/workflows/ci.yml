@@ -23,8 +23,18 @@ on:
 # commit, and cancelling an in-flight gate makes that assumption false — the
 # result is `ci-ok` green with no quality signal at all (#767). Giving `edited`
 # its own per-run group means it cancels nothing.
+#
+# a push to master gets a per-run group for the same reason. every merge commit
+# is a distinct tree that someone will branch from, so superseding its run saves
+# a few runner-minutes and costs the only gate result that commit will ever
+# have: `7fd73db6` was cancelled by `c6a96378` landing a minute later, and
+# master ended up with no completed `ci` run for it (#1328). `cancel-in-progress:
+# false` would not fix this — it queues the newer run instead, and a third push
+# cancels the *pending* one, so the middle commit is still ungated. a per-run
+# group is what actually keeps every merge commit's run. the cost is more
+# concurrent runs on a busy merge day.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && github.run_id || 'gate' }}
+  group: ci-${{ github.ref }}-${{ (github.event.action == 'edited' || github.event_name == 'push') && github.run_id || 'gate' }}
   cancel-in-progress: true
 
 # least-privilege GITHUB_TOKEN by default; jobs widen their own scope as needed.
@@ -41,7 +51,8 @@ jobs:
     # a title-only edit reruns pr-title/ci-ok only; the heavy gate already ran
     # (or is still running — see the concurrency group above, which keeps an
     # `edited` run from cancelling it) and never needs re-running for a
-    # metadata change
+    # metadata change. `ci-ok` verifies that claim against the api before it
+    # accepts this skip, so "still running" means red rather than green
     if: github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
 
@@ -133,13 +144,81 @@ jobs:
   # required status check on master; it turns green only when the quality
   # workflow, pr-title and codeql all succeed (a skipped pr-title is fine on a
   # push build and on the `workflow_dispatch` run that gates the release PR). adding/removing jobs then never requires touching branch protection
-  # settings. see ROL-124.
+  # settings. see ROL-124. the rules this job enforces, and why the `edited`
+  # fast-path exists at all, are written up in
+  # `docs/development/ci-gating.md`.
   ci-ok:
     name: ci-ok
     if: always()
     needs: [quality, pr-title, codeql]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # listing this workflow's other runs on the same head sha is the whole
+      # mechanism behind the `edited` guard below
+      actions: read
     steps:
+      # the `edited` fast-path below accepts a skipped `quality`/`codeql` because
+      # the gate is assumed to have already run on this commit. that assumption
+      # is unverified, and when it is false the fast-path writes a *newer*,
+      # successful `ci-ok` check-run on the same head sha — branch protection
+      # reads the newest one, so a retitle during an in-flight gate run made the
+      # commit mergeable before a single test had run (#1328, seen on #1315 and
+      # #1267). this step turns the assumption into a check: the fast-path may
+      # only report green when a real gate run for this exact sha has already
+      # completed successfully and nothing else is still running on it.
+      - name: assert the gate already ran for this commit
+        if: github.event.action == 'edited'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # `github.sha` on a pull_request run is the throwaway merge commit; the
+          # runs and check-runs that branch protection reads hang off the PR head
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SELF_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          runs="${RUNNER_TEMP}/ci-runs.json"
+          # scoped to ci.yml by filename: a run of any other workflow on this sha
+          # says nothing about this gate. no pipeline here on purpose — under
+          # `pipefail` a `| head`/`| grep -q` short-circuit fails the step for the
+          # wrong reason (#1291, #1306), so the body goes to a file and jq reads it
+          attempt=1
+          while true; do
+            if gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&per_page=100&exclude_pull_requests=true" > "${runs}"; then
+              break
+            fi
+            if [ "${attempt}" -ge 3 ]; then
+              # a flaking query must never resolve to green: no answer is not an answer
+              echo "::error::could not list ci runs for ${HEAD_SHA} after ${attempt} attempts; refusing to report green without a gate result"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 5
+          done
+
+          echo "ci runs on ${HEAD_SHA}:"
+          jq -r '.workflow_runs[] | "  \(.id) \(.event) \(.status) \(.conclusion // "-")"' "${runs}"
+
+          # this listing contains the current run too — drop it by id, never by
+          # name, since every run of this workflow shares the name
+          unfinished="$(jq --arg self "${SELF_RUN_ID}" \
+            '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status != "completed")] | length' "${runs}")"
+          # a cancelled run is `completed` with no verdict, so it counts as no run
+          # at all rather than as a pass — same treatment as a missing run
+          passed="$(jq --arg self "${SELF_RUN_ID}" \
+            '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status == "completed" and .conclusion == "success")] | length' "${runs}")"
+
+          if [ "${unfinished}" -gt 0 ]; then
+            echo "::error::${unfinished} ci run(s) on ${HEAD_SHA} are still queued or in progress; the title-edit fast path will not report green over an unfinished gate. that run writes its own ci-ok when it completes"
+            exit 1
+          fi
+          if [ "${passed}" -eq 0 ]; then
+            echo "::error::no completed, successful ci run on ${HEAD_SHA} (a cancelled run counts as none); re-run the gate instead of editing the title to go green"
+            exit 1
+          fi
+          echo "gate already passed for ${HEAD_SHA} in ${passed} completed run(s)"
+
       - name: assert required jobs succeeded
         run: |
           set -euo pipefail
@@ -150,8 +229,9 @@ jobs:
           # quality and codeql must succeed; pr-title may be skipped (push and
           # workflow_dispatch builds)
           # but must not have failed. on a title-only `edited` event the heavy
-          # gate and codeql are intentionally skipped (they already ran on this
-          # commit), so skipped is acceptable there and only pr-title re-runs
+          # gate and codeql are intentionally skipped — the step above has
+          # already proven they ran and passed on this exact head sha, so
+          # skipped is acceptable here and only pr-title re-runs
           if [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
             if [ "${{ needs.quality.result }}" != "success" ] \
                && [ "${{ needs.quality.result }}" != "skipped" ]; then

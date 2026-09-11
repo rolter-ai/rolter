@@ -554,6 +554,24 @@ pub struct McpServer {
     pub connect_timeout_ms: Option<i32>,
     pub request_timeout_ms: Option<i32>,
     pub max_retries: Option<i32>,
+    /// the authorization server's issuer identifier as an operator pinned it,
+    /// for a server whose authorization server publishes no metadata (#1347).
+    /// RFC 9207 validation has nothing to compare against without one
+    pub oauth_issuer: Option<String>,
+    /// `auto` (try RFC 9728 discovery, fall back to the columns above) or
+    /// `manual` (use the columns above and never probe)
+    pub oauth_discovery: String,
+    /// what the last successful discovery resolved. a cache: the interactive
+    /// authorize refreshes it, and the refresher and token exchange read it so
+    /// they never have to probe an upstream of their own accord
+    pub oauth_discovered_issuer: Option<String>,
+    pub oauth_discovered_authorize_url: Option<String>,
+    pub oauth_discovered_token_url: Option<String>,
+    /// whether that metadata carried
+    /// `authorization_response_iss_parameter_supported: true`, which is the
+    /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
+    pub oauth_discovered_iss_supported: bool,
+    pub oauth_discovered_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE
@@ -568,6 +586,17 @@ pub struct McpLoginState {
     pub scopes: Vec<String>,
     pub redirect_uri: String,
     pub created_at: DateTime<Utc>,
+    /// the issuer of the authorization server this request was sent to, as
+    /// RFC 9207 §2.4 requires it be recorded before the browser leaves (#1347)
+    pub expected_issuer: Option<String>,
+    /// whether that authorization server advertises the `iss` parameter
+    pub iss_supported: bool,
+    /// the RFC 8707 canonical resource identifier the authorization request
+    /// carried; the token request must carry the same one
+    pub resource: Option<String>,
+    /// the token endpoint of the authorization server whose issuer was
+    /// recorded, so the code goes back to the server that issued it
+    pub token_url: Option<String>,
 }
 
 /// a governed, named bundle of MCP tool references
