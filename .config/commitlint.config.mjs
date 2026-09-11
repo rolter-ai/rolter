@@ -35,6 +35,7 @@ export default {
         "infra",
         "ci",
         "deps",
+        "deps-dev",
         "release",
         "e2e",
       ],
