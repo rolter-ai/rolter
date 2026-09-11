@@ -257,12 +257,21 @@ whatever the caller sent. A sealed secret nothing can use is one `rolter kek
 verify` would audit forever, and it is a credential still sitting in a backup
 for no reason.
 
+All of the above is storage only. `repo::mcp::credential()` has no caller,
+`McpServerConfig` carries no auth fields, so nothing crosses `/internal/snapshot`,
+and `mcp_proxy` still refuses a request with no live OAuth session
+(`mcp_session_unauthorized`) whatever `auth_kind` says. Spending a stored
+credential on the proxy path is the remainder of #952.
+
 ### Per-server transport overrides
 
 `connect_timeout_ms`, `request_timeout_ms` and `max_retries` are nullable on
-`mcp_servers` and fall back to the org's `mcp_gateway_settings`. Null means
-inherit rather than a copy taken at creation, so raising the org default still
-moves every server that never asked to differ.
+`mcp_servers` and are meant to fall back to the org's `mcp_gateway_settings`.
+Null means inherit rather than a copy taken at creation, so raising the org
+default will still move every server that never asked to differ. That
+resolution is not performed yet: neither the row nor `mcp_gateway_settings`
+reaches the data plane, and the proxy dials on the gateway's deployment-level
+transport timeouts.
 
 On the wire the `PATCH` distinguishes absent from null — leave the override
 versus drop it — which an `Option` alone cannot express. serde collapses both to
