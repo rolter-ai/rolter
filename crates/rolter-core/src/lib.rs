@@ -30,12 +30,12 @@ pub use config::{
     BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CacheConfig,
     ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy, FeatureFlagsConfig,
     GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig, LoggingConfig,
-    McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig, ModelLimits,
-    ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode, ParamPolicy,
-    PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig,
-    RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache,
-    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig, TlsConfig,
-    UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
+    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig,
+    ModelLimits, ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode,
+    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
+    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
+    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig,
+    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
     MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
 };
 pub use config_lint::{unknown_keys, UnknownKey};
