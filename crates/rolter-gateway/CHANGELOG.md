@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/v0.1.0...v0.1.1) - 2026-09-11
+
+### Bug Fixes
+- *(control)* break invocation-list ties so burst rows page stably ([#1391](https://github.com/rolter-ai/rolter/pull/1391)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* stamp request logs with the request time, not the batch flush time ([#1223](https://github.com/rolter-ai/rolter/pull/1223)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* give the fleet one place to decide where request logs go [#929] ([#1174](https://github.com/rolter-ai/rolter/pull/1174)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* distinguish virtual keys, provider keys and admin tokens [#943] ([#1163](https://github.com/rolter-ai/rolter/pull/1163)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(core)* warn about unrecognised rolter.toml keys at startup ([#1438](https://github.com/rolter-ai/rolter/pull/1438)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* require a name and an expiry when minting a virtual key [#945] ([#1172](https://github.com/rolter-ai/rolter/pull/1172)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* carry the security policy to the gateway and enforce it [#1162] ([#1165](https://github.com/rolter-ai/rolter/pull/1165)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* finish the GenAI attribute set — response.id and embeddings ([#1155](https://github.com/rolter-ai/rolter/pull/1155)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(gateway)* eliminate intermediate Vec allocation in encoding_formats ([#1302](https://github.com/rolter-ai/rolter/pull/1302)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* compute money in exact decimal instead of f64 ([#1450](https://github.com/rolter-ai/rolter/pull/1450)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* share the scope and budget stages between proxy paths [#1041] ([#1322](https://github.com/rolter-ai/rolter/pull/1322)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(gateway)* count allocations on the admission hot path [#1054] ([#1321](https://github.com/rolter-ai/rolter/pull/1321)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/v0.0.10...v0.0.11) - 2026-08-13
 
 ### Bug Fixes

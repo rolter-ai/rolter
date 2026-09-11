@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-proxy-v0.1.0...rolter-proxy-v0.1.1) - 2026-09-11
+
+### Bug Fixes
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(proxy)* replace eager unwrap_or allocations with lazy unwrap_or_else ([#1448](https://github.com/rolter-ai/rolter/pull/1448)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-proxy-v0.0.10...rolter-proxy-v0.0.11) - 2026-08-13
 
 ### Bug Fixes

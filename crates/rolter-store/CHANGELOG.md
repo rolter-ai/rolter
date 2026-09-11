@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.1.0...rolter-store-v0.1.1) - 2026-09-11
+
+### Bug Fixes
+- *(control)* clear stale mcp oauth discovery cache on url change ([#1431](https://github.com/rolter-ai/rolter/pull/1431)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* bring the mcp oauth client up to the current spec ([#1419](https://github.com/rolter-ai/rolter/pull/1419)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* static credentials and per-server transport settings for mcp [#952] ([#1349](https://github.com/rolter-ai/rolter/pull/1349)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* label primitive for providers, routes, groups and models [#985] ([#1330](https://github.com/rolter-ai/rolter/pull/1330)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* totp second factor for local accounts [#1078] ([#1324](https://github.com/rolter-ai/rolter/pull/1324)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* update an SSO provider in place instead of delete-and-recreate [#1233] ([#1299](https://github.com/rolter-ai/rolter/pull/1299)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* say whether an SSO provider has a client secret stored ([#1278](https://github.com/rolter-ai/rolter/pull/1278)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* verify and rotate the KEK against the control-plane store [#923] ([#1175](https://github.com/rolter-ai/rolter/pull/1175)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* require a name and an expiry when minting a virtual key [#945] ([#1172](https://github.com/rolter-ai/rolter/pull/1172)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* carry the security policy to the gateway and enforce it [#1162] ([#1165](https://github.com/rolter-ai/rolter/pull/1165)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* compute money in exact decimal instead of f64 ([#1450](https://github.com/rolter-ai/rolter/pull/1450)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract the guardrail repo into its own module [#1042] ([#1320](https://github.com/rolter-ai/rolter/pull/1320)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract mcp repo into its own module [#1042] ([#1303](https://github.com/rolter-ai/rolter/pull/1303)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(control)* drop the per-test schema when an integration test finishes ([#1428](https://github.com/rolter-ai/rolter/pull/1428)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.0.10...rolter-store-v0.0.11) - 2026-08-13
 
 ### Bug Fixes
