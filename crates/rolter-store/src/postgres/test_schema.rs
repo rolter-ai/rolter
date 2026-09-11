@@ -9,7 +9,8 @@
 //! degraded and the whole suite failed in a way that reads like a code
 //! regression (#1364).
 //!
-//! [`TestSchema`] fixes that at the source: it drops the schema in `Drop`, so
+//! [`TestSchema`](crate::postgres::test_schema::TestSchema) fixes that at the
+//! source: it drops the schema in `Drop`, so
 //! cleanup also happens when a test panics. A hard-killed process — SIGKILL,
 //! or a `cargo nextest` timeout — never runs `Drop`, and neither did any run
 //! predating this module, so the first call in a process also sweeps schemas
