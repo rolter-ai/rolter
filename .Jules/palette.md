@@ -20,3 +20,7 @@
 ## 2024-05-18 - [ModelSheet Buttons]
 **Learning:** Icon-only remove buttons for dynamically added rows (like custom params/headers) frequently miss keyboard focus indicators (`focus-visible`) and can have inconsistent hover styles if copied from older patterns.
 **Action:** Always ensure `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring` is applied to interactive list-row action buttons to support keyboard navigation.
+
+## 2026-09-09 - [Added missing loading states in Playground]
+**Learning:** Users lack visibility during async playground actions if only the disabled state is used without a loading spinner.
+**Action:** When creating async buttons in complex forms like the playground, always pair the `disabled={busy}` property with a `<Loader2 className="animate-spin" />` state to provide clear visual feedback.
