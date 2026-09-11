@@ -7325,7 +7325,8 @@ async fn config_version(pool: &sqlx::PgPool) -> i64 {
 #[tokio::test]
 async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
