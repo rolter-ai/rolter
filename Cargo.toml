@@ -36,7 +36,19 @@ hyper = "1"
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# exact decimal arithmetic for money (#967). the postgres columns are already
+# `numeric`; this stops the exactness being discarded the moment a price is read
+rust_decimal = { version = "1", features = [
+  "serde",
+  "serde-with-float",
+  "maths",
+  "std",
+], default-features = false }
 toml = "1.1"
+# reports the keys a deserialize silently dropped. rolter's config types must
+# keep ignoring unknown keys at runtime (forward compatibility), so `rolter
+# check` needs a way to see what was ignored without changing that behaviour
+serde_ignored = "0.1"
 # linear-time (RE2-style) regex engine for built-in guardrails; no catastrophic
 # backtracking, with compile/size limits to bound regex-DoS risk
 regex = "1"

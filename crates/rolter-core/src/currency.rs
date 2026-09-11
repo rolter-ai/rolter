@@ -7,7 +7,57 @@
 
 use std::collections::HashMap;
 
+use rust_decimal::Decimal;
+
 use serde::{Deserialize, Serialize};
+
+/// Serde for the rate table: [`Decimal`] in memory, JSON/TOML numbers on the
+/// wire.
+///
+/// `rust_decimal` ships `serde::float` for a bare field but nothing for a map
+/// value, so the two conversions live here. Keeping the wire as numbers is
+/// deliberate and is explained on [`crate::ModelPriceConfig`] — a snapshot is
+/// exchanged between a control plane and a gateway that may be different
+/// builds, and this is not the release to change that shape in.
+mod rates_as_floats {
+    use std::collections::HashMap;
+
+    use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+    use rust_decimal::Decimal;
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        rates: &HashMap<String, Decimal>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        rates
+            .iter()
+            .map(|(code, rate)| (code, rate.to_f64().unwrap_or(f64::NAN)))
+            .collect::<HashMap<_, _>>()
+            .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<String, Decimal>, D::Error> {
+        HashMap::<String, f64>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(code, rate)| {
+                // a rate that is not a finite number is a misconfiguration, and
+                // silently dropping it would convert at the wrong number rather
+                // than refuse to convert at all
+                Decimal::from_f64(rate)
+                    .map(|rate| (code.clone(), rate))
+                    .ok_or_else(|| {
+                        D::Error::custom(format!(
+                            "currency rate for '{code}' is not a finite number"
+                        ))
+                    })
+            })
+            .collect()
+    }
+}
 
 /// The settlement currency spend accumulates in when none is configured.
 pub const DEFAULT_BASE_CURRENCY: &str = "USD";
@@ -31,7 +81,7 @@ pub fn normalize_code(code: &str) -> String {
 /// so the caller can fail closed instead of silently charging the wrong number.
 pub trait CurrencyConverter: Send + Sync {
     /// Amount expressed in `to`, or `None` when the pair is not convertible.
-    fn convert(&self, amount: f64, from: &str, to: &str) -> Option<f64>;
+    fn convert(&self, amount: Decimal, from: &str, to: &str) -> Option<Decimal>;
 }
 
 /// Operator-configured currency settings: the base everything settles in, plus
@@ -46,9 +96,12 @@ pub struct CurrencyConfig {
     pub base: String,
     /// how many units of `base` one unit of the keyed currency is worth
     /// (`EUR = 1.09` means one euro costs 1.09 base units when base is USD).
-    /// The base itself is implicitly 1.0 and need not be listed
-    #[serde(default)]
-    pub rates: HashMap<String, f64>,
+    /// The base itself is implicitly 1.0 and need not be listed.
+    ///
+    /// Decimal rather than `f64` so a conversion is exact (#967); kept as JSON
+    /// numbers on the wire for the reason [`crate::ModelPriceConfig`] gives.
+    #[serde(default, with = "rates_as_floats")]
+    pub rates: HashMap<String, Decimal>,
 }
 
 impl Default for CurrencyConfig {
@@ -68,10 +121,10 @@ impl CurrencyConfig {
 
     /// Rate for `code` in units of base, or `None` when the table has no entry.
     /// The base currency is always 1.0 without needing a row.
-    pub fn rate(&self, code: &str) -> Option<f64> {
+    pub fn rate(&self, code: &str) -> Option<Decimal> {
         let code = normalize_code(code);
         if code == self.base_code() {
-            return Some(1.0);
+            return Some(Decimal::ONE);
         }
         self.rates
             .iter()
@@ -114,9 +167,12 @@ impl CurrencyConfig {
             if code.trim().is_empty() {
                 problems.push("currency.rates has an empty currency code".to_string());
             }
-            if !rate.is_finite() || *rate <= 0.0 {
+            // a Decimal is finite by construction, so the non-finite half of
+            // this check is now enforced at deserialization (where a NaN or an
+            // infinity is refused) rather than here
+            if *rate <= Decimal::ZERO {
                 problems.push(format!(
-                    "currency.rates['{code}'] must be a positive, finite rate (got {rate})"
+                    "currency.rates['{code}'] must be a positive rate (got {rate})"
                 ));
             }
         }
@@ -142,7 +198,7 @@ impl StaticRates {
 }
 
 impl CurrencyConverter for StaticRates {
-    fn convert(&self, amount: f64, from: &str, to: &str) -> Option<f64> {
+    fn convert(&self, amount: Decimal, from: &str, to: &str) -> Option<Decimal> {
         let (from, to) = (normalize_code(from), normalize_code(to));
         if from == to {
             return Some(amount);
@@ -151,7 +207,7 @@ impl CurrencyConverter for StaticRates {
         // the N*N pairs without listing them
         let from_rate = self.config.rate(&from)?;
         let to_rate = self.config.rate(&to)?;
-        if to_rate == 0.0 {
+        if to_rate.is_zero() {
             return None;
         }
         Some(amount * from_rate / to_rate)
@@ -162,14 +218,22 @@ impl CurrencyConverter for StaticRates {
 mod tests {
     use super::*;
 
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
+
     fn rates() -> StaticRates {
         StaticRates::new(CurrencyConfig {
             base: "USD".to_string(),
             rates: HashMap::from([
-                ("EUR".to_string(), 1.10),
-                ("GBP".to_string(), 1.25),
+                ("EUR".to_string(), d("1.10")),
+                ("GBP".to_string(), d("1.25")),
                 // an open code set: no enum lists this, only the table does
-                ("BTC".to_string(), 60_000.0),
+                ("BTC".to_string(), d("60000.0")),
             ]),
         })
     }
@@ -187,34 +251,38 @@ mod tests {
     #[test]
     fn converts_into_and_out_of_the_base() {
         let fx = rates();
-        assert_eq!(fx.convert(10.0, "EUR", "USD"), Some(11.0));
-        assert_eq!(fx.convert(11.0, "USD", "EUR"), Some(10.0));
-        assert_eq!(fx.convert(1.0, "USD", "USD"), Some(1.0));
+        assert_eq!(fx.convert(d("10"), "EUR", "USD"), Some(d("11.00")));
+        assert_eq!(fx.convert(d("11"), "USD", "EUR"), Some(d("10")));
+        assert_eq!(fx.convert(d("1"), "USD", "USD"), Some(d("1")));
     }
 
     #[test]
     fn converts_between_two_non_base_currencies() {
-        let converted = rates().convert(100.0, "GBP", "EUR").unwrap();
-        assert!((converted - 125.0 / 1.10).abs() < 1e-9, "{converted}");
+        // 125/1.1 does not terminate, so this is the one place the result is
+        // rounded rather than exact. Decimal rounds at 28 significant digits
+        // instead of 15-16, and — unlike `f64` — it rounds the *decimal*
+        // expansion, so the value reads as the number a person would write
+        let converted = rates().convert(d("100"), "GBP", "EUR").unwrap();
+        assert_eq!(converted, d("113.63636363636363636363636364"));
     }
 
     #[test]
     fn a_new_code_needs_only_a_table_entry() {
         // the acceptance criterion from #650: no code change, no enum edit
         let fx = rates();
-        assert_eq!(fx.convert(2.0, "BTC", "USD"), Some(120_000.0));
+        assert_eq!(fx.convert(d("2"), "BTC", "USD"), Some(d("120000.0")));
     }
 
     #[test]
     fn codes_are_case_and_whitespace_insensitive() {
-        assert_eq!(rates().convert(10.0, " eur ", "usd"), Some(11.0));
+        assert_eq!(rates().convert(d("10"), " eur ", "usd"), Some(d("11.00")));
     }
 
     #[test]
     fn an_unknown_pair_is_none_rather_than_a_guess() {
         // the whole point: the caller must be able to fail closed
-        assert_eq!(rates().convert(10.0, "XYZ", "USD"), None);
-        assert_eq!(rates().convert(10.0, "USD", "XYZ"), None);
+        assert_eq!(rates().convert(d("10"), "XYZ", "USD"), None);
+        assert_eq!(rates().convert(d("10"), "USD", "XYZ"), None);
     }
 
     #[test]
@@ -242,7 +310,7 @@ mod tests {
         // #965: adding a currency must cost a rate-table entry and nothing else
         let mut config = CurrencyConfig::default();
         assert_eq!(config.codes(), ["USD"]);
-        config.rates.insert("RUB".to_string(), 0.011);
+        config.rates.insert("RUB".to_string(), d("0.011"));
         assert_eq!(config.codes(), ["USD", "RUB"]);
     }
 
@@ -252,10 +320,10 @@ mod tests {
             base: " usd ".to_string(),
             rates: HashMap::from([
                 // the base needs no row, but listing it must not double it up
-                ("usd".to_string(), 1.0),
-                (" rub ".to_string(), 0.011),
+                ("usd".to_string(), d("1.0")),
+                (" rub ".to_string(), d("0.011")),
                 // an empty code is a config defect, not a currency to offer
-                ("".to_string(), 2.0),
+                ("".to_string(), d("2.0")),
             ]),
         };
         assert_eq!(config.codes(), ["USD", "RUB"]);
@@ -265,7 +333,7 @@ mod tests {
     fn a_non_base_currency_is_offered_only_once_it_has_a_rate() {
         let mut config = CurrencyConfig::default();
         assert!(!config.codes().contains(&"EUR".to_string()));
-        config.rates.insert("EUR".to_string(), 1.09);
+        config.rates.insert("EUR".to_string(), d("1.09"));
         assert!(config.codes().contains(&"EUR".to_string()));
     }
 
@@ -273,13 +341,13 @@ mod tests {
     fn problems_reject_an_unusable_table() {
         let bad = CurrencyConfig {
             base: "USD".to_string(),
-            rates: HashMap::from([("EUR".to_string(), 0.0)]),
+            rates: HashMap::from([("EUR".to_string(), d("0.0"))]),
         };
         assert_eq!(bad.problems().len(), 1, "{:?}", bad.problems());
 
         let negative = CurrencyConfig {
             base: "USD".to_string(),
-            rates: HashMap::from([("EUR".to_string(), -1.0)]),
+            rates: HashMap::from([("EUR".to_string(), d("-1.0"))]),
         };
         assert_eq!(negative.problems().len(), 1);
 

@@ -83,8 +83,8 @@ impression.
 | Subsystem | Dashboard | Why it is experimental |
 |---|---|---|
 | `labels` | *(no screen; chips on Providers, Provider Groups and Routing Rules)* | Display and filter only. A route cannot select its targets by label, and making labels selectable turns them into configuration the data plane consumes — a change in what a label *is*. Stated in [Labels](../architecture/labels.md#display-and-filter-only-for-now). |
-| `mcp_settings` | MCP → MCP Settings | The screen stores organization defaults for transport, timeout intent, retries, failure policy and undeclared tools; the HTTP proxy still uses deployment-level transport timeouts and does not read them. |
-| `mcp_tool_groups` | MCP → Tool Groups | Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary. Access is still decided by virtual-key owner, server, live OAuth session and required scopes. Stated in [MCP OAuth](../architecture/mcp-oauth.md). |
+| `mcp_settings` | MCP → MCP Settings | The screen stores organization defaults for transport, timeout intent, retries, failure policy and undeclared tools, and the HTTP proxy does not read them. Since [#952](https://github.com/rolter-ai/rolter/issues/952) it does read a *per-server* override; a server without one falls back to the deployment-level transport timeouts rather than to these org defaults. |
+| `mcp_tool_groups` | MCP → Tool Groups | Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary. Access is still decided by virtual-key owner, server, the server's configured credential — a static one, or a live OAuth session and its required scopes — and nothing about which tools a group names. Stated in [MCP OAuth](../architecture/mcp-oauth.md). |
 | `plugins` | Plugins | The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it. `PluginRequest` in [`plugin_dispatch.rs`](../../crates/rolter-core/src/plugin_dispatch.rs) is the shape in question. |
 | `realtime` | *(no screen; reachable from the Playground)* | The `/v1/realtime` websocket relay sits outside every request-path subsystem. A session is admitted against process-local caps only and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution, so spend through a realtime session is neither capped nor recorded. |
 | `skills_repository` | Skills Repository | A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled. Nothing outside the dashboard depends on the current shape yet. |
@@ -156,12 +156,14 @@ SDK author sees it too.
 
 ## Relationship to the 1.0.0 guarantees (#922)
 
-#922 decides what each *stable* surface guarantees at 1.0 — the `/v1/*` gateway
-surface, the `/api/v1/*` control API, the config keys and environment variables,
-and the database schema. This page does not write that table and does not
-pre-empt it.
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) decides
+what each *stable* surface guarantees at 1.0 — the `/v1/*` gateway surface, the
+`/api/v1/*` control API, the config keys and environment variables, the database
+schema and the Rust crates. This page does not restate it. It is named there as
+**the** exemption route: a subsystem carrying the `experimental` marker is
+outside every promise the ADR makes, and no second mechanism exists beside it.
 
-What it does is make the table writable. A 1.0 that promises compatibility
+What this page does is make that table writable. A 1.0 that promises compatibility
 across the whole surface either over-promises or is held hostage to the
 least-finished corner of the product; naming the exemptions is the honest,
 cheap third option. Each row above is one line #922 does not have to argue

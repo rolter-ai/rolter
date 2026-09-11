@@ -74,8 +74,12 @@ gh api -X PATCH repos/rolter-ai/rolter/branches/master/protection/required_statu
 
 Until then, the working rule is the cheap half of the same discipline: **watch
 the `master` push run after your PR merges.** It is the run that sees the tree
-everyone else will branch from. Related: #1158 tracks whether `enforce_admins`
-belongs on `master` now that release PRs can go green on their own.
+everyone else will branch from. That run is now guaranteed to exist for every
+merge commit — see [the `ci-ok` gate and the title-edit fast
+path](ci-gating.md), which also covers why a PR title edit cannot report green
+over a gate run that has not finished. Related: #1158 tracks whether
+`enforce_admins` belongs on `master` now that release PRs can go green on their
+own.
 
 ## When you add a field to a widely-constructed type
 

@@ -69,7 +69,7 @@ Two properties are worth stating plainly:
 - `GET`/`PUT /api/v1/orgs/{org_id}/mcp/settings` — organization transport and request defaults. The current HTTP proxy still uses deployment-level transport timeouts, which is why `mcp_settings` carries the `experimental` [stability marker](../development/stability-markers.md).
 - `GET /api/v1/orgs/{org_id}/mcp/grants`, `DELETE /api/v1/mcp/grants/{id}`
 - `GET /api/v1/orgs/{org_id}/mcp/sessions`, `DELETE /api/v1/mcp/sessions/{id}`
-- `GET`/`PUT /api/v1/mcp-servers/{id}/oauth-client` — the OAuth client rolter presents to the server's authorization server. Admin-only in both directions: the row names a third party the tenant has chosen to trust. The client secret is sealed with the deployment KEK on write and never read back; `PUT` with an empty secret downgrades a confidential client to a public one.
+- `GET`/`PUT /api/v1/mcp-servers/{id}/oauth-client` — the OAuth client rolter presents to the server's authorization server. Admin-only in both directions: the row names a third party the tenant has chosen to trust. Only `client_id` is required: `authorize_url` and `token_url` are the fallback for a server that publishes no metadata and must be sent together or not at all, `issuer` pins the authorization server's issuer identifier for RFC 9207 validation, and `discovery` is `auto` (the default) or `manual`. The client secret is sealed with the deployment KEK on write and never read back; `PUT` with an empty secret downgrades a confidential client to a public one. The response also reports the RFC 8707 `resource` every request for this server will carry, and what the last discovery resolved.
 - `POST /api/v1/mcp-servers/{id}/oauth/authorize` — begin consent. Returns the authorization URL rather than a `302`, because the caller is the dashboard over `fetch` and cannot usefully follow a cross-origin redirect.
 - `GET /auth/mcp/callback` — where the browser returns. Authenticated by the one-shot login state, not by a session bearer token.
 - `POST /api/v1/mcp/sessions/{id}/refresh` — renew a session from its stored refresh token.
@@ -77,6 +77,146 @@ Two properties are worth stating plainly:
 - `GET`/`POST`/`DELETE /mcp/{server_slug}/{path...}` — Streamable HTTP/SSE proxy on the gateway, authorized by virtual-key owner, server and required scopes
 
 Revoking a grant revokes every session under it **in the same transaction**, so consent and tokens can never disagree. Server creation/deletion and both revocations are written to `audit_log`.
+
+## Which specification revision this targets
+
+The flow implements the MCP authorization specification revision **`draft`**, as
+published at `modelcontextprotocol.io/specification/draft/basic/authorization`
+and read on **2026-09-08** (#1347). That date is the thing to check first when
+the next drift is suspected: the specification moves, and #707 shipped a client
+that was correct against the revision of its day and had gone three MUSTs stale
+by the time #1347 was filed.
+
+Three client-side requirements are load-bearing, and all three fail closed — a
+check that does not pass ends the flow rather than logging and continuing.
+
+### RFC 9728 — discovery of the authorization server
+
+An MCP server publishes protected resource metadata naming its authorization
+servers, and a client is required to use it rather than to be told where to go.
+`crates/rolter-control/src/mcp_oauth_discovery.rs` walks the specification's
+order:
+
+1. an unauthenticated `GET` of the server URL, reading `resource_metadata` out
+   of the `WWW-Authenticate` challenge on a `401`;
+2. `/.well-known/oauth-protected-resource` with the server's path inserted
+   **after** the suffix (`https://h/.well-known/oauth-protected-resource/mcp`,
+   not `https://h/mcp/.well-known/…` — RFC 9728 §3.1 puts it the unusual way
+   round);
+3. the same document at the root.
+
+The document must declare the resource it was fetched for (RFC 9728 §3.3), or a
+server could hand rolter somebody else's authorization server. Each listed
+authorization server is then probed for RFC 8414 or OpenID Connect metadata in
+the required priority order, and the document's `issuer` must be identical to
+the identifier the URL was built from (RFC 8414 §3.3).
+
+Only the interactive `POST .../oauth/authorize` probes. What it resolves is
+cached on the `mcp_servers` row, and the background refresher and the token
+exchange read that cache, so nothing off a user's request reaches out to an
+upstream. The cache write is skipped when the values have not changed:
+`mcp_servers` carries a statement-level `bump_config_version()` trigger, and an
+unconditional write would wake every gateway on every consent.
+
+**Moving a server's URL invalidates the cache** (#1416). The cached endpoints
+belong to whatever authorization server the *old* URL's metadata named, so
+`PATCH /api/v1/mcp-servers/{id}` clears all four `oauth_discovered_*` columns
+whenever the update actually changes `url`. Without that, a refresh landing
+between the edit and the next interactive authorize would post to the previous
+server's token endpoint while naming the new canonical URI in `resource` — it
+fails closed, since a compliant authorization server refuses the mismatched
+audience, but it fails for the wrong reason and re-discovery is the right
+answer. The clearing is part of the same `update` statement that writes the URL,
+for the trigger reason above: a second statement would bump `config_version`
+twice for one edit, and an edit that leaves `url` alone clears nothing.
+
+**Hand-configured endpoints remain the fallback.** `authorize_url` and
+`token_url` are now optional on `PUT .../oauth-client`, and the preference order
+is discovery, then the last cached discovery, then what an operator typed. A row
+configured before #1347 keeps working untouched: discovery is attempted, finds
+nothing for a server that publishes nothing, and the configured pair is used.
+`"discovery": "manual"` pins a server to the configured pair and skips the probe
+entirely, which is worth setting for a server known to publish no metadata.
+
+### RFC 8707 — resource indicators
+
+Every authorization request and every token request — code, refresh and exchange
+alike — carries `resource`, the canonical URI of the MCP server the token is
+for. Without it the token is not audience-bound, and a compliant server, which
+MUST reject a token that was not issued for it, is entitled to refuse every
+token rolter mints.
+
+The canonical form is computed in exactly one place, `ResourceUri::parse`:
+
+- scheme and host lowercased (uppercase is accepted on the way in);
+- **no fragment** — RFC 8707 §2 forbids one outright;
+- **no trailing slash**, the form the specification asks implementations to
+  settle on;
+- the query preserved, since RFC 8707 allows one where it is what scopes the
+  resource;
+- userinfo refused, since a credential has no business in an authorization URL.
+
+The two requests cannot disagree about it, and that is structural rather than a
+convention: `ResourceUri` is the only way to name a resource in the crate, its
+only constructor is that parser, and both `authorization_url()` and
+`post_token()` take one. The value used in the authorization request is recorded
+on the login state and re-parsed at the callback — parsing is idempotent, so the
+token request carries the identical string. `post_token()` then refuses outright
+to send a form with no `resource`, which is the guard that catches a future
+refactor rather than a present bug.
+
+### RFC 9207 — issuer validation
+
+Before the browser leaves, the issuer of the validated authorization-server
+metadata is recorded on `mcp_oauth_login_states` beside the sealed PKCE
+verifier, together with whether that metadata advertised
+`authorization_response_iss_parameter_supported`. The callback applies the
+RFC 9207 §2.4 table before the authorization code goes anywhere:
+
+| advertised | `iss` present | action |
+| --- | --- | --- |
+| `true` | yes | compare against the recorded issuer |
+| `true` | no | **reject** |
+| `false` or absent | yes | compare against the recorded issuer |
+| `false` or absent | no | proceed |
+
+The comparison is **byte equality**. No case folding, no default-port elision,
+no trailing slash, no percent-decoding — reaching for a URL parser here would
+re-introduce exactly the equivalences a mix-up attack needs. A response that
+fails the check is refused whole: its `error`, `error_description` and
+`error_uri` are not acted on or displayed either, which is why the callback
+resolves the login state and validates the issuer *before* it reads anything
+else in the response.
+
+A row with no recorded issuer at all — hand-configured, no metadata, no pinned
+`issuer` — lands on the last line of the table and keeps working exactly as it
+did. But an `iss` that arrives for such a row is **refused**, because there is
+nothing authentic to compare it against and accepting it would be validation in
+name only. The fix an operator is told about is to pin `issuer` on the OAuth
+client, or to let discovery resolve one.
+
+### Fetching from the control plane, and SSRF
+
+Discovery means the control plane now fetches URLs it did not fetch before: one
+derived from the operator-configured server URL, and — the new exposure — the
+`authorization_servers` and endpoints of a document a third-party MCP server
+served. An operator registering an MCP server is already trusted to point the
+control plane at a token endpoint, so this widens an existing trust rather than
+creating one, but it widens it to a value the *upstream* chooses. Three guards
+bound it, and they are the reason this is acceptable rather than merely small:
+
+- every URL is `https`, with `http` allowed only on loopback;
+- every URL goes through the deployment's egress policy, which denies
+  link-local (instance metadata) by default and private and loopback ranges when
+  configured to;
+- discovery uses its own HTTP client with **redirects disabled**, so a host that
+  passed the egress check cannot hand the request to one that would not have,
+  and with a 5-second timeout and a 64 KiB body cap.
+
+What remains uncovered is what the egress policy itself does not cover: a
+hostname that resolves to a denied address, since the policy classifies IP
+literals and does not resolve DNS. That is the same connect-time gap every other
+upstream in rolter has, and it is not made worse here.
 
 ## The session lifecycle
 
@@ -129,12 +269,39 @@ whatever the caller sent. A sealed secret nothing can use is one `rolter kek
 verify` would audit forever, and it is a credential still sitting in a backup
 for no reason.
 
+A stored credential reaches the data plane through `/internal/snapshot` (#952).
+`load_mcp_servers` unseals it with the KEK and puts the plaintext on
+`McpServerConfig`, the same route an OAuth access token already takes — that
+endpoint is the credential-bearing control-to-data-plane channel, so this adds a
+secret to it rather than opening a new path for one. `McpServerConfig`'s `Debug`
+redacts the field so formatting a snapshot cannot spill it into a log or a crash
+dump, and the header form marks the value sensitive before it reaches the wire.
+
+A row whose credential cannot be unsealed — `ROLTER_KEK` unset or rotated —
+keeps its other fields and loses only the secret, and the proxy then refuses
+that server with `mcp_credential_unavailable` rather than calling it
+unauthenticated. Dropping the server from the snapshot instead would make a
+misconfigured KEK look like a server that was never registered.
+
 ### Per-server transport overrides
 
 `connect_timeout_ms`, `request_timeout_ms` and `max_retries` are nullable on
-`mcp_servers` and fall back to the org's `mcp_gateway_settings`. Null means
-inherit rather than a copy taken at creation, so raising the org default still
-moves every server that never asked to differ.
+`mcp_servers`, and the proxy reads them (#952). Null means inherit rather than a
+copy taken at creation, so the value a server never overrode still moves when
+the value it inherits does.
+
+What it inherits is the *deployment* transport timeout, not the org's
+`mcp_gateway_settings`: those org defaults are still not read by the data plane,
+which is what the `mcp_settings` stability marker records and what #1404 closes.
+Until then a per-server override is the only way to give one server its own
+budget.
+
+reqwest bakes the connect timeout into the client rather than the request, so a
+per-server `connect_timeout_ms` means a client per distinct value; they are
+built once and cached, and there are only ever a handful. `max_retries` repeats
+only a send that failed to connect: an MCP call is frequently a tool invocation
+and is not idempotent, so a request the server may have seen — including one
+that timed out — is reported rather than replayed.
 
 On the wire the `PATCH` distinguishes absent from null — leave the override
 versus drop it — which an `Option` alone cannot express. serde collapses both to
@@ -153,7 +320,14 @@ versus drop it — which an `Option` alone cannot express. serde collapses both 
   certificate store to put one in.
 - **Dynamic Client Registration (RFC 7591)** — the specification now marks it
   deprecated, retained only for authorization servers that do not support Client
-  ID Metadata Documents.
+  ID Metadata Documents. The decision recorded in #1347 is that rolter does not
+  implement it and will not: if client registration is ever automated here it
+  will be **Client ID Metadata Documents**
+  (`draft-ietf-oauth-client-id-metadata-document-00`), which the specification
+  now says clients SHOULD support, and DCR would be a second registration path
+  to keep secure for a mechanism its own specification is walking away from. A
+  `client_id` therefore stays operator-supplied; it is the one part of the
+  client the flow will not discover.
 
 `header` mode is deliberately outside the specification, which defines only
 `Authorization: Bearer`. It is an accommodation for real servers, and both the

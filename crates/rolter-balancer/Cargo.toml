@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "pluggable load-balancing strategies for rolter routes"
+description = "pluggable load-balancing strategies for rolter routes — internal crate, no stable rust api"
 
 [dependencies]
 rolter-core.workspace = true

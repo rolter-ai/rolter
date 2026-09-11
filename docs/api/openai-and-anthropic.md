@@ -2,6 +2,8 @@
 
 rolter speaks the OpenAI and Anthropic HTTP APIs so existing SDKs work unchanged — point them at the gateway base URL and use a rolter virtual key.
 
+What this surface guarantees across releases is the *dialect*, not a frozen schema: the `v1` in the path is OpenAI's, so there is no `/v2/` to move to, and following an upstream dialect change is not treated as a rolter breaking change. The rolter-owned parts — virtual-key auth, model addressing, the error envelope, `GET /v1/models` — are held stable on the same terms as the control API. See [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+
 ## Authentication
 
 - OpenAI-style: `Authorization: Bearer <virtual-key>`

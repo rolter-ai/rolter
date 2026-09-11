@@ -530,7 +530,13 @@ pub struct InvocationsQuery {
 /// is written continuously by the gateway, so rows land above the window
 /// between one page and the next; counting from the top then shows a row twice
 /// or skips it entirely, which for this screen is the normal case rather than
-/// an edge case (#1394). `request_id` makes the sort key total, so tied
+/// an edge case (#1394).
+///
+/// `request_id` is what makes that key total. The gateway stamps each row with
+/// its own request time (#1210), but `ts` is a `DateTime64(3)` and a burst of
+/// concurrent requests really does begin inside one millisecond, so `ts` alone
+/// is not a total order and ClickHouse may return tied rows in any order it
+/// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
 fn invocations_sql(status_expr: &str) -> String {
     let cursor = keyset_predicate("request_id");
@@ -710,6 +716,21 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
+    }
+
+    #[test]
+    fn invocations_sql_orders_by_a_total_key_so_paging_cannot_repeat_a_row() {
+        for status in ["all", "error", "success"] {
+            let sql = invocations_sql(status_predicate(status).expect("status is whitelisted"));
+            // ts is a DateTime64(3): a burst of concurrent requests shares one
+            // millisecond even though every row carries its own request time,
+            // so ordering on ts alone leaves tied rows in an arbitrary order
+            // that limit/offset paging can repeat or skip (#1344)
+            assert!(
+                sql.contains("order by ts desc, request_id desc"),
+                "invocations must order on a total key, got: {sql}"
+            );
+        }
     }
 
     #[test]
