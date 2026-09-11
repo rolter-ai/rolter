@@ -150,6 +150,11 @@ what you see when something goes wrong:
     `/.well-known/oauth-protected-resource` document — and validates that the
     document is really about that server before using it. What it resolves is
     remembered, so renewals never re-probe.
+
+    Changing the server's `url` forgets it again, since the remembered
+    endpoints belong to the authorization server the old URL pointed at. The
+    next consent re-discovers from the new URL; a renewal in between fails
+    rather than reaching for the previous server.
   </Accordion>
 
   <Accordion title="Every token is bound to one server">
