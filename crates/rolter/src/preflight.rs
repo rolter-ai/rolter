@@ -490,6 +490,10 @@ fn custom_api_base_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding>
 /// A warning is the whole point: the file is still valid and the process will
 /// still start, so nothing here may be fatal. `--strict` promotes it, which is
 /// the setting a CI job that lints a config wants.
+///
+/// The same keys are logged by [`rolter_core::GatewayConfig::load`] at startup,
+/// through the same [`rolter_core::config_lint::describe`] sentence, so the
+/// report here and the gateway's log say one thing rather than two (#1434).
 fn unknown_key_findings(raw: &str) -> Vec<Finding> {
     let Ok(unknown) = rolter_core::config_lint::unknown_keys(raw) else {
         // not parseable as TOML at all — already reported by the load below
@@ -498,15 +502,10 @@ fn unknown_key_findings(raw: &str) -> Vec<Finding> {
     unknown
         .into_iter()
         .map(|key| {
-            let mut detail = format!(
-                "`{}` is not a key rolter reads. It is ignored rather than rejected, so the \
-                 setting it looks like it configures is silently at its default.",
-                key.path
-            );
-            if let Some(suggestion) = &key.suggestion {
-                detail.push_str(&format!(" Did you mean `{suggestion}`?"));
-            }
-            Finding::warn(format!("unrecognised config key {}", key.path), detail)
+            Finding::warn(
+                format!("unrecognised config key {}", key.path),
+                rolter_core::config_lint::describe(&key),
+            )
         })
         .collect()
 }

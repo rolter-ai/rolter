@@ -2760,8 +2760,15 @@ impl GatewayConfig {
     }
 
     /// Load a configuration from a TOML file on disk.
+    ///
+    /// Keys the config model does not recognise are logged as warnings and then
+    /// ignored (#1434). The lint lives here rather than in each binary so no
+    /// load path can be added without it: a typo that silently leaves a setting
+    /// at its default is a startup-time problem everywhere the file is read,
+    /// not only under `rolter check`.
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
+        crate::config_lint::warn_unknown_keys_once(path, &raw);
         let config = Self::from_toml_str(&raw)?;
         config.validate_ca_bundles().map_err(|problems| {
             crate::Error::Config(format!(
