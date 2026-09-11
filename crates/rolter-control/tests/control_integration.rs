@@ -6,65 +6,34 @@
 #![cfg(feature = "postgres")]
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 
+use rolter_store::postgres::test_schema::TestSchema;
 use serde_json::{json, Value};
 
 fn database_url() -> Option<String> {
     std::env::var("ROLTER_TEST_DATABASE_URL").ok()
 }
 
-/// Monotonic sequence for per-test schema names, keeping concurrently-running
-/// tests off a shared schema (plain `cargo test` — e.g. the coverage job —
-/// runs them as threads in one process, so a shared `public` races on DDL).
-static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// Isolated schema name unique to this process and call, safe to interpolate
-/// (only ascii digits and underscores).
-fn unique_schema() -> String {
-    let n = SCHEMA_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("test_{}_{}", std::process::id(), n)
-}
-
-/// Return `url` with the connection pinned to `schema` via `search_path`, so
-/// migrations and queries land in the isolated schema rather than `public`.
-fn with_search_path(url: &str, schema: &str) -> String {
-    let sep = if url.contains('?') { '&' } else { '?' };
-    // percent-encode the space and `=` inside the libpq options string
-    format!("{url}{sep}options=-c%20search_path%3D{schema}")
-}
-
-/// Create a fresh isolated schema and return a pool pinned to it. Tests that
-/// only need a router use [`fresh_app`]; those that also query the store
-/// directly build the router from this pool themselves.
-async fn fresh_pool() -> sqlx::PgPool {
+/// Create a fresh isolated schema and return the guard owning it, so a test
+/// gets its schema back when it finishes — including when it panics (#1364).
+///
+/// Bind the guard for the whole test: the schema goes with it. Take the pool
+/// out with `db.pool().clone()`; tests that only need a router use
+/// [`fresh_app`].
+async fn fresh_db() -> TestSchema {
     let url = database_url().expect("ROLTER_TEST_DATABASE_URL checked by caller");
-    let schema = unique_schema();
-
-    // (re)create the isolated schema over a default-search_path connection
-    let admin = rolter_store::postgres::connect(&url)
-        .await
-        .expect("connect");
-    sqlx::query(&format!("drop schema if exists {schema} cascade"))
-        .execute(&admin)
-        .await
-        .expect("reset schema");
-    sqlx::query(&format!("create schema {schema}"))
-        .execute(&admin)
-        .await
-        .expect("recreate schema");
-    admin.close().await;
-
-    // app pool scoped to the isolated schema so migrations run there
-    rolter_store::postgres::connect(&with_search_path(&url, &schema))
-        .await
-        .expect("connect scoped")
+    TestSchema::create(&url).await
 }
 
-/// Isolated schema + control-plane app router (migrations applied by `test_app`).
-async fn fresh_app() -> axum::Router {
-    let pool = fresh_pool().await;
-    rolter_control::test_app(pool).await.expect("build app")
+/// Isolated schema + control-plane app router (migrations applied by
+/// `test_app`). The schema guard comes back with the router and has to outlive
+/// it, so bind it rather than dropping it on the floor.
+async fn fresh_app() -> (axum::Router, TestSchema) {
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    (app, db)
 }
 
 /// Serve `app` on an ephemeral port and return its address.
@@ -134,7 +103,8 @@ macro_rules! skip_without_db {
 #[tokio::test]
 async fn readyz_waits_for_migrations_while_healthz_stays_up() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let client = reqwest::Client::new();
 
     let addr = serve(rolter_control::test_app_unmigrated(pool.clone())).await;
@@ -190,7 +160,8 @@ async fn readyz_waits_for_migrations_while_healthz_stays_up() {
 #[tokio::test]
 async fn ping_and_healthz_respond() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
 
     let health = client
@@ -214,7 +185,8 @@ async fn ping_and_healthz_respond() {
 #[tokio::test]
 async fn snapshot_served_on_empty_store() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
 
     let resp = reqwest::Client::new()
         .get(format!("http://{addr}/internal/snapshot"))
@@ -236,7 +208,8 @@ async fn snapshot_served_on_empty_store() {
 #[tokio::test]
 async fn crud_create_round_trip_reflects_in_snapshot() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -353,7 +326,8 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -373,7 +347,8 @@ async fn org_slug_is_validated() {
 #[tokio::test]
 async fn business_unit_and_customer_crud_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -499,7 +474,8 @@ async fn business_unit_and_customer_crud_round_trip() {
 #[tokio::test]
 async fn governance_scoped_budgets_and_rate_limits() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -598,7 +574,8 @@ async fn governance_scoped_budgets_and_rate_limits() {
 #[tokio::test]
 async fn a_budget_carries_its_own_unpriced_policy_into_the_snapshot() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let addr = serve(
         rolter_control::test_app(pool.clone())
             .await
@@ -724,7 +701,8 @@ async fn a_budget_carries_its_own_unpriced_policy_into_the_snapshot() {
 #[tokio::test]
 async fn virtual_key_cost_attribution_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -906,7 +884,8 @@ async fn virtual_key_cost_attribution_round_trip() {
 #[tokio::test]
 async fn prompt_template_crud_publish_and_scope_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -1135,7 +1114,8 @@ async fn prompt_template_crud_publish_and_scope_round_trip() {
 #[tokio::test]
 async fn skills_crud_and_publish_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -1308,7 +1288,8 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -1431,7 +1412,8 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
 #[tokio::test]
 async fn admin_token_guards_crud_and_snapshot() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1474,7 +1456,8 @@ async fn config_export_serves_importable_toml_without_credentials() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1556,7 +1539,8 @@ async fn config_export_serves_importable_toml_without_credentials() {
 #[tokio::test]
 async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1609,7 +1593,8 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
 #[tokio::test]
 async fn stability_endpoint_lists_only_experimental_subsystems() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1674,7 +1659,8 @@ async fn stability_endpoint_lists_only_experimental_subsystems() {
 #[tokio::test]
 async fn a_gated_control_plane_reports_a_plain_missing_session_on_me() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1712,7 +1698,8 @@ async fn a_gated_control_plane_reports_a_plain_missing_session_on_me() {
 #[tokio::test]
 async fn feature_flags_are_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1790,7 +1777,8 @@ async fn feature_flags_are_superadmin_only_and_audited() {
 #[tokio::test]
 async fn cluster_inventory_tracks_polling_nodes() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1963,7 +1951,8 @@ async fn cluster_inventory_tracks_polling_nodes() {
 #[tokio::test]
 async fn unavailable_feature_flags_are_reported_and_cannot_be_enabled() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2034,7 +2023,8 @@ async fn unavailable_feature_flags_are_reported_and_cannot_be_enabled() {
 #[tokio::test]
 async fn logging_settings_are_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2129,7 +2119,8 @@ async fn logging_settings_are_superadmin_only_and_audited() {
 #[tokio::test]
 async fn runtime_policy_is_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2205,7 +2196,8 @@ async fn runtime_policy_is_superadmin_only_and_audited() {
 #[tokio::test]
 async fn compatibility_policy_is_superadmin_only_validated_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2285,7 +2277,8 @@ async fn compatibility_policy_is_superadmin_only_validated_and_audited() {
 #[tokio::test]
 async fn adaptive_routing_policy_is_superadmin_only_validated_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2398,7 +2391,8 @@ async fn adaptive_routing_policy_is_superadmin_only_validated_and_audited() {
 #[tokio::test]
 async fn login_me_logout_round_trip() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2506,7 +2500,8 @@ async fn login_me_logout_round_trip() {
 #[tokio::test]
 async fn failed_logins_are_throttled_per_account_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2623,7 +2618,8 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
 #[tokio::test]
 async fn expired_session_is_rejected() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2725,7 +2721,8 @@ async fn seed_session(pool: &sqlx::PgPool, user_id: uuid::Uuid, suffix: &str) ->
 #[tokio::test]
 async fn policy_allows_resolves_several_project_memberships_in_one_verdict() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -2872,7 +2869,8 @@ async fn policy_allows_resolves_several_project_memberships_in_one_verdict() {
 #[tokio::test]
 async fn skill_access_policy_filters_list_history_and_resolution() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -3160,7 +3158,8 @@ mod stub_idp {
 #[tokio::test]
 async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -3355,7 +3354,8 @@ async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
 #[tokio::test]
 async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     // the redirect uri is deployment-owned, so the control plane must know its
     // own public url for the flow to be coherent
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
@@ -3648,7 +3648,8 @@ fn url_param(url: &str, key: &str) -> String {
 #[tokio::test]
 async fn scim_users_are_provisioned_scoped_and_idempotent() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -3925,7 +3926,8 @@ async fn scim_users_are_provisioned_scoped_and_idempotent() {
 #[tokio::test]
 async fn scim_groups_map_to_teams_and_reconcile_idempotently() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4372,7 +4374,8 @@ async fn scim_groups_map_to_teams_and_reconcile_idempotently() {
 #[tokio::test]
 async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4686,7 +4689,8 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
 #[tokio::test]
 async fn rbac_matrix_and_effective_permissions_are_api_backed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4893,7 +4897,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
 #[tokio::test]
 async fn rbac_enforced_on_every_mutation() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -5044,7 +5049,8 @@ async fn rbac_enforced_on_every_mutation() {
 #[tokio::test]
 async fn open_mode_allows_unauthenticated_mutations() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/orgs"))
         .json(&json!({"name": "Acme", "slug": "acme"}))
@@ -5064,7 +5070,8 @@ async fn open_mode_allows_unauthenticated_mutations() {
 #[tokio::test]
 async fn user_and_membership_lifecycle() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -5227,7 +5234,8 @@ async fn user_and_membership_lifecycle() {
 #[tokio::test]
 async fn self_service_key_lifecycle() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -5390,7 +5398,8 @@ async fn self_service_key_lifecycle() {
 #[tokio::test]
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
@@ -5681,7 +5690,8 @@ async fn sso_login(
 #[tokio::test]
 async fn invitations_onboard_accounts_once_and_expire_closed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -5916,7 +5926,8 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
 #[tokio::test]
 async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -6067,7 +6078,8 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
 #[tokio::test]
 async fn custom_role_grant_widens_a_member_within_its_scope_only() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6231,7 +6243,8 @@ async fn custom_role_grant_widens_a_member_within_its_scope_only() {
 #[tokio::test]
 async fn custom_role_changes_are_guarded_by_references_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6333,7 +6346,8 @@ async fn custom_role_changes_are_guarded_by_references_and_audited() {
 #[tokio::test]
 async fn rbac_matrix_reflects_custom_roles_after_a_change() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6543,7 +6557,8 @@ mod stub_resource {
 #[tokio::test]
 async fn mcp_oauth_consent_refresh_and_exchange() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
@@ -6960,7 +6975,8 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
 #[tokio::test]
 async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -7309,7 +7325,8 @@ async fn config_version(pool: &sqlx::PgPool) -> i64 {
 #[tokio::test]
 async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -7483,7 +7500,8 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
 #[tokio::test]
 async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -7588,7 +7606,8 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
 #[tokio::test]
 async fn global_catalogs_take_authentication_but_no_membership() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -7650,7 +7669,8 @@ async fn global_catalogs_take_authentication_but_no_membership() {
 #[tokio::test]
 async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7730,7 +7750,8 @@ async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7778,7 +7799,8 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
     std::env::set_var("ROLTER_KEK", TEST_KEK);
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7862,7 +7884,8 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
 #[tokio::test]
 async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -8014,7 +8037,8 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
     // enrolment seals the secret with the deployment KEK, so a control plane
     // without one must refuse rather than store a bearer credential in clear
     std::env::set_var("ROLTER_KEK", TEST_KEK);
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8290,7 +8314,8 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
 async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8369,7 +8394,8 @@ async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
 async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8449,7 +8475,8 @@ async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
 #[tokio::test]
 async fn a_required_policy_refuses_an_unenrolled_account() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8491,7 +8518,8 @@ async fn a_required_policy_refuses_an_unenrolled_account() {
 #[tokio::test]
 async fn custom_labels_round_trip_and_refuse_a_duplicate_key() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -8635,7 +8663,8 @@ async fn custom_labels_round_trip_and_refuse_a_duplicate_key() {
 #[tokio::test]
 async fn auto_labels_are_produced_by_the_store_and_are_read_only() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -8743,7 +8772,8 @@ async fn auto_labels_are_produced_by_the_store_and_are_read_only() {
 #[tokio::test]
 async fn labels_are_scoped_by_the_subject_they_describe() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -8861,7 +8891,8 @@ async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
     skip_without_db!();
     std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -9029,7 +9060,8 @@ async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
 #[tokio::test]
 async fn mcp_transport_overrides_are_per_server_and_revertible() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 

@@ -4237,10 +4237,12 @@ mod tests {
     // the mcp domain took the only non-test use of `Duration` with it
     use chrono::Duration;
 
-    async fn fresh_pool() -> PgPool {
+    /// An isolated, migrated schema of this test's own. Bind the guard for the
+    /// whole test: the schema is dropped with it.
+    async fn fresh_db() -> super::super::test_schema::TestSchema {
         let url = std::env::var("ROLTER_TEST_DATABASE_URL")
             .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
-        super::super::test_support::fresh_scoped_pool(&url).await
+        super::super::test_schema::TestSchema::migrated(&url).await
     }
 
     #[tokio::test]
@@ -4249,7 +4251,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let orgs = OrgRepo(&pool);
         let org = orgs.create("acme", "acme").await.unwrap();
@@ -4390,7 +4393,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
 
         let repo = PromptTemplateRepo(&pool);
@@ -4476,7 +4480,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
 
         let repo = SkillRepo(&pool);
@@ -4564,7 +4569,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("plugins", "plugins").await.unwrap();
         let team = TeamRepo(&pool).create(org.id, "platform").await.unwrap();
         let project = ProjectRepo(&pool).create(team.id, "gateway").await.unwrap();
@@ -4634,7 +4640,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         }
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("audit", "audit").await.unwrap();
         let actor = UserRepo(&pool)
             .create("audit@example.com", None, false)
