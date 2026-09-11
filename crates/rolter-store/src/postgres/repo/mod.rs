@@ -32,11 +32,11 @@ use super::models::{
     AdaptiveRoutingPolicy, AdaptiveRoutingTelemetry, AuditLogEntry, Budget, BusinessUnit,
     ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole, CustomRoleGrant, Customer,
     EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, ModelDefaults,
-    ModelPrice, Org, OrgAuthPolicy, OwnedVirtualKey, PluginInstance, Project, PromptTemplate,
-    PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember,
-    RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity,
-    ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping, SsoLoginState,
-    SsoProvider, Team, User, VirtualKey,
+    ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance, Project,
+    PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
+    ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
+    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
+    SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -348,6 +348,23 @@ impl ProjectRepo<'_> {
             "select id, team_id, name, created_at from projects where team_id = $1 order by name",
         )
         .bind(team_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Every project in `org_id`, across all of its teams, in one query.
+    ///
+    /// The alternative is one [`Self::list`] per team, which a caller that only
+    /// wants to name a project anywhere in the org pays as N+1 round trips
+    /// (#1357). Ordered by team then project so the result is already grouped.
+    pub async fn list_for_org(&self, org_id: Uuid) -> Result<Vec<OrgProject>> {
+        sqlx::query_as(
+            "select p.id, p.team_id, t.name as team_name, p.name, p.created_at
+             from projects p join teams t on t.id = p.team_id
+             where t.org_id = $1 order by t.name, p.name",
+        )
+        .bind(org_id)
         .fetch_all(self.0)
         .await
         .map_err(store_err)

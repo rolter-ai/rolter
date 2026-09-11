@@ -32,6 +32,21 @@ pub struct Project {
     pub created_at: DateTime<Utc>,
 }
 
+/// A project listed org-wide, carrying the team it belongs to.
+///
+/// Projects are named per team, so two teams may each own a "prod" and an
+/// ungrouped org-wide list would offer the same label twice. `team_name` rides
+/// along with the row so a caller can group by team without a second request
+/// per team, which is the whole point of listing org-wide in the first place.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgProject {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub team_name: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct BusinessUnit {
     pub id: Uuid,
