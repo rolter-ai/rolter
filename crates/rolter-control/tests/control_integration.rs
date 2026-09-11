@@ -8116,11 +8116,15 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
         .unwrap();
     assert_eq!(bad.status(), 400);
 
-    // the right code does, and returns the recovery batch
+    // the right code does, and returns the recovery batch. bind it: the replay
+    // assertion below has to send back this exact code, and reading the clock a
+    // second time sends the next step's code across a 30s boundary, asserting
+    // the clock rather than the replay rule (#1451)
+    let confirming_code = current_code(&secret);
     let confirmed: Value = client
         .post(format!("{base}/api/v1/me/mfa/confirm"))
         .bearer_auth(&token)
-        .json(&json!({"code": current_code(&secret)}))
+        .json(&json!({"code": &confirming_code}))
         .send()
         .await
         .unwrap()
@@ -8169,7 +8173,7 @@ async fn totp_enrolment_step_up_and_recovery_codes() {
     // the earlier use was a legitimate one
     let spent = client
         .post(format!("{base}/api/v1/auth/mfa/verify"))
-        .json(&json!({"mfa_token": mfa_token, "code": current_code(&secret)}))
+        .json(&json!({"mfa_token": mfa_token, "code": &confirming_code}))
         .send()
         .await
         .unwrap();
