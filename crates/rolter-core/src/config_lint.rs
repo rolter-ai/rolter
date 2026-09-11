@@ -14,11 +14,20 @@
 //! document is parsed a second time through [`serde_ignored`], which reports
 //! every key the derived `Deserialize` impls dropped. Nothing in this module
 //! changes what the gateway or the control plane accept at runtime — it only
-//! gives `rolter check` something to say.
+//! gives the loader something to say.
 //!
 //! Using the real `Deserialize` impls is the point. A hand-maintained list of
 //! valid keys would be wrong within a release, and wrong in the direction that
 //! reports a brand-new key as a typo.
+//!
+//! [`warn_unknown_keys_once`] is the reporting half, and it hangs off
+//! [`GatewayConfig::load`] rather than off any one binary (#1434). An operator
+//! who mistypes a key does not run `rolter check` first — they restart the
+//! gateway and watch the log, so that is where the sentence has to appear.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -118,6 +127,72 @@ pub fn unknown_keys(toml_src: &str) -> Result<Vec<UnknownKey>> {
     findings.sort_by(|a, b| a.path.cmp(&b.path));
     findings.dedup();
     Ok(findings)
+}
+
+/// What one unrecognised key means, in the words every surface uses for it.
+///
+/// `rolter check` prints this as a finding's detail and every load path logs it
+/// as a warning, so an operator who meets the same typo twice reads the same
+/// sentence twice rather than two descriptions they have to reconcile.
+pub fn describe(key: &UnknownKey) -> String {
+    let mut detail = format!(
+        "`{}` is not a key rolter reads. It is ignored rather than rejected, so the setting it \
+         looks like it configures is silently at its default.",
+        key.path
+    );
+    if let Some(suggestion) = &key.suggestion {
+        detail.push_str(&format!(" Did you mean `{suggestion}`?"));
+    }
+    detail
+}
+
+/// Log one warning per key in `toml_src` that the config model ignores, naming
+/// `path` so a deployment with several config files says which one.
+///
+/// Returns how many keys were reported, which is what makes the emission
+/// testable without capturing a subscriber.
+///
+/// Never fatal and never fallible: a file that is not TOML at all reports
+/// nothing here and is left to the loader, which fails with one clear error
+/// rather than a pile of speculative key warnings on top of it.
+pub fn warn_unknown_keys(path: &Path, toml_src: &str) -> usize {
+    let Ok(findings) = unknown_keys(toml_src) else {
+        return 0;
+    };
+    for key in &findings {
+        tracing::warn!(
+            config = %path.display(),
+            key = %key.path,
+            "unrecognised config key: {}",
+            describe(key)
+        );
+    }
+    findings.len()
+}
+
+/// [`warn_unknown_keys`], but at most once per file for the life of the
+/// process.
+///
+/// `rolter easy-up` runs the seed importer, the control plane and the gateway
+/// in one process, and all three read the same `rolter.toml`. Reporting one
+/// typo three times reads like three problems, and the third copy is the one
+/// an operator scrolls past.
+pub fn warn_unknown_keys_once(path: &Path, toml_src: &str) -> usize {
+    static SEEN: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    // canonicalize so `./rolter.toml` and `rolter.toml` are one file; a path
+    // that cannot be resolved is still worth deduplicating as written
+    let identity = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let first_time = SEEN
+        .get_or_init(Mutex::default)
+        .lock()
+        // a poisoned lock here would silence the warning for the rest of the
+        // process, which is the failure this whole module exists to prevent
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(identity);
+    if !first_time {
+        return 0;
+    }
+    warn_unknown_keys(path, toml_src)
 }
 
 /// Walk a section that accepts either a flat array of entries or a
@@ -546,6 +621,170 @@ mod tests {
         let config = GatewayConfig::from_toml_str(src).expect("still valid");
         assert_eq!(config.server.port, 8080);
         assert_eq!(paths(src), ["server.prot"]);
+    }
+
+    /// Collects whatever a `tracing` subscriber formats, so the warnings can be
+    /// read back as text rather than trusted from a return value alone.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Capture {
+        fn text(&self) -> String {
+            String::from_utf8(
+                self.0
+                    .lock()
+                    .expect("no test panicked holding this")
+                    .clone(),
+            )
+            .expect("tracing writes utf-8")
+        }
+    }
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("no test panicked holding this")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `f` with a warn-level subscriber and hand back what it wrote.
+    fn captured(f: impl FnOnce()) -> String {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        capture.text()
+    }
+
+    /// A path of its own per test: [`warn_unknown_keys_once`] keeps
+    /// process-wide state keyed by path, so a shared name would make one test's
+    /// result depend on whether another ran first.
+    fn scratch_path(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "rolter-config-lint-{label}-{}-{:?}.toml",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    const TYPO_CONFIG: &str = r#"
+        [server]
+        port = 8080
+        prot = 9090
+
+        [[providers]]
+        name = "local"
+        kind = "openai_compatible"
+        api_base = "http://127.0.0.1:8000/v1"
+        api_key_evn = "LOCAL_API_KEY"
+        "#;
+
+    #[test]
+    fn each_unrecognised_key_is_logged_with_its_file_and_a_suggestion() {
+        let path = scratch_path("logged");
+        let text = captured(|| {
+            assert_eq!(warn_unknown_keys(&path, TYPO_CONFIG), 2);
+        });
+
+        assert!(text.contains("WARN"), "must be a warning, not info: {text}");
+        assert!(text.contains("server.prot"), "{text}");
+        assert!(text.contains("providers[0].api_key_evn"), "{text}");
+        assert!(text.contains("Did you mean `api_key_env`?"), "{text}");
+        // the file is named: a deployment can have more than one
+        assert!(text.contains(&path.display().to_string()), "{text}");
+    }
+
+    #[test]
+    fn a_clean_config_logs_nothing_at_all() {
+        let path = scratch_path("clean");
+        let text = captured(|| {
+            assert_eq!(warn_unknown_keys(&path, "[server]\nport = 8080\n"), 0);
+        });
+        assert!(text.is_empty(), "{text}");
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_is_left_to_the_loader() {
+        // the load that follows fails with one clear error; burying it under
+        // speculative key warnings helps nobody
+        let path = scratch_path("not-toml");
+        let text = captured(|| {
+            assert_eq!(warn_unknown_keys(&path, "{ not toml at all"), 0);
+        });
+        assert!(text.is_empty(), "{text}");
+    }
+
+    #[test]
+    fn the_same_file_is_only_reported_once_per_process() {
+        // easy-up seeds, then starts the control plane, then starts the gateway,
+        // all from one rolter.toml in one process
+        let path = scratch_path("once");
+        std::fs::write(&path, TYPO_CONFIG).expect("temp dir is writable");
+
+        let first = captured(|| assert_eq!(warn_unknown_keys_once(&path, TYPO_CONFIG), 2));
+        assert!(first.contains("server.prot"), "{first}");
+
+        let second = captured(|| assert_eq!(warn_unknown_keys_once(&path, TYPO_CONFIG), 0));
+        assert!(second.is_empty(), "{second}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loading_a_file_with_unknown_keys_warns_and_still_starts() {
+        // the whole guarantee in one test: the warning is emitted by the real
+        // load path every binary uses, and the load still succeeds
+        let path = scratch_path("load");
+        std::fs::write(&path, TYPO_CONFIG).expect("temp dir is writable");
+
+        let mut config = None;
+        let text = captured(|| config = Some(GatewayConfig::load(&path).expect("still loads")));
+        let _ = std::fs::remove_file(&path);
+
+        let config = config.expect("load ran");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.providers.len(), 1);
+        assert!(text.contains("server.prot"), "{text}");
+        assert!(text.contains("providers[0].api_key_evn"), "{text}");
+    }
+
+    #[test]
+    fn the_description_is_the_one_rolter_check_prints() {
+        assert_eq!(
+            describe(&UnknownKey {
+                path: "timeouts.connect_sesc".to_string(),
+                suggestion: Some("connect_secs".to_string()),
+            }),
+            "`timeouts.connect_sesc` is not a key rolter reads. It is ignored rather than \
+             rejected, so the setting it looks like it configures is silently at its default. Did \
+             you mean `connect_secs`?"
+        );
+        // no suggestion, no dangling question
+        assert!(!describe(&UnknownKey {
+            path: "server.kubernetes_namespace".to_string(),
+            suggestion: None,
+        })
+        .contains("Did you mean"));
     }
 
     #[test]

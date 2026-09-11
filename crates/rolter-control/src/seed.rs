@@ -75,6 +75,14 @@ pub struct SeedSummary {
 /// Idempotently bootstrap `pool`: org, default team/project, optional admin,
 /// optional bootstrap-toml import. Assumes migrations have already run.
 pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSummary> {
+    // before the first insert, not with the import at the end of it: an
+    // operator who sees `api_key_evn` named while the org is still being
+    // created can stop and fix the file, rather than finding out from a
+    // half-seeded database that the provider it named has no credential (#1434)
+    if let Some(path) = &opts.import {
+        lint_import_file(path);
+    }
+
     let org_name = if opts.org.trim().is_empty() {
         "default"
     } else {
@@ -132,6 +140,19 @@ pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSumma
         admin_email: opts.admin_email.clone(),
         admin_created,
     })
+}
+
+/// Warn about keys in the bootstrap file that the config model ignores.
+///
+/// Returns how many were reported, so the emission is assertable without a
+/// database. Nothing here can fail the import: an unknown key never stopped the
+/// file from loading and must not start now, and a file that cannot be read at
+/// all is reported with the error it deserves by the import itself.
+fn lint_import_file(path: &Path) -> usize {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => rolter_core::config_lint::warn_unknown_keys_once(path, &raw),
+        Err(_) => 0,
+    }
 }
 
 fn slugify(name: &str) -> String {
@@ -728,7 +749,10 @@ async fn import_prompt_template(
 
 #[cfg(test)]
 mod tests {
-    use super::{declares_payload_capture, import_bootstrap_toml, import_prompt_template, slugify};
+    use super::{
+        declares_payload_capture, import_bootstrap_toml, import_prompt_template, lint_import_file,
+        slugify,
+    };
     use rolter_core::{
         Decorator, DecoratorPosition, DecoratorRole, PromptTemplate, TemplateVariable,
     };
@@ -741,6 +765,42 @@ mod tests {
         assert_eq!(slugify("Default"), "default");
         assert_eq!(slugify("Acme Corp!"), "acme-corp");
         assert_eq!(slugify("  multi  space "), "multi-space");
+    }
+
+    /// #1434: a mistyped key in the imported file seeds nothing, and the
+    /// database ends up quietly missing the setting the operator wrote.
+    #[test]
+    fn an_unrecognised_key_in_the_import_file_is_reported_without_stopping_the_import() {
+        let dir = tempdir("lint-import");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+name = "local"
+kind = "openai_compatible"
+api_base = "http://127.0.0.1:8000/v1"
+api_key_evn = "LOCAL_API_KEY"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(lint_import_file(&path), 1);
+        // and the file the lint complained about is still perfectly importable:
+        // nothing about an unknown key may abort a seed
+        let config =
+            rolter_core::GatewayConfig::load(&path).expect("an unknown key never blocks the load");
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn a_missing_import_file_is_not_this_lint_to_report() {
+        // the import itself fails with a readable error; a second complaint
+        // about a file nobody can read adds nothing
+        assert_eq!(
+            lint_import_file(&tempdir("lint-absent").join("nope.toml")),
+            0
+        );
     }
 
     /// #927: a re-import of an edited file used to log `imported provider` and

@@ -456,6 +456,8 @@ struct ControlState {
 /// telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let bootstrap = match &args.config {
+        // `load` warns about every key in the file rolter does not read
+        // (#1434), which stays non-fatal: the bootstrap file still loads
         Some(path) if path.exists() => Some(GatewayConfig::load(path)?),
         _ => None,
     };

@@ -112,6 +112,8 @@ pub struct Args {
 /// and telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut config = if args.config.exists() {
+        // `load` also warns about every key in the file rolter does not read
+        // (#1434); unknown keys stay non-fatal, so this never blocks the boot
         GatewayConfig::load(&args.config)?
     } else {
         tracing::warn!(path = %args.config.display(), "config file not found, starting with empty config");

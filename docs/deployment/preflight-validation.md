@@ -67,7 +67,7 @@ that looks healthy while quietly not doing what it was configured to do.
 | Datastores accept a connection (with `--connect`) | error / warning | A URL that parses but resolves to nothing fails at first use rather than at rollout |
 | `ROLTER_KEK` opens the store (with `--connect`, postgres builds) | error | Every other KEK rule reads the environment alone, so all of them pass on a database restored under a *different* KEK — a failure with no startup symptom at all |
 | Config file parses (with `--config`) | error | A config that fails to load leaves the gateway on whatever it last had |
-| Every key in the config file is recognised (with `--config`) | warning | An unknown key is ignored rather than rejected, so a typo is silence and a default rather than an error |
+| Every key in the config file is recognised (with `--config`) | warning | An unknown key is ignored rather than rejected, so a typo is silence and a default rather than an error. Also logged as a `WARN` by every process that loads the file — see [below](#the-same-keys-are-reported-at-startup-1434) |
 
 `--connect` is opt-in because a check that opens sockets cannot be the default
 for a command meant to run offline and without side effects. It is a TCP
@@ -137,6 +137,39 @@ every key the real `Deserialize` impls dropped. It is deliberately not a list of
 valid keys: a hand-maintained list drifts within a release, and it drifts in the
 direction that reports a brand-new key as a typo. The suggestion comes from a
 plain Levenshtein distance against the sibling keys the type actually has.
+
+### The same keys are reported at startup (#1434)
+
+`rolter check` is opt-in, and an operator who mistypes a key does not run it
+first — they restart the process and read the log. So every path that loads a
+`rolter.toml` logs the same sentence as a `WARN` line before it starts:
+
+- `rolter gateway --config rolter.toml`
+- `rolter control --config rolter.toml`
+- `rolter easy-up`
+- `rolter-seed --import rolter.toml`, before the first row is written
+
+```
+WARN rolter_core::config_lint: unrecognised config key: `providers[0].api_key_evn` is not a
+     key rolter reads. It is ignored rather than rejected, so the setting it looks like it
+     configures is silently at its default. Did you mean `api_key_env`?
+     config=rolter.toml key=providers[0].api_key_evn
+```
+
+The wiring hangs off `GatewayConfig::load` rather than off each binary, so a new
+load path cannot be added without it. It stays **non-fatal everywhere**: the
+warning never stops a process from starting and never aborts an import. Only
+`rolter check --strict` turns an unknown key into a non-zero exit, and that is a
+lint run, not a boot.
+
+Each file is reported once per process. `rolter easy-up` seeds the database,
+starts the control plane and starts the gateway from one `rolter.toml`, and one
+typo printed three times reads like three problems.
+
+The config the gateway pulls from the control plane's `/internal/snapshot` needs
+none of this: that document is JSON assembled from database rows, every column
+of which is already constrained by the schema and by the CRUD API that wrote it.
+There is no hand-typed key in it to misspell.
 
 ## Generating the configuration (`rolter init`)
 

@@ -16,9 +16,23 @@ cp rolter.example.toml rolter.toml
 
 Rolter never rejects a `rolter.toml` over a key it does not recognise. That is what keeps the file compatible in both directions: a config written for a newer release still loads on an older binary, so rolling a release back is not an outage.
 
-The trade-off is that a typo is silent. `connect_sesc` under `[timeouts]` produces no error and no warning at startup — the default simply applies, and a misspelled `api_key_env` leaves a provider with no credential until the first upstream `401`.
+The trade-off is that a typo would otherwise be silent. `connect_sesc` under `[timeouts]` produces no error — the default simply applies, and a misspelled `api_key_env` leaves a provider with no credential until the first upstream `401`.
 
-`rolter check` closes that gap without changing what the gateway accepts:
+So rolter names the key instead, without changing what it accepts. **Every process that reads the file reports it**, as a warning in the startup log:
+
+- `rolter gateway --config rolter.toml`
+- `rolter control --config rolter.toml`
+- `rolter easy-up`
+- `rolter-seed --import rolter.toml`, before it writes anything to the database
+
+```
+WARN rolter_core::config_lint: unrecognised config key: `providers[0].api_key_evn` is not a
+     key rolter reads. It is ignored rather than rejected, so the setting it looks like it
+     configures is silently at its default. Did you mean `api_key_env`?
+     config=rolter.toml key=providers[0].api_key_evn
+```
+
+`rolter check` reports the same keys without starting anything, which is the form to run before a deploy:
 
 ```bash
 rolter check --config rolter.toml
@@ -31,13 +45,17 @@ warn   unrecognised config key providers[0].api_key_evn
        its default. Did you mean `api_key_env`?
 ```
 
-It reports the full path to every unrecognised key, including keys nested inside tables and inside arrays of tables, and suggests the nearest real key when one is close enough to be a likely typo.
+Either way you get the full path to every unrecognised key, including keys nested inside tables and inside arrays of tables, plus the nearest real key when one is close enough to be a likely typo.
 
-These are warnings: the file is valid and the gateway will start. Add `--strict` to turn them into a non-zero exit, which is what you want in CI when a config change is under review.
+These are always warnings. The file is valid, the gateway starts, and an import still runs — an unknown key never stops a process. The one exception is deliberate: `--strict` turns them into a non-zero exit, which is what you want in CI when a config change is under review.
 
 ```bash
 rolter check --config rolter.toml --strict
 ```
+
+<Note>
+  A config served from the database (the control plane's snapshot, which is what `rolter easy-up --database-url ...` and any DB-backed deployment runs on) has no unknown keys to report: it is built from validated rows, not from a file you typed.
+</Note>
 
 ---
 
