@@ -50,3 +50,6 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 ## 2025-09-07 - Avoid intermediate `Vec` allocations in `join`
 **Learning:** In `crates/rolter-gateway/src/genai.rs`, the `encoding_formats` function previously used `.collect::<Vec<_>>().join(",")` to construct a string from an iterator. This pattern introduces an unnecessary heap allocation for the intermediate `Vec`.
 **Action:** When joining strings from iterators in Rust, do not collect into a `Vec` just to call `join()`. Use direct string iteration, `push`, and `push_str` on a mutable `String` instead to avoid the allocation. Alternatively, use standard `.collect::<String>()` when commas are part of the mapped output, but avoid the `Vec` either way.
+## 2026-09-11 - Eager Evaluation in unwrap_or
+**Learning:** Using `.unwrap_or()` with arguments that perform heap allocations (like `String::new()` via `Value::String` or the `json!()` macro) causes eager evaluation. This means the allocation happens every time, even when the `Some` branch is taken, which introduces severe overhead on hot paths like JSON translation loops.
+**Action:** Always prefer `.unwrap_or_else(|| ...)` for fallbacks that allocate memory (like strings, vecs, or `serde_json::Value` structures) to guarantee lazy evaluation and avoid unnecessary heap allocations.
