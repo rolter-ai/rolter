@@ -3,6 +3,12 @@
 //! The MVP ships an in-memory [`ConfigStore`]. Postgres (source of truth),
 //! Redis (cache + pub/sub) and ClickHouse (logs) backends implement the same
 //! traits behind cargo features as the control plane is built out.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -204,6 +210,14 @@ impl ConfigStore for MergedConfigStore {
 mod tests {
     use super::*;
 
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn roundtrips_config() {
         // note: tokio is pulled in transitively only for the test harness here;
@@ -351,11 +365,11 @@ mod tests {
         }
     }
 
-    fn price_val(model: &str, input: f64) -> rolter_core::ModelPriceConfig {
+    fn price_val(model: &str, input: rust_decimal::Decimal) -> rolter_core::ModelPriceConfig {
         rolter_core::ModelPriceConfig {
             model: model.to_string(),
             input_per_mtok: input,
-            output_per_mtok: 0.0,
+            output_per_mtok: d("0.0"),
             cached_input_per_mtok: None,
             currency: "USD".to_string(),
         }
@@ -365,7 +379,7 @@ mod tests {
         rolter_core::BudgetConfig {
             scope: rolter_core::BudgetScope::Org,
             id: id.to_string(),
-            limit_usd: 10.0,
+            limit_usd: d("10.0"),
             period: Default::default(),
             unpriced_policy: None,
         }
@@ -391,7 +405,7 @@ mod tests {
 
         let mut db = GatewayConfig::default();
         db.db_virtual_keys.push(db_vkey("vk1", "hash-1"));
-        db.model_prices.push(price_val("gpt-4o", 3.0));
+        db.model_prices.push(price_val("gpt-4o", d("3.0")));
         db.budgets.push(budget("b1"));
         db.rate_limits.push(rate_limit("rl1"));
         db.mcp_servers.push(rolter_core::McpServerConfig {
@@ -401,6 +415,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:read".to_string()],
+            auth_kind: rolter_core::McpAuthKind::Oauth,
+            ..Default::default()
         });
         db.mcp_oauth_sessions
             .push(rolter_core::McpOAuthSessionConfig {
@@ -458,13 +474,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn merged_store_bootstrap_wins_over_db_prices_and_limits() {
         let mut bootstrap = GatewayConfig::default();
-        bootstrap.model_prices.push(price_val("gpt-4o", 1.0));
+        bootstrap.model_prices.push(price_val("gpt-4o", d("1.0")));
         bootstrap.budgets.push(budget("b1"));
         bootstrap.rate_limits.push(rate_limit("rl1"));
 
         let mut db = GatewayConfig::default();
-        db.model_prices.push(price_val("gpt-4o", 999.0)); // collides on model → dropped
-        db.model_prices.push(price_val("claude", 2.0)); // db-only → kept
+        db.model_prices.push(price_val("gpt-4o", d("999.0"))); // collides on model → dropped
+        db.model_prices.push(price_val("claude", d("2.0"))); // db-only → kept
         db.budgets.push(budget("b1")); // collides on id → dropped
         db.budgets.push(budget("b2")); // db-only → kept
         db.rate_limits.push(rate_limit("rl1")); // collides on id → dropped
@@ -478,10 +494,14 @@ mod tests {
             .iter()
             .map(|p| (p.model.clone(), p.input_per_mtok))
             .collect();
-        assert_eq!(prices.get("gpt-4o"), Some(&1.0), "config price must win");
+        assert_eq!(
+            prices.get("gpt-4o"),
+            Some(&d("1.0")),
+            "config price must win"
+        );
         assert_eq!(
             prices.get("claude"),
-            Some(&2.0),
+            Some(&d("2.0")),
             "db-only price must survive"
         );
         assert_eq!(merged.model_prices.len(), 2);

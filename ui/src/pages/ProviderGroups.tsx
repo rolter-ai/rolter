@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, Layers, Loader2, Trash2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import {
   ProviderGroupSheet,
@@ -37,6 +37,7 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -88,6 +89,8 @@ export default function ProviderGroups() {
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderGroupRow | null>(null);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
+  // a group is edited and deleted by the same admin that may add one (#1258)
+  const deleteGate = useGate("provider_group:delete");
 
   const q = search.trim().toLowerCase();
   const filtered = (groups.data ?? []).filter(
@@ -108,7 +111,7 @@ export default function ProviderGroups() {
     <PageBody>
       <Toolbar>
         <SearchInput
-          placeholder="Search provider groups"
+          placeholder={t("pages.providerGroups.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -118,7 +121,7 @@ export default function ProviderGroups() {
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.orgId}
         >
-          + Add group
+          + {t("pages.providerGroups.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -131,7 +134,7 @@ export default function ProviderGroups() {
       )}
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Add/edit/delete is unavailable: {scopeMessage}. Read-only view still works.
+          {t("common.scopeReadOnly", { reason: scopeMessage })}
         </p>
       )}
       {!scope.isLoading && !scope.errorKey && !scope.orgId && (
@@ -145,16 +148,26 @@ export default function ProviderGroups() {
 
       <ListTable>
         <ListHeader grid={GRID}>
-          <SortLabel label="Name" col="name" sort={sort} onCycle={(c) => cycle(c as never)} />
           <SortLabel
-            label="Strategy"
+            label={t("pages.providerGroups.columns.name")}
+            col="name"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
+            label={t("pages.providerGroups.columns.strategy")}
             col="strategy"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <SortLabel label="Address" col="slug" sort={sort} onCycle={(c) => cycle(c as never)} />
           <SortLabel
-            label="Members"
+            label={t("pages.providerGroups.columns.address")}
+            col="slug"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
+            label={t("pages.providerGroups.columns.members")}
             col="members"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
@@ -174,13 +187,15 @@ export default function ProviderGroups() {
               </span>
               <CopyButton
                 value={`${group.slug}/`}
-                label="Copy address prefix"
+                label={t("pages.providerGroups.copyAddress")}
                 className="h-6 px-1"
               />
             </span>
             <span className="flex min-w-0 flex-wrap items-center gap-1">
               {group.members.length === 0 ? (
-                <span className="text-xs text-muted-foreground">no members</span>
+                <span className="text-xs text-muted-foreground">
+                  {t("pages.providerGroups.noMembers")}
+                </span>
               ) : (
                 group.members.map((m) => (
                   <Badge key={m.provider_id} tone="outline" className="font-mono text-[11px]">
@@ -191,20 +206,26 @@ export default function ProviderGroups() {
               )}
             </span>
             <div className="flex items-center justify-end gap-1.5">
-              <Button
+              <GatedButton
+                gate="provider_group:update"
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
+                aria-label={t("pages.providerGroups.editOne", { name: group.name })}
                 onClick={() => setSheet({ mode: "edit", group })}
               >
-                Edit
-              </Button>
+                {t("pages.providerGroups.edit")}
+              </GatedButton>
               <button
                 type="button"
-                title="Delete provider group"
-                aria-label={`Delete provider group ${group.name}`}
+                title={
+                  deleteGate.reason ??
+                  t("pages.providerGroups.deleteOne", { name: group.name })
+                }
+                aria-label={t("pages.providerGroups.deleteOne", { name: group.name })}
+                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(group)}
-                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -252,11 +273,19 @@ export default function ProviderGroups() {
 
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
-          <DialogTitle>Delete provider group</DialogTitle>
+          <DialogTitle>{t("pages.providerGroups.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            <span className="font-mono">{deleteTarget?.name}</span> will stop resolving as a{" "}
-            <span className="font-mono">{deleteTarget?.slug}/model</span> address. Member
-            providers are unaffected. This cannot be undone.
+            <Trans
+              i18nKey="pages.providerGroups.deleteBody"
+              values={{
+                name: deleteTarget?.name,
+                address: `${deleteTarget?.slug}/model`,
+              }}
+              components={[
+                <span key="name" className="font-mono" />,
+                <span key="address" className="font-mono" />,
+              ]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removeGroup.isError && (
@@ -264,7 +293,7 @@ export default function ProviderGroups() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -290,7 +319,7 @@ export default function ProviderGroups() {
             {removeGroup.isPending && (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             )}
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>

@@ -48,28 +48,29 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
 });
 
 // mirrors the server's validation so a bad value is caught before the round
-// trip; the server stays the authority and its message is surfaced on reject
+// trip; the server stays the authority and its message is surfaced on reject.
+// returns a catalog key, translated by the caller
 function validate(form: FormState): string | null {
   const percent = Number(form.samplePercent);
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-    return "Sample rate must be between 0 and 100 percent.";
+    return "pages.logsSettings.errors.sampleRange";
   }
   const maxBytes = Number(form.maxBytes);
   if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > 1_048_576) {
-    return "Max payload bytes must be a whole number between 0 and 1048576.";
+    return "pages.logsSettings.errors.maxBytes";
   }
   const days = Number(form.retentionDays);
   if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    return "Retention must be a whole number of days between 1 and 3650.";
+    return "pages.logsSettings.errors.retentionDays";
   }
   const hours = Number(form.payloadRetentionHours);
   if (!Number.isInteger(hours) || hours < 1 || hours > 8760) {
-    return "Payload retention must be a whole number of hours between 1 and 8760.";
+    return "pages.logsSettings.errors.payloadRetentionHours";
   }
   // raw bodies are the sensitive half: keeping them past the metadata they
   // belong to would leak prompt content the operator meant to expire
   if (hours > days * 24) {
-    return "Payload retention cannot outlive log retention.";
+    return "pages.logsSettings.errors.payloadOutlivesLog";
   }
   return null;
 }
@@ -162,36 +163,34 @@ function LogsSettingsScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Sample Rate</span>
+          <span className="text-sm font-medium">{t("pages.logsSettings.sampleRate")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Percentage of requests written to the log. Lower it to cut storage on
-            high-volume deployments; metrics and budgets are unaffected.
+            {t("pages.logsSettings.sampleRateHint")}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Input
             className="max-w-[120px]"
             inputMode="decimal"
-            aria-label="Sample rate percent"
+            aria-label={t("pages.logsSettings.sampleRatePercent")}
             value={form.samplePercent}
             onChange={(e) => set({ samplePercent: e.target.value })}
           />
-          <span className="text-sm text-muted-foreground">% of requests</span>
+          <span className="text-sm text-muted-foreground">{t("pages.logsSettings.percentOfRequests")}</span>
         </div>
       </section>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">Capture Request Payloads</span>
+            <span className="text-sm font-medium">{t("pages.logsSettings.capture")}</span>
             <p className="mt-1 text-sm text-muted-foreground">
-              Store raw prompt and completion bodies alongside the log metadata.
-              Off by default — payloads carry whatever the caller sent.
+              {t("pages.logsSettings.captureHint")}
             </p>
           </div>
           <Switch
             checked={form.captureEnabled}
-            aria-label="Capture request payloads"
+            aria-label={t("pages.logsSettings.captureAria")}
             onCheckedChange={(v) => set({ captureEnabled: v })}
           />
         </div>
@@ -221,42 +220,42 @@ function LogsSettingsScreen() {
           style={{ opacity: capture ? 1 : 0.55 }}
         >
           <label htmlFor="logs-max-bytes" className="text-xs font-medium text-[color:var(--text-secondary)]">
-            Max bytes per payload
+            {t("pages.logsSettings.maxBytes")}
           </label>
           <Input
             id="logs-max-bytes"
             className="max-w-[180px]"
             inputMode="numeric"
             disabled={!capture}
-            aria-label="Max bytes per payload"
+            aria-label={t("pages.logsSettings.maxBytes")}
             value={form.maxBytes}
             onChange={(e) => set({ maxBytes: e.target.value })}
           />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-            Anything longer is truncated. Maximum 1048576 (1 MiB).
+            {t("pages.logsSettings.maxBytesHint")}
           </span>
         </fieldset>
       </section>
 
       <ListCard
-        title="Redacted Fields"
-        desc="Comma-separated JSON keys stripped from captured payloads before they are stored. Redaction happens before the write, so a redacted value never reaches storage."
+        title={t("pages.logsSettings.redacted")}
+        desc={t("pages.logsSettings.redactedHint")}
         value={form.redactFields}
-        placeholder="authorization, api_key, ssn"
+        placeholder={t("pages.logsSettings.redactedPlaceholder")}
         disabled={!capture}
         onChange={(v) => set({ redactFields: v })}
       />
       <ListCard
-        title="Capture Only These Models"
-        desc="Comma-separated model names. Leave empty to capture payloads for every model."
+        title={t("pages.logsSettings.onlyModels")}
+        desc={t("pages.logsSettings.onlyModelsHint")}
         value={form.models}
-        placeholder="gpt-4o, claude-sonnet-5"
+        placeholder={t("pages.logsSettings.onlyModelsPlaceholder")}
         disabled={!capture}
         onChange={(v) => set({ models: v })}
       />
       <ListCard
-        title="Capture Only These Virtual Keys"
-        desc="Comma-separated virtual key UUIDs. Leave empty to capture payloads for every key."
+        title={t("pages.logsSettings.onlyKeys")}
+        desc={t("pages.logsSettings.onlyKeysHint")}
         value={form.virtualKeyIds}
         placeholder="0b7f1e2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
         disabled={!capture}
@@ -265,35 +264,34 @@ function LogsSettingsScreen() {
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Retention</span>
+          <span className="text-sm font-medium">{t("pages.logsSettings.retention")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            How long each half of the log is kept. Payloads are the sensitive
-            half, so they cannot outlive the metadata they belong to.
+            {t("pages.logsSettings.retentionHint")}
           </p>
         </div>
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="logs-retention-days" className="text-xs font-medium text-[color:var(--text-secondary)]">
-              Log metadata (days)
+              {t("pages.logsSettings.retentionDays")}
             </label>
             <Input
               id="logs-retention-days"
               className="max-w-[140px]"
               inputMode="numeric"
-              aria-label="Retention days"
+              aria-label={t("pages.logsSettings.retentionDaysAria")}
               value={form.retentionDays}
               onChange={(e) => set({ retentionDays: e.target.value })}
             />
           </div>
           <div className="flex flex-col gap-1.5">
             <label htmlFor="logs-payload-retention-hours" className="text-xs font-medium text-[color:var(--text-secondary)]">
-              Captured payloads (hours)
+              {t("pages.logsSettings.payloadRetentionHours")}
             </label>
             <Input
               id="logs-payload-retention-hours"
               className="max-w-[140px]"
               inputMode="numeric"
-              aria-label="Payload retention hours"
+              aria-label={t("pages.logsSettings.payloadRetentionHoursAria")}
               value={form.payloadRetentionHours}
               onChange={(e) => set({ payloadRetentionHours: e.target.value })}
             />
@@ -302,12 +300,14 @@ function LogsSettingsScreen() {
       </section>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">{t(localError)}</span>
+        )}
         <Button
           disabled={save.isPending || localError !== null}
           onClick={() => save.mutate(form)}
         >
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

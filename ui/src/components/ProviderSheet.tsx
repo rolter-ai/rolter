@@ -444,7 +444,7 @@ export function ProviderSheet({
             </Button>
           )}
           <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             disabled={!canSave}

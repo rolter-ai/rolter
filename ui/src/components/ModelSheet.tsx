@@ -9,7 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
@@ -963,11 +963,11 @@ export function ModelSheet({
   const publicName = draft.alias.trim() || draft.upstreamName.trim();
   const errProvider =
     !readonly && !draft.providerId
-      ? "Required. Pick the upstream provider that actually serves this model."
+      ? t("modelSheet.errors.provider")
       : "";
   const errUpstream =
     !readonly && !draft.upstreamName.trim()
-      ? "Required. Enter the model id exactly as the provider's API expects it — this is the string sent to the base URL (e.g. gpt-4o, claude-sonnet-4-20250514)."
+      ? t("modelSheet.errors.upstream")
       : "";
   const nameConflict =
     !readonly &&
@@ -978,21 +978,21 @@ export function ModelSheet({
         (mode !== "edit" || m.model !== route?.model),
     );
   const errAlias = nameConflict
-    ? `A model named “${publicName}” already exists. Give this one a distinct Rolter alias.`
+    ? t("modelSheet.errors.alias", { name: publicName })
     : "";
   const errBaseUrl =
     draft.baseUrl.trim() !== "" && !/^https?:\/\//i.test(draft.baseUrl.trim())
-      ? "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint."
+      ? t("modelSheet.errors.baseUrl")
       : "";
   const errParam = draft.params.some(
     (p) => p.custom && p.value.trim() !== "" && p.key.trim() === "",
   )
-    ? "One or more custom parameters have a value but no name — name them or clear the value."
+    ? t("modelSheet.errors.param")
     : "";
   const errHeader = draft.headers.some(
     (h) => h.value.trim() !== "" && h.key.trim() === "",
   )
-    ? "One or more custom headers have a value but no name — name them or clear the value."
+    ? t("modelSheet.errors.header")
     : "";
   const errors = [errProvider, errUpstream, errAlias, errBaseUrl, errParam, errHeader].filter(
     Boolean,
@@ -1144,12 +1144,17 @@ export function ModelSheet({
     });
   };
 
-  const title = mode === "add" ? "Add model" : readonly ? "Model details" : "Edit model";
+  const title =
+    mode === "add"
+      ? t("modelSheet.titleAdd")
+      : readonly
+        ? t("modelSheet.titleView")
+        : t("modelSheet.titleEdit");
   const subtitle =
     mode === "add"
-      ? "Register a model and how the gateway calls it."
+      ? t("modelSheet.subtitleAdd")
       : `${providerName || "—"} · ${draft.upstreamName.trim() || "—"}`;
-  const cta = mode === "add" ? "Add model" : "Save model";
+  const cta = mode === "add" ? t("modelSheet.ctaAdd") : t("modelSheet.ctaSave");
 
   const showCaps = draft.modality === "chat" || draft.modality === "audio";
   const cur = draft.price.currency;
@@ -1167,15 +1172,15 @@ export function ModelSheet({
   const headerManual = draft.headerMode === "manual";
   const modeNote =
     draft.paramMode === "lockAll"
-      ? "Locked: clients cannot override any parameter — these server-side values are enforced."
+      ? t("modelSheet.lock.noteLockAll")
       : draft.paramMode === "unlockAll"
-        ? "Open: clients may override any parameter. Values here act as defaults only."
-        : "Manual: lock individual parameters below; unlocked ones stay client-overridable.";
+        ? t("modelSheet.lock.noteUnlockAll")
+        : t("modelSheet.lock.noteManual");
 
   const lockModeOptions: { value: LockMode; label: string }[] = [
-    { value: "lockAll", label: "Lock all" },
-    { value: "unlockAll", label: "Unlock all" },
-    { value: "manual", label: "Manual" },
+    { value: "lockAll", label: t("modelSheet.lock.lockAll") },
+    { value: "unlockAll", label: t("modelSheet.lock.unlockAll") },
+    { value: "manual", label: t("modelSheet.lock.manual") },
   ];
 
   const numInput = (
@@ -1226,9 +1231,10 @@ export function ModelSheet({
           <div className="flex items-start gap-2.5 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-3 py-2.5">
             <Lock className="mt-0.5 h-3.5 w-3.5 flex-none text-[color:var(--text-secondary)]" />
             <p className="text-xs leading-snug text-[color:var(--text-secondary)]">
-              Read-only config model — defined in config and always present. Fields are
-              shown for reference; edits and deletes are rejected with{" "}
-              <span className="font-mono text-foreground">409 Conflict</span>.
+              <Trans
+                i18nKey="modelSheet.readonlyNotice"
+                components={[<span key="code" className="font-mono text-foreground" />]}
+              />
             </p>
           </div>
         )}
@@ -1237,8 +1243,8 @@ export function ModelSheet({
         {mode === "add" && (
           <div className="space-y-1.5">
             <FieldLabel
-              label="Duplicate from"
-              info="Prefill every field from an existing model, then tweak. Handy for adding a second deployment of the same model on another provider."
+              label={t("modelSheet.dupFrom.label")}
+              info={t("modelSheet.dupFrom.info")}
               htmlFor="ms-field-1"
             />
             <Select
@@ -1247,7 +1253,7 @@ export function ModelSheet({
               value={dupFrom}
               onChange={(e) => applyDupFrom(e.target.value)}
             >
-              <option value="">Start from scratch…</option>
+              <option value="">{t("modelSheet.dupFrom.scratch")}</option>
               {routes.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.model}
@@ -1259,7 +1265,7 @@ export function ModelSheet({
 
         {/* ===== General ===== */}
         <Section
-          title="General"
+          title={t("modelSheet.sections.general")}
           open={secOpen.general}
           onToggle={() => toggleSec("general")}
           className="space-y-3.5"
@@ -1267,9 +1273,9 @@ export function ModelSheet({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <FieldLabel
-                label="Provider"
+                label={t("modelSheet.fields.provider")}
                 required
-                info="The upstream provider that serves this model. Sets auth, endpoint shape, and which parameters are valid."
+                info={t("modelSheet.fields.providerInfo")}
                 htmlFor="ms-field-2"
               />
               <Select
@@ -1279,7 +1285,11 @@ export function ModelSheet({
                 disabled={readonly}
                 onChange={(e) => set({ providerId: e.target.value })}
               >
-                <option value="">{readonly ? "config" : "select provider…"}</option>
+                <option value="">
+                  {readonly
+                    ? t("modelSheet.fields.providerConfig")
+                    : t("modelSheet.fields.providerSelect")}
+                </option>
                 {providers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -1290,8 +1300,8 @@ export function ModelSheet({
             </div>
             <div className="space-y-1.5">
               <FieldLabel
-                label="Model type"
-                info="The modality this endpoint handles. Determines which request schema and playground surface apply."
+                label={t("modelSheet.fields.modality")}
+                info={t("modelSheet.fields.modalityInfo")}
                 htmlFor="ms-field-3"
               />
               <Select
@@ -1311,9 +1321,9 @@ export function ModelSheet({
           </div>
           <div className="space-y-1.5">
             <FieldLabel
-              label="Upstream model name"
+              label={t("modelSheet.fields.upstream")}
               required
-              info="The exact model id the provider expects — this string is sent to the base URL. e.g. gpt-4o, claude-sonnet-4-20250514, Llama-3.1-8B-Instruct."
+              info={t("modelSheet.fields.upstreamInfo")}
               htmlFor="ms-field-4"
             />
             <Input
@@ -1326,34 +1336,34 @@ export function ModelSheet({
             />
             <p className="text-xs text-muted-foreground">
               {mode === "edit"
-                ? "Renaming isn't supported yet — delete and re-add to change the name."
-                : "Sent verbatim to the provider — must match their API exactly."}
+                ? t("modelSheet.fields.upstreamHintEdit")
+                : t("modelSheet.fields.upstreamHint")}
             </p>
             <FieldError error={errUpstream} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
-              label="Rolter alias"
-              info="Optional. The public name clients call this model by. Leave blank to reuse the upstream name. Use it to expose a stable, provider-agnostic name."
+              label={t("modelSheet.fields.alias")}
+              info={t("modelSheet.fields.aliasInfo")}
               htmlFor="ms-field-5"
             />
             <Input
               id="ms-field-5"
               className="font-mono"
               value={draft.alias}
-              placeholder={draft.upstreamName.trim() || "same as upstream name"}
+              placeholder={draft.upstreamName.trim() || t("modelSheet.fields.aliasPlaceholder")}
               disabled={readonly || mode === "edit"}
               onChange={(e) => set({ alias: e.target.value })}
             />
             <p className="text-xs text-muted-foreground">
-              The name clients send. Optional — defaults to the upstream name.
+              {t("modelSheet.fields.aliasHint")}
             </p>
             <FieldError error={errAlias} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
-              label="Base URL override"
-              info="Point this model at a custom endpoint (self-hosted, proxy, or region). Leave blank to use the provider's default base URL."
+              label={t("modelSheet.fields.baseUrl")}
+              info={t("modelSheet.fields.baseUrlInfo")}
               htmlFor="ms-field-6"
             />
             <Input
@@ -1365,27 +1375,27 @@ export function ModelSheet({
               onChange={(e) => set({ baseUrl: e.target.value })}
             />
             <p className="text-xs text-muted-foreground">
-              Optional. Overrides the provider endpoint for this model only.
+              {t("modelSheet.fields.baseUrlHint")}
             </p>
             <FieldError error={errBaseUrl} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
-              label="Description"
-              info="Free text shown in the catalog and pickers. Note capabilities, intended use, or gotchas for your team."
+              label={t("modelSheet.fields.description")}
+              info={t("modelSheet.fields.descriptionInfo")}
               htmlFor="ms-field-7"
             />
             <Textarea
               id="ms-field-7"
               value={draft.description}
-              placeholder="What is this model for? Any routing notes for the team…"
+              placeholder={t("modelSheet.fields.descriptionPlaceholder")}
               disabled={readonly}
               onChange={(e) => set({ description: e.target.value })}
             />
           </div>
           <SwitchRow
-            title="Enabled"
-            hint="Off = kept in the catalog but excluded from routing and pickers."
+            title={t("modelSheet.fields.enabled")}
+            hint={t("modelSheet.fields.enabledHint")}
             checked={draft.enabled}
             disabled={readonly}
             onChange={(v) => set({ enabled: v })}
@@ -1394,8 +1404,8 @@ export function ModelSheet({
 
         {/* ===== Default parameters ===== */}
         <Section
-          title="Default parameters"
-          info="Server-side default values for inference parameters, and whether clients may override each one."
+          title={t("modelSheet.sections.params")}
+          info={t("modelSheet.sections.paramsInfo")}
           open={secOpen.params}
           onToggle={() => toggleSec("params")}
           className="space-y-3"
@@ -1413,10 +1423,10 @@ export function ModelSheet({
               <div key={p.custom ? `c${i}` : p.key} className="flex items-center gap-2">
                 {p.custom ? (
                   <Input
-                    aria-label="Param name"
+                    aria-label={t("modelSheet.params.name")}
                     className="h-[34px] flex-[1.1] font-mono text-xs"
                     value={p.key}
-                    placeholder="param name"
+                    placeholder={t("modelSheet.params.namePlaceholder")}
                     disabled={readonly}
                     onChange={(e) => setParamAt(i, { key: e.target.value })}
                   />
@@ -1427,7 +1437,7 @@ export function ModelSheet({
                 )}
                 {p.type === "enum" ? (
                   <Select
-                    aria-label="Param value"
+                    aria-label={t("modelSheet.params.value")}
                     className="h-[34px] min-w-0 flex-1 font-mono text-xs"
                     value={p.value}
                     disabled={readonly}
@@ -1435,25 +1445,29 @@ export function ModelSheet({
                   >
                     {(p.opts ?? ["", "low", "medium", "high"]).map((o) => (
                       <option key={o} value={o}>
-                        {o === "" ? "provider default" : o}
+                        {o === "" ? t("modelSheet.params.providerDefault") : o}
                       </option>
                     ))}
                   </Select>
                 ) : (
                   <Input
-                    aria-label="Param value"
+                    aria-label={t("modelSheet.params.value")}
                     className="h-[34px] min-w-0 flex-1 font-mono text-xs"
                     type={p.type === "int" || p.type === "float" ? "number" : "text"}
                     step="any"
                     value={p.value}
-                    placeholder={p.custom ? "value" : "provider default"}
+                    placeholder={
+                      p.custom
+                        ? t("modelSheet.params.valuePlaceholder")
+                        : t("modelSheet.params.providerDefault")
+                    }
                     disabled={readonly}
                     onChange={(e) => setParamAt(i, { value: e.target.value })}
                   />
                 )}
                 {p.custom && (
                   <Select
-                    aria-label="Param type"
+                    aria-label={t("modelSheet.params.type")}
                     className="h-[34px] w-20 flex-none font-mono text-[11px]"
                     value={p.type}
                     disabled={readonly}
@@ -1476,8 +1490,8 @@ export function ModelSheet({
                 {p.custom && (
                   <button
                     type="button"
-                    title="Remove"
-                    aria-label="Remove param"
+                    title={t("common.remove")}
+                    aria-label={t("modelSheet.params.remove")}
                     disabled={readonly}
                     onClick={() =>
                       setDraft((d) => ({
@@ -1485,7 +1499,7 @@ export function ModelSheet({
                         params: d.params.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-destructive hover:text-[color:var(--status-danger-text)]"
+                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -1515,7 +1529,7 @@ export function ModelSheet({
               }
             >
               <Plus className="h-3.5 w-3.5" />
-              Add parameter
+              {t("modelSheet.params.add")}
             </Button>
           )}
         </Section>
@@ -1523,14 +1537,14 @@ export function ModelSheet({
         {/* ===== Capabilities (chat + audio only) ===== */}
         {showCaps && (
           <Section
-            title="Capabilities"
-            info="What this model endpoint supports. Flags gate request features and hint the playground — they don't add capabilities the provider lacks. The set shown depends on the model type."
+            title={t("modelSheet.sections.caps")}
+            info={t("modelSheet.sections.capsInfo")}
             open={secOpen.caps}
             onToggle={() => toggleSec("caps")}
             className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
           >
             <SwitchRow
-              title="Streaming"
+              title={t("modelSheet.caps.streaming")}
               checked={draft.caps.streaming}
               disabled={readonly}
               onChange={(v) => setDeep("caps", { streaming: v })}
@@ -1538,26 +1552,26 @@ export function ModelSheet({
             {draft.modality === "chat" && (
               <>
                 <SwitchRow
-                  title="Tools / functions"
+                  title={t("modelSheet.caps.tools")}
                   checked={draft.caps.tools}
                   disabled={readonly}
                   onChange={(v) => setDeep("caps", { tools: v })}
                 />
                 <SwitchRow
-                  title="Vision / images"
+                  title={t("modelSheet.caps.vision")}
                   checked={draft.caps.vision}
                   disabled={readonly}
                   onChange={(v) => setDeep("caps", { vision: v })}
                 />
                 <SwitchRow
-                  title="JSON mode"
+                  title={t("modelSheet.caps.json")}
                   checked={draft.caps.json}
                   disabled={readonly}
                   onChange={(v) => setDeep("caps", { json: v })}
                 />
                 <SwitchRow
-                  title="Reasoning"
-                  info="Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter."
+                  title={t("modelSheet.caps.reasoning")}
+                  info={t("modelSheet.caps.reasoningInfo")}
                   checked={draft.caps.reasoning}
                   disabled={readonly}
                   onChange={setReasoning}
@@ -1569,24 +1583,27 @@ export function ModelSheet({
 
         {/* ===== Pricing override ===== */}
         <Section
-          title="Pricing override"
-          info="Override the datasheet price for accurate cost tracking. All fields optional — blank counts as 0."
+          title={t("modelSheet.sections.pricing")}
+          info={t("modelSheet.sections.pricingInfo")}
           open={secOpen.pricing}
           onToggle={() => toggleSec("pricing")}
           className="space-y-3"
         >
-          <p className="text-xs text-muted-foreground">
-            Optional cost overrides for accurate tracking — fields shown match the model
-            type. Leave blank for free / provider-tracked.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {(draft.modality === "chat" || draft.modality === "embedding") &&
-              priceInput("input", `Input ${cur}/Mtok`)}
+              priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
             {draft.modality === "chat" && (
               <>
-                {priceInput("output", `Output ${cur}/Mtok`)}
-                {priceInput("cacheWrite", `Cache-write ${cur}/Mtok`)}
-                {priceInput("cacheRead", `Cache-read ${cur}/Mtok`)}
+                {priceInput("output", t("modelSheet.pricing.output", { currency: cur }))}
+                {priceInput(
+                  "cacheWrite",
+                  t("modelSheet.pricing.cacheWrite", { currency: cur }),
+                )}
+                {priceInput(
+                  "cacheRead",
+                  t("modelSheet.pricing.cacheRead", { currency: cur }),
+                )}
               </>
             )}
           </div>
@@ -1595,8 +1612,8 @@ export function ModelSheet({
               <FieldLabel
                 label={
                   draft.modality === "image"
-                    ? `Flat price per image (${cur})`
-                    : `Flat price per minute (${cur})`
+                    ? t("modelSheet.pricing.perImage", { currency: cur })
+                    : t("modelSheet.pricing.perMinute", { currency: cur })
                 }
                 htmlFor="ms-field-8"
               />
@@ -1614,7 +1631,7 @@ export function ModelSheet({
           )}
           <div className="flex items-end gap-3">
             <div className="w-36 space-y-1">
-              <FieldLabel label="Currency" htmlFor="ms-field-9" />
+              <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
               <Select
                 id="ms-field-9"
                 className="font-mono"
@@ -1650,7 +1667,7 @@ export function ModelSheet({
 
         {/* ===== Limits & network ===== */}
         <Section
-          title="Limits & network"
+          title={t("modelSheet.sections.advanced")}
           open={secOpen.advanced}
           onToggle={() => toggleSec("advanced")}
           className="space-y-3"
@@ -1658,40 +1675,44 @@ export function ModelSheet({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {numInput(
               "rpm",
-              "Requests / min",
-              "unlimited",
-              "Max requests per minute to this model. Blank = no per-model cap (virtual-key limits still apply).",
+              t("modelSheet.net.rpm"),
+              t("modelSheet.net.unlimited"),
+              t("modelSheet.net.rpmInfo"),
             )}
             {numInput(
               "tpm",
-              "Tokens / min",
-              "unlimited",
-              "Max tokens per minute across requests to this model. Blank = no per-model cap.",
+              t("modelSheet.net.tpm"),
+              t("modelSheet.net.unlimited"),
+              t("modelSheet.net.tpmInfo"),
             )}
-            {numInput("concurrency", "Max concurrency", "unlimited")}
-            {numInput("timeoutMs", "Timeout (ms)", "30000")}
-            {numInput("retries", "Max retries", "2")}
+            {numInput(
+              "concurrency",
+              t("modelSheet.net.concurrency"),
+              t("modelSheet.net.unlimited"),
+            )}
+            {numInput("timeoutMs", t("modelSheet.net.timeout"), "30000")}
+            {numInput("retries", t("modelSheet.net.retries"), "2")}
             {numInput(
               "weight",
-              "Routing weight",
+              t("modelSheet.net.weight"),
               "100",
-              "Relative share of traffic when this model is one of several targets for the same alias.",
+              t("modelSheet.net.weightInfo"),
             )}
-            {numInput("context", "Context window", "128000")}
-            {numInput("maxOutput", "Max output tokens", "16384")}
+            {numInput("context", t("modelSheet.net.context"), "128000")}
+            {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384")}
           </div>
           <SwitchRow
-            title="Allow insecure TLS"
-            hint="Disables cert verification for this model's endpoint."
-            info="Skip TLS certificate verification. Only for self-signed or private-CA endpoints you trust — never for public providers."
+            title={t("modelSheet.net.insecureTls")}
+            hint={t("modelSheet.net.insecureTlsHint")}
+            info={t("modelSheet.net.insecureTlsInfo")}
             checked={draft.net.insecureTls}
             disabled={readonly}
             onChange={(v) => setDeep("net", { insecureTls: v })}
           />
           <SwitchRow
-            title="Allow additional fields"
-            hint="Forward unknown fields instead of stripping them."
-            info="Pass through request fields not in Rolter's schema straight to the provider — for provider-specific options Rolter doesn't model yet."
+            title={t("modelSheet.net.allowAdditional")}
+            hint={t("modelSheet.net.allowAdditionalHint")}
+            info={t("modelSheet.net.allowAdditionalInfo")}
             checked={draft.net.allowAdditional}
             disabled={readonly}
             onChange={(v) => setDeep("net", { allowAdditional: v })}
@@ -1700,8 +1721,8 @@ export function ModelSheet({
 
         {/* ===== Custom request headers ===== */}
         <Section
-          title="Custom request headers"
-          info="Extra HTTP headers sent upstream with every request. Same lock rules as parameters — control whether clients can override them."
+          title={t("modelSheet.sections.headers")}
+          info={t("modelSheet.sections.headersInfo")}
           open={secOpen.headers}
           onToggle={() => toggleSec("headers")}
           className="space-y-3"
@@ -1718,18 +1739,18 @@ export function ModelSheet({
               {draft.headers.map((h, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <Input
-                    aria-label="Header name"
+                    aria-label={t("modelSheet.headers.name")}
                     className="h-[34px] min-w-0 flex-1 font-mono text-xs"
                     value={h.key}
-                    placeholder="Header-Name"
+                    placeholder={t("modelSheet.headers.namePlaceholder")}
                     disabled={readonly}
                     onChange={(e) => setHeaderAt(i, { key: e.target.value })}
                   />
                   <Input
-                    aria-label="Header value"
+                    aria-label={t("modelSheet.headers.value")}
                     className="h-[34px] min-w-0 flex-1 font-mono text-xs"
                     value={h.value}
-                    placeholder="value"
+                    placeholder={t("modelSheet.headers.valuePlaceholder")}
                     disabled={readonly}
                     onChange={(e) => setHeaderAt(i, { value: e.target.value })}
                   />
@@ -1742,8 +1763,8 @@ export function ModelSheet({
                   )}
                   <button
                     type="button"
-                    title="Remove"
-                    aria-label="Remove header"
+                    title={t("common.remove")}
+                    aria-label={t("modelSheet.headers.remove")}
                     disabled={readonly}
                     onClick={() =>
                       setDraft((d) => ({
@@ -1751,7 +1772,7 @@ export function ModelSheet({
                         headers: d.headers.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-destructive hover:text-[color:var(--status-danger-text)]"
+                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -1775,22 +1796,22 @@ export function ModelSheet({
               }
             >
               <Plus className="h-3.5 w-3.5" />
-              Add header
+              {t("modelSheet.headers.add")}
             </Button>
           )}
         </Section>
 
         {/* ===== Access & permissions ===== */}
         <Section
-          title="Access & permissions"
+          title={t("modelSheet.sections.rbac")}
           open={secOpen.rbac}
           onToggle={() => toggleSec("rbac")}
           className="space-y-3.5"
         >
           <div className="space-y-1.5">
             <FieldLabel
-              label="Minimum role"
-              info="The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it."
+              label={t("modelSheet.rbac.minRole")}
+              info={t("modelSheet.rbac.minRoleInfo")}
               htmlFor="ms-field-10"
             />
             <Select
@@ -1809,16 +1830,16 @@ export function ModelSheet({
           </div>
           <div className="space-y-1.5">
             <FieldLabel
-              label="Visibility"
-              info="Public = available to anyone meeting the minimum role. Restricted = only the teams, virtual keys, and users you list below."
+              label={t("modelSheet.rbac.visibility")}
+              info={t("modelSheet.rbac.visibilityInfo")}
               id="ms-visibility-label"
             />
             <Segmented
               labelledBy="ms-visibility-label"
               value={draft.rbac.visibility}
               options={[
-                { value: "public", label: "Public" },
-                { value: "restricted", label: "Restricted" },
+                { value: "public", label: t("modelSheet.rbac.public") },
+                { value: "restricted", label: t("modelSheet.rbac.restricted") },
               ]}
               disabled={readonly}
               onChange={(v) => setDeep("rbac", { visibility: v })}
@@ -1827,7 +1848,7 @@ export function ModelSheet({
           {draft.rbac.visibility === "restricted" && (
             <div className="space-y-3.5">
               <ChipGroup
-                label="Allowed teams / business units"
+                label={t("modelSheet.rbac.teams")}
                 options={(teams.data ?? []).map((row) => ({ id: row.id, name: row.name }))}
                 selected={draft.rbac.teams}
                 disabled={readonly}
@@ -1840,7 +1861,7 @@ export function ModelSheet({
                 }
               />
               <ChipGroup
-                label="Allowed virtual keys"
+                label={t("modelSheet.rbac.vkeys")}
                 options={(vkeys.data ?? []).map((row) => ({
                   id: row.id,
                   name: row.name || row.key_prefix,
@@ -1856,7 +1877,7 @@ export function ModelSheet({
                 }
               />
               <ChipGroup
-                label="Restrict to specific users"
+                label={t("modelSheet.rbac.users")}
                 options={(users.data ?? []).map((row) => ({ id: row.id, name: row.email }))}
                 selected={draft.rbac.users}
                 disabled={readonly}
@@ -1874,7 +1895,7 @@ export function ModelSheet({
 
         {/* ===== Config preview ===== */}
         <Section
-          title="Config preview"
+          title={t("modelSheet.configPreview")}
           open={secOpen.preview}
           onToggle={() => toggleSec("preview")}
         >
@@ -1927,10 +1948,10 @@ export function ModelSheet({
               <Plug className="h-[15px] w-[15px]" />
             )}
             {testState === "testing"
-              ? "Testing…"
+              ? t("modelSheet.test.testing")
               : testState === "ok"
-                ? "Connection OK"
-                : "Test connection"}
+                ? t("modelSheet.test.ok")
+                : t("modelSheet.test.run")}
           </button>
           {/* the primary action stays where it is and greys out instead of
               vanishing (#1265): a footer that reflows tells an operator who
@@ -1947,11 +1968,11 @@ export function ModelSheet({
           )}
           <span className={cn("inline-flex gap-2.5", !blockingError && "ml-auto")}>
             <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             {readonly && (
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Close
+                {t("common.close")}
               </Button>
             )}
             {!readonly && (

@@ -45,10 +45,11 @@ const fromDto = (dto: RuntimePolicyDto): FormState => ({
   queueBlockMs: String(dto.queue_block_ms),
 });
 
+// the catalog key describing each policy; the copy itself lives in en.json
 const BACKPRESSURE_COPY: Record<BackpressurePolicy, string> = {
-  drop: "Drop — shed the request immediately with an overload response.",
-  block: "Block — wait for capacity until the block timeout expires.",
-  error: "Error — return a structured queue_full error immediately.",
+  drop: "pages.performance.backpressure.drop",
+  block: "pages.performance.backpressure.block",
+  error: "pages.performance.backpressure.error",
 };
 
 const inRange = (value: string, min: number, max: number) => {
@@ -57,28 +58,31 @@ const inRange = (value: string, min: number, max: number) => {
 };
 
 // mirrors the server's validation so a bad value is caught before the round
-// trip; the server stays the authority and its message is surfaced on reject
+// trip; the server stays the authority and its message is surfaced on reject.
+// it names a catalog key rather than carrying english copy — the screen renders
+// it, which is where `t` lives
 function validate(form: FormState): string | null {
-  if (!inRange(form.retryMaxRetries, 0, 10)) return "Max retries must be between 0 and 10.";
-  if (!inRange(form.retryBaseMs, 0, 60_000)) return "Retry base must be between 0 and 60000 ms.";
-  if (!inRange(form.retryMaxMs, 0, 600_000)) return "Retry cap must be between 0 and 600000 ms.";
+  const key = "pages.performance.validation.";
+  if (!inRange(form.retryMaxRetries, 0, 10)) return `${key}maxRetries`;
+  if (!inRange(form.retryBaseMs, 0, 60_000)) return `${key}retryBase`;
+  if (!inRange(form.retryMaxMs, 0, 600_000)) return `${key}retryCap`;
   if (Number(form.retryMaxMs) < Number(form.retryBaseMs)) {
-    return "Retry cap cannot be lower than the retry base.";
+    return `${key}retryCapBelowBase`;
   }
-  if (!inRange(form.timeoutConnectS, 0, 300)) return "Connect timeout must be between 0 and 300 s.";
+  if (!inRange(form.timeoutConnectS, 0, 300)) return `${key}connectTimeout`;
   if (!inRange(form.timeoutRequestS, 0, 3_600)) {
-    return "Request timeout must be between 0 and 3600 s.";
+    return `${key}requestTimeout`;
   }
   if (!inRange(form.queueCapacity, 1, 100_000)) {
-    return "Queue capacity must be between 1 and 100000.";
+    return `${key}queueCapacity`;
   }
-  if (!inRange(form.queueWorkers, 1, 2_048)) return "Queue workers must be between 1 and 2048.";
+  if (!inRange(form.queueWorkers, 1, 2_048)) return `${key}queueWorkers`;
   if (!inRange(form.queueBlockMs, 0, 120_000)) {
-    return "Block timeout must be between 0 and 120000 ms.";
+    return `${key}blockTimeout`;
   }
   // blocking with a zero timeout would park callers forever
   if (form.queueBackpressure === "block" && Number(form.queueBlockMs) === 0) {
-    return "Block backpressure needs a non-zero block timeout.";
+    return `${key}blockNeedsTimeout`;
   }
   return null;
 }
@@ -166,43 +170,44 @@ function PerformanceScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  const localErrorKey = validate(form);
+  const localError = localErrorKey ? t(localErrorKey) : null;
   const queue = form.queueEnabled;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <Card
-        title="Retries"
-        desc="Upstream retry budget for a single client request. Backoff grows exponentially from the base up to the cap."
+        title={t("pages.performance.retries.title")}
+        desc={t("pages.performance.retries.desc")}
       >
         <NumberField
-          label="Max retries"
+          label={t("pages.performance.retries.maxRetries")}
           value={form.retryMaxRetries}
           onChange={(v) => set({ retryMaxRetries: v })}
         />
         <NumberField
-          label="Base backoff (ms)"
+          label={t("pages.performance.retries.baseBackoff")}
           value={form.retryBaseMs}
           onChange={(v) => set({ retryBaseMs: v })}
         />
         <NumberField
-          label="Backoff cap (ms)"
+          label={t("pages.performance.retries.backoffCap")}
           value={form.retryMaxMs}
           onChange={(v) => set({ retryMaxMs: v })}
         />
       </Card>
 
       <Card
-        title="Timeouts"
-        desc="How long the gateway waits on an upstream. Zero disables the timeout — streaming responses are bounded by the request timeout too."
+        title={t("pages.performance.timeouts.title")}
+        desc={t("pages.performance.timeouts.desc")}
       >
         <NumberField
-          label="Connect (s)"
+          label={t("pages.performance.timeouts.connect")}
           value={form.timeoutConnectS}
           onChange={(v) => set({ timeoutConnectS: v })}
         />
         <NumberField
-          label="Request (s)"
+          label={t("pages.performance.timeouts.request")}
           value={form.timeoutRequestS}
           onChange={(v) => set({ timeoutRequestS: v })}
         />
@@ -211,15 +216,16 @@ function PerformanceScreen() {
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">Admission Queue</span>
+            <span className="text-sm font-medium">
+              {t("pages.performance.queue.title")}
+            </span>
             <p className="mt-1 text-sm text-muted-foreground">
-              Each provider gets its own bounded queue and worker set, so a slow
-              provider cannot consume the admission capacity of healthy ones.
+              {t("pages.performance.queue.desc")}
             </p>
           </div>
           <Switch
             checked={form.queueEnabled}
-            aria-label="Admission queue"
+            aria-label={t("pages.performance.queue.toggleAria")}
             onCheckedChange={(v) => set({ queueEnabled: v })}
           />
         </div>
@@ -232,26 +238,26 @@ function PerformanceScreen() {
           style={{ opacity: queue ? 1 : 0.55 }}
         >
           <NumberField
-            label="Capacity"
+            label={t("pages.performance.queue.capacity")}
             value={form.queueCapacity}
             disabled={!queue}
             onChange={(v) => set({ queueCapacity: v })}
           />
           <NumberField
-            label="Workers"
+            label={t("pages.performance.queue.workers")}
             value={form.queueWorkers}
             disabled={!queue}
             onChange={(v) => set({ queueWorkers: v })}
           />
           <div className="flex min-w-[200px] flex-col gap-1.5">
             <label htmlFor="perf-queue-backpressure" className="text-xs font-medium text-[color:var(--text-secondary)]">
-              When the queue is full
+              {t("pages.performance.queue.whenFull")}
             </label>
             <Select
               id="perf-queue-backpressure"
               value={form.queueBackpressure}
               disabled={!queue}
-              aria-label="When the queue is full"
+              aria-label={t("pages.performance.queue.whenFull")}
               onChange={(e) =>
                 set({ queueBackpressure: e.target.value as BackpressurePolicy })
               }
@@ -263,11 +269,11 @@ function PerformanceScreen() {
               ))}
             </Select>
             <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-              {BACKPRESSURE_COPY[form.queueBackpressure]}
+              {t(BACKPRESSURE_COPY[form.queueBackpressure])}
             </span>
           </div>
           <NumberField
-            label="Block timeout (ms)"
+            label={t("pages.performance.queue.blockTimeout")}
             value={form.queueBlockMs}
             disabled={!queue || form.queueBackpressure !== "block"}
             onChange={(v) => set({ queueBlockMs: v })}
@@ -281,7 +287,7 @@ function PerformanceScreen() {
           disabled={save.isPending || localError !== null}
           onClick={() => save.mutate(form)}
         >
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

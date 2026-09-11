@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent } from "storybook/test";
 
-import { ApiError } from "@/lib/api";
+import { AnalyticsUnavailableError, ApiError } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 
 import { LoadError } from "./LoadError";
@@ -85,7 +85,11 @@ export const NoStore: Story = {
 export const Unreachable: Story = {
   args: { error: new TypeError("Failed to fetch"), onRetry: fn() },
   play: async ({ canvas, args }) => {
-    await expect(await canvas.findByRole("alert")).toHaveTextContent(/Cannot reach the control/);
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/Cannot reach the control/);
+    // this kind names the resource in the body rather than the title, which is
+    // where the raw {{resource}} used to surface (#1362)
+    await expect(alert).toHaveTextContent(/The request for virtual keys got no answer/);
     await userEvent.click(canvas.getByRole("button", { name: /try again/i }));
     await expect(args.onRetry).toHaveBeenCalled();
   },
@@ -116,5 +120,46 @@ export const WithoutRetryHandle: Story = {
   play: async ({ canvas }) => {
     await canvas.findByRole("alert");
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  },
+};
+
+/**
+ * Every kind at once, against one resource noun.
+ *
+ * Five of the eight bodies carry `{{resource}}` and the title of a sixth does
+ * not, so the component has to interpolate both halves — before #1362 it filled
+ * only the title and the reader saw the raw `{{resource}}` in the body. Catalog
+ * parity cannot see this: the placeholder is in every locale, it was the call
+ * site that dropped it. The assertion is therefore on the rendered DOM.
+ */
+export const EveryKind: Story = {
+  args: { error: new ApiError("boom", 500) },
+  render: (args) => (
+    <div className="flex flex-col gap-3">
+      {[
+        new ApiError("missing bearer token", 401),
+        new ApiError("insufficient role", 403),
+        new ApiError("no session", 401, "open_mode_no_session"),
+        new ApiError("no such endpoint: /api/v1/orgs", 404, "no_such_endpoint"),
+        new AnalyticsUnavailableError("analytics is not configured"),
+        new TypeError("Failed to fetch"),
+        new ApiError("database connection pool exhausted", 500),
+        new ApiError("I'm a teapot", 418),
+      ].map((error, i) => (
+        <LoadError key={i} {...args} error={error} />
+      ))}
+    </div>
+  ),
+  play: async ({ canvas }) => {
+    const alerts = await canvas.findAllByRole("alert");
+    await expect(alerts).toHaveLength(8);
+    for (const alert of alerts) {
+      // no unresolved interpolation anywhere on screen, in either half
+      await expect(alert.textContent).not.toContain("{{");
+      await expect(alert.textContent).not.toContain("}}");
+      // and the noun really did land, not just the braces disappear — every
+      // kind names it in its title, its body, or both
+      await expect(alert).toHaveTextContent(/virtual keys/);
+    }
   },
 };

@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "virtual keys, roles and access checks for rolter"
+description = "virtual keys, roles and access checks for rolter — internal crate, no stable rust api"
 
 [dependencies]
 serde.workspace = true
 subtle.workspace = true
 sha2.workspace = true
+# rfc 6238 totp; sha-1 is what authenticator apps compute regardless of what
+# the otpauth uri asks for, so it is the interoperable choice (see src/totp.rs)
+hmac.workspace = true
+sha1.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 

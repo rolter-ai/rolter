@@ -95,6 +95,14 @@ expires_at = "2027-01-01T00:00:00Z"
 ```
 
 <Note>
+  In the dashboard the same allow-list is a list of the project's routes to tick
+  off, so a model name never has to be typed from memory. A model the project
+  does not route yet can still be added by hand, and an entry already on a key
+  that no route serves is kept rather than dropped — the stored value is the
+  same array of names either way.
+</Note>
+
+<Note>
   The raw key value is visible only at the moment you add it to your configuration or create it via the API. Store it in a secrets manager (such as a CI secret or a vault) immediately — it cannot be recovered later.
 </Note>
 

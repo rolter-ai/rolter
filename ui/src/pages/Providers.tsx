@@ -36,6 +36,7 @@ import {
   fetchProviders,
   type ProviderRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import {
@@ -95,6 +96,9 @@ export default function Providers() {
   const deleteUx = useFormTelemetry("provider-delete", !!deleteTarget);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
+  // editing and deleting a provider are an admin's, the same as adding one
+  // (#1258)
+  const deleteGate = useGate("provider:delete");
 
   const q = search.trim().toLowerCase();
   const rows = (providers.data ?? []).filter(
@@ -181,22 +185,25 @@ export default function Providers() {
               {provider.api_key_env || "—"}
             </span>
             <div className="flex items-center justify-end gap-1.5">
-              <Button
+              <GatedButton
+                gate="provider:update"
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
+                aria-label={t("pages.providers.editOne", { name: provider.name })}
                 onClick={() => setSheet({ mode: "edit", provider })}
               >
                 {t("pages.providers.edit")}
-              </Button>
+              </GatedButton>
               <button
                 type="button"
-                title={t("pages.providers.deleteTitle")}
+                title={deleteGate.reason ?? t("pages.providers.deleteTitle")}
                 aria-label={t("pages.providers.deleteOne", {
                   name: provider.name,
                 })}
+                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(provider)}
-                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

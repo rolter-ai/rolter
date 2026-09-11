@@ -183,6 +183,28 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
     },
     Capability {
+        // a label on a provider, provider group or route. its own capability
+        // rather than the subject's, so an operator role can be allowed to
+        // annotate a provider without being allowed to re-point it
+        resource: "label",
+        scope: "org",
+        read: VIEWER,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
+    },
+    Capability {
+        // a label on a model. models live in the deployment-wide pricing
+        // catalog and not in any one org, so labelling one is a
+        // deployment-wide act and mirrors `model_price` exactly
+        resource: "model_label",
+        scope: "deployment",
+        read: ANYONE,
+        create: SUPER,
+        update: SUPER,
+        delete: SUPER,
+    },
+    Capability {
         resource: "route",
         scope: "project",
         read: VIEWER,
@@ -250,6 +272,17 @@ const CAPABILITIES: &[Capability] = &[
     // may read it and nobody may write it
     Capability {
         resource: "version",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
+    // which subsystems this build marks experimental (#1385): a fact about the
+    // code, identical for every caller, and read by the nav rail every signed-in
+    // user sees — so anyone authenticated may read it and nobody may write it
+    Capability {
+        resource: "stability",
         scope: "deployment",
         read: ANYONE,
         create: NA,
@@ -1078,9 +1111,20 @@ mod tests {
     #[test]
     fn no_membership_means_only_the_global_catalogs() {
         let allowed = allowed_for(false, None, &[], ScopeChain::default());
+        // model labels join the list for the same reason model prices are on
+        // it: the pricing catalog is deployment-wide, so a label on a model
+        // names no tenant and there is no membership to hold over it (#985)
         assert_eq!(
             allowed,
-            vec!["model_price:read", "model:read", "version:read"]
+            vec![
+                "model_label:read",
+                "model_price:read",
+                "model:read",
+                "version:read",
+                // which subsystems this build calls experimental (#1385): a
+                // property of the code, so it has no scope either
+                "stability:read"
+            ]
         );
     }
 
@@ -1151,6 +1195,7 @@ mod tests {
         ("crud.rs", include_str!("crud.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
+        ("labels.rs", include_str!("labels.rs")),
         ("health.rs", include_str!("health.rs")),
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
@@ -1161,8 +1206,13 @@ mod tests {
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),
+        (
+            "mcp_oauth_discovery.rs",
+            include_str!("mcp_oauth_discovery.rs"),
+        ),
         ("mcp_oauth_flow.rs", include_str!("mcp_oauth_flow.rs")),
         ("me.rs", include_str!("me.rs")),
+        ("mfa.rs", include_str!("mfa.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
@@ -1175,6 +1225,7 @@ mod tests {
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
         ("sso.rs", include_str!("sso.rs")),
+        ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
         ("ui_config.rs", include_str!("ui_config.rs")),
         ("ui_events.rs", include_str!("ui_events.rs")),

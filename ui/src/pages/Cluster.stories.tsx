@@ -140,7 +140,10 @@ export const RefusesDrainingTheLastGateway: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Drain" }));
+    // by name, not by index: each row control names its own node (#1214)
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Drain node gw-1" }),
+    );
     // the refusal used to sit in a line beside the node count; it is an
     // assertive toast now, carrying the control plane's own words (#1197)
     await expectToast(canvasElement, /only live gateway still serving/, "error");
@@ -157,9 +160,13 @@ export const ForgetOnlyOfferedForStaleNodes: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const buttons = await canvas.findAllByRole("button", { name: "Forget" });
-    await expect(buttons[0]).toBeDisabled();
-    await expect(buttons[1]).toBeEnabled();
+    // the live node's Forget is refused, the stale one's is offered
+    await expect(
+      await canvas.findByRole("button", { name: "Forget node gw-1" }),
+    ).toBeDisabled();
+    await expect(
+      canvas.getByRole("button", { name: "Forget node gw-old" }),
+    ).toBeEnabled();
   },
 };
 
@@ -178,7 +185,7 @@ export const ConfirmsBeforeForgettingANode: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const stale = async () =>
-      (await canvas.findAllByRole("button", { name: "Forget" }))[1];
+      canvas.findByRole("button", { name: "Forget node gw-old" });
 
     await userEvent.click(await stale());
     await cancelConfirmation();

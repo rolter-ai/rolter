@@ -4,12 +4,13 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import PromptRepository from "./PromptRepository";
-import { Toasted, expectToast } from "./story-harness";
+import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole } from "./story-harness";
 import type {
   PromptTemplateRow,
   PromptTemplateScopeRow,
   PromptTemplateVersionRow,
 } from "@/lib/api";
+import { CapabilityProvider } from "@/lib/can";
 
 const ORG = "00000000-0000-4000-8000-000000000001";
 const TEAM = "00000000-0000-4000-8000-000000000002";
@@ -120,18 +121,19 @@ function loadedStub(): FetchStub {
   };
 }
 
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
+    globalThis.fetch = (role ? withCapabilities(role, fetchStub) : fetchStub) as typeof globalThis.fetch;
     localStorage.removeItem("rolter.scope");
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
+  }, [fetchStub, role]);
   React.useEffect(() => () => {
     if (original.current) globalThis.fetch = original.current;
   }, []);
-  return <QueryClientProvider client={client}><Toasted><div className="h-screen bg-[color:var(--surface-app)]"><PromptRepository /></div></Toasted></QueryClientProvider>;
+  const screen = <div className="h-screen bg-[color:var(--surface-app)]"><PromptRepository /></div>;
+  return <QueryClientProvider client={client}><Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted></QueryClientProvider>;
 }
 
 const meta = {
@@ -218,5 +220,26 @@ export const RequiresSlugToDeleteTemplate: Story = {
     await waitFor(() => expect(confirm).toBeEnabled());
     await userEvent.click(confirm);
     await waitFor(() => expect(canvas.getByText("Start with a prompt template")).toBeVisible());
+  },
+};
+
+// A viewer reaches the same workbench — `prompt_template:read` is a viewer's —
+// and every control on it that writes is refused before the click rather than
+// after the 403. Publishing, rolling back and saving a version are all one
+// `prompt_template:update` guard in crates/rolter-control/src/crud.rs, so the
+// role that would allow them is Admin.
+export const AsViewer: Story = {
+  render: () => <Harness fetchStub={loadedStub()} role="viewer" />,
+  play: async ({ canvas, canvasElement }) => {
+    await expectRefused(canvasElement, "Save as new draft");
+    await expectRefused(canvasElement, "Rename Support concierge");
+    await expectRefused(canvasElement, "Delete Support concierge");
+    await expectRefused(canvasElement, "Roll back to v1");
+    // publishing only offers itself on a version that is not the live one, so
+    // the story selects v1 before it can assert the control at all
+    await userEvent.click(await canvas.findByRole("button", { name: /^v1\b/ }));
+    await expectRefused(canvasElement, "Publish v1");
+    // reading is untouched: the slug is on screen in the index and the header
+    await expect(canvas.getAllByText("support-concierge").length).toBeGreaterThan(0);
   },
 };

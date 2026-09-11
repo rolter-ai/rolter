@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -315,7 +316,8 @@ function StageLane({
                     {plugin.endpoint}
                   </p>
                 </div>
-                <Switch
+                <GatedSwitch
+                  gate="plugin:update"
                   checked={plugin.enabled}
                   disabled={
                     togglingId === plugin.id || removingId === plugin.id
@@ -350,8 +352,10 @@ function StageLane({
                 )}
               </div>
               <div className="mt-4 flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                <Button
+                <GatedButton
+                  gate="plugin:delete"
                   variant="ghost"
+                  aria-label={t("pages.plugins.deleteAria", { name: plugin.name })}
                   disabled={removingId === plugin.id}
                   onClick={() => onDelete(plugin)}
                 >
@@ -359,10 +363,15 @@ function StageLane({
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
                   {t("pages.plugins.delete")}
-                </Button>
-                <Button variant="outline" onClick={() => onEdit(plugin)}>
+                </GatedButton>
+                <GatedButton
+                  gate="plugin:update"
+                  variant="outline"
+                  aria-label={t("pages.plugins.configureAria", { name: plugin.name })}
+                  onClick={() => onEdit(plugin)}
+                >
                   {t("pages.plugins.configure")}
-                </Button>
+                </GatedButton>
               </div>
             </article>
           ))}

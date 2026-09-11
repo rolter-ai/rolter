@@ -137,9 +137,12 @@ replacements cover every case the dashboard had:
 ## Every story is an accessibility test
 
 `ui/.storybook/test-runner.ts` runs axe over the whole document after each
-story's play function, and fails the story on any **serious** or **critical**
-violation (`wcag2a`, `wcag2aa`, `best-practice`; only `document-title` and
-`html-has-lang` are off, because that iframe is Storybook's own). Adding a
+story's play function, and fails the story on **any violation at any impact**
+(`wcag2a`, `wcag2aa`, `best-practice`; the disabled rules are named with their
+reasons in `DISABLED_RULES` — Storybook's own iframe, plus the three page-level
+landmark rules a single-component story cannot satisfy, which the two stories
+that mount a whole page switch back on, see
+[Testing](testing.md#every-story-is-also-an-axe-test)). Adding a
 story therefore adds a contrast and a semantics check for whatever it renders,
 in every state it renders — empty, loading and error included.
 
@@ -165,3 +168,18 @@ background and ratio it measured, and the fix is nearly always a token swap from
 this page rather than a new colour. A story may opt out with
 `parameters: { a11y: { disable: true } }`, but it has to say why beside it — no
 story in the dashboard currently needs to.
+
+## The identity around the tokens
+
+This page governs the dashboard's *interior*: which token a component reaches
+for and why. The identity those tokens express — the cross-stitch mark, its
+clear space and minimum size, when `--red-500` is the accent and `--red-folk`
+is ornament, where the вышивка rule belongs and where it does not, and how the
+wordmark is set — is documented once for everybody, in
+[the brand usage guidelines](../../user-docs/community/brand.mdx) on the
+end-user docs site.
+
+Read it before you place the mark anywhere, add a `.vyshivka-rule` to a screen,
+or produce an asset that carries the brand (a slide, a README header, the social
+preview at `assets/og.svg`). The rules there are the reason the constraints here
+exist.

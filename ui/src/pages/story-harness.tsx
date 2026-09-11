@@ -3,16 +3,11 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
-import type {
-  RbacAction,
-  RbacActionView,
-  RbacEffective,
-  RbacMatrix,
-  Role,
-} from "@/lib/api";
+import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
+import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
 import { ToastProvider } from "@/lib/toast";
 
 // Shared fetch-stub harness for screen stories (#879).
@@ -120,137 +115,24 @@ export function Harness({
 /** The four kinds of caller the gating stories are written for. */
 export type StoryRole = Role | "superadmin";
 
-// the capability table, as much of it as the stories need
-// (crates/rolter-control/src/rbac_matrix.rs). read is a viewer's and mutations
-// are an admin's for everything with a tenancy scope; everything without one is
-// the superadmin's alone
-const SCOPED_RESOURCES = [
-  "org",
-  "team",
-  "project",
-  "provider",
-  "provider_group",
-  "plugin",
-  "route",
-  "virtual_key",
-  "budget",
-  "rate_limit",
-  "model",
-  "model_price",
-  "business_unit",
-  "customer",
-  "prompt_template",
-  "skill",
-  "user",
-  "membership",
-  "custom_role",
-  "access_profile",
-  "access_profile_assignment",
-  "mcp_server",
-  "mcp_tool_group",
-  "mcp_settings",
-  "mcp_oauth_grant",
-  "mcp_oauth_session",
-];
-
-// an admin read: the rows name the IdPs and the invitations, not just the data
-const ADMIN_RESOURCES = [
-  "scim_token",
-  "scim_group_mapping",
-  "audit_log",
-  "invitation",
-  "sso_provider",
-  "sso_group_mapping",
-  "org_auth_policy",
-  "mcp_oauth_client",
-];
-
-const DEPLOYMENT_RESOURCES = [
-  "feature_flags",
-  "runtime_policy",
-  "logging_settings",
-  "compatibility_policy",
-  "client_settings",
-  "model_defaults",
-  "adaptive_routing_policy",
-  "adaptive_routing_telemetry",
-  "guardrail_rule",
-  "guardrail_provider",
-  "cluster_node",
-  "security_settings",
-  "connector",
-  "alert_channel",
-  "alert_rule",
-  "alert_history",
-  "mcp_log",
-];
-
-const ACTIONS: RbacAction[] = ["read", "create", "update", "delete"];
-
-/** What the control plane would answer for a caller holding `role`. */
+/**
+ * What the control plane would answer for a caller holding `role`, derived
+ * from its own capability table (#1298).
+ *
+ * The table used to be copied out by hand here, and the copy drifted: #1258
+ * found it calling `model` and `model_price` org-scoped admin resources when
+ * both are deployment-wide catalogs a superadmin alone writes, which let two
+ * screens gate on capabilities the control plane does not define while their
+ * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
+ * generated copy of `CAPABILITIES` instead, and a test fails the build when
+ * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ */
 export function effectiveFor(role: StoryRole): RbacEffective {
-  const allowed: string[] = [];
-  if (role !== "superadmin") {
-    for (const resource of SCOPED_RESOURCES) {
-      allowed.push(`${resource}:read`);
-      if (role === "admin") {
-        for (const action of ACTIONS) allowed.push(`${resource}:${action}`);
-      }
-    }
-    // a key a member mints for themself, which is the one create a non-admin has
-    if (role !== "viewer") allowed.push("my_virtual_key:create");
-    if (role === "admin") {
-      for (const resource of ADMIN_RESOURCES) {
-        for (const action of ACTIONS) allowed.push(`${resource}:${action}`);
-      }
-    }
-  }
-  return {
-    superadmin: role === "superadmin",
-    role: role === "superadmin" ? "admin" : role,
-    // a superadmin's list is empty on the wire too: `decide` short-circuits on
-    // the flag rather than enumerating every pair
-    allowed: role === "superadmin" ? [] : allowed,
-    custom_roles: [],
-    model_policy: null,
-  };
+  return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
 }
 
 /** The published rules, which is where a disabled control reads its role from. */
-export function matrixFixture(): RbacMatrix {
-  const actions = (minimum: Role | null): RbacActionView[] =>
-    ACTIONS.map((action) => ({
-      action,
-      minimum_role: minimum === null ? null : action === "read" ? "viewer" : minimum,
-      superadmin_only: minimum === null,
-      authenticated_only: false,
-    }));
-  return {
-    roles: [
-      { role: "viewer", rank: 0 },
-      { role: "member", rank: 1 },
-      { role: "admin", rank: 2 },
-    ],
-    resources: [
-      ...SCOPED_RESOURCES.map((resource) => ({
-        resource,
-        scope: "org",
-        actions: actions("admin"),
-      })),
-      ...ADMIN_RESOURCES.map((resource) => ({
-        resource,
-        scope: "org",
-        actions: actions("admin"),
-      })),
-      ...DEPLOYMENT_RESOURCES.map((resource) => ({
-        resource,
-        scope: "deployment",
-        actions: actions(null),
-      })),
-    ],
-    custom_roles: [],
-  };
-}
+export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
 export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub {
@@ -341,6 +223,41 @@ export async function clickWhenEnabled(
  */
 export const LOADING_LABEL = en.common.loading;
 
+/**
+ * What a refused control says it would take, read out of the catalog.
+ *
+ * Built from `rbac.needsRole` rather than written out again, so rewording the
+ * refusal cannot leave the gating stories asserting a sentence the dashboard
+ * no longer renders.
+ */
+export const NEEDS_ADMIN = en.rbac.needsRole.replace("{{role}}", en.shell.roles.admin);
+
+/**
+ * Assert a gated control is refused, and that it names what would allow it.
+ *
+ * Both halves matter: `disabled` on its own is the same non-answer the 403
+ * was, so the `title` has to carry the role (#1183). The disabled state is
+ * awaited rather than asserted at once, because the effective-permissions
+ * query is one request behind the first paint and the control renders enabled
+ * until it lands.
+ */
+export async function expectRefused(
+  canvasElement: HTMLElement,
+  name: RegExp | string,
+  reason: string = NEEDS_ADMIN,
+): Promise<void> {
+  const canvas = within(canvasElement);
+  const button = await canvas.findByRole("button", { name });
+  // both in one wait: a control can already be disabled for a reason of its
+  // own — an unsaved draft that does not validate yet — so asserting the
+  // disabled flag first would pass before the gate has answered and then read
+  // a `title` that is still null
+  await waitFor(() => {
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", reason);
+  });
+}
+
 /** Assert the screen is standing in a skeleton for content it does not have yet. */
 export async function expectSkeleton(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
@@ -424,8 +341,11 @@ export interface Recorder {
    * Asserting the *body* is the difference between "the screen sent a PUT" and
    * "the screen sent the attribution the operator picked": a mutation that
    * fires with the wrong payload passes every url-only assertion (#1193).
+   *
+   * `T` names the shape the story is about to assert on, so a field check reads
+   * as `body.client_secret` rather than through a cast at every call site.
    */
-  expectSentBody: (method: string, fragment: string) => Promise<unknown>;
+  expectSentBody: <T = unknown>(method: string, fragment: string) => Promise<T>;
 }
 
 export function recording(handler: FetchStub): Recorder {
@@ -448,9 +368,9 @@ export function recording(handler: FetchStub): Recorder {
     expectNotSent: (method, fragment) => {
       expect(match(method, fragment)).toBeUndefined();
     },
-    expectSentBody: async (method, fragment) => {
+    expectSentBody: async <T,>(method: string, fragment: string): Promise<T> => {
       await waitFor(() => expect(match(method, fragment)?.body).toBeDefined());
-      return JSON.parse(match(method, fragment)!.body as string) as unknown;
+      return JSON.parse(match(method, fragment)!.body as string) as T;
     },
   };
 }

@@ -46,7 +46,7 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{Membership, Session, User};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, MembershipRepo, OrgAuthPolicyRepo, SessionRepo, UserRepo,
+    AuditLogRepo, MembershipRepo, MfaRepo, OrgAuthPolicyRepo, SessionRepo, UserRepo,
 };
 
 use crate::ControlState;
@@ -195,6 +195,10 @@ pub enum AuthError {
     /// is locked for a while (#1079). Carries the remaining lock so the client
     /// gets a `Retry-After` instead of having to poll
     TooManyAttempts(std::time::Duration),
+    /// the password was right, but the account's org requires a second factor
+    /// and this account has none armed (403). Distinct from a wrong password:
+    /// there is nothing to retype, and the remedy is an admin's (#1078)
+    MfaEnrolmentRequired,
     Internal(String),
 }
 
@@ -231,6 +235,13 @@ impl IntoResponse for AuthError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "too_many_attempts",
                 "too many failed sign-in attempts; try again later",
+            ),
+            Self::MfaEnrolmentRequired => (
+                StatusCode::FORBIDDEN,
+                "mfa_enrolment_required",
+                "this organization requires a second factor and this account has none enrolled; \
+                 an administrator must relax the policy or clear the account with \
+                 `rolter mfa reset` so it can enrol",
             ),
             Self::Internal(ref msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal", msg.as_str())
@@ -272,7 +283,7 @@ struct LoginRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct LoginResponse {
+pub(crate) struct LoginResponse {
     /// bearer token; send as `Authorization: Bearer <token>` on subsequent
     /// requests. Shown once — only its digest is persisted
     token: String,
@@ -280,12 +291,27 @@ struct LoginResponse {
     user: User,
 }
 
+/// What `POST /api/v1/auth/login` answers with.
+///
+/// A single endpoint returning either a session or a challenge, rather than
+/// two endpoints: the client cannot know which it will get until the password
+/// has been checked, and asking first would leak whether an account has a
+/// factor to anyone who can guess an email.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum LoginOutcome {
+    /// no factor stands in the way; here is the session
+    Session(LoginResponse),
+    /// the password was right, but the account owes a second factor
+    Challenge(crate::mfa::MfaChallengeResponse),
+}
+
 async fn login(
     State(state): State<ControlState>,
     client: crate::login_throttle::ClientAddr,
     headers: axum::http::HeaderMap,
     Json(body): Json<LoginRequest>,
-) -> AuthResult<Json<LoginResponse>> {
+) -> AuthResult<Json<LoginOutcome>> {
     let email = body.email.trim().to_string();
     let pool = pool(&state);
 
@@ -369,7 +395,6 @@ async fn login(
     };
 
     let after_lock = state.login_throttle.record_success(&subjects).await;
-    state.metrics.record_login("success");
 
     let user_id: Uuid = identity
         .subject
@@ -377,6 +402,57 @@ async fn login(
         .map_err(|_| AuthError::Internal("resolved identity carried an invalid subject".into()))?;
     let user = UserRepo(pool).get(user_id).await?;
 
+    // the password is proved; the second factor, if there is one, is checked
+    // by `POST /api/v1/auth/mfa/verify` against the challenge issued here. The
+    // throttle counter was already cleared above, on purpose: the password was
+    // correct, and holding the failed-password lock open across the step-up
+    // would let a wrong code look like a wrong password
+    let (policy, required) = crate::mfa::effective_policy(&state, &user)
+        .await
+        .map_err(|_| AuthError::Internal("failed to read the second-factor policy".into()))?;
+    let armed = MfaRepo(pool).has_armed_factor(user.id).await?;
+    if armed {
+        state.metrics.record_login("mfa_challenge");
+        return Ok(Json(LoginOutcome::Challenge(
+            crate::mfa::issue_challenge(&state, user.id).await?,
+        )));
+    }
+    if required {
+        // refusing rather than letting them in unprotected: an org that set
+        // `required_*` asked for exactly this. The message names the remedy,
+        // because a user who cannot enrol without signing in and cannot sign
+        // in without enrolling needs to be told an admin must relax the policy
+        // or run the break-glass path
+        state.metrics.record_login("mfa_required");
+        let _ = AuditLogRepo(pool)
+            .create(
+                None,
+                Some(user.id),
+                "auth.mfa_enrolment_required",
+                Some("user"),
+                Some(user.id),
+                Some(serde_json::json!({ "policy": policy })),
+            )
+            .await;
+        return Err(AuthError::MfaEnrolmentRequired);
+    }
+
+    Ok(Json(LoginOutcome::Session(
+        issue_session(&state, user, after_lock).await?,
+    )))
+}
+
+/// Mint a session for a user whose credentials -- and second factor, where one
+/// is armed -- have already been proved.
+///
+/// Shared with [`crate::mfa`] so a session that came through the step-up is
+/// identical to one that came straight from a password, audit entry included.
+pub(crate) async fn issue_session(
+    state: &ControlState,
+    user: User,
+    after_lock: bool,
+) -> AuthResult<LoginResponse> {
+    let pool = pool(state);
     let (token, token_hash) = generate_session_token(&session_pepper());
     let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
     SessionRepo(pool)
@@ -398,11 +474,12 @@ async fn login(
         )
         .await;
 
-    Ok(Json(LoginResponse {
+    state.metrics.record_login("success");
+    Ok(LoginResponse {
         token,
         expires_at,
         user,
-    }))
+    })
 }
 
 /// Record a rejected sign-in, off the response path.
@@ -505,9 +582,17 @@ async fn me(
 /// generate a fresh opaque session token and its peppered digest; the digest
 /// is what's persisted, the token is only ever returned to the client
 pub(crate) fn generate_session_token(pepper: &str) -> (String, String) {
+    generate_token("rolter_sess", pepper)
+}
+
+/// The same construction for any opaque token this control plane hands out:
+/// 256 bits of CSPRNG output behind a prefix that says what it is, with only
+/// the peppered digest persisted. `prefix` keeps a leaked token identifiable
+/// in a log without being guessable.
+pub(crate) fn generate_token(prefix: &str, pepper: &str) -> (String, String) {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
-    let token = format!("rolter_sess_{}", hex_encode(&bytes));
+    let token = format!("{prefix}_{}", hex_encode(&bytes));
     let hash = rolter_auth::hash_key(pepper, &token);
     (token, hash)
 }

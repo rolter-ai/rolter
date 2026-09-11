@@ -6,6 +6,12 @@
 //! with minimal copying. Cross-protocol requests are normalized by the
 //! extensible translation registry before dispatch; responses are translated by
 //! the gateway while they stream back to the caller.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 pub mod egress_resolver;
 pub mod pool;
@@ -33,6 +39,12 @@ use crate::egress_resolver::{EgressResolver, SharedEgressPolicy};
 pub struct Forwarder {
     default: ArcSwap<Client>,
     configured: DashMap<ClientKey, Client>,
+    /// clients that differ from `default` only in their connect timeout, for
+    /// MCP servers carrying a per-server `connect_timeout_ms` override.
+    /// reqwest bakes the connect timeout into the client, so honouring a
+    /// per-server value means a client per distinct value — there are only
+    /// ever a handful, and they are built once and reused (#952)
+    mcp_connect: DashMap<u64, Client>,
     /// live egress policy consulted by every client's resolver; swapping it
     /// re-tunes enforcement without rebuilding the pooled clients
     egress: SharedEgressPolicy,
@@ -106,6 +118,7 @@ impl Forwarder {
                 build_client(None, &[], connect_timeout, &egress).unwrap_or_else(|_| Client::new()),
             ),
             configured: DashMap::new(),
+            mcp_connect: DashMap::new(),
             egress,
             connect_timeout_secs: AtomicU64::new(timeouts.connect_secs),
             request_timeout_secs: AtomicU64::new(timeouts.request_secs),
@@ -477,33 +490,101 @@ impl Forwarder {
         .await
     }
 
-    /// Forward an arbitrary HTTP request with a gateway-owned bearer token.
+    /// Forward an arbitrary HTTP request to an MCP server.
     ///
     /// Used by the MCP gateway path, where the upstream URL is an org-scoped
     /// server rather than an LLM provider. The caller supplies already-filtered
-    /// end-to-end headers; authorization is always replaced here so a client
+    /// end-to-end headers; the credential is always applied here so a client
     /// can never choose the downstream credential.
-    pub async fn forward_bearer(
+    ///
+    /// `transport` carries the server's per-server overrides. A `None` field
+    /// inherits the deployment default, which is what every server that never
+    /// asked to differ does (#952).
+    pub async fn forward_mcp(
         &self,
         method: Method,
         url: &str,
         mut headers: reqwest::header::HeaderMap,
         body: Bytes,
-        bearer: &str,
+        auth: McpUpstreamAuth<'_>,
+        transport: McpTransportOverrides,
     ) -> Result<Response> {
         headers.remove(reqwest::header::AUTHORIZATION);
         headers.remove(reqwest::header::HOST);
         headers.remove(reqwest::header::CONTENT_LENGTH);
-        let client = self.default.load().as_ref().clone();
-        self.await_send(
-            client
-                .request(method, url)
-                .headers(headers)
-                .bearer_auth(bearer)
-                .body(body)
-                .send(),
-        )
-        .await
+        let client = self.mcp_client(transport.connect_timeout);
+        let budget = transport
+            .request_timeout
+            .or_else(|| timeout_duration(self.request_timeout_secs.load(Relaxed)));
+
+        // a retry here may only ever repeat a request the upstream never saw.
+        // an MCP call is frequently a tool invocation and is not idempotent, so
+        // replaying one that reached the server could run it twice; reqwest's
+        // `is_connect()` is the test for "the connection was never
+        // established", which is the only failure that is safe to repeat
+        let attempts = transport.max_retries.saturating_add(1);
+        let mut last: Option<Error> = None;
+        for _ in 0..attempts {
+            let request = client
+                .request(method.clone(), url)
+                .headers(headers.clone())
+                .body(body.clone());
+            let request = auth.apply(request)?;
+            match Self::send_within(budget, request.send()).await {
+                Ok(response) => return Ok(response),
+                Err(SendFailure::Connect(error)) => last = Some(Error::Upstream(error)),
+                Err(SendFailure::Fatal(error)) => return Err(error),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Upstream("MCP upstream request failed".to_string())))
+    }
+
+    /// A client whose connect timeout matches `connect_timeout`, built once per
+    /// distinct value and reused thereafter.
+    fn mcp_client(&self, connect_timeout: Option<Duration>) -> Client {
+        let Some(connect_timeout) = connect_timeout else {
+            return self.default.load().as_ref().clone();
+        };
+        let key = connect_timeout.as_millis().min(u128::from(u64::MAX)) as u64;
+        if let Some(client) = self.mcp_connect.get(&key) {
+            return client.clone();
+        }
+        // a client that cannot be built is not worth failing the request over:
+        // the deployment default already works, it just connects on a different
+        // budget than this server asked for
+        let client = build_client(None, &[], Some(connect_timeout), &self.egress)
+            .unwrap_or_else(|_| self.default.load().as_ref().clone());
+        self.mcp_connect.insert(key, client.clone());
+        client
+    }
+
+    /// Send under `budget`, separating "never connected" from every other
+    /// outcome so only the former is retried.
+    async fn send_within(
+        budget: Option<Duration>,
+        send: impl std::future::Future<Output = std::result::Result<Response, reqwest::Error>>,
+    ) -> std::result::Result<Response, SendFailure> {
+        let sent = match budget {
+            Some(limit) => match tokio::time::timeout(limit, send).await {
+                Ok(sent) => sent,
+                Err(_) => {
+                    // a timeout may well have reached the server and be running
+                    // there, so it is never retried
+                    return Err(SendFailure::Fatal(Error::Upstream(format!(
+                        "upstream request timed out after {}ms",
+                        limit.as_millis()
+                    ))));
+                }
+            },
+            None => send.await,
+        };
+        sent.map_err(|error| {
+            if error.is_connect() {
+                SendFailure::Connect(error.to_string())
+            } else {
+                SendFailure::Fatal(Error::Upstream(error.to_string()))
+            }
+        })
     }
 
     /// Await an upstream send under the configured time-to-headers budget. The
@@ -676,6 +757,53 @@ fn gemini_generate_url(
     } else {
         format!("{base}/models/{model}:generateContent")
     }
+}
+
+/// How the gateway presents itself to an MCP server.
+#[derive(Debug, Clone, Copy)]
+pub enum McpUpstreamAuth<'a> {
+    /// present nothing
+    None,
+    /// `Authorization: Bearer <token>`
+    Bearer(&'a str),
+    /// an API key in a server-chosen header
+    Header { name: &'a str, value: &'a str },
+}
+
+impl McpUpstreamAuth<'_> {
+    fn apply(&self, request: RequestBuilder) -> Result<RequestBuilder> {
+        Ok(match self {
+            Self::None => request,
+            Self::Bearer(token) => request.bearer_auth(token),
+            Self::Header { name, value } => {
+                // the header name is operator-configured and constrained on
+                // write, but this is the last point before it reaches the wire
+                let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| Error::Config(format!("'{name}' is not a valid header name")))?;
+                let mut value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+                    Error::Config("MCP credential is not a valid header value".into())
+                })?;
+                value.set_sensitive(true);
+                request.header(name, value)
+            }
+        })
+    }
+}
+
+/// Per-server transport overrides; `None` inherits the deployment default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct McpTransportOverrides {
+    pub connect_timeout: Option<Duration>,
+    pub request_timeout: Option<Duration>,
+    pub max_retries: u32,
+}
+
+/// Whether a failed send is safe to repeat.
+enum SendFailure {
+    /// the connection was never established, so the upstream saw nothing
+    Connect(String),
+    /// anything else, including a timeout: the request may have been processed
+    Fatal(Error),
 }
 
 fn build_client(

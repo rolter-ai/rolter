@@ -42,7 +42,7 @@ published crate, and it checks only the crates listed in `GUARDED` in
 | Crate | Guarded | Why |
 |---|---|---|
 | `rolter-auth` | yes | virtual keys, roles and access checks; consumed by both planes |
-| `rolter-balancer` | yes | the `LoadBalancer` trait is the documented extension point |
+| `rolter-balancer` | yes | in-tree strategies all implement one `LoadBalancer` trait, so a change to it reaches every strategy at once |
 | `rolter-gateway` | yes | data-plane surface; changes here are behavioural, not structural |
 | `rolter-proxy` | yes | provider dialect adapters |
 | `rolter-core` | no | config types churn with every new provider kind and strategy |
@@ -51,15 +51,22 @@ published crate, and it checks only the crates listed in `GUARDED` in
 | `rolter` | no | launcher binary, no library surface |
 
 The guarded crates are checked at `--release-type patch` — the strict reading.
-On those crates a breaking change has to be a deliberate act: it fails the job,
-and the fix is either to keep the API or to move the crate off the list on
-purpose, in the same pull request, with a line in this table saying why.
+On those crates a change to a public item is surfaced rather than passing
+unremarked: the job goes red, and the pull request either keeps the API or says
+in its description that moving it was the point.
 
-The unguarded three are unguarded because their Rust API is not a promise
-anyone has made. They are the crates whose public items exist so the two
-binaries can share code, and they change shape whenever the schema, the config
-or the dashboard payloads change. Pretending otherwise is what produced the
-permanent red.
+The unguarded three are unguarded because their public items exist purely so the
+two binaries can share code, and they change shape whenever the schema, the
+config or the dashboard payloads change. Checking them produced the permanent
+red this page opens with.
+
+**The list is about review value, not about a promise.** No rolter crate has a
+stable Rust API — [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
+decides that explicitly, and 1.0 does not change it. A crate is on the list
+because an unintended change to its API is likely enough to be an unintended
+change in *behaviour* that a second look is worth the noise, and off it when it
+is not. Adding or removing one is that judgement, made in the same pull request,
+with a line in the table saying why.
 
 ## What this does *not* cover
 
@@ -71,19 +78,53 @@ The surfaces rolter's users actually depend on are not Rust APIs:
 - the database schema and its migrations.
 
 None of those are checked here — `cargo-semver-checks` cannot see them.
-Deciding what each of them guarantees at 1.0 is #922, and this page is the
-Rust-crate half of the answer it will need.
+What each of them guarantees is decided in
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) (#922),
+and the user-facing statement of it is
+[Versioning & compatibility](../../user-docs/community/versioning.mdx).
 
-## At 1.0
+The configuration-file half already has one property that a 1.0 promise will
+have to keep: rolter's config types carry no `deny_unknown_fields`, so a
+`rolter.toml` written for any build loads on any other build of the same major,
+including an older one it is rolled back onto. That is why an unknown key can
+only ever be a warning, and why the warning lives in `rolter check` rather than
+in the deserializer —
+[Unrecognised keys in `rolter.toml`](../deployment/preflight-validation.md#unrecognised-keys-in-roltertoml-1424)
+covers what it reports and how `--strict` turns it into a CI gate.
 
-Two things change, both in #922's scope:
+The other half of what #922 needs is the list of subsystems the promise does
+*not* cover. That is a separate axis, set per subsystem rather than per crate,
+and it lives in [Stability markers](stability-markers.md): an `experimental`
+marker is a documented exemption saying the subsystem may change shape or be
+removed in a minor release.
 
-1. The job stops being informational. `continue-on-error` comes off and
-   `semver-checks` joins `ci-ok`'s `needs:` in `.github/workflows/ci.yml`.
-2. The guarded list is revisited against whatever 1.0 declares stable. A crate
-   that ships a 1.0 API belongs on the list; one that stays an implementation
-   detail should say so in its `Cargo.toml` description rather than sit silently
-   in the "no" column here.
+## At 1.0 — the job stays advisory
 
-Until then the job is green on a clean tree, and a red run means a guarded
-crate's API moved.
+An earlier version of this page planned to promote the job at 1.0: drop
+`continue-on-error`, add it to `ci-ok`'s `needs:`, and revisit `GUARDED`
+against whatever 1.0 declared stable.
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) withdraws
+that plan, because 1.0 declares **no** Rust API stable. Every published crate is
+internal implementation detail, said so in its `Cargo.toml` description, its
+`//!` docs and the README, and a gate enforcing a promise the ADR disclaims
+would be worse than either choice alone.
+
+So the job is permanently advisory:
+
+- `continue-on-error: true` stays, and `semver-checks` never joins `ci-ok`'s
+  `needs:`. A red run is a *review signal* — "this pull request moved a public
+  item in a crate both binaries share" — and is often the correct outcome, as it
+  is for the behaviour-preserving refactors in #1041 and #1042.
+- `GUARDED` keeps its four crates for the same reason: those are where an
+  unintended API change is most likely to be an unintended *behaviour* change
+  worth a second look. Adding or removing one is a judgement about review value,
+  not about a promise, and still wants a line in the table above saying why.
+- release-plz has `semver_check = false` at the workspace level in
+  `.github/config/release-plz.toml`. Left at its default it would run
+  `cargo-semver-checks` itself and propose a **major bump of the shared
+  workspace version** — every binary, the wheel, the Docker tag — because a
+  shared helper changed shape. rolter's version is driven by commit types and
+  nothing else.
+
+The job is green on a clean tree, and a red run means a guarded crate's API
+moved. That is information, not a verdict.

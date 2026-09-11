@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Pencil, Trash2 } from "lucide-react";
 import * as React from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import {
   HEALTH_COLOR,
@@ -16,6 +16,7 @@ import {
   StatusDot,
   useSort,
 } from "./screen";
+import { Harness, routes } from "@/pages/story-harness";
 
 // the grid every list screen is assembled from: a template shared by the
 // header and the rows, so a column cannot drift between the two
@@ -190,5 +191,48 @@ export const NoRows: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Kind")).toBeVisible();
     await expect(canvas.queryByText("openai-prod")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A refused row control: the icon button takes the same gate the labelled
+ * controls do, and says what it would take in its `title` (#1258).
+ *
+ * An icon carries no text, so the tooltip is the only thing that can explain
+ * the refusal — a viewer who sees a dimmed trash can and nothing else has been
+ * told "no" without being told why.
+ */
+export const RowIconButtonRefused: Story = {
+  render: () => (
+    <Harness fetchStub={routes([])} role="viewer">
+      <PageBody>
+        <RowIconButton danger gate="provider:delete" aria-label="Delete openai-prod">
+          <Trash2 className="h-3.5 w-3.5" />
+        </RowIconButton>
+      </PageBody>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button", { name: "Delete openai-prod" });
+    await waitFor(() => expect(button).toBeDisabled());
+    await expect(button).toHaveAttribute("title", "Requires the Admin role");
+  },
+};
+
+/** The same button for a caller who may press it: enabled, and no refusal text. */
+export const RowIconButtonAllowed: Story = {
+  render: () => (
+    <Harness fetchStub={routes([])} role="admin">
+      <PageBody>
+        <RowIconButton danger gate="provider:delete" aria-label="Delete openai-prod">
+          <Trash2 className="h-3.5 w-3.5" />
+        </RowIconButton>
+      </PageBody>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button", { name: "Delete openai-prod" });
+    await waitFor(() => expect(button).toBeEnabled());
+    await expect(button).not.toHaveAttribute("title");
   },
 };

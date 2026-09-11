@@ -6,65 +6,34 @@
 #![cfg(feature = "postgres")]
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 
+use rolter_store::postgres::test_schema::TestSchema;
 use serde_json::{json, Value};
 
 fn database_url() -> Option<String> {
     std::env::var("ROLTER_TEST_DATABASE_URL").ok()
 }
 
-/// Monotonic sequence for per-test schema names, keeping concurrently-running
-/// tests off a shared schema (plain `cargo test` — e.g. the coverage job —
-/// runs them as threads in one process, so a shared `public` races on DDL).
-static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// Isolated schema name unique to this process and call, safe to interpolate
-/// (only ascii digits and underscores).
-fn unique_schema() -> String {
-    let n = SCHEMA_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("test_{}_{}", std::process::id(), n)
-}
-
-/// Return `url` with the connection pinned to `schema` via `search_path`, so
-/// migrations and queries land in the isolated schema rather than `public`.
-fn with_search_path(url: &str, schema: &str) -> String {
-    let sep = if url.contains('?') { '&' } else { '?' };
-    // percent-encode the space and `=` inside the libpq options string
-    format!("{url}{sep}options=-c%20search_path%3D{schema}")
-}
-
-/// Create a fresh isolated schema and return a pool pinned to it. Tests that
-/// only need a router use [`fresh_app`]; those that also query the store
-/// directly build the router from this pool themselves.
-async fn fresh_pool() -> sqlx::PgPool {
+/// Create a fresh isolated schema and return the guard owning it, so a test
+/// gets its schema back when it finishes — including when it panics (#1364).
+///
+/// Bind the guard for the whole test: the schema goes with it. Take the pool
+/// out with `db.pool().clone()`; tests that only need a router use
+/// [`fresh_app`].
+async fn fresh_db() -> TestSchema {
     let url = database_url().expect("ROLTER_TEST_DATABASE_URL checked by caller");
-    let schema = unique_schema();
-
-    // (re)create the isolated schema over a default-search_path connection
-    let admin = rolter_store::postgres::connect(&url)
-        .await
-        .expect("connect");
-    sqlx::query(&format!("drop schema if exists {schema} cascade"))
-        .execute(&admin)
-        .await
-        .expect("reset schema");
-    sqlx::query(&format!("create schema {schema}"))
-        .execute(&admin)
-        .await
-        .expect("recreate schema");
-    admin.close().await;
-
-    // app pool scoped to the isolated schema so migrations run there
-    rolter_store::postgres::connect(&with_search_path(&url, &schema))
-        .await
-        .expect("connect scoped")
+    TestSchema::create(&url).await
 }
 
-/// Isolated schema + control-plane app router (migrations applied by `test_app`).
-async fn fresh_app() -> axum::Router {
-    let pool = fresh_pool().await;
-    rolter_control::test_app(pool).await.expect("build app")
+/// Isolated schema + control-plane app router (migrations applied by
+/// `test_app`). The schema guard comes back with the router and has to outlive
+/// it, so bind it rather than dropping it on the floor.
+async fn fresh_app() -> (axum::Router, TestSchema) {
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    (app, db)
 }
 
 /// Serve `app` on an ephemeral port and return its address.
@@ -76,6 +45,46 @@ async fn serve(app: axum::Router) -> SocketAddr {
     });
     addr
 }
+
+/// Serve a control-plane app that knows its own ephemeral address as the
+/// deployment's public base URL (#1418).
+///
+/// The SSO and MCP OAuth flows derive their redirect URI from that URL, and it
+/// used to arrive through `ROLTER_PUBLIC_URL`. The environment is process-wide:
+/// under `cargo nextest` each test owns its process and that is harmless, but
+/// the coverage job runs plain `cargo test`, where every test in this binary is
+/// a thread sharing one environment — so one test's listener address became
+/// another test's redirect URI, and the failure landed on whichever flow
+/// happened to be mid-exchange. Binding the listener first and passing the
+/// address into the app keeps each test's value its own.
+async fn serve_with_public_url(pool: sqlx::PgPool, admin_token: Option<String>) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app =
+        rolter_control::test_app_with_public_url(pool, admin_token, &format!("http://{addr}"))
+            .await
+            .expect("build app");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// The one KEK every test in this file installs (#1351).
+///
+/// `std::env::set_var` is process-wide. The main test job runs `cargo nextest`,
+/// which gives each test its own process, but the `coverage` job runs plain
+/// `cargo test` — one binary, tests as threads, one environment — and
+/// `Kek::from_env()` is read at *request* time. So a test setting a value of
+/// its own is read by another test's in-flight request, and a sealed value
+/// written under one key fails to open under the next. The symptom is never
+/// local: it lands on whichever unrelated seal-then-open test was mid-flight.
+///
+/// Nothing here needs a *distinct* key, only *a* key — the one test that needs
+/// a non-matching one builds it directly with `Kek::from_secret`, never through
+/// the environment. So every call site installs this same value and the race
+/// has nothing to observe.
+const TEST_KEK: &str = "integration-test-kek";
 
 macro_rules! skip_without_db {
     () => {
@@ -94,7 +103,8 @@ macro_rules! skip_without_db {
 #[tokio::test]
 async fn readyz_waits_for_migrations_while_healthz_stays_up() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let client = reqwest::Client::new();
 
     let addr = serve(rolter_control::test_app_unmigrated(pool.clone())).await;
@@ -150,7 +160,8 @@ async fn readyz_waits_for_migrations_while_healthz_stays_up() {
 #[tokio::test]
 async fn ping_and_healthz_respond() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
 
     let health = client
@@ -174,7 +185,8 @@ async fn ping_and_healthz_respond() {
 #[tokio::test]
 async fn snapshot_served_on_empty_store() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
 
     let resp = reqwest::Client::new()
         .get(format!("http://{addr}/internal/snapshot"))
@@ -196,7 +208,8 @@ async fn snapshot_served_on_empty_store() {
 #[tokio::test]
 async fn crud_create_round_trip_reflects_in_snapshot() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -313,7 +326,8 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -333,7 +347,8 @@ async fn org_slug_is_validated() {
 #[tokio::test]
 async fn business_unit_and_customer_crud_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -459,7 +474,8 @@ async fn business_unit_and_customer_crud_round_trip() {
 #[tokio::test]
 async fn governance_scoped_budgets_and_rate_limits() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -558,7 +574,8 @@ async fn governance_scoped_budgets_and_rate_limits() {
 #[tokio::test]
 async fn a_budget_carries_its_own_unpriced_policy_into_the_snapshot() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let addr = serve(
         rolter_control::test_app(pool.clone())
             .await
@@ -684,7 +701,8 @@ async fn a_budget_carries_its_own_unpriced_policy_into_the_snapshot() {
 #[tokio::test]
 async fn virtual_key_cost_attribution_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -866,7 +884,8 @@ async fn virtual_key_cost_attribution_round_trip() {
 #[tokio::test]
 async fn prompt_template_crud_publish_and_scope_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -1095,7 +1114,8 @@ async fn prompt_template_crud_publish_and_scope_round_trip() {
 #[tokio::test]
 async fn skills_crud_and_publish_round_trip() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -1262,14 +1282,14 @@ async fn skills_crud_and_publish_round_trip() {
 
 /// Provider credentials posted to the API must be sealed at rest, decrypted
 /// into the gateway snapshot, and never leak through the dashboard config
-/// endpoint. Runs in its own process (nextest), so setting the KEK env var
-/// here cannot race other tests.
+/// endpoint.
 #[tokio::test]
 async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -1392,7 +1412,8 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
 #[tokio::test]
 async fn admin_token_guards_crud_and_snapshot() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1433,9 +1454,10 @@ async fn admin_token_guards_crud_and_snapshot() {
 #[tokio::test]
 async fn config_export_serves_importable_toml_without_credentials() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "integration-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1517,7 +1539,8 @@ async fn config_export_serves_importable_toml_without_credentials() {
 #[tokio::test]
 async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1563,6 +1586,70 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     assert_eq!(as_admin.status(), 200);
 }
 
+/// `GET /api/v1/stability` is the dashboard's one source for the nav's
+/// experimental markers (#1385): the least-privileged signed-in caller reads it
+/// — a viewer sees the nav too — an anonymous one does not, and every row it
+/// returns is an exception, because absence is what "stable" means.
+#[tokio::test]
+async fn stability_endpoint_lists_only_experimental_subsystems() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let denied = client
+        .get(format!("{base}/api/v1/stability"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+
+    let viewer = seed_user(&pool, "stability-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "stabilityviewer").await;
+    let resp = client
+        .get(format!("{base}/api/v1/stability"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let rows = body.as_array().expect("an array of markers");
+    assert_eq!(rows.len(), rolter_core::SUBSYSTEMS.len());
+    for row in rows {
+        assert_eq!(
+            row["stability"], "experimental",
+            "a stable subsystem must be absent, not listed: {row}"
+        );
+        let id = row["id"].as_str().expect("a subsystem id");
+        assert!(
+            rolter_core::subsystem(id).is_some(),
+            "{id} is not in the core table"
+        );
+        assert!(
+            !row["note"].as_str().unwrap_or_default().is_empty(),
+            "{id} must say why it is experimental"
+        );
+    }
+    // a stable subsystem is nowhere in the payload
+    assert!(!rows
+        .iter()
+        .any(|row| row["id"] == "providers" || row["id"] == "virtual_keys"));
+
+    let as_admin = client
+        .get(format!("{base}/api/v1/stability"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(as_admin.status(), 200);
+}
+
 /// The `/me/*` 401 distinguishes "you are not signed in" from "this deployment
 /// has no accounts to sign in to" (#942).
 ///
@@ -1572,7 +1659,8 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
 #[tokio::test]
 async fn a_gated_control_plane_reports_a_plain_missing_session_on_me() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool, Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1610,7 +1698,8 @@ async fn a_gated_control_plane_reports_a_plain_missing_session_on_me() {
 #[tokio::test]
 async fn feature_flags_are_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1688,7 +1777,8 @@ async fn feature_flags_are_superadmin_only_and_audited() {
 #[tokio::test]
 async fn cluster_inventory_tracks_polling_nodes() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1861,7 +1951,8 @@ async fn cluster_inventory_tracks_polling_nodes() {
 #[tokio::test]
 async fn unavailable_feature_flags_are_reported_and_cannot_be_enabled() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -1932,7 +2023,8 @@ async fn unavailable_feature_flags_are_reported_and_cannot_be_enabled() {
 #[tokio::test]
 async fn logging_settings_are_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2027,7 +2119,8 @@ async fn logging_settings_are_superadmin_only_and_audited() {
 #[tokio::test]
 async fn runtime_policy_is_superadmin_only_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2103,7 +2196,8 @@ async fn runtime_policy_is_superadmin_only_and_audited() {
 #[tokio::test]
 async fn compatibility_policy_is_superadmin_only_validated_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2183,7 +2277,8 @@ async fn compatibility_policy_is_superadmin_only_validated_and_audited() {
 #[tokio::test]
 async fn adaptive_routing_policy_is_superadmin_only_validated_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -2296,7 +2391,8 @@ async fn adaptive_routing_policy_is_superadmin_only_validated_and_audited() {
 #[tokio::test]
 async fn login_me_logout_round_trip() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2404,7 +2500,8 @@ async fn login_me_logout_round_trip() {
 #[tokio::test]
 async fn failed_logins_are_throttled_per_account_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2521,7 +2618,8 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
 #[tokio::test]
 async fn expired_session_is_rejected() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -2623,7 +2721,8 @@ async fn seed_session(pool: &sqlx::PgPool, user_id: uuid::Uuid, suffix: &str) ->
 #[tokio::test]
 async fn policy_allows_resolves_several_project_memberships_in_one_verdict() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -2770,7 +2869,8 @@ async fn policy_allows_resolves_several_project_memberships_in_one_verdict() {
 #[tokio::test]
 async fn skill_access_policy_filters_list_history_and_resolution() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -3058,12 +3158,13 @@ mod stub_idp {
 #[tokio::test]
 async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
     let addr = serve(app).await;
-    std::env::set_var("ROLTER_KEK", "sso-update-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -3253,15 +3354,12 @@ async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
 #[tokio::test]
 async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     // the redirect uri is deployment-owned, so the control plane must know its
     // own public url for the flow to be coherent
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "sso-test-kek");
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -3550,7 +3648,8 @@ fn url_param(url: &str, key: &str) -> String {
 #[tokio::test]
 async fn scim_users_are_provisioned_scoped_and_idempotent() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -3827,7 +3926,8 @@ async fn scim_users_are_provisioned_scoped_and_idempotent() {
 #[tokio::test]
 async fn scim_groups_map_to_teams_and_reconcile_idempotently() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4274,7 +4374,8 @@ async fn scim_groups_map_to_teams_and_reconcile_idempotently() {
 #[tokio::test]
 async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4588,7 +4689,8 @@ async fn mcp_oauth_grants_and_sessions_are_owner_scoped_and_revocable() {
 #[tokio::test]
 async fn rbac_matrix_and_effective_permissions_are_api_backed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4711,7 +4813,13 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
         .collect();
     assert_eq!(
         elsewhere_allowed,
-        vec!["model_price:read", "model:read", "version:read"]
+        vec![
+            "model_label:read",
+            "model_price:read",
+            "model:read",
+            "version:read",
+            "stability:read"
+        ]
     );
 
     // a project-scoped admin inherits nothing upward: the same user is only an
@@ -4789,7 +4897,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
 #[tokio::test]
 async fn rbac_enforced_on_every_mutation() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -4940,7 +5049,8 @@ async fn rbac_enforced_on_every_mutation() {
 #[tokio::test]
 async fn open_mode_allows_unauthenticated_mutations() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/orgs"))
         .json(&json!({"name": "Acme", "slug": "acme"}))
@@ -4960,7 +5070,8 @@ async fn open_mode_allows_unauthenticated_mutations() {
 #[tokio::test]
 async fn user_and_membership_lifecycle() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -5123,7 +5234,8 @@ async fn user_and_membership_lifecycle() {
 #[tokio::test]
 async fn self_service_key_lifecycle() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -5286,13 +5398,10 @@ async fn self_service_key_lifecycle() {
 #[tokio::test]
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
-    let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "sso-test-kek");
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -5581,7 +5690,8 @@ async fn sso_login(
 #[tokio::test]
 async fn invitations_onboard_accounts_once_and_expire_closed() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -5816,7 +5926,8 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
 #[tokio::test]
 async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -5967,7 +6078,8 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
 #[tokio::test]
 async fn custom_role_grant_widens_a_member_within_its_scope_only() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6131,7 +6243,8 @@ async fn custom_role_grant_widens_a_member_within_its_scope_only() {
 #[tokio::test]
 async fn custom_role_changes_are_guarded_by_references_and_audited() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6233,7 +6346,8 @@ async fn custom_role_changes_are_guarded_by_references_and_audited() {
 #[tokio::test]
 async fn rbac_matrix_reflects_custom_roles_after_a_change() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6334,31 +6448,104 @@ mod stub_authz {
     }
 
     pub async fn serve_stub() -> (String, Stub) {
+        serve_stub_with_metadata(true).await
+    }
+
+    /// The same stub, plus the RFC 8414 metadata document discovery reads
+    /// (#1347). `iss_supported` is what the metadata advertises, which is the
+    /// row of the RFC 9207 §2.4 table a response with no `iss` is judged by.
+    pub async fn serve_stub_with_metadata(iss_supported: bool) -> (String, Stub) {
         let stub = Stub::default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = Router::new().route(
-            "/token",
-            axum::routing::post({
-                let stub = stub.clone();
-                move |body: String| {
+        let issuer = format!("http://{addr}");
+        let metadata = json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "authorization_response_iss_parameter_supported": iss_supported,
+            "response_types_supported": ["code"],
+        });
+        let app = Router::new()
+            .route(
+                "/.well-known/oauth-authorization-server",
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { axum::Json(metadata) }
+                }),
+            )
+            .route(
+                "/token",
+                axum::routing::post({
                     let stub = stub.clone();
-                    async move {
-                        *stub.last_form.lock().unwrap() = body;
-                        *stub.calls.lock().unwrap() += 1;
-                        let (status, payload) = stub.next.lock().unwrap().clone();
-                        (
-                            axum::http::StatusCode::from_u16(status).unwrap(),
-                            axum::Json(payload),
-                        )
+                    move |body: String| {
+                        let stub = stub.clone();
+                        async move {
+                            *stub.last_form.lock().unwrap() = body;
+                            *stub.calls.lock().unwrap() += 1;
+                            let (status, payload) = stub.next.lock().unwrap().clone();
+                            (
+                                axum::http::StatusCode::from_u16(status).unwrap(),
+                                axum::Json(payload),
+                            )
+                        }
                     }
-                }
-            }),
-        );
+                }),
+            );
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (format!("http://{addr}"), stub)
+        (issuer, stub)
+    }
+}
+
+/// A stub MCP server that publishes RFC 9728 protected resource metadata
+/// (#1347): an unauthenticated request is challenged with a
+/// `resource_metadata` URL, and that document names the authorization server.
+mod stub_resource {
+    use super::*;
+    use axum::Router;
+
+    /// Serve a protected resource at `/mcp` whose metadata points at
+    /// `authorization_server`. Returns the resource's canonical URI.
+    pub async fn serve_stub(authorization_server: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let resource = format!("http://{addr}/mcp");
+        let metadata = json!({
+            "resource": resource,
+            "authorization_servers": [authorization_server],
+            "scopes_supported": ["tools:read", "tools:write"],
+            "bearer_methods_supported": ["header"],
+        });
+        let challenge = format!(
+            "Bearer resource_metadata=\"http://{addr}/.well-known/oauth-protected-resource/mcp\", \
+             scope=\"tools:read\""
+        );
+        let app = Router::new()
+            .route(
+                "/mcp",
+                axum::routing::get(move || {
+                    let challenge = challenge.clone();
+                    async move {
+                        (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            [(axum::http::header::WWW_AUTHENTICATE, challenge)],
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { axum::Json(metadata) }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        resource
     }
 }
 
@@ -6370,13 +6557,10 @@ mod stub_authz {
 #[tokio::test]
 async fn mcp_oauth_consent_refresh_and_exchange() {
     skip_without_db!();
-    let pool = fresh_pool().await;
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
-    let addr = serve(app).await;
-    std::env::set_var("ROLTER_PUBLIC_URL", format!("http://{addr}"));
-    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
     let (authz, stub) = stub_authz::serve_stub().await;
@@ -6488,7 +6672,10 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
             "token_url": format!("{authz}/token"),
             "client_id": "rolter",
             "client_secret": "cli3nt-s3cret",
-            "default_scopes": ["tools:read", "tools:write"]
+            "default_scopes": ["tools:read", "tools:write"],
+            // this server publishes no metadata, so it is pinned to the
+            // hand-configured endpoints and nothing is probed (#1347)
+            "discovery": "manual"
         }))
         .send()
         .await
@@ -6779,18 +6966,547 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     }
 }
 
+/// The three client-side MUSTs of the current MCP specification (#1347), end to
+/// end: the authorization server is discovered from what the MCP server
+/// publishes rather than typed in, both requests carry the RFC 8707 `resource`,
+/// and the callback applies RFC 9207 §2.4 — including the two failures that
+/// would otherwise be silent, a wrong `iss` and an absent one from a server
+/// that advertises it.
+#[tokio::test]
+async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    // deliberately *not* setting ROLTER_PUBLIC_URL: it is process-wide, and
+    // under plain `cargo test` (the coverage job) one test's value is read by
+    // another test's in-flight request. nothing here asserts on the redirect
+    // uri, so whatever the deployment default is will do
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    // an authorization server that publishes metadata and says it returns `iss`
+    let (authz, stub) = stub_authz::serve_stub_with_metadata(true).await;
+    let resource = stub_resource::serve_stub(&authz).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "DiscoOrg", "slug": "disco-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple")
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("insert into users (email, password_hash) values ($1, $2) returning id")
+            .bind("grace@example.com")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+        .bind(user_id)
+        .bind(uuid::Uuid::parse_str(&org_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "grace@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Disco", "slug": "disco", "url": resource}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+
+    // a client id and nothing else: no endpoint is typed in, because the
+    // server publishes where its authorization server is
+    let registered: Value = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"client_id": "rolter", "default_scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(registered["authorize_url"], Value::Null);
+    assert_eq!(registered["token_url"], Value::Null);
+    assert_eq!(registered["resource"], json!(resource));
+
+    // one consent start, used three times over: each callback consumes its own
+    // login state, so every case below asks for a fresh one
+    let start = || async {
+        let started: Value = client
+            .post(format!(
+                "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+            ))
+            .bearer_auth(&token)
+            .json(&json!({"scopes": ["tools:read"]}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        started
+    };
+
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    // the endpoint came from the authorization server's metadata, not from a
+    // column an operator filled in
+    assert!(
+        auth_url.starts_with(&format!("{authz}/authorize?")),
+        "authorization url must come from discovery: {auth_url}"
+    );
+    // RFC 8707 on the authorization request
+    assert_eq!(
+        url_param(&auth_url, "resource"),
+        resource.replace(':', "%3A").replace('/', "%2F"),
+        "the authorization request must carry the canonical resource: {auth_url}"
+    );
+
+    // -- RFC 9207: a wrong issuer ------------------------------------------
+    let wrong = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-1&state={}&iss=https%3A%2F%2Fevil.example.com",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 400, "a mismatched iss must be rejected");
+    assert_eq!(
+        stub.calls(),
+        0,
+        "the authorization code must never reach a token endpoint after an iss mismatch"
+    );
+
+    // -- RFC 9207: an absent issuer from a server that advertises one -------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    let absent = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-2&state={}",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        absent.status(),
+        400,
+        "an absent iss must be rejected when the metadata advertises it"
+    );
+    assert_eq!(stub.calls(), 0);
+
+    // -- and an error response whose issuer does not check out --------------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    let refused = client
+        .get(format!(
+            "{base}/auth/mcp/callback?error=access_denied&error_description=go-here-instead\
+             &state={}&iss=https%3A%2F%2Fevil.example.com",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body = refused.text().await.unwrap();
+    assert!(
+        !body.contains("go-here-instead") && !body.contains("access_denied"),
+        "an unvalidated error response must not be displayed: {body}"
+    );
+
+    // nothing above created a grant
+    let grants: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/grants"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants.as_array().map(Vec::len), Some(0), "{grants}");
+
+    // -- the happy path -----------------------------------------------------
+    let started = start().await;
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    stub.answer(
+        200,
+        json!({
+            "access_token": "access-1",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "tools:read"
+        }),
+    );
+    let consented = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-3&state={}&iss={}",
+            url_param(&auth_url, "state"),
+            authz.replace(':', "%3A").replace('/', "%2F")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        consented.status(),
+        200,
+        "{}",
+        consented.text().await.unwrap()
+    );
+    // RFC 8707 on the token request, carrying the very same identifier
+    let form = stub.form();
+    assert!(
+        form.contains(&format!(
+            "resource={}",
+            resource.replace(':', "%3A").replace('/', "%2F")
+        )),
+        "the token request must carry the same canonical resource: {form}"
+    );
+
+    // -- the hand-configured fallback still works ---------------------------
+    // a server that publishes nothing at all: discovery fails against a dead
+    // port and the operator's endpoints are used instead
+    let quiet: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Quiet", "slug": "quiet", "url": "http://127.0.0.1:1/mcp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let quiet_id = quiet["id"].as_str().unwrap().to_string();
+    let quiet_client = client
+        .put(format!("{base}/api/v1/mcp-servers/{quiet_id}/oauth-client"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "authorize_url": format!("{authz}/authorize"),
+            "token_url": format!("{authz}/token"),
+            "client_id": "rolter"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(quiet_client.status(), 200);
+    let started: Value = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{quiet_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    assert!(
+        auth_url.starts_with(&format!("{authz}/authorize?")),
+        "the configured endpoint must be the fallback: {auth_url}"
+    );
+    // the resource parameter is not conditional on discovery having worked
+    assert_eq!(
+        url_param(&auth_url, "resource"),
+        "http%3A%2F%2F127.0.0.1%3A1%2Fmcp"
+    );
+    // nothing was discovered and no issuer was pinned, so a returned `iss` has
+    // nothing authentic to be checked against and the exchange is refused
+    let unverifiable = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-4&state={}&iss={}",
+            url_param(&auth_url, "state"),
+            authz.replace(':', "%3A").replace('/', "%2F")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unverifiable.status(), 400);
+
+    // while a response with no `iss` at all is row four of the table, and
+    // proceeds exactly as it did before this flow knew about RFC 9207
+    let started: Value = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{quiet_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    stub.answer(
+        200,
+        json!({"access_token": "access-2", "token_type": "Bearer", "expires_in": 3600}),
+    );
+    let legacy = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-5&state={}",
+            url_param(&auth_url, "state")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 200, "{}", legacy.text().await.unwrap());
+}
+
+/// The `oauth_discovered_*` cache of one server, plus whether
+/// `oauth_discovered_at` is set — read as a boolean so the tuple needs no
+/// timestamp type.
+type DiscoveryCache = (Option<String>, Option<String>, Option<String>, bool, bool);
+
+async fn discovery_cache(pool: &sqlx::PgPool, id: uuid::Uuid) -> DiscoveryCache {
+    sqlx::query_as(
+        "select oauth_discovered_issuer, oauth_discovered_authorize_url, \
+                oauth_discovered_token_url, oauth_discovered_iss_supported, \
+                oauth_discovered_at is not null \
+         from mcp_servers where id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn config_version(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// #1416: the discovery cache is keyed by the server's URL — it holds the
+/// endpoints of whatever authorization server that URL's protected-resource
+/// metadata named. Pointing the row somewhere else must therefore drop it, or a
+/// refresh landing before the next interactive authorize would post to the old
+/// server's token endpoint while naming the new canonical URI in `resource`.
+///
+/// The second half is the constraint that makes the fix non-obvious:
+/// `mcp_servers` has a statement-level `bump_config_version()` trigger, so the
+/// clearing has to ride on the update that writes the URL rather than follow
+/// it, and an edit that leaves the URL alone must not clear anything.
+#[tokio::test]
+async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let (authz, _stub) = stub_authz::serve_stub_with_metadata(true).await;
+    let resource = stub_resource::serve_stub(&authz).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "MoveOrg", "slug": "move-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    // consent is a user-facing act, so the authorize below needs a member
+    // session rather than the admin token
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple")
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("insert into users (email, password_hash) values ($1, $2) returning id")
+            .bind("mallory@example.com")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+        .bind(user_id)
+        .bind(uuid::Uuid::parse_str(&org_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mallory@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Movable", "slug": "movable", "url": resource}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    let server_uuid = uuid::Uuid::parse_str(&server_id).unwrap();
+
+    let registered = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"client_id": "rolter", "default_scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), 200);
+
+    // one interactive authorize is what fills the cache
+    let started = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(started.status(), 200, "{}", started.text().await.unwrap());
+    let cached = discovery_cache(&pool, server_uuid).await;
+    assert_eq!(
+        cached,
+        (
+            Some(authz.clone()),
+            Some(format!("{authz}/authorize")),
+            Some(format!("{authz}/token")),
+            true,
+            true
+        ),
+        "discovery should have cached the stub authorization server"
+    );
+
+    // an edit that leaves the url where it is keeps the cache: re-discovering
+    // on every rename would put an upstream probe on a path that has no reason
+    // to touch one
+    let before = config_version(&pool).await;
+    let renamed = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Renamed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), 200, "{}", renamed.text().await.unwrap());
+    assert_eq!(
+        discovery_cache(&pool, server_uuid).await,
+        cached,
+        "an edit that did not move the url must not invalidate the cache"
+    );
+    assert_eq!(
+        config_version(&pool).await - before,
+        1,
+        "one edit must bump config_version exactly once"
+    );
+
+    // moving the url drops every discovered column, so the next refresh
+    // re-discovers instead of posting to the previous server's token endpoint
+    let before = config_version(&pool).await;
+    let moved = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .bearer_auth("admintok")
+        .json(&json!({"url": "http://127.0.0.1:1/mcp"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), 200, "{}", moved.text().await.unwrap());
+    assert_eq!(
+        discovery_cache(&pool, server_uuid).await,
+        (None, None, None, false, false),
+        "moving the url must clear the endpoints discovered for the old one"
+    );
+    // the clearing rides on the update that wrote the url; a second statement
+    // would bump twice for one logical edit
+    assert_eq!(
+        config_version(&pool).await - before,
+        1,
+        "clearing the cache must not cost a second config_version bump"
+    );
+
+    // and with the cache gone the fallback is what an operator configured,
+    // rather than an endpoint belonging to a server this row no longer names
+    let quiet = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        quiet.status(),
+        400,
+        "nothing is discoverable at the new url and no endpoint was configured"
+    );
+}
+
 /// Cross-tenant isolation on the exchange path: a member of another org may not
 /// refresh or exchange a session they do not own, and the answer is a 404 —
 /// whether a session exists elsewhere is not something to probe for.
 #[tokio::test]
 async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
     let addr = serve(app).await;
-    std::env::set_var("ROLTER_KEK", "mcp-oauth-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -6890,7 +7606,8 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
 #[tokio::test]
 async fn global_catalogs_take_authentication_but_no_membership() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
@@ -6952,7 +7669,8 @@ async fn global_catalogs_take_authentication_but_no_membership() {
 #[tokio::test]
 async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7030,9 +7748,10 @@ async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
 #[tokio::test]
 async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     skip_without_db!();
-    std::env::set_var("ROLTER_KEK", "collector-config-test-kek");
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
 
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7079,8 +7798,9 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
     skip_without_db!();
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
-    std::env::set_var("ROLTER_KEK", "security-policy-test-kek");
-    let pool = fresh_pool().await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
         .await
         .unwrap();
@@ -7164,7 +7884,8 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
 #[tokio::test]
 async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
     skip_without_db!();
-    let addr = serve(fresh_app().await).await;
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
@@ -7264,4 +7985,1167 @@ async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
         .await
         .unwrap();
     assert_eq!(zero.status(), 400);
+}
+
+// ---------------------------------------------------------------------------
+// TOTP second factor (#1078)
+// ---------------------------------------------------------------------------
+
+/// A password for one test account, generated per run rather than written out.
+/// A literal here is a hard-coded credential to every scanner that reads this
+/// file, and the tests need only that the password round-trips -- not that it
+/// is any particular string.
+fn random_password() -> String {
+    format!("pw-{}", uuid::Uuid::new_v4())
+}
+
+/// Seed a local superadmin with a known password and return its id.
+async fn seed_local_user(pool: &sqlx::PgPool, email: &str, password: &str) -> uuid::Uuid {
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string();
+    sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, $2, true)
+         returning id",
+    )
+    .bind(email)
+    .bind(&hash)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// The current TOTP code for a base32 secret, as an authenticator app would
+/// compute it.
+fn current_code(secret_b32: &str) -> String {
+    let secret = rolter_auth::totp::base32_decode(secret_b32).expect("secret decodes");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    rolter_auth::totp::code_at_step(&secret, rolter_auth::totp::step_at(now))
+}
+
+/// The whole enrolment → step-up → recovery-code path, plus the two properties
+/// that make the factor worth having: a code cannot be replayed, and a
+/// recovery code is single-use.
+#[tokio::test]
+async fn totp_enrolment_step_up_and_recovery_codes() {
+    skip_without_db!();
+    // enrolment seals the secret with the deployment KEK, so a control plane
+    // without one must refuse rather than store a bearer credential in clear
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_local_user(&pool, "mfa@example.com", &password).await;
+
+    // sign in the ordinary way: no factor yet, so a session comes straight back
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().expect("session token").to_string();
+
+    // status before enrolment
+    let status: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["policy"], "off");
+
+    // begin enrolment: the secret is shown once
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().expect("secret").to_string();
+    assert!(
+        enrol["otpauth_uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/"),
+        "{enrol}"
+    );
+
+    // an unconfirmed factor arms nothing: logging in again must still hand
+    // back a session, not a challenge
+    let mid: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        mid["token"].is_string(),
+        "unconfirmed factor must not gate login: {mid}"
+    );
+
+    // a wrong code does not arm it
+    let bad = client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // the right code does, and returns the recovery batch. bind it: the replay
+    // assertion below has to send back this exact code, and reading the clock a
+    // second time sends the next step's code across a 30s boundary, asserting
+    // the clock rather than the replay rule (#1451)
+    let confirming_code = current_code(&secret);
+    let confirmed: Value = client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": &confirming_code}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let codes: Vec<String> = confirmed["recovery_codes"]
+        .as_array()
+        .expect("recovery codes")
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(codes.len(), 10, "{confirmed}");
+
+    // now login is a challenge, not a session
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(challenge["mfa_required"], true, "{challenge}");
+    assert!(
+        challenge["token"].is_null(),
+        "a challenge is not a session: {challenge}"
+    );
+    let mfa_token = challenge["mfa_token"]
+        .as_str()
+        .expect("mfa token")
+        .to_string();
+
+    // a wrong code against the challenge is refused
+    let wrong = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    // the code that confirmed the enrolment has already been spent, so it does
+    // not redeem the challenge either -- the replay rule does not care that
+    // the earlier use was a legitimate one
+    let spent = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": &confirming_code}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        spent.status(),
+        401,
+        "the confirming code is spent and must not redeem a challenge"
+    );
+
+    // stand in for the 30 seconds a real user waits for the next code, by
+    // winding the spent step back one. Winding the clock instead would mean
+    // sleeping through a step in every CI run
+    sqlx::query("update user_totp_factors set last_used_step = last_used_step - 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // now the current code redeems the challenge for a real session
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mfa_token = challenge["mfa_token"]
+        .as_str()
+        .expect("mfa token")
+        .to_string();
+    let code = current_code(&secret);
+    let stepped: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": code}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session = stepped["token"]
+        .as_str()
+        .expect("session token")
+        .to_string();
+    let me = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200, "the stepped-up session must authenticate");
+
+    // *the* property: that same code, still inside its window, cannot be
+    // replayed on a fresh challenge. Without the spent-step check a
+    // shoulder-surfed code stays usable for up to 90 seconds
+    let replay_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let replayed = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": replay_challenge["mfa_token"].as_str().unwrap(),
+            "code": code,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed.status(),
+        401,
+        "a spent TOTP step must not verify again"
+    );
+
+    // a recovery code gets past the factor exactly once
+    let recovery_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let redeemed = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": recovery_challenge["mfa_token"].as_str().unwrap(),
+            "code": codes[0],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        redeemed.status(),
+        200,
+        "an unspent recovery code must verify"
+    );
+
+    let reuse_challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "mfa@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let reused = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({
+            "mfa_token": reuse_challenge["mfa_token"].as_str().unwrap(),
+            "code": codes[0],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reused.status(), 401, "a recovery code must be single-use");
+
+    let after: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["enabled"], true);
+    assert_eq!(after["recovery_codes_remaining"], 9);
+}
+
+/// A challenge is spendable a bounded number of times. Without this, a
+/// stolen password is six digits and unlimited guesses away from a session.
+#[tokio::test]
+async fn a_challenge_is_exhausted_by_repeated_wrong_codes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_local_user(&pool, "attempts@example.com", &password).await;
+
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "attempts@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().unwrap().to_string();
+    client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+
+    let challenge: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "attempts@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mfa_token = challenge["mfa_token"].as_str().unwrap().to_string();
+
+    for attempt in 0..3 {
+        let wrong = client
+            .post(format!("{base}/api/v1/auth/mfa/verify"))
+            .json(&json!({"mfa_token": mfa_token, "code": "000000"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401, "attempt {attempt}");
+    }
+
+    // the budget is spent, so even the *correct* code no longer redeems this
+    // challenge -- the user has to start over from the password
+    let correct = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": mfa_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        correct.status(),
+        401,
+        "an exhausted challenge must not redeem, right code or not"
+    );
+}
+
+/// `rolter mfa reset` is the documented way back into an account whose factor
+/// is gone. It clears the factor and revokes the sessions that were riding on
+/// it, and records why it was run.
+#[tokio::test]
+async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let user_id = seed_local_user(&pool, "locked-out@example.com", &password).await;
+
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "locked-out@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/me/mfa/enroll"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/api/v1/me/mfa/confirm"))
+        .bearer_auth(&token)
+        .json(&json!({"code": current_code(enrol["secret"].as_str().unwrap())}))
+        .send()
+        .await
+        .unwrap();
+
+    let cleared = rolter_control::mfa::break_glass_reset(&pool, user_id, "lost phone, ticket 42")
+        .await
+        .unwrap();
+    assert!(cleared, "there was a factor to clear");
+
+    // the session that existed before the reset is gone
+    let stale = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 401, "reset must revoke live sessions");
+
+    // and the password alone gets back in, so the user can enrol again
+    let back_in: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "locked-out@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(back_in["token"].is_string(), "{back_in}");
+
+    // the reason is on the audit entry, which is the whole point of demanding
+    // one on the command line
+    let reason: Option<String> = sqlx::query_scalar(
+        "select detail->>'reason' from audit_log
+         where action = 'auth.mfa_break_glass_reset' and actor_user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap()
+    .flatten();
+    assert_eq!(reason.as_deref(), Some("lost phone, ticket 42"));
+}
+
+/// An org policy of `required_all` refuses a session to an account with no
+/// armed factor, rather than letting it in unprotected.
+#[tokio::test]
+async fn a_required_policy_refuses_an_unenrolled_account() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let user_id = seed_local_user(&pool, "unenrolled@example.com", &password).await;
+
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'admin')")
+        .bind(user_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into org_auth_policies (org_id, mfa_policy) values ($1, 'required_all')")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let refused = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "unenrolled@example.com", "password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "mfa_enrolment_required", "{body}");
+}
+
+/// A custom label's full life on a provider, and the conflict an operator gets
+/// for re-using a key on the same subject rather than a silent overwrite
+/// (#985).
+#[tokio::test]
+async fn custom_labels_round_trip_and_refuse_a_duplicate_key() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .json(&json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+
+    let created = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "eu-only",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(created["source"], "custom");
+    assert_eq!(created["key"], "eu-only");
+    assert!(
+        created["observed_at"].is_null() && created["observation"].is_null(),
+        "an operator's assertion carries no provenance: {created}"
+    );
+    let label_id = created["id"].as_str().unwrap().to_string();
+
+    // a valueless label is a flag; one with a value is a field
+    let owner = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "owner",
+            "value": "platform-team",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(owner.status(), 201);
+
+    let duplicate = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "eu-only",
+            "value": "yes",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        duplicate.status(),
+        409,
+        "re-using a key must not silently rewrite the existing label"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+
+    let filtered: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels?key=owner"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(filtered.as_array().unwrap().len(), 1);
+    assert_eq!(filtered[0]["value"], "platform-team");
+
+    let updated: Value = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/labels/{label_id}"))
+        .json(&json!({"value": "frankfurt"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["value"], "frankfurt");
+
+    let deleted = client
+        .delete(format!("{base}/api/v1/orgs/{org_id}/labels/{label_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+
+    // the subject's own deletion sweeps what is left: subject_id is text, so
+    // no foreign key does this for us
+    let removed = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(removed.status().is_success(), "{}", removed.status());
+    let after: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.as_array().unwrap().len(),
+        0,
+        "a deleted provider must not leave labels behind: {after}"
+    );
+}
+
+/// The auto label the pricing catalog produces, and the fact that no request
+/// can edit, retract or impersonate one (#985).
+#[tokio::test]
+async fn auto_labels_are_produced_by_the_store_and_are_read_only() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let priced = client
+        .put(format!("{base}/api/v1/model-prices"))
+        .json(&json!({
+            "model": "gpt-4o",
+            "input_per_mtok": "2.50",
+            "output_per_mtok": "10.00",
+            "currency": "USD",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(priced.status().is_success(), "{}", priced.status());
+
+    let labels: Value = client
+        .get(format!("{base}/api/v1/model-labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(labels.as_array().unwrap().len(), 1, "{labels}");
+    let auto = &labels[0];
+    assert_eq!(auto["source"], "auto");
+    assert_eq!(auto["key"], "priced");
+    assert_eq!(auto["subject_id"], "gpt-4o");
+    assert_eq!(auto["value"], "USD");
+    assert_eq!(
+        auto["observation"], "model_prices",
+        "an auto label must say what established it"
+    );
+    assert!(
+        auto["observed_at"].is_string(),
+        "an auto label must say when: {auto}"
+    );
+    let auto_id = auto["id"].as_str().unwrap().to_string();
+
+    // read-only means read-only over HTTP too, not merely absent from the UI
+    let edit = client
+        .put(format!("{base}/api/v1/model-labels/{auto_id}"))
+        .json(&json!({"value": "EUR"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(edit.status(), 404, "an observation is not editable");
+    let drop = client
+        .delete(format!("{base}/api/v1/model-labels/{auto_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(drop.status(), 404, "an observation is not deletable");
+
+    // an operator writing the same key gets their own row rather than
+    // overwriting the probed one, and it is plainly marked custom
+    let shadow = client
+        .post(format!("{base}/api/v1/model-labels"))
+        .json(&json!({"model": "gpt-4o", "key": "priced", "value": "trust me"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shadow.status(), 201);
+    let shadow: Value = shadow.json().await.unwrap();
+    assert_eq!(shadow["source"], "custom");
+    assert!(shadow["observed_at"].is_null());
+
+    let both: Value = client
+        .get(format!("{base}/api/v1/model-labels?key=priced"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        both.as_array().unwrap().len(),
+        2,
+        "auto and custom labels sharing a key must coexist: {both}"
+    );
+
+    // withdrawing the observation withdraws the auto label and leaves the
+    // operator's alone
+    let unpriced = client
+        .delete(format!("{base}/api/v1/model-prices/gpt-4o"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unpriced.status(), 204);
+    let left: Value = client
+        .get(format!("{base}/api/v1/model-labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(left.as_array().unwrap().len(), 1, "{left}");
+    assert_eq!(left[0]["source"], "custom");
+}
+
+/// A label's tenancy comes from its subject, so one org's path must not reach
+/// another org's provider or another org's label (#985).
+#[tokio::test]
+async fn labels_are_scoped_by_the_subject_they_describe() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn make_org(client: &reqwest::Client, base: &str, slug: &str) -> String {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        org["id"].as_str().unwrap().to_string()
+    }
+
+    let acme = make_org(&client, &base, "acme").await;
+    let globex = make_org(&client, &base, "globex").await;
+
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{acme}/providers"))
+        .json(&json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+
+    let cross = client
+        .post(format!("{base}/api/v1/orgs/{globex}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "stolen",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cross.status(),
+        404,
+        "another org's path must not label this provider"
+    );
+
+    let mine: Value = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "prod",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let label_id = mine["id"].as_str().unwrap().to_string();
+
+    let peek = client
+        .delete(format!("{base}/api/v1/orgs/{globex}/labels/{label_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        peek.status(),
+        404,
+        "a label id from another org must not be reachable"
+    );
+
+    let globex_labels: Value = client
+        .get(format!("{base}/api/v1/orgs/{globex}/labels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        globex_labels.as_array().unwrap().len(),
+        0,
+        "{globex_labels}"
+    );
+
+    // a model is not an org's to label through the org surface
+    let wrong_surface = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({"subject_type": "model", "subject_id": provider_id, "key": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_surface.status(), 400);
+
+    // and a malformed key is rejected before it reaches the check constraint
+    let bad_key = client
+        .post(format!("{base}/api/v1/orgs/{acme}/labels"))
+        .json(&json!({
+            "subject_type": "provider",
+            "subject_id": provider_id,
+            "key": "Not A Key",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_key.status(), 400);
+}
+
+/// A static MCP credential is sealed at rest, never comes back out of the read
+/// API, and the auth kind and the credential columns cannot disagree (#952).
+
+#[tokio::test]
+async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({
+            "name": "Search",
+            "slug": "search",
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable_http",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        server["auth_kind"], "none",
+        "a server registers unauthenticated until told otherwise: {server}"
+    );
+    assert_eq!(server["has_credential"], false);
+
+    const TOKEN: &str = "mcp-upstream-token-value";
+    let armed: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "bearer", "credential": TOKEN}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(armed["auth_kind"], "bearer");
+    assert_eq!(armed["has_credential"], true);
+    assert!(
+        !armed.to_string().contains(TOKEN),
+        "the credential must not come back in the write response"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !listed.to_string().contains(TOKEN),
+        "the credential must not come back in the read API"
+    );
+
+    // sealed at rest: the row holds ciphertext, and the plaintext appears
+    // nowhere in the column
+    let stored: (Option<Vec<u8>>, Option<Vec<u8>>) = sqlx::query_as(
+        "select credential_ciphertext, credential_nonce from mcp_servers where id = $1::uuid",
+    )
+    .bind(&server_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let ciphertext = stored.0.expect("ciphertext stored");
+    assert!(stored.1.is_some(), "nonce stored beside the ciphertext");
+    assert!(
+        !String::from_utf8_lossy(&ciphertext).contains(TOKEN),
+        "the credential must not be recoverable from the stored bytes"
+    );
+
+    // renaming nothing but the kind keeps the stored credential: an operator
+    // cannot read it back, so requiring a re-type would make it unchangeable
+    let to_header: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "X-Api-Key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(to_header["auth_kind"], "header");
+    assert_eq!(to_header["auth_header_name"], "X-Api-Key");
+    assert_eq!(to_header["has_credential"], true);
+
+    // header mode must not be able to forge the bearer path
+    let forged = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "Authorization"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        forged.status(),
+        400,
+        "an api key must not be presentable as Authorization"
+    );
+
+    let malformed = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header", "auth_header_name": "X Api Key"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), 400);
+
+    let headerless = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "header"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        headerless.status(),
+        400,
+        "header mode without a header name is not a usable configuration"
+    );
+
+    // dropping to 'none' clears the credential rather than orphaning it, so
+    // `rolter kek verify` is not left auditing a secret nothing can use
+    let disarmed: Value = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "none"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(disarmed["auth_kind"], "none");
+    assert_eq!(disarmed["has_credential"], false);
+    let cleared: (Option<Vec<u8>>,) =
+        sqlx::query_as("select credential_ciphertext from mcp_servers where id = $1::uuid")
+            .bind(&server_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(cleared.0.is_none(), "the sealed credential must be gone");
+
+    // and a kind that needs one cannot be armed without supplying it
+    let empty_handed = client
+        .put(format!("{base}/api/v1/mcp-servers/{server_id}/auth"))
+        .json(&json!({"auth_kind": "bearer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty_handed.status(), 400);
+}
+
+/// Per-server transport overrides, and the null that gives one back to the org
+/// default (#952).
+#[tokio::test]
+async fn mcp_transport_overrides_are_per_server_and_revertible() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({
+            "name": "Slow",
+            "slug": "slow",
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable_http",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    assert!(
+        server["request_timeout_ms"].is_null(),
+        "a new server inherits rather than pinning a copy of the org default"
+    );
+
+    let slowed: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": 120000}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(slowed["request_timeout_ms"], 120000);
+
+    // an unrelated PATCH must not disturb the override
+    let renamed: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"description": "the slow one"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        renamed["request_timeout_ms"], 120000,
+        "absent means leave it, not clear it"
+    );
+
+    let out_of_range = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out_of_range.status(), 400);
+
+    // explicit null is how an operator gives the server back to the org default
+    let reverted: Value = client
+        .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
+        .json(&json!({"request_timeout_ms": null}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        reverted["request_timeout_ms"].is_null(),
+        "null must clear the override: {reverted}"
+    );
 }

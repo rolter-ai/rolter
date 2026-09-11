@@ -13,7 +13,7 @@ import {
   KeyReachSummary,
   keyNameProblem,
   parseCacheMode,
-  parseModels,
+  useRouteModels,
   ttlToDays,
   type CacheMode,
 } from "@/components/KeyMintFields";
@@ -371,22 +371,23 @@ function MintKeyDialog({
 }) {
   const { t } = useTranslation();
   const [name, setName] = React.useState("");
-  const [modelsText, setModelsText] = React.useState("");
+  const [models, setModels] = React.useState<string[]>([]);
   const [ttl, setTtl] = React.useState(String(DEFAULT_KEY_TTL_DAYS));
   const [providerSel, setProviderSel] = React.useState<string[]>([]);
   const [cache, setCache] = React.useState<CacheMode>("inherit");
+  // the models this project routes; only asked for while the sheet is open
+  const routes = useRouteModels(projectId, open);
 
   React.useEffect(() => {
     if (open) {
       setName("");
-      setModelsText("");
+      setModels([]);
       setTtl(String(DEFAULT_KEY_TTL_DAYS));
       setProviderSel([]);
       setCache("inherit");
     }
   }, [open]);
 
-  const models = React.useMemo(() => parseModels(modelsText), [modelsText]);
   const project = projectLabel ?? t("account.keys.mint.currentProject");
 
   const mint = useMutation({
@@ -410,7 +411,7 @@ function MintKeyDialog({
       onOpenChange={onOpenChange}
       title={t("account.keys.mint.title")}
       subtitle={t("account.keys.mint.subtitle", { project })}
-      dirty={Boolean(name || modelsText || providerSel.length) || cache !== "inherit"}
+      dirty={Boolean(name || models.length || providerSel.length) || cache !== "inherit"}
       errorMessage={mint.isError ? (mint.error as Error).message : undefined}
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
@@ -421,7 +422,14 @@ function MintKeyDialog({
         <KeyNameField value={name} onChange={setName} />
         <KeyExpiryField value={ttl} onChange={setTtl} />
         <KeyCacheField value={cache} onChange={setCache} />
-        <KeyModelsField value={modelsText} onChange={setModelsText} />
+        <KeyModelsField
+          value={models}
+          onChange={setModels}
+          options={routes.models}
+          loading={routes.loading}
+          error={routes.error}
+          onRetry={routes.retry}
+        />
         <KeyProvidersField
           providers={providers}
           selected={providerSel}

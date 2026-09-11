@@ -10,11 +10,15 @@
 //! caller still writes `postgres::repo::McpServerRepo` either way.
 
 mod guardrails;
+mod labels;
 mod mcp;
+mod mfa;
 mod support;
 
 pub use guardrails::*;
+pub use labels::*;
 pub use mcp::*;
+pub use mfa::*;
 use support::store_err;
 
 use chrono::{DateTime, Utc};
@@ -2560,7 +2564,8 @@ impl ModelPriceRepo<'_> {
         cached_input_per_mtok: Option<&str>,
         currency: &str,
     ) -> Result<ModelPrice> {
-        sqlx::query_as(
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let row = sqlx::query_as(
             "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
              values ($1, $2::numeric, $3::numeric, $4::numeric, $5)
              on conflict (model) do update
@@ -2579,20 +2584,43 @@ impl ModelPriceRepo<'_> {
         .bind(output_per_mtok)
         .bind(cached_input_per_mtok)
         .bind(currency)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        // the first producer against the label primitive (#985): "this model
+        // has a price" is a fact rolter establishes, and the moment it becomes
+        // true is this statement, so it is recorded here rather than by a job
+        // that would have to guess how stale it is allowed to be
+        LabelRepo::upsert_auto(
+            &mut *tx,
+            AutoLabelInput {
+                subject_type: "model",
+                subject_id: model,
+                key: PRICED_LABEL_KEY,
+                value: Some(currency),
+                observation: "model_prices",
+                observed_at: Utc::now(),
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(row)
     }
 
     pub async fn delete(&self, model: &str) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
         let res = sqlx::query("delete from model_prices where model = $1")
             .bind(model)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("model price '{model}'")));
         }
+        // the fact stops holding with the row, and an auto label that outlived
+        // its observation would be worse than none
+        LabelRepo::clear_auto(&mut *tx, "model", model, PRICED_LABEL_KEY).await?;
+        tx.commit().await.map_err(store_err)?;
         Ok(())
     }
 }
@@ -2941,7 +2969,7 @@ impl OrgAuthPolicyRepo<'_> {
     /// logging in exactly as they did.
     pub async fn get(&self, org_id: Uuid) -> Result<OrgAuthPolicy> {
         let found: Option<OrgAuthPolicy> = sqlx::query_as(
-            "select org_id, allow_password_login, allow_sso, updated_at
+            "select org_id, allow_password_login, allow_sso, mfa_policy, updated_at
              from org_auth_policies where org_id = $1",
         )
         .bind(org_id)
@@ -2952,6 +2980,7 @@ impl OrgAuthPolicyRepo<'_> {
             org_id,
             allow_password_login: true,
             allow_sso: true,
+            mfa_policy: "off".to_string(),
             updated_at: chrono::Utc::now(),
         }))
     }
@@ -2961,22 +2990,67 @@ impl OrgAuthPolicyRepo<'_> {
         org_id: Uuid,
         allow_password_login: bool,
         allow_sso: bool,
+        mfa_policy: &str,
     ) -> Result<OrgAuthPolicy> {
         sqlx::query_as(
-            "insert into org_auth_policies (org_id, allow_password_login, allow_sso)
-             values ($1, $2, $3)
+            "insert into org_auth_policies (org_id, allow_password_login, allow_sso, mfa_policy)
+             values ($1, $2, $3, $4)
              on conflict (org_id) do update
                  set allow_password_login = excluded.allow_password_login,
                      allow_sso = excluded.allow_sso,
+                     mfa_policy = excluded.mfa_policy,
                      updated_at = now()
-             returning org_id, allow_password_login, allow_sso, updated_at",
+             returning org_id, allow_password_login, allow_sso, mfa_policy, updated_at",
         )
         .bind(org_id)
         .bind(allow_password_login)
         .bind(allow_sso)
+        .bind(mfa_policy)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// The strictest second-factor policy across every org this user belongs
+    /// to, as `(policy, org_id)`.
+    ///
+    /// Strictest wins rather than first-found: a user who is an admin in a
+    /// hardened org and a viewer in a relaxed one must not be able to sign in
+    /// without their factor because the relaxed membership was read first.
+    /// Membership scopes are org/team/project, so a team's and a project's
+    /// owning org counts too -- the same join `password_login_blocked_for_user`
+    /// walks.
+    pub async fn strictest_mfa_policy_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<(String, Uuid)>> {
+        let rows: Vec<(String, Uuid)> = sqlx::query_as(
+            "select ap.mfa_policy, ap.org_id from memberships m
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             join org_auth_policies ap
+               on ap.org_id = coalesce(m.org_id, t.org_id, pt.org_id)
+             where m.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        // ordering is expressed here and not as a SQL `order by`, because the
+        // policy values are words rather than a rank the database knows
+        fn rank(policy: &str) -> u8 {
+            match policy {
+                "required_all" => 3,
+                "required_superadmin" => 2,
+                "optional" => 1,
+                _ => 0,
+            }
+        }
+        Ok(rows
+            .into_iter()
+            .max_by_key(|(policy, _)| rank(policy))
+            .filter(|(policy, _)| rank(policy) > 0))
     }
 
     /// True when at least one org this user belongs to forbids password login.
@@ -4163,10 +4237,12 @@ mod tests {
     // the mcp domain took the only non-test use of `Duration` with it
     use chrono::Duration;
 
-    async fn fresh_pool() -> PgPool {
+    /// An isolated, migrated schema of this test's own. Bind the guard for the
+    /// whole test: the schema is dropped with it.
+    async fn fresh_db() -> super::super::test_schema::TestSchema {
         let url = std::env::var("ROLTER_TEST_DATABASE_URL")
             .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
-        super::super::test_support::fresh_scoped_pool(&url).await
+        super::super::test_schema::TestSchema::migrated(&url).await
     }
 
     #[tokio::test]
@@ -4175,7 +4251,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
 
         let orgs = OrgRepo(&pool);
         let org = orgs.create("acme", "acme").await.unwrap();
@@ -4316,7 +4393,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
 
         let repo = PromptTemplateRepo(&pool);
@@ -4402,7 +4480,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
 
         let repo = SkillRepo(&pool);
@@ -4490,7 +4569,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("plugins", "plugins").await.unwrap();
         let team = TeamRepo(&pool).create(org.id, "platform").await.unwrap();
         let project = ProjectRepo(&pool).create(team.id, "gateway").await.unwrap();
@@ -4560,7 +4640,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         }
-        let pool = fresh_pool().await;
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("audit", "audit").await.unwrap();
         let actor = UserRepo(&pool)
             .create("audit@example.com", None, false)

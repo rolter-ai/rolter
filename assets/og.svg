@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="rolter — OpenAI- and Anthropic-compatible AI gateway">
+  <title>rolter</title>
+  <!--
+    Social preview source (#855). Every colour here is a token from
+    ui/src/index.css, not a new value:
+      #111113 --surface-base   #18181b --surface-app
+      #ff4017 --red-500        #b41d21 --red-folk
+      #fafafa --text-primary   #a1a1aa --text-muted   #93939e --text-subtle
+    Type is Geist / Geist Mono, the same vendored families the dashboard ships.
+    Render to user-docs/images/og.png and ui/public/og.png with
+    `bun scripts/render-og.ts` from ui/, which supplies the fonts from
+    node_modules — nothing here is fetched at render time or at runtime.
+  -->
+  <defs>
+    <!-- вышивка: the 10px cross-stitch tile of .vyshivka-rule, expressed as
+         rects rather than as two offset 45 degree gradients -->
+    <pattern id="vyshivka" width="10" height="10" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="5" height="5" fill="#b41d21"></rect>
+      <rect x="5" y="5" width="5" height="5" fill="#b41d21"></rect>
+    </pattern>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ff4017" stop-opacity="0.16"></stop>
+      <stop offset="100%" stop-color="#ff4017" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="#111113"></rect>
+  <circle cx="205" cy="325" r="300" fill="url(#glow)"></circle>
+
+  <!-- one ceremonial band, at the top edge only -->
+  <rect x="0" y="0" width="1200" height="10" fill="url(#vyshivka)" opacity="0.9"></rect>
+
+  <g transform="translate(115 233) scale(2.9206)">
+      <rect x="28.40" y="0.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="21.40" y="7.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="28.40" y="7.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="35.40" y="7.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="14.40" y="14.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="21.40" y="14.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="35.40" y="14.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="42.40" y="14.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="7.40" y="21.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="14.40" y="21.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="42.40" y="21.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="49.40" y="21.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="0.40" y="28.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="7.40" y="28.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="28.40" y="28.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="49.40" y="28.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="56.40" y="28.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="7.40" y="35.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="14.40" y="35.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="42.40" y="35.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="49.40" y="35.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="14.40" y="42.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="21.40" y="42.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="35.40" y="42.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="42.40" y="42.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="21.40" y="49.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="28.40" y="49.40" width="6.2" height="6.2" rx="1" fill="#b41d21"></rect>
+      <rect x="35.40" y="49.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+      <rect x="28.40" y="56.40" width="6.2" height="6.2" rx="1" fill="#ff4017"></rect>
+  </g>
+
+  <text x="360" y="293" font-family="Geist Variable, Geist, sans-serif" font-size="132" font-weight="600" letter-spacing="-5" fill="#fafafa">rolter</text>
+  <text x="364" y="353" font-family="Geist Variable, Geist, sans-serif" font-size="24" font-weight="400" letter-spacing="-0.1" fill="#a1a1aa">OpenAI- and Anthropic-compatible AI gateway and load balancer</text>
+  <rect x="364" y="387" width="72" height="3" rx="1.5" fill="#ff4017"></rect>
+
+  <text x="364" y="445" font-family="Geist Mono Variable, Geist Mono, monospace" font-size="22" font-weight="400" letter-spacing="0.4" fill="#93939e">github.com/rolter-ai/rolter</text>
+</svg>

@@ -4,8 +4,9 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
-import { Toasted, expectToast } from "./story-harness";
+import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
+import { CapabilityProvider } from "@/lib/can";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
 const TEAM = "00000000-0000-4000-8000-000000000012";
@@ -91,18 +92,19 @@ function loadedStub(): FetchStub {
   };
 }
 
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
+    globalThis.fetch = (role ? withCapabilities(role, fetchStub) : fetchStub) as typeof globalThis.fetch;
     localStorage.removeItem("rolter.scope");
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
+  }, [fetchStub, role]);
   React.useEffect(() => () => {
     if (original.current) globalThis.fetch = original.current;
   }, []);
-  return <QueryClientProvider client={client}><Toasted><div className="h-screen bg-[color:var(--surface-app)]"><SkillsRepository /></div></Toasted></QueryClientProvider>;
+  const screen = <div className="h-screen bg-[color:var(--surface-app)]"><SkillsRepository /></div>;
+  return <QueryClientProvider client={client}><Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted></QueryClientProvider>;
 }
 
 const meta = {
@@ -190,5 +192,23 @@ export const RequiresSlugToDeleteSkill: Story = {
     await waitFor(() => expect(confirm).toBeEnabled());
     await userEvent.click(confirm);
     await waitFor(() => expect(canvas.getByText("Share your first skill")).toBeVisible());
+  },
+};
+
+// The same for skills: a viewer reads the library and writes none of it.
+// Settings is the skill's access policy, which is a `skill:update` like the
+// rest — only the delete asks for `skill:delete` — so Admin is the role every
+// refusal here names.
+export const AsViewer: Story = {
+  render: () => <Harness fetchStub={loadedStub()} role="viewer" />,
+  play: async ({ canvas, canvasElement }) => {
+    await expectRefused(canvasElement, "Save new version");
+    await expectRefused(canvasElement, "Settings");
+    await expectRefused(canvasElement, "Delete Incident coordinator");
+    await expectRefused(canvasElement, "Roll back to v1");
+    await userEvent.click(await canvas.findByRole("button", { name: /^v1\b/ }));
+    await expectRefused(canvasElement, "Publish v1");
+    // reading is untouched: the slug is on screen in the index and the header
+    await expect(canvas.getAllByText("incident-coordinator").length).toBeGreaterThan(0);
   },
 };

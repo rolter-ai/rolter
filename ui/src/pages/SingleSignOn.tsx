@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { KeyRound, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
+import { Eraser, KeyRound, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -267,9 +267,9 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
     <div className="border-t border-[color:var(--border-subtle)] px-4 py-3.5">
       <div className="flex items-center gap-1.5">
         <Users aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
-        <h4 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+        <h3 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
           {t("pages.sso.mappings.title")}
-        </h4>
+        </h3>
       </div>
 
       {mappings.isLoading && <Skeleton className="mt-2.5 h-8 rounded-md" />}
@@ -301,6 +301,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
               <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
               <RowIconButton
                 danger
+                gate="sso_group_mapping:delete"
                 title={t("pages.sso.mappings.remove")}
                 aria-label={t("pages.sso.mappings.removeNamed", {
                   group: mapping.group_name,
@@ -387,16 +388,20 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
 
 function ProviderCard({
   provider,
+  onClearSecret,
   onDelete,
   onEdit,
   onToggle,
+  clearingSecret,
   deleting,
   toggling,
 }: {
   provider: SsoProviderRow;
+  onClearSecret: (provider: SsoProviderRow) => void;
   onDelete: (provider: SsoProviderRow) => void;
   onEdit: (provider: SsoProviderRow) => void;
   onToggle: (provider: SsoProviderRow, enabled: boolean) => void;
+  clearingSecret: boolean;
   deleting: boolean;
   toggling: boolean;
 }) {
@@ -455,8 +460,30 @@ function ProviderCard({
         >
           <Pencil className="h-3.5 w-3.5" />
         </RowIconButton>
+        {/* the only deliberate way to drop a sealed secret. it exists because
+            the edit form no longer can: a whitespace-only field there used to
+            trim to "" and clear the secret silently, and the first symptom was
+            a failed login (#1293). offered only where there is one to remove */}
+        {provider.has_client_secret && (
+          <RowIconButton
+            gate="sso_provider:update"
+            title={t("pages.sso.providers.clearSecret")}
+            aria-label={t("pages.sso.providers.clearSecretNamed", {
+              name: provider.name,
+            })}
+            disabled={clearingSecret}
+            onClick={() => onClearSecret(provider)}
+          >
+            {clearingSecret ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Eraser className="h-3.5 w-3.5" />
+            )}
+          </RowIconButton>
+        )}
         <RowIconButton
           danger
+          gate="sso_provider:delete"
           title={t("pages.sso.providers.delete")}
           aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
           disabled={deleting}
@@ -586,8 +613,12 @@ function ProviderSheet({
             issuer: draft.issuer.trim(),
             client_id: draft.clientId.trim(),
             // an untouched field leaves the sealed secret where it is; the
-            // form cannot show it, so it must not be able to erase it either
-            client_secret: draft.clientSecret ? draft.clientSecret.trim() : undefined,
+            // form cannot show it, so it must not be able to erase it either.
+            // `trim()` before the check, not after: a stray space or a pasted
+            // newline used to survive the truthiness test and reach the server
+            // as "", which is the wire's "clear it" (#1293). clearing is the
+            // card's own control now, never a side effect of saving the form
+            client_secret: draft.clientSecret.trim() || undefined,
             scopes: scopeList(),
             group_claim: draft.groupClaim.trim() || undefined,
             default_role: draft.defaultRole || undefined,
@@ -834,6 +865,26 @@ export default function SingleSignOn() {
     },
   });
 
+  // #1293: the deliberate way to turn a provider into a public client. the
+  // empty string is the third value `PUT /sso-providers/:id` understands —
+  // omitted keeps the sealed secret, a value rotates it, "" drops it — and
+  // nothing else in the screen is allowed to send it
+  const clearSecret = useMutation({
+    mutationFn: (provider: SsoProviderRow) =>
+      updateSsoProvider(provider.id, {
+        name: provider.name,
+        issuer: provider.issuer,
+        client_id: provider.client_id,
+        client_secret: "",
+        scopes: provider.scopes,
+        group_claim: provider.group_claim,
+        default_role: provider.default_role ?? undefined,
+        enabled: provider.enabled,
+      }),
+    // the refetch is what flips the `has_client_secret` badge on the card
+    onSuccess: invalidate,
+  });
+
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<SsoProviderRow | null>(null);
   const openCreate = () => {
@@ -850,6 +901,13 @@ export default function SingleSignOn() {
   const startDelete = (provider: SsoProviderRow) => {
     remove.reset();
     setDeleteTarget(provider);
+  };
+  const [secretTarget, setSecretTarget] = React.useState<SsoProviderRow | null>(
+    null,
+  );
+  const startClearSecret = (provider: SsoProviderRow) => {
+    clearSecret.reset();
+    setSecretTarget(provider);
   };
 
   if (scope.isLoading || (!!orgId && (providers.isLoading || policy.isLoading))) {
@@ -926,10 +984,14 @@ export default function SingleSignOn() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
+                clearingSecret={
+                  clearSecret.isPending && clearSecret.variables?.id === provider.id
+                }
                 deleting={remove.isPending && remove.variables === provider.id}
                 toggling={
                   toggle.isPending && toggle.variables?.provider.id === provider.id
                 }
+                onClearSecret={startClearSecret}
                 onDelete={startDelete}
                 onEdit={openEdit}
                 onToggle={(target, enabled) =>
@@ -949,6 +1011,36 @@ export default function SingleSignOn() {
           onSaved={invalidate}
         />
       )}
+
+      <ConfirmDialog
+        open={!!secretTarget}
+        onOpenChange={(open) => !open && setSecretTarget(null)}
+        title={t("pages.sso.clearSecret.title", { name: secretTarget?.name })}
+        description={t("pages.sso.clearSecret.body")}
+        confirmLabel={t("pages.sso.clearSecret.confirm")}
+        pending={clearSecret.isPending}
+        error={clearSecret.error}
+        onConfirm={() => {
+          if (!secretTarget) return;
+          const name = secretTarget.name;
+          clearSecret.mutate(secretTarget, {
+            onSuccess: () => {
+              setSecretTarget(null);
+              toast.push({
+                tone: "success",
+                title: t("pages.sso.providers.secretClearedToast", { name }),
+              });
+            },
+            onError: (error) => {
+              toast.push({
+                tone: "error",
+                title: t("toast.saveFailed", { what: name }),
+                detail: errorDetail(error),
+              });
+            },
+          });
+        }}
+      />
 
       <ConfirmDialog
         open={!!deleteTarget}

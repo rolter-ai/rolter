@@ -7,15 +7,14 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
 import { ListHeader, ListRow, ListTable, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   ALERT_SIGNALS,
   createAlertChannel,
@@ -31,6 +30,7 @@ import {
   type AlertChannelRow,
   type AlertRuleRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -84,12 +84,17 @@ function AlertChannelsScreen() {
     remove.reset();
     setDeleteTarget(channel);
   };
+  // the row controls take the same deployment-wide authority the add button
+  // does — alerting has no tenancy scope to be an admin of (#1258)
+  const channelDeleteGate = useGate("alert_channel:delete");
 
   return (
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {channels.data?.length ?? 0} channels · webhook destinations for alert delivery
+          {t("pages.alerting.channelSummary", {
+            count: channels.data?.length ?? 0,
+          })}
         </span>
         <GatedButton gate="alert_channel:create" className="ml-auto" onClick={() => setAddOpen(true)}>
           + Add channel
@@ -127,7 +132,8 @@ function AlertChannelsScreen() {
                 <div className="font-mono text-sm font-semibold">{c.name}</div>
                 <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
               </div>
-              <Switch
+              <GatedSwitch
+                gate="alert_channel:update"
                 checked={c.enabled}
                 disabled={toggle.isPending}
                 aria-label={t("pages.alerting.channels.toggleAria", { name: c.name })}
@@ -143,13 +149,22 @@ function AlertChannelsScreen() {
                   secret set
                 </Pill>
               )}
+              {/* the label names the channel: a column of cards each
+                  offering "Delete channel" is N buttons a screen reader
+                  cannot tell apart (#1214) */}
               <button
                 type="button"
-                title="Delete channel"
-                aria-label="Delete channel"
-                disabled={remove.isPending && remove.variables === c.id}
+                title={
+                  channelDeleteGate.reason ??
+                  t("pages.alerting.channels.deleteAria", { name: c.name })
+                }
+                aria-label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                disabled={
+                  channelDeleteGate.denied ||
+                  (remove.isPending && remove.variables === c.id)
+                }
                 onClick={() => startDelete(c)}
-                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {remove.isPending && remove.variables === c.id ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -245,20 +260,20 @@ function AddChannelDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add channel"
-      subtitle="Webhook endpoint alerts are POSTed to."
+      title={t("pages.alerting.channels.sheetTitle")}
+      subtitle={t("pages.alerting.channels.sheetSubtitle")}
       dirty={Boolean(name || endpoint || secret)}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Name">
+        <Field label={t("pages.alerting.channels.fieldName")}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-slack" />
         </Field>
-        <Field label="Endpoint URL">
+        <Field label={t("pages.alerting.channels.fieldEndpoint")}>
           <Input
             className="font-mono"
             value={endpoint}
@@ -266,12 +281,12 @@ function AddChannelDialog({
             placeholder="https://hooks.slack.com/services/…"
           />
         </Field>
-        <Field label="Bearer secret (optional, write-only)">
+        <Field label={t("pages.alerting.channels.fieldSecret")}>
           <Input
             type="password"
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
-            placeholder="stored encrypted"
+            placeholder={t("pages.alerting.channels.secretPlaceholder")}
           />
         </Field>
       </div>
@@ -345,12 +360,13 @@ function AlertRulesScreen() {
     remove.reset();
     setDeleteTarget(rule);
   };
+  const ruleDeleteGate = useGate("alert_rule:delete");
 
   return (
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {rules.data?.length ?? 0} rules · evaluated every 60s against gateway analytics
+          {t("pages.alerting.ruleSummary", { count: rules.data?.length ?? 0 })}
         </span>
         <GatedButton gate="alert_rule:create" className="ml-auto" onClick={() => setAddOpen(true)}>
           + Add rule
@@ -392,7 +408,8 @@ function AlertRulesScreen() {
                 <Pill color={tone[0]} tint={tone[1]}>
                   {r.state}
                 </Pill>
-                <Switch
+                <GatedSwitch
+                  gate="alert_rule:update"
                   className="ml-auto"
                   checked={r.enabled}
                   disabled={toggle.isPending}
@@ -401,39 +418,53 @@ function AlertRulesScreen() {
                 />
               </div>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                <RuleStat label="Signal" value={r.signal} />
-                <RuleStat label="Threshold" value={String(r.threshold)} />
-                <RuleStat label="Window" value={`${r.window_secs}s`} />
+                <RuleStat label={t("pages.alerting.rules.statSignal")} value={r.signal} />
+                <RuleStat label={t("pages.alerting.rules.statThreshold")} value={String(r.threshold)} />
+                <RuleStat label={t("pages.alerting.rules.statWindow")} value={`${r.window_secs}s`} />
                 <RuleStat
-                  label="Last value"
+                  label={t("pages.alerting.rules.statLastValue")}
                   value={r.last_value === null ? "—" : String(r.last_value)}
                 />
                 <RuleStat
-                  label="Evaluated"
-                  value={r.last_evaluated_at ? fmt.time(r.last_evaluated_at) : "never"}
+                  label={t("pages.alerting.rules.statEvaluated")}
+                  value={
+                    r.last_evaluated_at
+                      ? fmt.time(r.last_evaluated_at)
+                      : t("pages.alerting.rules.statNever")
+                  }
                 />
-                <RuleStat label="Channel" value={channelName(r.channel_id)} />
+                <RuleStat label={t("pages.alerting.rules.statChannel")} value={channelName(r.channel_id)} />
               </div>
               {r.last_error && (
                 <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                <Button
+                {/* running a rule writes an alert-history row, which is the
+                    capability the control plane guards it with */}
+                <GatedButton
+                  gate="alert_history:create"
                   size="sm"
                   variant="outline"
+                  aria-label={t("pages.alerting.rules.evaluateAria", { name: r.name })}
                   disabled={evaluate.isPending}
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   <Play className="h-3.5 w-3.5" />
-                  Evaluate now
-                </Button>
+                  {t("pages.alerting.rules.evaluateNow")}
+                </GatedButton>
                 <button
                   type="button"
-                  title="Delete rule"
-                  aria-label="Delete rule"
-                  disabled={remove.isPending && remove.variables === r.id}
+                  title={
+                    ruleDeleteGate.reason ??
+                    t("pages.alerting.rules.deleteAria", { name: r.name })
+                  }
+                  aria-label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                  disabled={
+                    ruleDeleteGate.denied ||
+                    (remove.isPending && remove.variables === r.id)
+                  }
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {remove.isPending && remove.variables === r.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -564,20 +595,20 @@ function AddRuleDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add rule"
-      subtitle="Fires when the signal crosses the threshold within the window."
+      title={t("pages.alerting.rules.sheetTitle")}
+      subtitle={t("pages.alerting.rules.sheetSubtitle")}
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(name.trim() && threshold.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Name">
+        <Field label={t("pages.alerting.rules.fieldName")}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="high error rate" />
         </Field>
-        <Field label="Signal">
+        <Field label={t("pages.alerting.rules.fieldSignal")}>
           <Select value={signal} onChange={(e) => setSignal(e.target.value)}>
             {ALERT_SIGNALS.map((s) => (
               <option key={s} value={s}>
@@ -587,7 +618,7 @@ function AddRuleDialog({
           </Select>
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Threshold">
+          <Field label={t("pages.alerting.rules.fieldThreshold")}>
             <Input
               type="number"
               step="any"
@@ -595,7 +626,7 @@ function AddRuleDialog({
               onChange={(e) => setThreshold(e.target.value)}
             />
           </Field>
-          <Field label="Window (seconds)">
+          <Field label={t("pages.alerting.rules.fieldWindow")}>
             <Input
               type="number"
               min={30}
@@ -604,9 +635,9 @@ function AddRuleDialog({
             />
           </Field>
         </div>
-        <Field label="Channel">
+        <Field label={t("pages.alerting.rules.fieldChannel")}>
           <Select value={channelId} onChange={(e) => setChannelId(e.target.value)}>
-            <option value="">none (record only)</option>
+            <option value="">{t("pages.alerting.rules.channelNone")}</option>
             {channels.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -642,7 +673,9 @@ function AlertHistoryScreen() {
   return (
     <PageBody>
       <span className="text-sm text-muted-foreground">
-        {history.data?.length ?? 0} notifications · newest first
+        {t("pages.alerting.historySummary", {
+          count: history.data?.length ?? 0,
+        })}
       </span>
       {history.isLoading && <TableSkeleton rows={5} />}
       {history.isError && (
@@ -671,11 +704,11 @@ function AlertHistoryScreen() {
       {history.data && history.data.length > 0 && (
         <ListTable>
           <ListHeader grid={HISTORY_GRID}>
-            <span>Sent</span>
-            <span>Rule</span>
-            <span>State</span>
-            <span>Delivery</span>
-            <span>Detail</span>
+            <span>{t("pages.alerting.history.colSent")}</span>
+            <span>{t("pages.alerting.history.colRule")}</span>
+            <span>{t("pages.alerting.history.colState")}</span>
+            <span>{t("pages.alerting.history.colDelivery")}</span>
+            <span>{t("pages.alerting.history.colDetail")}</span>
           </ListHeader>
           {history.data.map((n) => {
             const tone = stateTone(n.state);

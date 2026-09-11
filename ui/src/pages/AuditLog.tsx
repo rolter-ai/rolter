@@ -83,7 +83,8 @@ const TARGET_PATH: Record<string, string> = {
   security_settings: "/security",
 };
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // server-side paginated, filtered audit log: action/target/actor/time-range
 // filters map to query params, pagination walks the keyset cursor
@@ -119,7 +120,15 @@ export default function AuditLog() {
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
-    queryKey: ["audit-log", scope.orgId, action, target, actorParam, rangeIdx, cursor],
+    queryKey: [
+      "audit-log",
+      scope.orgId,
+      action,
+      target,
+      actorParam,
+      rangeIdx,
+      cursor,
+    ],
     queryFn: () =>
       fetchAuditLogPage(scope.orgId as string, {
         limit: PAGE_SIZE,
@@ -132,7 +141,6 @@ export default function AuditLog() {
       }),
     enabled: !!scope.orgId,
   });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -149,7 +157,8 @@ export default function AuditLog() {
 
   const rows = page.data?.items ?? [];
   const [total, setTotal] = React.useState<number | null>(null);
-  const filtersActive = !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
+  const filtersActive =
+    !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
   const clearFilters = () => {
     setActor("");
     setAction("");
@@ -215,6 +224,13 @@ export default function AuditLog() {
           <button
             type="button"
             className="rounded-sm text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-expanded={expanded === row.id}
+            aria-label={t(
+              expanded === row.id
+                ? "pages.auditLog.hideDetailsAria"
+                : "pages.auditLog.showDetailsAria",
+              { action: row.action, target: row.target_type || "unknown" },
+            )}
             onClick={() => setExpanded(expanded === row.id ? null : row.id)}
           >
             {expanded === row.id ? "hide" : "show"}
@@ -275,7 +291,7 @@ export default function AuditLog() {
               value={action}
               onChange={(e) => setAction(e.target.value)}
             >
-              <option value="">All actions</option>
+              <option value="">{t("pages.auditLog.allActions")}</option>
               {ACTIONS.map((a) => (
                 <option key={a} value={a}>
                   {a}
@@ -288,7 +304,7 @@ export default function AuditLog() {
               value={target}
               onChange={(e) => setTarget(e.target.value)}
             >
-              <option value="">All targets</option>
+              <option value="">{t("pages.auditLog.allTargets")}</option>
               {TARGET_TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -300,6 +316,7 @@ export default function AuditLog() {
                 <button
                   key={r.label}
                   type="button"
+                  aria-pressed={i === rangeIdx}
                   onClick={() => setRangeIdx(i)}
                   className={`rounded-md border px-2.5 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                     i === rangeIdx
@@ -319,7 +336,9 @@ export default function AuditLog() {
             <TableSkeleton rows={6} />
           ) : (
             <Table
-              columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
+              columns={
+                columns as unknown as TableColumn<Record<string, unknown>>[]
+              }
               data={rows as unknown as Record<string, unknown>[]}
               rowKey="id"
               empty={
@@ -351,20 +370,22 @@ export default function AuditLog() {
           {(rows.length > 0 || cursors.length > 0) && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                page {cursors.length + 1}
-                {total != null && ` · ${total} total`}
+                {t("pages.auditLog.page", { page: cursors.length + 1 })}
+                {total != null && t("pages.auditLog.totalSuffix", { total })}
               </span>
               <div className="flex gap-1">
                 <button
                   type="button"
+                  aria-label={t("pages.auditLog.prevPageAria")}
                   disabled={cursors.length === 0}
                   onClick={() => setCursors((c) => c.slice(0, -1))}
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
-                  Prev
+                  {t("pages.auditLog.prev")}
                 </button>
                 <button
                   type="button"
+                  aria-label={t("pages.auditLog.nextPageAria")}
                   disabled={!page.data?.has_next || !page.data.next_cursor}
                   onClick={() =>
                     page.data?.next_cursor &&
@@ -372,7 +393,7 @@ export default function AuditLog() {
                   }
                   className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
-                  Next
+                  {t("pages.auditLog.next")}
                 </button>
               </div>
             </div>

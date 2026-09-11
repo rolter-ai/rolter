@@ -63,9 +63,12 @@ presents to the server's authorization server. The dashboard does this on
 
 <Steps>
   <Step title="Register the client">
-    Enter the authorization URL, the token URL and the client ID. All three
-    travel together — two of them is not a client — and both URLs must be
-    `https`, with `http` accepted only on loopback so a local stub still works.
+    The client ID is the only field that is always required. Most MCP servers
+    publish where their authorization server lives, and Rolter discovers the
+    authorization and token URLs from that; enter them yourself only for a
+    server that publishes nothing. When you do, both travel together — one of
+    them is not a fallback — and both must be `https`, with `http` accepted
+    only on loopback so a local stub still works.
   </Step>
   <Step title="Copy the redirect URI">
     The **Redirect URI** field is filled in for you from the deployment's own
@@ -94,7 +97,21 @@ presents to the server's authorization server. The dashboard does this on
   no one could see or revoke it.
 </Note>
 
-The same registration over the API:
+The same registration over the API, for a server whose authorization server is
+discoverable:
+
+```bash
+curl -X PUT https://control.example.com/api/v1/mcp-servers/$SERVER_ID/oauth-client \
+  -H "Authorization: Bearer $ROLTER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "client_id": "Iv1.abc123",
+        "client_secret": "…",
+        "default_scopes": ["repo", "read:org"]
+      }'
+```
+
+And for one that publishes no metadata, with the endpoints as the fallback:
 
 ```bash
 curl -X PUT https://control.example.com/api/v1/mcp-servers/$SERVER_ID/oauth-client \
@@ -103,16 +120,68 @@ curl -X PUT https://control.example.com/api/v1/mcp-servers/$SERVER_ID/oauth-clie
   -d '{
         "authorize_url": "https://github.com/login/oauth/authorize",
         "token_url": "https://github.com/login/oauth/access_token",
+        "issuer": "https://github.com",
+        "discovery": "manual",
         "client_id": "Iv1.abc123",
         "client_secret": "…",
         "default_scopes": ["repo", "read:org"]
       }'
 ```
 
+`discovery` is `auto` by default, which tries discovery on every consent and
+falls back to whatever you configured. Setting it to `manual` skips the probe
+altogether, which is worth doing for a server you know publishes nothing.
+
 This endpoint is admin-only in both directions — even reading it, because the
 row names a third party the organization has chosen to trust. The secret is
 sealed with the deployment key on write and is never readable back; sending an
 empty secret downgrades the client to a public one.
+
+## Discovery, audience binding and issuer checks
+
+Rolter's MCP client follows the current MCP authorization specification
+(revision `draft`, tracked as of 2026-09-08). Three of its requirements change
+what you see when something goes wrong:
+
+<AccordionGroup>
+  <Accordion title="The authorization server is discovered, not typed">
+    Rolter asks the MCP server where its authorization server is — from the
+    `WWW-Authenticate` challenge on an unauthenticated request, or from the
+    `/.well-known/oauth-protected-resource` document — and validates that the
+    document is really about that server before using it. What it resolves is
+    remembered, so renewals never re-probe.
+
+    Changing the server's `url` forgets it again, since the remembered
+    endpoints belong to the authorization server the old URL pointed at. The
+    next consent re-discovers from the new URL; a renewal in between fails
+    rather than reaching for the previous server.
+  </Accordion>
+
+  <Accordion title="Every token is bound to one server">
+    Both the authorization request and the token request carry a `resource`
+    parameter naming the MCP server the token is for, so the token cannot be
+    replayed at a different server. The value is the server's URL in canonical
+    form: no fragment, no trailing slash. It is shown back to you on the OAuth
+    client response as `resource`.
+
+    An authorization server that does not understand the parameter ignores it;
+    one that does will bind the token. Rolter sends it either way, as the
+    specification requires.
+  </Accordion>
+
+  <Accordion title="The response has to come back from where it was sent">
+    If the authorization server returns an `iss` parameter, Rolter compares it
+    to the issuer it recorded when it sent you there — as an exact string, with
+    no normalisation. A mismatch fails the consent and the authorization code is
+    discarded rather than exchanged, and the server's own error text is not
+    shown, because a response that failed this check is not one to act on.
+
+    A hand-configured server with no `issuer` set has nothing to compare
+    against. If its authorization server returns an `iss`, consent fails with a
+    message asking you to pin `issuer` — that is deliberate, since accepting an
+    unverifiable issuer would be a check in name only.
+  </Accordion>
+</AccordionGroup>
 
 Connect calls `POST /api/v1/mcp-servers/{id}/oauth/authorize`, which answers
 with the authorization URL rather than a redirect — the caller is a `fetch`

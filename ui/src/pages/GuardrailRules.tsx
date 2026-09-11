@@ -112,6 +112,21 @@ function GuardrailRulesScreen() {
     setDeleteTarget(rule);
   };
 
+  const builtinDescription = (builtin: GuardrailRuleRow["builtin"]) => {
+    switch (builtin) {
+      case "email":
+        return t("pages.guardrailRules.builtinCardEmail");
+      case "phone":
+        return t("pages.guardrailRules.builtinCardPhone");
+      case "api_token":
+        return t("pages.guardrailRules.builtinCardApiToken");
+      case "payment_card":
+        return t("pages.guardrailRules.builtinCardPaymentCard");
+      default:
+        return t("pages.guardrailRules.sourceBuiltin");
+    }
+  };
+
   const open = editing !== undefined;
   const rules = query.data ?? [];
   return (
@@ -119,18 +134,17 @@ function GuardrailRulesScreen() {
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="font-mono text-[0.6875rem] uppercase tracking-[0.16em] text-[color:var(--status-danger-text)]">
-            Ordered policy stack
+            {t("pages.guardrailRules.eyebrow")}
           </p>
           <h1 className="mt-1 text-xl font-semibold tracking-tight">
-            Traffic inspection rules
+            {t("pages.guardrailRules.heading")}
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Rules run from the lowest position upward. Paused rules stay visible
-            but never inspect traffic.
+            {t("pages.guardrailRules.intro")}
           </p>
         </div>
         <GatedButton gate="guardrail_rule:create" onClick={() => setEditing(null)}>
-          <Plus className="h-4 w-4" aria-hidden /> Add rule
+          <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailRules.addRule")}
         </GatedButton>
       </div>
 
@@ -147,10 +161,12 @@ function GuardrailRulesScreen() {
         />
       ) : rules.length === 0 ? (
         <GuardrailEmpty
-          title="No inspection rules"
-          description="Add a built-in detector or a bounded custom regex before enabling the deployment guardrails flag."
+          title={t("pages.guardrailRules.emptyTitle")}
+          description={t("pages.guardrailRules.emptyBody")}
           action={
-            <GatedButton gate="guardrail_rule:create" onClick={() => setEditing(null)}>Add first rule</GatedButton>
+            <GatedButton gate="guardrail_rule:create" onClick={() => setEditing(null)}>
+              {t("pages.guardrailRules.addFirst")}
+            </GatedButton>
           }
         />
       ) : (
@@ -161,8 +177,8 @@ function GuardrailRulesScreen() {
               title={`${rule.position.toString().padStart(2, "0")} · ${rule.name}`}
               description={
                 rule.source_type === "builtin"
-                  ? `Built-in ${rule.builtin?.replace(/_/g, " ")} detector`
-                  : (rule.pattern ?? "Custom regular expression")
+                  ? builtinDescription(rule.builtin)
+                  : (rule.pattern ?? t("pages.guardrailRules.customRegex"))
               }
               enabled={rule.enabled}
               badges={
@@ -180,30 +196,39 @@ function GuardrailRulesScreen() {
                   </Badge>
                   <Badge tone="outline">{rule.stage.replace("_", "-")}</Badge>
                   {rule.include_system && (
-                    <Badge tone="accent">system messages</Badge>
+                    <Badge tone="accent">{t("pages.guardrailRules.systemBadge")}</Badge>
                   )}
                 </>
               }
               details={
                 rule.replacement
-                  ? `Replacement · ${rule.replacement}`
-                  : "Content is not rewritten"
+                  ? t("pages.guardrailRules.replacementDetail", {
+                      token: rule.replacement,
+                    })
+                  : t("pages.guardrailRules.noRewrite")
               }
               actions={
                 <>
-                  <Button
+                  <GatedButton
+                    gate="guardrail_rule:delete"
                     variant="ghost"
+                    aria-label={t("pages.guardrailRules.deleteAria", { name: rule.name })}
                     onClick={() => startDelete(rule)}
                     disabled={remove.isPending && remove.variables === rule.id}
                   >
                     {remove.isPending && remove.variables === rule.id && (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
-                    Delete
-                  </Button>
-                  <Button variant="outline" onClick={() => setEditing(rule)}>
-                    Edit rule
-                  </Button>
+                    {t("common.delete")}
+                  </GatedButton>
+                  <GatedButton
+                    gate="guardrail_rule:update"
+                    variant="outline"
+                    aria-label={t("pages.guardrailRules.editAria", { name: rule.name })}
+                    onClick={() => setEditing(rule)}
+                  >
+                    {t("pages.guardrailRules.editRule")}
+                  </GatedButton>
                 </>
               }
             />
@@ -266,6 +291,7 @@ function RuleDialog({
   onClose: () => void;
   onSave: (body: GuardrailRuleInput) => void;
 }) {
+  const { t } = useTranslation();
   const [form, setForm] = React.useState<GuardrailRuleInput>(initial ?? EMPTY);
   const set = (patch: Partial<GuardrailRuleInput>) =>
     setForm((value) => ({ ...value, ...patch }));
@@ -276,15 +302,16 @@ function RuleDialog({
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
         <DialogTitle>
-          {initial ? "Edit inspection rule" : "Add inspection rule"}
+          {initial
+            ? t("pages.guardrailRules.dialogEditTitle")
+            : t("pages.guardrailRules.dialogAddTitle")}
         </DialogTitle>
         <DialogDescription>
-          Use a built-in detector or one bounded regular expression. The gateway
-          validates it before publishing.
+          {t("pages.guardrailRules.dialogBody")}
         </DialogDescription>
       </DialogHeader>
       <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
-        <Field label="Rule name" htmlFor="rule-name">
+        <Field label={t("pages.guardrailRules.fieldName")} htmlFor="rule-name">
           <Input
             id="rule-name"
             value={form.name}
@@ -292,7 +319,7 @@ function RuleDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Source" htmlFor="rule-source">
+          <Field label={t("pages.guardrailRules.fieldSource")} htmlFor="rule-source">
             <Select
               id="rule-source"
               value={form.source_type}
@@ -305,14 +332,18 @@ function RuleDialog({
                 })
               }
             >
-              <option value="builtin">Built-in detector</option>
-              <option value="pattern">Custom regex</option>
+              <option value="builtin">
+                {t("pages.guardrailRules.sourceBuiltin")}
+              </option>
+              <option value="pattern">
+                {t("pages.guardrailRules.sourcePattern")}
+              </option>
             </Select>
           </Field>
           <Field
-            label="Position"
+            label={t("pages.guardrailRules.fieldPosition")}
             htmlFor="rule-position"
-            hint="Lower positions run first."
+            hint={t("pages.guardrailRules.positionHint")}
           >
             <Input
               id="rule-position"
@@ -326,7 +357,7 @@ function RuleDialog({
           </Field>
         </div>
         {form.source_type === "builtin" ? (
-          <Field label="Detector" htmlFor="rule-builtin">
+          <Field label={t("pages.guardrailRules.fieldDetector")} htmlFor="rule-builtin">
             <Select
               id="rule-builtin"
               value={form.builtin ?? "email"}
@@ -336,17 +367,25 @@ function RuleDialog({
                 })
               }
             >
-              <option value="email">Email address</option>
-              <option value="phone">Phone number</option>
-              <option value="api_token">API token</option>
-              <option value="payment_card">Payment card</option>
+              <option value="email">
+                {t("pages.guardrailRules.detectorEmail")}
+              </option>
+              <option value="phone">
+                {t("pages.guardrailRules.detectorPhone")}
+              </option>
+              <option value="api_token">
+                {t("pages.guardrailRules.detectorApiToken")}
+              </option>
+              <option value="payment_card">
+                {t("pages.guardrailRules.detectorPaymentCard")}
+              </option>
             </Select>
           </Field>
         ) : (
           <Field
-            label="Regular expression"
+            label={t("pages.guardrailRules.fieldPattern")}
             htmlFor="rule-pattern"
-            hint="Uses the gateway’s linear-time regex engine."
+            hint={t("pages.guardrailRules.patternHint")}
           >
             <Textarea
               id="rule-pattern"
@@ -357,7 +396,7 @@ function RuleDialog({
           </Field>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Stage" htmlFor="rule-stage">
+          <Field label={t("pages.guardrailRules.fieldStage")} htmlFor="rule-stage">
             <Select
               id="rule-stage"
               value={form.stage}
@@ -367,11 +406,15 @@ function RuleDialog({
                 })
               }
             >
-              <option value="pre_call">Before upstream</option>
-              <option value="post_call">Before response</option>
+              <option value="pre_call">
+                {t("pages.guardrailRules.stagePre")}
+              </option>
+              <option value="post_call">
+                {t("pages.guardrailRules.stagePost")}
+              </option>
             </Select>
           </Field>
-          <Field label="Action" htmlFor="rule-action">
+          <Field label={t("pages.guardrailRules.fieldAction")} htmlFor="rule-action">
             <Select
               id="rule-action"
               value={form.action}
@@ -381,14 +424,23 @@ function RuleDialog({
                 })
               }
             >
-              <option value="annotate">Annotate only</option>
-              <option value="block">Block traffic</option>
-              <option value="redact">Redact matches</option>
+              <option value="annotate">
+                {t("pages.guardrailRules.actionAnnotate")}
+              </option>
+              <option value="block">
+                {t("pages.guardrailRules.actionBlock")}
+              </option>
+              <option value="redact">
+                {t("pages.guardrailRules.actionRedact")}
+              </option>
             </Select>
           </Field>
         </div>
         {form.action === "redact" && (
-          <Field label="Replacement token" htmlFor="rule-replacement">
+          <Field
+            label={t("pages.guardrailRules.fieldReplacement")}
+            htmlFor="rule-replacement"
+          >
             <Input
               id="rule-replacement"
               value={form.replacement ?? ""}
@@ -399,14 +451,14 @@ function RuleDialog({
           </Field>
         )}
         <ToggleRow
-          label="Rule enforced"
-          description="Paused rules remain stored and ordered."
+          label={t("pages.guardrailRules.toggleEnabled")}
+          description={t("pages.guardrailRules.toggleEnabledHint")}
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
         <ToggleRow
-          label="Inspect system messages"
-          description="Off by default because operator-authored instructions are trusted."
+          label={t("pages.guardrailRules.toggleSystem")}
+          description={t("pages.guardrailRules.toggleSystemHint")}
           checked={form.include_system}
           onChange={(include_system) => set({ include_system })}
         />
@@ -418,10 +470,12 @@ function RuleDialog({
       </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button disabled={!valid || pending} onClick={() => onSave(form)}>
-          {pending ? "Publishing…" : "Publish rule"}
+          {pending
+            ? t("pages.guardrailRules.publishing")
+            : t("pages.guardrailRules.publish")}
         </Button>
       </DialogFooter>
     </Dialog>

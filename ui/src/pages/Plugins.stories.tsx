@@ -124,7 +124,9 @@ export const ConfirmsBeforeDeletingAPlugin: Story = {
   render: () => <Harness fetchStub={deletes.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const del = async () => (await canvas.findAllByRole("button", { name: "Delete" }))[0];
+    // by name, not by index: each row control names its own plugin (#1214)
+    const del = async () =>
+      canvas.findByRole("button", { name: "Delete plugin PII redaction" });
 
     await userEvent.click(await del());
     await cancelConfirmation();
@@ -151,6 +153,8 @@ export const KeepsOtherRowsInteractiveWhileOneToggles: Story = {
     await userEvent.click(toggled);
     await waitFor(() => expect(toggled).toBeDisabled());
     await expect(untouched).toBeEnabled();
-    await expect(canvas.getAllByRole("button", { name: "Delete" })[1]).toBeEnabled();
+    await expect(
+      canvas.getByRole("button", { name: "Delete plugin Response audit" }),
+    ).toBeEnabled();
   },
 };

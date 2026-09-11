@@ -242,6 +242,12 @@ fn operations() -> Vec<Op> {
                 "Provider kinds this build can talk to",
             ),
             Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
+            Op::get(
+                "/api/v1/stability",
+                "getStability",
+                "Subsystems this build marks experimental; absence means stable",
+            )
+            .ok(Payload::List("SubsystemStability")),
             Op::post(
                 "/api/v1/ui-events",
                 "ingestUiEvent",
@@ -272,7 +278,14 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/auth/login",
                 "login",
-                "Exchange email and password for a session token",
+                "Exchange email and password for a session token, or for a \
+                 second-factor challenge when the account has one armed",
+            )
+            .public(),
+            Op::post(
+                "/api/v1/auth/mfa/verify",
+                "verifyMfaChallenge",
+                "Redeem a second-factor challenge for a session token",
             )
             .public(),
             Op::post(
@@ -740,6 +753,31 @@ fn operations() -> Vec<Op> {
                 "getMyUsage",
                 "Spend and usage for the calling account's keys",
             ),
+            Op::get(
+                "/api/v1/me/mfa",
+                "getMyMfa",
+                "Second-factor state and policy for the calling account",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/enroll",
+                "beginMyMfaEnrolment",
+                "Issue a TOTP secret for the calling account (shown once)",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/confirm",
+                "confirmMyMfaEnrolment",
+                "Arm the second factor with a code, returning recovery codes",
+            ),
+            Op::post(
+                "/api/v1/me/mfa/recovery-codes",
+                "regenerateMyRecoveryCodes",
+                "Replace the calling account's recovery codes",
+            ),
+            Op::delete(
+                "/api/v1/me/mfa",
+                "disableMyMfa",
+                "Remove the calling account's second factor",
+            ),
         ],
     ));
 
@@ -933,6 +971,52 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "labels",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/labels",
+                "listOrgLabels",
+                "List labels on an org's providers, provider groups and routes",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/labels",
+                "createOrgLabel",
+                "Attach a custom label to a provider, provider group or route",
+            ),
+            Op::put(
+                "/api/v1/orgs/{org_id}/labels/{id}",
+                "updateOrgLabel",
+                "Change a custom label's value",
+            ),
+            Op::delete(
+                "/api/v1/orgs/{org_id}/labels/{id}",
+                "deleteOrgLabel",
+                "Remove a custom label",
+            ),
+            Op::get(
+                "/api/v1/model-labels",
+                "listModelLabels",
+                "List model labels",
+            ),
+            Op::post(
+                "/api/v1/model-labels",
+                "createModelLabel",
+                "Attach a custom label to a model",
+            ),
+            Op::put(
+                "/api/v1/model-labels/{id}",
+                "updateModelLabel",
+                "Change a custom model label's value",
+            ),
+            Op::delete(
+                "/api/v1/model-labels/{id}",
+                "deleteModelLabel",
+                "Remove a custom model label",
+            ),
+        ],
+    ));
+
+    ops.extend(tagged(
         "plugins",
         vec![
             Op::get(
@@ -972,6 +1056,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}",
                 "deleteMcpServer",
                 "Delete a registered MCP server",
+            ),
+            Op::put(
+                "/api/v1/mcp-servers/{id}/auth",
+                "setMcpServerAuth",
+                "Set how rolter authenticates to an MCP server",
             ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
@@ -1574,6 +1663,7 @@ fn tags() -> Value {
         {"name": "prompt-templates", "description": "versioned prompt templates and their scope bindings"},
         {"name": "skills", "description": "versioned skills and their published slugs"},
         {"name": "guardrails", "description": "guardrail providers and the rules that apply them"},
+        {"name": "labels", "description": "custom and automatic labels on providers, provider groups, routes and models"},
         {"name": "plugins", "description": "installed request/response plugins"},
         {"name": "mcp", "description": "MCP servers, tool groups, OAuth sessions and the tool-call log"},
         {"name": "alerting", "description": "alert channels, rules and delivery history"},
@@ -1710,12 +1800,30 @@ fn schemas() -> Value {
         routing_schemas(&p),
         virtual_key_schemas(&p),
         governance_schemas(&p),
+        stability_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
         }
     }
     Value::Object(out)
+}
+
+/// The stability marker (#1385). `stable` is in the enum for completeness, but
+/// the endpoint never emits it: absence from the array is what "stable" means.
+fn stability_schemas(p: &Prim) -> Value {
+    let string = &p.string;
+    json!({
+        "SubsystemStability": {
+            "type": "object",
+            "required": ["subsystem", "stability", "note"],
+            "properties": {
+                "subsystem": string,
+                "stability": {"type": "string", "enum": ["stable", "experimental"]},
+                "note": string
+            }
+        }
+    })
 }
 
 fn error_schemas(p: &Prim) -> Value {

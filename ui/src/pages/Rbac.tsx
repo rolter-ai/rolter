@@ -659,6 +659,7 @@ function CustomRolesTab({
               </div>
               <div className="flex flex-none items-center gap-1">
                 <RowIconButton
+                  gate="custom_role:update"
                   aria-label={t("pages.rbac.custom.editRole", { name: role.name })}
                   title={t("pages.rbac.custom.editRole", { name: role.name })}
                   onClick={() => startEdit(role)}
@@ -667,6 +668,7 @@ function CustomRolesTab({
                 </RowIconButton>
                 <RowIconButton
                   danger
+                  gate="custom_role:delete"
                   aria-label={t("pages.rbac.custom.deleteRole", { name: role.name })}
                   title={t("pages.rbac.custom.deleteRole", { name: role.name })}
                   onClick={() => startDelete(role)}

@@ -510,7 +510,7 @@ pub struct McpServer {
     pub name: String,
     pub slug: String,
     pub url: String,
-    /// one of `stdio` | `sse` | `streamable_http` | `websocket`
+    /// one of `sse` | `streamable_http` | `websocket` (stdio was dropped in #783)
     pub transport: String,
     pub description: String,
     /// only enabled servers are projected into gateway snapshots
@@ -535,6 +535,43 @@ pub struct McpServer {
     /// whether a sealed client secret is stored, so a UI can show that the
     /// client is confidential without the control plane handing the secret out
     pub has_client_secret: bool,
+    /// how rolter authenticates to this server: `none` | `bearer` | `header` |
+    /// `oauth` (#952). `oauth` is the consent flow above; the other two present
+    /// a static credential that the schema requires to be present for them and
+    /// absent otherwise
+    pub auth_kind: String,
+    /// the header a `header`-kind api key is presented in, e.g. `X-Api-Key`.
+    /// never `Authorization` — that one belongs to the bearer path, and the
+    /// `mcp_servers_auth_header_name_shape` constraint refuses it
+    pub auth_header_name: Option<String>,
+    /// whether a sealed static credential is stored. the credential itself is
+    /// deliberately **not** on this struct, for the same reason the client
+    /// secret is not
+    pub has_credential: bool,
+    /// per-server overrides of the org's `mcp_gateway_settings`; `None`
+    /// inherits, so an operator changing the org default still moves every
+    /// server that never asked to differ
+    pub connect_timeout_ms: Option<i32>,
+    pub request_timeout_ms: Option<i32>,
+    pub max_retries: Option<i32>,
+    /// the authorization server's issuer identifier as an operator pinned it,
+    /// for a server whose authorization server publishes no metadata (#1347).
+    /// RFC 9207 validation has nothing to compare against without one
+    pub oauth_issuer: Option<String>,
+    /// `auto` (try RFC 9728 discovery, fall back to the columns above) or
+    /// `manual` (use the columns above and never probe)
+    pub oauth_discovery: String,
+    /// what the last successful discovery resolved. a cache: the interactive
+    /// authorize refreshes it, and the refresher and token exchange read it so
+    /// they never have to probe an upstream of their own accord
+    pub oauth_discovered_issuer: Option<String>,
+    pub oauth_discovered_authorize_url: Option<String>,
+    pub oauth_discovered_token_url: Option<String>,
+    /// whether that metadata carried
+    /// `authorization_response_iss_parameter_supported: true`, which is the
+    /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
+    pub oauth_discovered_iss_supported: bool,
+    pub oauth_discovered_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE
@@ -549,6 +586,17 @@ pub struct McpLoginState {
     pub scopes: Vec<String>,
     pub redirect_uri: String,
     pub created_at: DateTime<Utc>,
+    /// the issuer of the authorization server this request was sent to, as
+    /// RFC 9207 §2.4 requires it be recorded before the browser leaves (#1347)
+    pub expected_issuer: Option<String>,
+    /// whether that authorization server advertises the `iss` parameter
+    pub iss_supported: bool,
+    /// the RFC 8707 canonical resource identifier the authorization request
+    /// carried; the token request must carry the same one
+    pub resource: Option<String>,
+    /// the token endpoint of the authorization server whose issuer was
+    /// recorded, so the code goes back to the server that issued it
+    pub token_url: Option<String>,
 }
 
 /// a governed, named bundle of MCP tool references
@@ -732,7 +780,36 @@ pub struct OrgAuthPolicy {
     pub org_id: Uuid,
     pub allow_password_login: bool,
     pub allow_sso: bool,
+    /// one of `off`, `optional`, `required_superadmin`, `required_all`
+    /// (`migrations/0067_totp_second_factor.sql`). Stored as text rather than
+    /// an enum so widening the policy set is a migration, not a code change
+    /// every consumer has to be recompiled for
+    pub mfa_policy: String,
     pub updated_at: DateTime<Utc>,
+}
+
+/// What the dashboard and the login exchange may know about a user's second
+/// factor. Deliberately not the row: the sealed secret has no representation
+/// here at all, so there is no serialisation path that could leak it (#1078).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TotpFactorStatus {
+    pub user_id: Uuid,
+    /// null while an enrolment is in progress. An unconfirmed factor grants
+    /// nothing and is not enforced at login
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A live second-factor challenge handed out by the login exchange. It
+/// authenticates nothing on its own -- it only names which user is halfway
+/// through signing in.
+#[derive(Debug, Clone, FromRow)]
+pub struct MfaChallenge {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub attempts: i32,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// a record of an admin/CRUD/auth action, for the audit-log API
@@ -916,4 +993,25 @@ mod tests {
         let json = serde_json::to_value(provider(None)).expect("SsoProvider serializes");
         assert_eq!(json["has_client_secret"], serde_json::json!(false));
     }
+}
+
+/// one label attached to a provider, provider group, route or model (#985).
+///
+/// `subject_id` is text because a model is addressed by name while everything
+/// else is addressed by id. `source` is `auto` for a fact rolter established
+/// itself — those carry `observed_at` and `observation` and no operator can
+/// write one — or `custom` for an operator's own, which rolter stores and
+/// displays without interpreting.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct Label {
+    pub id: Uuid,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub key: String,
+    pub value: Option<String>,
+    pub source: String,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub observation: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

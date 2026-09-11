@@ -1,0 +1,181 @@
+---
+title: "Two-factor authentication"
+description: "TOTP second factor for local accounts, recovery codes, org enforcement policy, and the break-glass path back in."
+---
+
+A rolter dashboard session reaches every provider credential in the
+deployment. Local accounts can protect that with a time-based one-time
+password (TOTP) second factor — the six-digit code an authenticator app
+generates — on top of the password.
+
+<Note>
+Accounts that sign in through an identity provider inherit whatever MFA that
+IdP enforces; this page is about rolter's own local accounts. See
+[Single sign-on](/security/single-sign-on).
+</Note>
+
+## Requirements
+
+Enrolment seals the shared secret with the deployment key-encryption key, so
+`ROLTER_KEK` must be set on the control plane. Without it, enrolment is
+refused rather than storing a bearer credential in the clear — see
+[Backup and restore](/deployment/backup-and-restore) for the sealed-column
+list, which `user_totp_factors` is part of.
+
+Optionally, set `ROLTER_MFA_ISSUER` to the name authenticator apps show beside
+the account. It defaults to `rolter`; give each deployment its own so an
+operator running several can tell the entries apart.
+
+## Enrolling
+
+```bash
+# 1. sign in as normal
+TOKEN=$(curl -sS -X POST https://rolter.example.com/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"ops@example.com","password":"..."}' | jq -r .token)
+
+# 2. ask for a secret. it is shown exactly once
+curl -sS -X POST https://rolter.example.com/api/v1/me/mfa/enroll \
+  -H "authorization: Bearer $TOKEN"
+```
+
+The response carries an `otpauth_uri` to render as a QR code and the same
+`secret` in base32 for manual entry. Nothing is armed yet: an unconfirmed
+enrolment grants nothing and does not gate login, so a half-finished
+enrolment cannot lock anyone out.
+
+```bash
+# 3. prove a code from the secret. this arms the factor and returns the
+#    recovery codes, which are also shown exactly once
+curl -sS -X POST https://rolter.example.com/api/v1/me/mfa/confirm \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"code":"123456"}'
+```
+
+<Warning>
+The code you confirm with is spent. Signing in immediately afterwards needs
+the **next** code, up to 30 seconds later — this is the replay rule below
+working, not a fault.
+</Warning>
+
+## Signing in with a factor armed
+
+`POST /api/v1/auth/login` answers with a challenge instead of a session:
+
+```json
+{ "mfa_required": true, "mfa_token": "rolter_mfa_...", "expires_at": "..." }
+```
+
+Present that token with a code to get the session:
+
+```bash
+curl -sS -X POST https://rolter.example.com/api/v1/auth/mfa/verify \
+  -H 'content-type: application/json' \
+  -d '{"mfa_token":"rolter_mfa_...","code":"123456"}'
+```
+
+The same endpoint accepts a recovery code in place of a TOTP code; they are
+told apart by shape, so there is nothing to select.
+
+A challenge lives five minutes and accepts three guesses. Once either runs
+out, the sign-in starts again from the password — including for the correct
+code, so a guesser gains nothing by holding a challenge open.
+
+The factor is checked **once, at sign-in**. The session it issues is an
+ordinary rolter session: revocable immediately by logging out, and valid for
+its normal lifetime. rolter does not re-prompt per request.
+
+## Recovery codes
+
+Confirming an enrolment issues ten single-use codes. Each works exactly once,
+in place of a TOTP code, and using one is recorded in the audit log along with
+how many remain.
+
+Regenerating replaces the whole batch rather than topping it up:
+
+```bash
+curl -sS -X POST https://rolter.example.com/api/v1/me/mfa/recovery-codes \
+  -H "authorization: Bearer $TOKEN"
+```
+
+Any code from the previous batch stops working the moment you do this, which
+is what makes a printed sheet safe to invalidate if it goes missing.
+
+## Enforcement policy
+
+`mfa_policy` sits on the per-org auth policy alongside the password and SSO
+switches, and takes one of four values:
+
+| Value | Meaning |
+|---|---|
+| `off` | the default; a factor is neither required nor advertised |
+| `optional` | members may enrol; nobody is required to |
+| `required_superadmin` | superadmins must have an armed factor to sign in |
+| `required_all` | every member must have an armed factor to sign in |
+
+```bash
+curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"allow_password_login":true,"allow_sso":true,"mfa_policy":"required_all"}'
+```
+
+A user in several orgs gets the strictest policy across all of them — a
+relaxed membership never softens a hardened one.
+
+Under a `required_*` policy, an account with no armed factor is **refused a
+session** (403, `mfa_enrolment_required`) rather than let in unprotected. Turn
+the policy on after the accounts it binds have enrolled, or expect to run the
+break-glass path below.
+
+<Note>
+Unlike `allow_password_login`, `required_all` does not exempt superadmins. It
+does not need to: the break-glass path runs on the host rather than through
+the API, so exempting the most privileged account would weaken the policy
+without buying any recoverability.
+</Note>
+
+## Break-glass: a lost device
+
+A lost phone with no recovery codes left would otherwise be an unrecoverable
+account — and, for a superadmin, an unrecoverable deployment. The way back in
+runs on the host, against the database, at the same privilege level as reading
+the rows it clears:
+
+```bash
+rolter mfa reset \
+  --database-url "$ROLTER_DATABASE_URL" \
+  --email ops@example.com \
+  --reason "lost phone, ticket 4211"
+```
+
+This clears the factor and its recovery codes, and revokes every live session
+for the account — the reason to run it is that the account is in unknown
+hands, so leaving a week-long session alive would leave the factor bypassed
+anyway. The account can then sign in with its password and enrol again.
+
+`--reason` is required, not optional: a break-glass with no stated reason is
+indistinguishable from an attack when it is read back six months later. It is
+recorded verbatim on the `auth.mfa_break_glass_reset` audit entry.
+
+There is deliberately no API endpoint for this. An endpoint that clears a
+second factor is a second factor that anyone holding a session can clear.
+
+## What is audited
+
+| Action | When |
+|---|---|
+| `auth.mfa_enabled` | an enrolment is confirmed |
+| `auth.mfa_disabled` | a user removes their own factor |
+| `auth.mfa_confirm_failed` | a wrong code during enrolment |
+| `auth.mfa_disable_failed` | a wrong code when removing a factor |
+| `auth.mfa_failed` | a wrong code at sign-in, with the attempt number |
+| `auth.mfa_recovery_code_used` | a recovery code is spent, with the count left |
+| `auth.mfa_recovery_codes_regenerated` | a batch is replaced |
+| `auth.mfa_enrolment_required` | a policy refused an unenrolled account |
+| `auth.mfa_break_glass_reset` | `rolter mfa reset`, with the stated reason |
+
+## Not covered
+
+WebAuthn and passkeys. They are the stronger factor and are tracked
+separately; TOTP needs no browser API work and is the factor every security
+review asks for.

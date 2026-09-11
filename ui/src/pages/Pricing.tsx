@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDollarSign, Plus, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
+import { useGate } from "@/lib/can";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -74,15 +75,21 @@ export default function Pricing() {
   const [editOpen, setEditOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<ModelPriceRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ModelPriceRow | null>(null);
+  // model prices are deployment-wide, so a row control is the superadmin's
+  // exactly as the add button is (#1258)
+  const deleteGate = useGate("model_price:delete");
 
   return (
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {prices.data?.length ?? 0} models · per-million-token pricing · currency set per model
+          {t("pages.pricing.summary", { count: prices.data?.length ?? 0 })}
         </span>
+        {/* a price is written with PUT /model-prices whether or not the row
+            exists, so adding one takes `model_price:update` — there is no
+            create capability to gate on (#1258) */}
         <GatedButton
-          gate="model_price:create"
+          gate="model_price:update"
           className="ml-auto"
           onClick={() => {
             setEditTarget(null);
@@ -90,7 +97,7 @@ export default function Pricing() {
           }}
         >
           <Plus className="h-4 w-4" />
-          Add price
+          {t("pages.pricing.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -110,7 +117,7 @@ export default function Pricing() {
           description={t("pages.pricing.emptyBody")}
           actions={
             <GatedButton
-              gate="model_price:create"
+              gate="model_price:update"
               onClick={() => {
                 setEditTarget(null);
                 setEditOpen(true);
@@ -131,14 +138,23 @@ export default function Pricing() {
             <div className="truncate font-mono text-sm font-semibold">{price.model}</div>
             <div className="flex flex-wrap gap-1.5">
               <Badge tone="outline">
-                in {price.input_per_mtok} {price.currency}/Mtok
+                {t("pages.pricing.inPrice", {
+                  value: price.input_per_mtok,
+                  currency: price.currency,
+                })}
               </Badge>
               <Badge tone="outline">
-                out {price.output_per_mtok} {price.currency}/Mtok
+                {t("pages.pricing.outPrice", {
+                  value: price.output_per_mtok,
+                  currency: price.currency,
+                })}
               </Badge>
               {price.cached_input_per_mtok && (
                 <Badge tone="neutral">
-                  cached {price.cached_input_per_mtok} {price.currency}/Mtok
+                  {t("pages.pricing.cachedPrice", {
+                    value: price.cached_input_per_mtok,
+                    currency: price.currency,
+                  })}
                 </Badge>
               )}
             </div>
@@ -151,23 +167,31 @@ export default function Pricing() {
               </p>
             )}
             <div className="flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
-              <Button
+              <GatedButton
+                gate="model_price:update"
                 size="sm"
                 variant="outline"
+                aria-label={t("pages.pricing.editAria", { model: price.model })}
                 onClick={() => {
                   setEditTarget(price);
                   setEditOpen(true);
                 }}
               >
-                Edit
-              </Button>
+                {t("pages.pricing.edit")}
+              </GatedButton>
               <button
                 type="button"
-                title="Delete price"
-                aria-label={`Delete price for ${price.model}`}
-                disabled={removePrice.isPending && deleteTarget?.model === price.model}
+                title={
+                  deleteGate.reason ??
+                  t("pages.pricing.deleteAria", { model: price.model })
+                }
+                aria-label={t("pages.pricing.deleteAria", { model: price.model })}
+                disabled={
+                  deleteGate.denied ||
+                  (removePrice.isPending && deleteTarget?.model === price.model)
+                }
                 onClick={() => setDeleteTarget(price)}
-                className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+                className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {removePrice.isPending && deleteTarget?.model === price.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
               </button>
@@ -188,11 +212,13 @@ export default function Pricing() {
         onOpenChange={(open) => !open && setDeleteTarget(null)}
       >
         <DialogHeader>
-          <DialogTitle>Delete price</DialogTitle>
+          <DialogTitle>{t("pages.pricing.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            Removes the pricing entry for{" "}
-            <span className="font-mono">{deleteTarget?.model}</span>. Cost
-            accounting for this model falls back to no known price.
+            <Trans
+              i18nKey="pages.pricing.deleteBody"
+              values={{ model: deleteTarget?.model }}
+              components={[<span key="model" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removePrice.isError && (
@@ -202,7 +228,7 @@ export default function Pricing() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -225,7 +251,7 @@ export default function Pricing() {
               });
             }}
           >
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -306,17 +332,21 @@ function UpsertPriceDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title={existing ? `Edit ${existing.model}` : "Add price"}
-      subtitle="Prices are per million tokens (Mtok); saving upserts by model name."
+      title={
+        existing
+          ? t("pages.pricing.editTitle", { model: existing.model })
+          : t("pages.pricing.emptyAction")
+      }
+      subtitle={t("pages.pricing.editSubtitle")}
       dirty={dirty}
       errorMessage={submit.isError ? (submit.error as Error).message : undefined}
-      saveLabel="Save"
+      saveLabel={t("common.save")}
       canSave={!!model.trim() && !!inputPerMtok.trim() && !!outputPerMtok.trim()}
       saving={submit.isPending}
       onSave={() => submit.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Model name">
+        <Field label={t("pages.pricing.modelName")}>
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -324,7 +354,7 @@ function UpsertPriceDialog({
             disabled={!!existing}
           />
         </Field>
-        <Field label="Input price per Mtok">
+        <Field label={t("pages.pricing.inputPrice")}>
           <Input
             type="number"
             min={0}
@@ -333,7 +363,7 @@ function UpsertPriceDialog({
             onChange={(e) => setInputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label="Output price per Mtok">
+        <Field label={t("pages.pricing.outputPrice")}>
           <Input
             type="number"
             min={0}
@@ -342,20 +372,20 @@ function UpsertPriceDialog({
             onChange={(e) => setOutputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label="Cached input price per Mtok (optional)">
+        <Field label={t("pages.pricing.cachedInputPrice")}>
           <Input
             type="number"
             min={0}
             step="0.000001"
             value={cachedInputPerMtok}
             onChange={(e) => setCachedInputPerMtok(e.target.value)}
-            placeholder="defaults to input price"
+            placeholder={t("pages.pricing.cachedPlaceholder")}
           />
         </Field>
         <Field
-          label="Currency"
-          hint="Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate."
-          info="Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget."
+          label={t("pages.pricing.currency")}
+          hint={t("pages.pricing.currencyHint")}
+          info={t("pages.pricing.currencyInfo")}
         >
           <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />
         </Field>

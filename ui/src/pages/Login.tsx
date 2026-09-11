@@ -91,7 +91,10 @@ export default function Login() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
+    // a <main>, not a <div>: signed out there is no shell around this, so the
+    // card is the whole page and everything on it has to sit inside a landmark
+    // — the two rules the story gate now holds this screen to (#1353)
+    <main className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
       <div className="w-[400px] max-w-full overflow-hidden rounded-xl border bg-background shadow-2xl">
         <div className="vyshivka-rule" />
         <div className="flex flex-col gap-6 p-8">
@@ -229,7 +232,7 @@ export default function Login() {
           )}
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

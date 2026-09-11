@@ -12,6 +12,7 @@ import {
   expectToast,
   json,
   pending,
+  recording,
   scoped,
   sheet,
   type FetchStub,
@@ -77,36 +78,6 @@ const POLICY: OrgAuthPolicy = {
   allow_sso: true,
   updated_at: NOW,
 };
-
-/** every request the stub saw, with its parsed JSON body */
-interface Sent {
-  method: string;
-  url: string;
-  body?: unknown;
-}
-
-/**
- * Record what actually left, bodies included.
- *
- * The shared `recording` helper keeps method and URL, which answers "did the
- * DELETE leave". These stories also have to answer "did the create send the
- * *right* provider", and the write-only client secret is exactly the field a
- * screen could plausibly drop on the floor — so the body is kept too.
- */
-function record(handler: FetchStub): { stub: FetchStub; calls: Sent[] } {
-  const calls: Sent[] = [];
-  return {
-    calls,
-    stub: async (input, init) => {
-      calls.push({
-        method: (init?.method ?? "GET").toUpperCase(),
-        url: String(input),
-        body: init?.body ? JSON.parse(String(init.body)) : undefined,
-      });
-      return handler(input, init);
-    },
-  };
-}
 
 /**
  * The screen's three endpoints, routed by path.
@@ -312,7 +283,7 @@ export const Forbidden: Story = {
 
 // the create body is the assertion: the client secret is write-only and never
 // comes back, so a screen that dropped it would look like it worked
-const creates = record(api({ providers: () => [provider()] }));
+const creates = recording(api({ providers: () => [provider()] }));
 
 export const CreatesAProvider: Story = {
   render: () => (
@@ -338,21 +309,18 @@ export const CreatesAProvider: Story = {
 
     await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
 
-    await waitFor(() => {
-      const post = creates.calls.find(
-        (c) => c.method === "POST" && c.url.includes("/sso-providers"),
-      );
-      expect(post).toBeDefined();
-      expect(post?.url).toContain(`/api/v1/orgs/${ORG.id}/sso-providers`);
-      expect(post?.body).toEqual({
-        name: "Acme Okta",
-        slug: "okta",
-        issuer: "https://acme.okta.com",
-        client_id: "0oa1b2c3d4",
-        client_secret: "s3cr3t",
-        // omitted optionals are left out entirely, so the server applies its
-        // own defaults rather than being handed an empty string
-      });
+    const created = await creates.expectSentBody(
+      "POST",
+      `/api/v1/orgs/${ORG.id}/sso-providers`,
+    );
+    await expect(created).toEqual({
+      name: "Acme Okta",
+      slug: "okta",
+      issuer: "https://acme.okta.com",
+      client_id: "0oa1b2c3d4",
+      client_secret: "s3cr3t",
+      // omitted optionals are left out entirely, so the server applies its own
+      // defaults rather than being handed an empty string
     });
   },
 };
@@ -360,7 +328,7 @@ export const CreatesAProvider: Story = {
 // #1233: editing in place. before this, rotating a secret or fixing a typo
 // meant deleting the provider and registering it again, which dropped every
 // group mapping and changed the id in the audit trail
-const edits = record(api({ providers: () => [provider()] }));
+const edits = recording(api({ providers: () => [provider()] }));
 
 export const EditsAProviderInPlace: Story = {
   render: () => (
@@ -385,24 +353,128 @@ export const EditsAProviderInPlace: Story = {
     await userEvent.type(panel.getByLabelText("Client ID"), "0oa-rotated");
     await userEvent.click(panel.getByRole("button", { name: "Save changes" }));
 
-    await waitFor(() => {
-      const put = edits.calls.find((c) => c.method === "PUT");
-      expect(put).toBeDefined();
-      expect(put?.url).toContain("/api/v1/sso-providers/sso-1");
-      const body = put?.body as Record<string, unknown>;
-      expect(body.client_id).toBe("0oa-rotated");
-      expect(body.name).toBe("Acme Okta");
-      // the untouched secret field sends nothing at all, which is what tells
-      // the server to leave the sealed one alone
-      expect("client_secret" in body).toBe(false);
-      // and the slug is never sent, so it cannot be changed by accident
-      expect("slug" in body).toBe(false);
-    });
+    const body = await edits.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/api/v1/sso-providers/sso-1",
+    );
+    await expect(body.client_id).toBe("0oa-rotated");
+    await expect(body.name).toBe("Acme Okta");
+    // the untouched secret field sends nothing at all, which is what tells the
+    // server to leave the sealed one alone
+    await expect("client_secret" in body).toBe(false);
+    // and the slug is never sent, so it cannot be changed by accident
+    await expect("slug" in body).toBe(false);
+  },
+};
+
+// #1293: a stray space in the secret field used to trim to "" and reach the
+// server as the wire's "clear it", so the provider silently lost its sealed
+// secret and the next login failed at token exchange. whitespace alone is now
+// the same as untouched: nothing is sent
+const whitespace = recording(api({ providers: () => [provider()] }));
+
+export const TreatsAWhitespaceOnlySecretAsUntouched: Story = {
+  render: () => (
+    <Harness fetchStub={whitespace.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit provider Acme Okta/);
+
+    const panel = within(sheet());
+    await userEvent.type(panel.getByLabelText("Client secret"), "   ");
+    await userEvent.click(panel.getByRole("button", { name: "Save changes" }));
+
+    const body = await whitespace.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/api/v1/sso-providers/sso-1",
+    );
+    // the assertion that matters: not an empty string, not present at all
+    await expect("client_secret" in body).toBe(false);
+    await expect(body.client_id).toBe("0oa1b2c3d4");
+  },
+};
+
+/**
+ * #1293: clearing is its own control now, and it is the only thing that sends
+ * the empty string.
+ *
+ * The stub models the server rather than a fixture: the PUT flips the stored
+ * flag, so the badge the card draws afterwards comes from a refetched list and
+ * not from the story asserting on its own constant.
+ */
+function clearingApi(): FetchStub {
+  let stored = true;
+  const row = () => provider({ has_client_secret: stored });
+  return scoped(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/group-mappings")) return json([], 200);
+    if (url.includes("/sso-providers")) {
+      if (method === "PUT") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (body.client_secret === "") stored = false;
+        return json(row(), 200);
+      }
+      return json([row()], 200);
+    }
+    if (url.includes("/auth-policy")) return json(POLICY, 200);
+    return json([]);
+  });
+}
+
+const clears = recording(clearingApi());
+
+export const RemovesTheStoredSecretWithConfirmation: Story = {
+  render: () => (
+    <Harness fetchStub={clears.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Stored")).toBeVisible());
+
+    // cancelling sends nothing: a secret that cannot be read back must not be
+    // droppable by one stray click
+    await userEvent.click(
+      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
+    );
+    await cancelConfirmation();
+    clears.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
+
+    await userEvent.click(
+      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
+    );
+    await confirmDestructive(/Acme Okta/, "Remove secret");
+
+    const body = await clears.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/api/v1/sso-providers/sso-1",
+    );
+    // the empty string is the wire's third value, and only this path sends it
+    await expect(body.client_secret).toBe("");
+    // the rest of the row rides along unchanged
+    await expect(body.name).toBe("Acme Okta");
+    await expect(body.enabled).toBe(true);
+
+    // and the badge flips off the refetched list
+    await waitFor(() =>
+      expect(canvas.getByText("No client secret")).toBeVisible(),
+    );
+    await expect(canvas.getByText("Not set")).toBeVisible();
+    // with nothing stored, the control that removes one is gone
+    await expect(
+      canvas.queryByLabelText("Remove the stored client secret for Acme Okta"),
+    ).toBeNull();
   },
 };
 
 // a provider is taken out of service with a switch instead of a delete
-const toggles = record(api({ providers: () => [provider()] }));
+const toggles = recording(api({ providers: () => [provider()] }));
 
 export const DisablesAProviderWithoutDeletingIt: Story = {
   render: () => (
@@ -417,26 +489,23 @@ export const DisablesAProviderWithoutDeletingIt: Story = {
     });
     await userEvent.click(toggle);
 
-    await waitFor(() => {
-      const put = toggles.calls.find((c) => c.method === "PUT");
-      expect(put).toBeDefined();
-      const body = put?.body as Record<string, unknown>;
-      expect(body.enabled).toBe(false);
-      // everything else rides along unchanged, and the secret is untouched
-      expect(body.name).toBe("Acme Okta");
-      expect("client_secret" in body).toBe(false);
-    });
+    const body = await toggles.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/api/v1/sso-providers/sso-1",
+    );
+    await expect(body.enabled).toBe(false);
+    // everything else rides along unchanged, and the secret is untouched
+    await expect(body.name).toBe("Acme Okta");
+    await expect("client_secret" in body).toBe(false);
     // nothing was deleted: the group mappings that hang off this provider are
     // exactly what delete-and-recreate used to destroy
-    await expect(
-      toggles.calls.some((c) => c.method === "DELETE"),
-    ).toBe(false);
+    toggles.expectNotSent("DELETE", "/sso-providers");
   },
 };
 
 // deleting a provider takes a whole sign-in route away, so it is named and
 // confirmed before anything leaves (#1179)
-const deletes = record(api({ providers: () => [provider()] }));
+const deletes = recording(api({ providers: () => [provider()] }));
 
 export const DeletesWithConfirmation: Story = {
   render: () => (
@@ -447,24 +516,20 @@ export const DeletesWithConfirmation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Acme Okta")).toBeVisible());
-    const sent = () =>
-      deletes.calls.some(
-        (c) => c.method === "DELETE" && c.url.includes("/sso-providers/sso-1"),
-      );
 
     await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
     await cancelConfirmation();
-    expect(sent()).toBe(false);
+    deletes.expectNotSent("DELETE", "/sso-providers/sso-1");
 
     await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
     await confirmDestructive(/Acme Okta/, "Delete provider");
-    await waitFor(() => expect(sent()).toBe(true));
+    await deletes.expectSent("DELETE", "/sso-providers/sso-1");
   },
 };
 
 // both flags travel together because the control plane refuses the combination,
 // not the field
-const policySave = record(api({ providers: () => [provider()] }));
+const policySave = recording(api({ providers: () => [provider()] }));
 
 export const SavesPolicy: Story = {
   render: () => (
@@ -486,13 +551,14 @@ export const SavesPolicy: Story = {
     await waitFor(() => expect(save).toBeEnabled());
     await userEvent.click(save);
 
-    await waitFor(() => {
-      const put = policySave.calls.find((c) => c.method === "PUT");
-      expect(put?.url).toContain(`/api/v1/orgs/${ORG.id}/auth-policy`);
-      expect(put?.body).toEqual({
-        allow_password_login: false,
-        allow_sso: true,
-      });
+    await expect(
+      await policySave.expectSentBody(
+        "PUT",
+        `/api/v1/orgs/${ORG.id}/auth-policy`,
+      ),
+    ).toEqual({
+      allow_password_login: false,
+      allow_sso: true,
     });
     await expectToast(canvasElement, /the sign-in policy updated/i);
   },

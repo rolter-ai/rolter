@@ -233,13 +233,14 @@ export const ConfirmsBeforeDeletingAChannel: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ops-slack")).toBeInTheDocument();
-    const buttons = canvas.getAllByRole("button", { name: /delete channel/i });
+    // by name, not by index: each row control names its own channel (#1214)
+    const button = canvas.getByRole("button", { name: "Delete channel ops-slack" });
 
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await cancelConfirmation();
     channelDeletes.expectNotSent("DELETE", "/alert-channels/chan-1");
 
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await confirmDestructive(/ops-slack/, /delete channel/i);
     await channelDeletes.expectSent("DELETE", "/alert-channels/chan-1");
   },
@@ -262,7 +263,9 @@ export const ChannelDeleteFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ops-slack")).toBeInTheDocument();
-    await userEvent.click(canvas.getAllByRole("button", { name: /delete channel/i })[0]);
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Delete channel ops-slack" }),
+    );
     await confirmDestructive(/ops-slack/, /delete channel/i);
     await waitFor(() =>
       expect(within(document.body).getByRole("alert")).toHaveTextContent(
@@ -383,13 +386,15 @@ export const ConfirmsBeforeDeletingARule: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
-    const buttons = canvas.getAllByRole("button", { name: /delete rule/i });
+    const button = canvas.getByRole("button", {
+      name: "Delete rule high error rate",
+    });
 
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await cancelConfirmation();
     ruleDeletes.expectNotSent("DELETE", "/alert-rules/rule-1");
 
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await confirmDestructive(/high error rate/, /delete rule/i);
     await ruleDeletes.expectSent("DELETE", "/alert-rules/rule-1");
   },

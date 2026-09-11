@@ -116,7 +116,9 @@ export const ConfirmsBeforeDeletingAProvider: Story = {
   render: () => <Harness fetchStub={deletes.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const del = async () => (await canvas.findAllByRole("button", { name: "Delete" }))[0];
+    // by name, not by index: each row control names its own provider (#1214)
+    const del = async () =>
+      canvas.findByRole("button", { name: "Delete provider Production LLM Guard" });
 
     await userEvent.click(await del());
     await cancelConfirmation();
@@ -132,7 +134,9 @@ export const ExplainsFailOpen: Story = {
   render: () => <Harness fetchStub={async () => json(PROVIDERS)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click((await canvas.findAllByRole("button", { name: "Edit provider" }))[1]);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Staging evaluator" }),
+    );
     await waitFor(() => expect(within(document.body).getByText(/fail-open favors availability/i)).toBeVisible());
   },
 };

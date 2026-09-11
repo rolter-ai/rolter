@@ -55,35 +55,56 @@ const fromDto = (dto: ClientSettingsDto): FormState => ({
 // caught here rather than after a round trip
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
-function validate(form: FormState, reserved: string[]): string | null {
+// a catalog key and the values it interpolates; the screen renders it, which
+// is where `t` lives
+interface FormError {
+  key: string;
+  values?: Record<string, string>;
+}
+
+function validate(form: FormState, reserved: string[]): FormError | null {
   const url = form.publicBaseUrl.trim();
   if (url !== "" && !/^https?:\/\//.test(url)) {
-    return "Base URL must start with http:// or https://.";
+    return { key: "pages.clientSettings.errors.baseUrlScheme" };
   }
   const forwarded = splitList(form.forwarded);
   for (const name of forwarded) {
-    if (!HEADER_NAME.test(name)) return `'${name}' is not a valid header name.`;
-    if (reserved.includes(name)) return `'${name}' is managed by the gateway.`;
+    if (!HEADER_NAME.test(name)) {
+      return { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
+    }
+    if (reserved.includes(name)) {
+      return { key: "pages.clientSettings.errors.reservedHeader", values: { name } };
+    }
   }
-  if (forwarded.length > 64) return "At most 64 forwarded headers are allowed.";
+  if (forwarded.length > 64) return { key: "pages.clientSettings.errors.tooManyForwarded" };
 
   const seen = new Set<string>();
   for (const { name, value } of form.injected) {
     const lower = name.trim().toLowerCase();
     if (lower === "" && value.trim() === "") continue;
-    if (!HEADER_NAME.test(lower)) return `'${name}' is not a valid header name.`;
-    if (reserved.includes(lower)) return `'${lower}' is managed by the gateway.`;
-    if (seen.has(lower)) return `'${lower}' is listed twice.`;
+    if (!HEADER_NAME.test(lower)) {
+      return { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
+    }
+    if (reserved.includes(lower)) {
+      return { key: "pages.clientSettings.errors.reservedHeader", values: { name: lower } };
+    }
+    if (seen.has(lower)) {
+      return { key: "pages.clientSettings.errors.duplicateHeader", values: { name: lower } };
+    }
     seen.add(lower);
     if (/[\u0000-\u001f\u007f]/.test(value)) {
-      return `Value for '${lower}' must not contain control characters.`;
+      return { key: "pages.clientSettings.errors.controlCharacters", values: { name: lower } };
     }
   }
-  if (seen.size > 64) return "At most 64 injected headers are allowed.";
+  if (seen.size > 64) return { key: "pages.clientSettings.errors.tooManyInjected" };
 
   const requestId = form.requestIdHeader.trim().toLowerCase();
-  if (!HEADER_NAME.test(requestId)) return "Request ID header is not a valid header name.";
-  if (reserved.includes(requestId)) return `'${requestId}' is managed by the gateway.`;
+  if (!HEADER_NAME.test(requestId)) {
+    return { key: "pages.clientSettings.errors.badRequestIdHeader" };
+  }
+  if (reserved.includes(requestId)) {
+    return { key: "pages.clientSettings.errors.reservedHeader", values: { name: requestId } };
+  }
   return null;
 }
 
@@ -179,22 +200,19 @@ function ClientSettingsScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Base URL</span>
+          <span className="text-sm font-medium">{t("pages.clientSettings.baseUrl")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            The address clients point their SDK at. Set this when the gateway sits
-            behind a load balancer or a custom domain, so the snippet below matches
-            what a caller can actually reach. Leave it empty to use this
-            dashboard&rsquo;s own origin.
+            {t("pages.clientSettings.baseUrlHint")}
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="client-public-base-url" className="text-xs font-medium text-[color:var(--text-secondary)]">
-            Public base URL
+            {t("pages.clientSettings.publicBaseUrl")}
           </label>
           <Input
             id="client-public-base-url"
             className="min-w-[320px] font-mono text-xs"
-            aria-label="Public base URL"
+            aria-label={t("pages.clientSettings.publicBaseUrl")}
             placeholder={effectiveBase}
             value={form.publicBaseUrl}
             onChange={(e) => set({ publicBaseUrl: e.target.value })}
@@ -205,22 +223,20 @@ function ClientSettingsScreen() {
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Forwarded request headers</span>
+          <span className="text-sm font-medium">{t("pages.clientSettings.forwarded")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Inbound client headers passed through to the upstream provider,
-            comma or newline separated. Everything not listed is dropped at the
-            gateway.
+            {t("pages.clientSettings.forwardedHint")}
           </p>
         </div>
         <textarea
-          aria-label="Forwarded request headers"
+          aria-label={t("pages.clientSettings.forwarded")}
           className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
-          placeholder="x-tenant-id, x-session-id"
+          placeholder={t("pages.clientSettings.forwardedPlaceholder")}
           value={form.forwarded}
           onChange={(e) => set({ forwarded: e.target.value })}
         />
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Always propagated:</span>
+          <span>{t("pages.clientSettings.alwaysPropagated")}</span>
           {dto.always_propagated.map((h) => (
             <Badge key={h} tone="info" className="font-mono">
               {h}
@@ -228,7 +244,7 @@ function ClientSettingsScreen() {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Never forwarded:</span>
+          <span>{t("pages.clientSettings.neverForwarded")}</span>
           {dto.reserved.map((h) => (
             <Badge key={h} tone="neutral" className="font-mono">
               {h}
@@ -239,26 +255,22 @@ function ClientSettingsScreen() {
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Injected upstream headers</span>
+          <span className="text-sm font-medium">{t("pages.clientSettings.injected")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Static headers the gateway adds to every upstream request. A
-            trace-context header of the same name still wins, so correlation
-            cannot be broken from here. Values are treated as deployment secrets
-            and are never written to the audit log.
+            {t("pages.clientSettings.injectedHint")}
           </p>
         </div>
         <div className="flex flex-col gap-2">
           {form.injected.length === 0 && (
             <p className="text-xs text-[color:var(--text-subtle)]">
-              No headers injected — upstream requests carry only what the gateway
-              and the caller already send.
+              {t("pages.clientSettings.injectedNone")}
             </p>
           )}
           {form.injected.map((row, i) => (
             <div key={row.id} className="flex items-center gap-2">
               <Input
                 className="max-w-[220px] font-mono text-xs"
-                aria-label={`Injected header name ${i + 1}`}
+                aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
                 placeholder="x-partner-id"
                 value={row.name}
                 onChange={(e) =>
@@ -271,7 +283,7 @@ function ClientSettingsScreen() {
               />
               <Input
                 className="flex-1 font-mono text-xs"
-                aria-label={`Injected header value ${i + 1}`}
+                aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
                 placeholder="value"
                 value={row.value}
                 onChange={(e) =>
@@ -284,7 +296,7 @@ function ClientSettingsScreen() {
               />
               <button
                 type="button"
-                aria-label={`Remove injected header ${i + 1}`}
+                aria-label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
                 className="flex h-8 w-8 flex-none items-center justify-center rounded-md text-[color:var(--text-subtle)] transition-colors hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 onClick={() =>
                   set({ injected: form.injected.filter((r) => r.id !== row.id) })
@@ -301,28 +313,26 @@ function ClientSettingsScreen() {
             onClick={() => set({ injected: [...form.injected, pair()] })}
           >
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            Add header
+            {t("pages.clientSettings.addHeader")}
           </Button>
         </div>
       </section>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">Correlation</span>
+          <span className="text-sm font-medium">{t("pages.clientSettings.correlation")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
-            Header carrying the end-to-end request id. The gateway reuses the
-            caller&rsquo;s value when present, mints one when absent, and echoes it
-            on the response so a client can find its own call in the logs.
+            {t("pages.clientSettings.correlationHint")}
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="client-request-id-header" className="text-xs font-medium text-[color:var(--text-secondary)]">
-            Request ID header
+            {t("pages.clientSettings.requestIdHeader")}
           </label>
           <Input
             id="client-request-id-header"
             className="max-w-[240px] font-mono text-xs"
-            aria-label="Request ID header"
+            aria-label={t("pages.clientSettings.requestIdHeader")}
             value={form.requestIdHeader}
             onChange={(e) => set({ requestIdHeader: e.target.value })}
           />
@@ -330,9 +340,13 @@ function ClientSettingsScreen() {
       </section>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">
+            {t(localError.key, localError.values)}
+          </span>
+        )}
         <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>

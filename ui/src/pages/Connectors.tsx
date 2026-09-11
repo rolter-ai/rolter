@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
@@ -22,7 +23,6 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import {
   createConnector,
   deleteConnector,
@@ -32,6 +32,7 @@ import {
   updateConnector,
   type ConnectorRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -194,12 +195,17 @@ function ConnectorsScreen() {
     remove.reset();
     setDeleteTarget(connector);
   };
+  // a connector has no tenancy scope, so its row controls are the superadmin's
+  // exactly as the add button is (#1258)
+  const deleteGate = useGate("connector:delete");
 
   return (
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
-          {connectors.data?.length ?? 0} connectors · OTLP/HTTP sinks for request logs
+          {t("pages.connectors.summary", {
+            count: connectors.data?.length ?? 0,
+          })}
         </span>
         {/* the config sits beside "add", because it is the other half of the
             job: a connector row does nothing until a collector runs this */}
@@ -212,7 +218,9 @@ function ConnectorsScreen() {
           <FileCode2 className="h-4 w-4" aria-hidden />
           {t("pages.connectors.collectorConfig.open")}
         </Button>
-        <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>+ Add connector</GatedButton>
+        <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>
+          + {t("pages.connectors.add")}
+        </GatedButton>
       </Toolbar>
 
       {connectors.isLoading && <CardGridSkeleton cards={3} height={186} min={380} />}
@@ -255,7 +263,8 @@ function ConnectorsScreen() {
                   <div className="font-mono text-sm font-semibold">{c.name}</div>
                   <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
                 </div>
-                <Switch
+                <GatedSwitch
+                  gate="connector:update"
                   checked={c.enabled}
                   disabled={toggle.isPending}
                   aria-label={t("pages.connectors.toggleAria", { name: c.name })}
@@ -271,11 +280,13 @@ function ConnectorsScreen() {
                   {c.health_status}
                 </Pill>
                 <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                  {Math.round(c.sampling_rate * 100)}% sampled
+                  {t("pages.connectors.sampled", {
+                    percent: Math.round(c.sampling_rate * 100),
+                  })}
                 </Pill>
                 {c.auth_secret_configured && (
                   <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
-                    secret set
+                    {t("pages.connectors.secretSet")}
                   </Pill>
                 )}
               </div>
@@ -294,9 +305,13 @@ function ConnectorsScreen() {
                 </p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                <Button
+                {/* the probe writes the connector's health back, so the
+                    control plane guards it as an update */}
+                <GatedButton
+                  gate="connector:update"
                   size="sm"
                   variant="outline"
+                  aria-label={t("pages.connectors.testAria", { name: c.name })}
                   disabled={test.isPending && test.variables === c.id}
                   onClick={() => test.mutate(c.id)}
                 >
@@ -305,8 +320,8 @@ function ConnectorsScreen() {
                   ) : (
                     <FlaskConical className="h-3.5 w-3.5" />
                   )}
-                  Test delivery
-                </Button>
+                  {t("pages.connectors.testDelivery")}
+                </GatedButton>
                 {c.health_checked_at && (
                   <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
                     {t("pages.connectors.checkedAt", { time: fmt.time(c.health_checked_at) })}
@@ -314,11 +329,17 @@ function ConnectorsScreen() {
                 )}
                 <button
                   type="button"
-                  title="Delete connector"
-                  aria-label={`Delete connector ${c.name}`}
-                  disabled={remove.isPending && remove.variables === c.id}
+                  title={
+                    deleteGate.reason ??
+                    t("pages.connectors.deleteAria", { name: c.name })
+                  }
+                  aria-label={t("pages.connectors.deleteAria", { name: c.name })}
+                  disabled={
+                    deleteGate.denied ||
+                    (remove.isPending && remove.variables === c.id)
+                  }
                   onClick={() => startDelete(c)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {remove.isPending && remove.variables === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 </button>
@@ -428,20 +449,20 @@ function AddConnectorDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add connector"
-      subtitle="OTLP/HTTP collector endpoint request logs are exported to."
+      title={t("pages.connectors.add")}
+      subtitle={t("pages.connectors.addSubtitle")}
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={!!name.trim() && !!endpoint.trim()}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Name">
+        <Field label={t("pages.connectors.form.name")}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="datadog" />
         </Field>
-        <Field label="Endpoint URL">
+        <Field label={t("pages.connectors.form.endpoint")}>
           <Input
             className="font-mono"
             value={endpoint}
@@ -450,7 +471,7 @@ function AddConnectorDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Sampling (%)">
+          <Field label={t("pages.connectors.form.sampling")}>
             <Input
               type="number"
               min={0}
@@ -459,12 +480,12 @@ function AddConnectorDialog({
               onChange={(e) => setSampling(e.target.value)}
             />
           </Field>
-          <Field label="Bearer secret (optional)">
+          <Field label={t("pages.connectors.form.secret")}>
             <Input
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
-              placeholder="stored encrypted"
+              placeholder={t("pages.connectors.form.secretPlaceholder")}
             />
           </Field>
         </div>

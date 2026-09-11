@@ -32,6 +32,12 @@ use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
 
+/// The values `mfa_policy` accepts, matching the check constraint in
+/// `migrations/0067_totp_second_factor.sql`. Rejected here as well as there so
+/// a typo is a 400 naming the alternatives rather than a 500 from a constraint
+/// violation.
+const MFA_POLICIES: &[&str] = &["off", "optional", "required_superadmin", "required_all"];
+
 pub fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/auth/methods", get(methods))
@@ -100,6 +106,12 @@ async fn get_policy(
 struct SetPolicy {
     allow_password_login: bool,
     allow_sso: bool,
+    /// `off`, `optional`, `required_superadmin` or `required_all` (#1078).
+    /// Optional in the body so a client written before second factors existed
+    /// keeps working; absent means the org's current setting is kept, not
+    /// silently reset to `off`
+    #[serde(default)]
+    mfa_policy: Option<String>,
 }
 
 async fn set_policy(
@@ -132,8 +144,21 @@ async fn set_policy(
             ));
         }
     }
+    let current = OrgAuthPolicyRepo(pool(&state)).get(org_id).await?;
+    let mfa_policy = body.mfa_policy.clone().unwrap_or(current.mfa_policy);
+    if !MFA_POLICIES.contains(&mfa_policy.as_str()) {
+        return Err(ApiError::Core(rolter_core::Error::Config(format!(
+            "mfa_policy must be one of {}",
+            MFA_POLICIES.join(", ")
+        ))));
+    }
     let policy = OrgAuthPolicyRepo(pool(&state))
-        .set(org_id, body.allow_password_login, body.allow_sso)
+        .set(
+            org_id,
+            body.allow_password_login,
+            body.allow_sso,
+            &mfa_policy,
+        )
         .await?;
     log_audit(
         &state,
@@ -145,6 +170,7 @@ async fn set_policy(
         serde_json::json!({
             "allow_password_login": body.allow_password_login,
             "allow_sso": body.allow_sso,
+            "mfa_policy": policy.mfa_policy,
         }),
     )
     .await;

@@ -23,8 +23,12 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+  // an h2, not an h3: every screen title is the h1 in `ScreenHeader`, and a
+  // card is the next level down. as an h3 it skipped a level, which the
+  // assembled-shell story (#1239) caught the moment the axe gate started
+  // asserting heading-order (#1244)
   return (
-    <h3
+    <h2
       className={cn("text-lg font-semibold leading-none tracking-tight", className)}
       {...props}
     />

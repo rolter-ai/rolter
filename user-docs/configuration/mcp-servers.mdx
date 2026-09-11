@@ -1,0 +1,139 @@
+---
+title: "MCP Server Credentials and Transport Settings"
+sidebarTitle: "MCP Credentials"
+description: "How Rolter authenticates to an MCP server — bearer tokens, header API keys, or the OAuth consent flow — how those credentials are sealed at rest, and the per-server timeout overrides."
+---
+
+An MCP server Rolter dials usually wants to know who is calling. Rolter supports
+four answers, set per server under `auth_kind`.
+
+| `auth_kind` | Rolter sends | Use it when |
+|---|---|---|
+| `none` | nothing | the server is open, or reachable only inside your network |
+| `bearer` | `Authorization: Bearer <credential>` | the server issued you a long-lived token |
+| `header` | `<your header>: <credential>` | the server wants an API key in its own header |
+| `oauth` | a token minted per user by the consent flow | the server supports OAuth and you want per-user attribution |
+
+<Note>
+  A `bearer` or `header` credential is one secret shared by the whole
+  deployment, so a call through `/mcp/{server}` is authorized by the virtual
+  key's organization alone — there is no per-user consent step and no
+  `mcp_session_unauthorized`. Pick `oauth` when each user should act as
+  themselves and you want per-user attribution.
+</Note>
+
+`oauth` is the flow described in [MCP OAuth](/security/mcp-oauth) and is unchanged
+by any of this — pick it when each user should act as themselves. The other three
+are one credential shared by the deployment.
+
+---
+
+## Setting a credential
+
+```bash
+curl -X PUT https://rolter.example.com/api/v1/mcp-servers/$SERVER_ID/auth \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"auth_kind": "bearer", "credential": "mcp_live_..."}'
+```
+
+For a header API key, name the header:
+
+```bash
+-d '{"auth_kind": "header", "auth_header_name": "X-Api-Key", "credential": "..."}'
+```
+
+Setting a credential requires `ROLTER_KEK` on the control plane. Without it the
+request is refused rather than storing the credential in the clear.
+
+<Warning>
+Rolter refuses `Authorization`, `Host`, `Content-Length`, `Content-Type`,
+`Connection`, `Transfer-Encoding`, `Upgrade`, `TE`, `Trailer` and
+`Proxy-Authorization` as `auth_header_name`. Those are headers Rolter sets
+itself; allowing an API key into `Authorization` in particular would let header
+mode impersonate the bearer path.
+</Warning>
+
+### You cannot read a credential back
+
+It is sealed with the deployment KEK, exactly like a provider key, and the read
+API projects only `has_credential: true`. No API response and no dashboard screen
+has a field that can carry the value.
+
+That is why **omitting `credential` leaves the stored one in place**. You can
+switch a server from `bearer` to `header`, or rename its header, without
+re-typing a secret you have no way to look up:
+
+```bash
+# keeps the existing credential, just changes how it is presented
+-d '{"auth_kind": "header", "auth_header_name": "X-Api-Key"}'
+```
+
+Send `"credential": ""` to clear it, or any other value to replace it.
+
+### Changing to a kind that has no credential clears it
+
+Moving a server to `none` or `oauth` deletes the sealed credential rather than
+leaving it stored and unused. An orphaned secret is one `rolter kek verify` would
+keep auditing forever with nothing able to use it, so Rolter does not keep one.
+
+The reverse is refused: arming `bearer` or `header` on a server that has no
+stored credential and sending none returns `400`.
+
+---
+
+## Per-server timeouts
+
+`connect_timeout_ms`, `request_timeout_ms` and `max_retries` are set per server.
+A single slow server can be given its own budget without moving everyone:
+
+```bash
+curl -X PATCH https://rolter.example.com/api/v1/mcp-servers/$SERVER_ID \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"request_timeout_ms": 120000}'
+```
+
+Send an explicit `null` to give the server back to the org default:
+
+```bash
+-d '{"request_timeout_ms": null}'
+```
+
+Omitting the field entirely leaves the override as it is. The distinction
+matters: **absent means "leave it", `null` means "stop overriding"**.
+
+An unset override inherits rather than copying a value at creation time, so a
+server that never asked to differ follows whatever it inherits when that moves.
+
+<Note>
+  Today a server with no override inherits the **deployment**'s transport
+  timeouts. The org-wide values under **MCP Gateway → Settings** are stored but
+  not yet read by the proxy, so setting them there does not change what a
+  request does — a per-server override is currently the only one that takes
+  effect. This is tracked in
+  [#1404](https://github.com/rolter-ai/rolter/issues/1404).
+</Note>
+
+`max_retries` only ever repeats a request that never reached the server. An MCP
+call is usually a tool invocation and is not safe to run twice, so a request that
+connected — including one that then timed out — is reported rather than retried.
+
+---
+
+## What Rolter does not support
+
+**stdio servers.** Rolter is a hosted gateway; it dials MCP servers over the
+network and does not spawn local subprocesses, so `stdio` was removed as a
+transport. The MCP specification points the same way — it says stdio
+implementations *"SHOULD NOT"* use its authorization flow and should
+*"retrieve credentials from the environment"* instead, so there is nothing for
+Rolter to store for one.
+
+**mTLS.** A client certificate is an identity rather than a string, and Rolter
+has no certificate store to put one in yet.
+
+**Header API keys are not in the MCP specification.** The spec defines only
+`Authorization: Bearer`. `header` mode exists because many hosted MCP servers
+want an API key in a header of their own, not because the protocol sanctions it.
+Prefer `bearer` or `oauth` where the server offers them.

@@ -4,6 +4,12 @@
 //! control plane. Local password login and OAuth2/OIDC SSO both implement the
 //! pluggable [`IdentityProvider`] trait below (ROL-35); LDAP (#241) is the
 //! next provider to plug into the same seam.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +17,8 @@ use subtle::ConstantTimeEq;
 
 mod identity;
 pub use identity::{Credential, Identity, IdentityError, IdentityProvider};
+
+pub mod totp;
 
 /// RBAC role, scoped to an org/team/project by the control plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

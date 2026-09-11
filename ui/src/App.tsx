@@ -34,7 +34,7 @@ import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
-import { useVersionStatus } from "@/lib/version";
+import { useStability, useVersionStatus, type ExperimentalNavKeys } from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
 import {
   UxScreenProvider,
@@ -181,12 +181,20 @@ const GithubIcon = (
   </svg>
 );
 
-function toNavItem(def: NavDef, t: TFunction): NavItem {
+// `marked` is the control plane's answer, keyed by nav leaf key (#1386). The
+// dashboard never decides which subsystems are experimental — a second list
+// here is exactly the drift `crates/rolter-core/src/stability.rs` exists to
+// prevent — so an empty map (older control plane, failed read, no session yet)
+// simply renders a rail with no markers.
+function toNavItem(def: NavDef, t: TFunction, marked: ExperimentalNavKeys): NavItem {
+  const note = marked.get(def.key);
   return {
     key: def.key,
     label: t(`nav.${def.key}`),
     icon: def.icon,
-    children: def.children?.map((child) => toNavItem(child, t)),
+    experimental: note !== undefined,
+    experimentalNote: note,
+    children: def.children?.map((child) => toNavItem(child, t, marked)),
   };
 }
 
@@ -261,7 +269,17 @@ function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }
     <UxScreenProvider screen={screen}>
       <div className="flex h-full min-h-0 flex-col">
         <ScreenHeader title={title} subtitle={subtitle} onOpenNav={onOpenNav} />
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* the screen scrolls here, so this container has to be reachable from
+            the keyboard or everything below the fold is mouse-only — the same
+            contract `ListTable` and `CodeBlock` sign, and the violation the
+            assembled-shell story caught the moment one existed (#1239). the
+            title names it, so it is a region rather than an unlabelled stop */}
+        <div
+          tabIndex={0}
+          role="region"
+          aria-label={title}
+          className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        >
           {forbidden ? (
             <ForbiddenScreen resource={t(`nav.${screen}`)} />
           ) : (
@@ -321,6 +339,11 @@ function Shell() {
   // while the endpoint is unreachable or the session is still being checked
   const { version, update } = useVersionStatus(__APP_VERSION__, !!email && status !== "checking");
 
+  // which nav entries this build ships as experimental (#1386), read from
+  // `/api/v1/stability` once per session; tolerant by construction, since an
+  // empty map marks nothing and a failed read is one too.
+  const experimental = useStability(!!email && status !== "checking");
+
   // revoke the server-side session (if any) before clearing local state;
   // best-effort so a network hiccup still logs the user out locally
   const handleSignOut = () => {
@@ -350,7 +373,7 @@ function Shell() {
   const redirect = LEGACY[key];
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const navGroups: NavGroup[] = [
-    { items: visibleNav(can).map((def) => toNavItem(def, t)) },
+    { items: visibleNav(can).map((def) => toNavItem(def, t, experimental)) },
   ];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
   const role = orgName

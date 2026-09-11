@@ -1,5 +1,6 @@
 import { AlertTriangle, Lock, LockOpen, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -196,6 +197,7 @@ interface CreateProps extends CommonProps {
  * route is created.
  */
 export function ParamsEditor(props: EditProps | CreateProps) {
+  const { t } = useTranslation();
   const isCreate = props.variant === "create";
   const params = props.params;
   const paramPolicy = props.paramPolicy;
@@ -252,34 +254,38 @@ export function ParamsEditor(props: EditProps | CreateProps) {
   };
 
   const MODE_LABELS: Record<PolicyMode, string> = {
-    allow: "Callers may override",
-    deny: "Locked by default",
-    manual: "Manual",
+    allow: t("paramsEditor.mode.allow"),
+    deny: t("paramsEditor.mode.deny"),
+    manual: t("paramsEditor.mode.manual"),
   };
   const MODE_HINTS: Record<PolicyMode, string> = {
-    allow: "Callers can override any default above.",
-    deny: "Callers can't override any default — the admin values always win.",
-    manual: "Set override or lock per param with the toggle on each row.",
+    allow: t("paramsEditor.modeHint.allow"),
+    deny: t("paramsEditor.modeHint.deny"),
+    manual: t("paramsEditor.modeHint.manual"),
   };
 
   return (
     <div className="space-y-3 rounded-md border border-dashed border-border p-3">
       <div className="space-y-0.5">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium leading-none">Params</p>
+          <p className="text-sm font-medium leading-none">
+            {t("paramsEditor.title")}
+          </p>
           <InfoHint
-            label="About params"
-            text="Default inference params sent to the upstream on every request for this model (e.g. temperature 0.7, max_tokens 1024). Pick the value's type per row; json accepts arrays/objects like stop sequences."
+            label={t("paramsEditor.aboutParams")}
+            text={t("paramsEditor.aboutParamsText")}
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          Admin default inference params, applied reload-free on save.
+          {t("paramsEditor.subtitle")}
         </p>
       </div>
 
       <div className="space-y-1.5">
         {rows.length === 0 && (
-          <p className="text-xs text-muted-foreground">No default params.</p>
+          <p className="text-xs text-muted-foreground">
+            {t("paramsEditor.empty")}
+          </p>
         )}
         {rows.map((row) => {
           const unknown = row.key.trim() !== "" && !KNOWN_PARAMS.has(row.key.trim());
@@ -287,7 +293,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
             <div key={row.id} className="flex items-start gap-1.5">
               <div className="relative flex-1">
                 <Input
-                  aria-label="Param name"
+                  aria-label={t("paramsEditor.paramName")}
                   className="h-8 font-mono text-xs"
                   placeholder="temperature"
                   value={row.key}
@@ -296,13 +302,13 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                 />
                 {unknown && (
                   <AlertTriangle
-                    aria-label="Unrecognized param key"
+                    aria-label={t("paramsEditor.unrecognized")}
                     className="pointer-events-none absolute right-2 top-2 h-3.5 w-3.5 text-[color:var(--status-warning-text)]"
                   />
                 )}
               </div>
               <Select
-                aria-label="Param type"
+                aria-label={t("paramsEditor.paramType")}
                 className="h-8 w-24 text-xs"
                 value={row.type}
                 onChange={(e) => {
@@ -320,7 +326,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
               </Select>
               {row.type === "boolean" ? (
                 <Select
-                  aria-label="Param value"
+                  aria-label={t("paramsEditor.paramValue")}
                   className="h-8 flex-1 text-xs"
                   value={row.value}
                   onChange={(e) => updateRow(row.id, { value: e.target.value })}
@@ -330,7 +336,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                 </Select>
               ) : (
                 <Input
-                  aria-label="Param value"
+                  aria-label={t("paramsEditor.paramValue")}
                   className="h-8 flex-1 font-mono text-xs"
                   type={row.type === "number" ? "number" : "text"}
                   placeholder={row.type === "json" ? '["\\n"]' : "0"}
@@ -343,8 +349,8 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                   type="button"
                   aria-label={
                     row.locked
-                      ? "Locked — callers can't override; click to allow"
-                      : "Overridable — callers may override; click to lock"
+                      ? t("paramsEditor.lockedToggle")
+                      : t("paramsEditor.overridableToggle")
                   }
                   aria-pressed={row.locked}
                   onClick={() => updateRow(row.id, { locked: !row.locked })}
@@ -364,7 +370,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
               )}
               <button
                 type="button"
-                aria-label="Remove param"
+                aria-label={t("paramsEditor.removeParam")}
                 onClick={() => removeRow(row.id)}
                 className="mt-1.5 shrink-0 text-muted-foreground hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
               >
@@ -380,7 +386,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
         </datalist>
         <Button size="sm" variant="ghost" className="h-7 px-2" onClick={addRow}>
           <Plus className="h-3.5 w-3.5" />
-          Add param
+          {t("paramsEditor.addParam")}
         </Button>
       </div>
 
@@ -388,18 +394,19 @@ export function ParamsEditor(props: EditProps | CreateProps) {
         <p className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Not a standard OpenAI/Anthropic param: {unknownKeys.join(", ")}. Saved
-            as-is — check the spelling if unintended.
+            {t("paramsEditor.unknownKeys", { keys: unknownKeys.join(", ") })}
           </span>
         </p>
       )}
 
       <div className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium leading-none">Override policy</p>
+          <p className="text-sm font-medium leading-none">
+            {t("paramsEditor.policyTitle")}
+          </p>
           <InfoHint
-            label="About override policy"
-            text="Governs whether a caller's request params can replace these admin defaults. 'Callers may override' allows all; 'Locked by default' allows none; 'Manual' decides per param with the lock toggle on each row."
+            label={t("paramsEditor.aboutPolicy")}
+            text={t("paramsEditor.aboutPolicyText")}
           />
         </div>
         <div className="inline-flex rounded-md border border-border p-0.5 text-xs">
@@ -429,7 +436,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
       )}
       {!isCreate && (
         <Button size="sm" variant="outline" disabled={props.saving} onClick={submit}>
-          Save params
+          {t("paramsEditor.saveParams")}
         </Button>
       )}
     </div>

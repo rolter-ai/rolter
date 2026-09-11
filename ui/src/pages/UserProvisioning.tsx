@@ -2,12 +2,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { BookUser, Loader2, Plus, Trash2, Users } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
+import {
+  OrgScopePicker,
+  scopeTargetIds,
+  useOrgScope,
+  type OrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import { CopyButton } from "@/components/CopyButton";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +47,7 @@ import {
   type ScimTokenRow,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
-import { useScope, type ScopeResult } from "@/lib/scope";
+import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -72,23 +79,15 @@ function roleLabel(t: TFunction, role: string): string {
 }
 
 // the scope a mapping grants at, as the reader knows it. the most specific
-// non-null id wins, exactly as `scim_groups.rs` resolves it; an id the current
-// scope selection does not cover is shown raw rather than hidden
+// non-null id wins, exactly as `scim_groups.rs` resolves it, and the name is
+// looked up org-wide — a mapping onto a project in another team is named rather
+// than shown as a raw id (#1249)
 function scopeLabel(
   t: TFunction,
-  scope: ScopeResult,
+  scope: OrgScope,
   mapping: ScimGroupMappingRow,
 ): string {
-  if (mapping.project_id) {
-    return (
-      scope.projects.find((p) => p.id === mapping.project_id)?.name ??
-      mapping.project_id
-    );
-  }
-  if (mapping.team_id) {
-    return scope.teams.find((x) => x.id === mapping.team_id)?.name ?? mapping.team_id;
-  }
-  return t("pages.userProvisioning.mappings.scopeOrg");
+  return scope.nameFor(mapping) ?? t("scope.picker.org");
 }
 
 /**
@@ -99,15 +98,16 @@ function scopeLabel(
  * operator says what a group is worth, and the control plane reconciles
  * everyone in it on the spot rather than at the next sync.
  *
- * The scope select offers the org, every team in it, and the projects of the
- * team the scope switcher currently has selected: those are the ids
- * `useScope()` has names for, and a mapping may never grant outside its own org
- * anyway.
+ * The scope select is the shared `OrgScopePicker`: the org, every team in it,
+ * and every project in any of those teams, so a mapping onto a project in a
+ * team the scope switcher does not currently have selected can be written
+ * without moving the switcher first (#1249). A mapping may never grant outside
+ * its own org anyway.
  */
 function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const scope = useScope();
+  const scope = useOrgScope(orgId);
   const toast = useToast();
 
   const mappings = useQuery({
@@ -124,16 +124,14 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
   const [group, setGroup] = React.useState("");
   const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
   // "" is the org; otherwise "team:<id>" or "project:<id>"
-  const [target, setTarget] = React.useState("");
+  const [target, setTarget] = React.useState<ScopeTarget>("");
 
   const create = useMutation({
     mutationFn: () => {
-      const [kind, id] = target.split(":");
       return createScimGroupMapping(orgId, {
         group_name: group.trim(),
         role,
-        team_id: kind === "team" ? id : undefined,
-        project_id: kind === "project" ? id : undefined,
+        ...scopeTargetIds(target),
       });
     },
     // the failure stays inline, beside the form that caused it; the success is
@@ -215,6 +213,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
                 <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
                 <RowIconButton
                   danger
+                  gate="scim_group_mapping:delete"
                   title={t("pages.userProvisioning.mappings.remove")}
                   aria-label={t("pages.userProvisioning.mappings.removeNamed", {
                     group: mapping.group_name,
@@ -237,32 +236,12 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
             aria-label={t("pages.userProvisioning.mappings.groupLabel")}
             placeholder={t("pages.userProvisioning.mappings.groupPlaceholder")}
           />
-          <Select
-            className="h-8 w-[164px]"
+          <OrgScopePicker
+            orgId={orgId}
             value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            aria-label={t("pages.userProvisioning.mappings.scopeLabel")}
-          >
-            <option value="">{t("pages.userProvisioning.mappings.scopeOrg")}</option>
-            {scope.teams.length > 0 && (
-              <optgroup label={t("pages.userProvisioning.mappings.scopeTeams")}>
-                {scope.teams.map((team) => (
-                  <option key={team.id} value={`team:${team.id}`}>
-                    {team.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {scope.projects.length > 0 && (
-              <optgroup label={t("pages.userProvisioning.mappings.scopeProjects")}>
-                {scope.projects.map((project) => (
-                  <option key={project.id} value={`project:${project.id}`}>
-                    {project.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </Select>
+            onChange={setTarget}
+            label={t("pages.userProvisioning.mappings.scopeLabel")}
+          />
           <Select
             className="h-8 w-[132px]"
             value={role}
@@ -363,13 +342,18 @@ export default function UserProvisioning() {
   const canManage = !!orgId && !forbidden;
 
   const columns: TableColumn<ScimTokenRow & Record<string, unknown>>[] = [
-    { key: "name", header: "Token" },
+    { key: "name", header: t("pages.userProvisioning.columns.token") },
     {
       key: "revoked_at",
-      header: "Status",
+      header: t("pages.userProvisioning.columns.status"),
       render: (_v, row) =>
         row.revoked_at ? (
-          <Badge tone="danger" title={`revoked ${stamp(fmt, row.revoked_at)}`}>
+          <Badge
+            tone="danger"
+            title={t("pages.userProvisioning.revokedAt", {
+              when: stamp(fmt, row.revoked_at),
+            })}
+          >
             REVOKED
           </Badge>
         ) : (
@@ -380,34 +364,42 @@ export default function UserProvisioning() {
     },
     {
       key: "last_used_at",
-      header: "Last sync",
+      header: t("pages.userProvisioning.columns.lastSync"),
       render: (_v, row) =>
         row.last_used_at ? (
           stamp(fmt, row.last_used_at)
         ) : (
-          <span className="text-[color:var(--text-subtle)]">never used</span>
+          <span className="text-[color:var(--text-subtle)]">
+            {t("pages.userProvisioning.neverUsed")}
+          </span>
         ),
     },
     {
       key: "created_at",
-      header: "Created",
+      header: t("pages.userProvisioning.columns.created"),
       align: "right",
       // "created" is a day, not an instant — the short date, as everywhere else
       render: (_v, row) => fmt.date(row.created_at) || "—",
     },
     {
       key: "actions",
-      header: "",
+      // an empty <th> leaves the cells under it unnamed; the column is real,
+      // it just has nothing worth drawing (#1244)
+      header: <span className="sr-only">{t("common.rowActions")}</span>,
       align: "right",
       render: (_v, row) => (
-        <Button
+        <GatedButton
+          gate="scim_token:delete"
           variant="outline"
           size="sm"
+          aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
           disabled={!!row.revoked_at || revoke.isPending}
           onClick={() => setRevokeTarget(row)}
         >
-          {row.revoked_at ? "Revoked" : "Revoke"}
-        </Button>
+          {row.revoked_at
+            ? t("pages.userProvisioning.revoked")
+            : t("pages.userProvisioning.revoke")}
+        </GatedButton>
       ),
     },
   ];
@@ -427,23 +419,24 @@ export default function UserProvisioning() {
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">
-          {rows.length} tokens · {active} active. Your identity provider presents
-          one of these as a bearer token and drives{" "}
-          <code className="font-mono text-xs">/scim/v2/Users</code> to create,
-          update and deactivate accounts in this org.
+          <Trans
+            i18nKey="pages.userProvisioning.lead"
+            count={rows.length}
+            values={{ active }}
+            components={[<code key="path" className="font-mono text-xs" />]}
+          />
         </span>
         <div className="ml-auto">
           <GatedButton gate="scim_token:create" disabled={!canManage} onClick={() => setIssueOpen(true)}>
             <Plus className="h-4 w-4" />
-            Issue token
+            {t("pages.userProvisioning.issueToken")}
           </GatedButton>
         </div>
       </div>
 
       {forbidden && (
         <p className="text-sm text-muted-foreground">
-          Provisioning tokens are visible to org admins only. Ask an admin to
-          issue or revoke one for your identity provider.
+          {t("pages.userProvisioning.forbidden")}
         </p>
       )}
       {tokens.isError && !forbidden && (
@@ -498,18 +491,18 @@ export default function UserProvisioning() {
         onOpenChange={(open) => !open && setRevokeTarget(null)}
       >
         <DialogHeader>
-          <DialogTitle>Revoke provisioning token</DialogTitle>
+          <DialogTitle>{t("pages.userProvisioning.revokeTitle")}</DialogTitle>
           <DialogDescription>
-            <span className="font-mono">{revokeTarget?.name}</span> stops
-            authenticating on the very next request — there is no cache to wait
-            out. Accounts it already provisioned are left exactly as they are:
-            nobody is deactivated or logged out, the directory simply stops
-            syncing until you point the IdP at a new token.
+            <Trans
+              i18nKey="pages.userProvisioning.revokeBody"
+              values={{ name: revokeTarget?.name }}
+              components={[<span key="name" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => setRevokeTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -535,7 +528,7 @@ export default function UserProvisioning() {
             }}
           >
             {revoke.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Revoke
+            {t("pages.userProvisioning.revoke")}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -557,6 +550,7 @@ function IssueTokenSheet({
   orgId: string;
   onIssued: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const [issued, setIssued] = React.useState<CreatedScimToken | null>(null);
 
@@ -578,8 +572,12 @@ function IssueTokenSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetHeader
-        title={issued ? "Copy the token now" : "Issue provisioning token"}
-        subtitle={issued ? issued.name : "scim 2.0 · bearer credential"}
+        title={
+          issued
+            ? t("pages.userProvisioning.sheet.copyTitle")
+            : t("pages.userProvisioning.sheet.issueTitle")
+        }
+        subtitle={issued ? issued.name : t("pages.userProvisioning.sheet.subtitle")}
         onClose={() => onOpenChange(false)}
       />
       <SheetBody>
@@ -593,39 +591,36 @@ function IssueTokenSheet({
                 >
                   {issued.secret}
                 </code>
-                <CopyButton value={issued.secret} label="Copy provisioning token" />
+                <CopyButton
+                  value={issued.secret}
+                  label={t("pages.userProvisioning.copyToken")}
+                />
               </div>
             </div>
             <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
-              This is the only time this token is shown. Rolter stores a hash of
-              it and cannot display or recover it again — if you lose it, issue a
-              new token and revoke this one.
+              {t("pages.userProvisioning.onceWarning")}
             </p>
             <p className="text-sm text-muted-foreground">
-              Paste it into your identity provider's SCIM connector as the bearer
-              token, alongside the base URL{" "}
-              <code className="font-mono text-xs">
-                https://your-rolter-host/scim/v2
-              </code>
-              . The token carries the org, so no tenant id goes in the URL.
+              <Trans
+                i18nKey="pages.userProvisioning.pasteHint"
+                components={[<code key="url" className="font-mono text-xs" />]}
+              />
             </p>
           </>
         ) : (
           <>
             <Field
-              label="Name"
-              hint="how you will recognise it later — usually the identity provider it belongs to"
+              label={t("pages.userProvisioning.nameLabel")}
+              hint={t("pages.userProvisioning.nameHint")}
             >
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Okta production"
+                placeholder={t("pages.userProvisioning.namePlaceholder")}
               />
             </Field>
             <p className="text-sm text-muted-foreground">
-              Provisioned accounts join this org as viewers and have no local
-              password: SCIM decides who exists, you still decide what they may
-              do.
+              {t("pages.userProvisioning.viewerNote")}
             </p>
             {create.isError && (
               <p className="text-sm text-[color:var(--status-danger-text)]">
@@ -638,11 +633,11 @@ function IssueTokenSheet({
       <SheetFooter>
         <div className="flex justify-end gap-2 px-[22px] py-3">
           {issued ? (
-            <Button onClick={() => onOpenChange(false)}>Done</Button>
+            <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
           ) : (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
               <Button
                 disabled={!name.trim() || create.isPending}
@@ -651,7 +646,7 @@ function IssueTokenSheet({
                 {create.isPending && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 )}
-                Issue token
+                {t("pages.userProvisioning.issueToken")}
               </Button>
             </>
           )}

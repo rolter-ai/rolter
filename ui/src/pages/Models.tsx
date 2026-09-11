@@ -1,7 +1,7 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Boxes, Lock, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -40,6 +40,7 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -55,6 +56,14 @@ interface CatalogRow {
   entry: EffectiveModelDto;
   route: RouteRow | null;
   providerName: string;
+  /**
+   * every provider the route fans out to, deduplicated and in target order.
+   *
+   * the column only has room for the first name plus a count, so the full list
+   * lives in a tooltip and backs search and the provider tally — a route's
+   * second provider used to be invisible to both (#1202)
+   */
+  providerNames: string[];
   targetCount: number;
   strategy: string;
   origin: "config" | "db";
@@ -155,6 +164,9 @@ export default function Models() {
     // the first target names the provider column; a route spread over several
     // providers says so instead of pretending it lives on one
     const target = targets[0];
+    const providerNames = [...new Set(targets.map((tg) => providerName(tg.provider_id)))].filter(
+      (n) => n !== "—",
+    );
     const price = prices.data?.find((p) => p.model === entry.model);
     const policy = route?.param_policy as Record<string, unknown> | undefined;
     const deny = Array.isArray(policy?.deny) ? (policy.deny as unknown[]) : [];
@@ -166,6 +178,7 @@ export default function Models() {
         targets.length > 1
           ? t("pages.models.providerCount", { first: providerName(target?.provider_id), count: targets.length - 1 })
           : providerName(target?.provider_id),
+      providerNames,
       strategy: entry.strategy,
       origin: entry.source === "config" ? "config" : "db",
       locked: policy?.mode === "deny" || deny.length > 0,
@@ -185,7 +198,9 @@ export default function Models() {
     (r) =>
       (origin === "all" || r.origin === origin) &&
       (!unpricedOnly || r.priced === false) &&
-      (!q || r.name.toLowerCase().includes(q) || r.providerName.toLowerCase().includes(q)),
+      (!q ||
+        r.name.toLowerCase().includes(q) ||
+        r.providerNames.some((n) => n.toLowerCase().includes(q))),
   );
   const sorted = apply(filtered, {
     name: (r) => r.name,
@@ -200,7 +215,7 @@ export default function Models() {
     db: rows.filter((r) => r.origin === "db").length,
   };
 
-  const providerCount = new Set(rows.map((r) => r.providerName).filter((p) => p !== "—")).size;
+  const providerCount = new Set(rows.flatMap((r) => r.providerNames)).size;
   const unpricedCount = rows.filter((r) => r.priced === false).length;
 
   const invalidate = () => {
@@ -214,6 +229,10 @@ export default function Models() {
   });
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
+  // a db-backed model row is really its route, and forgetting a model outright
+  // is deployment-wide — two different capabilities on one row (#1258)
+  const routeUpdateGate = useGate("route:update");
+  const deleteGate = useGate("model:delete");
   const filtersActive = !!q || origin !== "all" || unpricedOnly;
   const clearFilters = () => {
     setSearch("");
@@ -225,31 +244,35 @@ export default function Models() {
     <PageBody>
       <Toolbar>
         <SearchInput
-          placeholder="Search models"
+          placeholder={t("pages.models.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <span className="text-sm text-muted-foreground">
-          {rows.length} models · {providerCount} providers
+          {t("pages.models.modelTally", { count: rows.length })} ·{" "}
+          {t("pages.models.providerTally", { count: providerCount })}
         </span>
+        {/* adding a model creates a route, not a `model` row: the catalog is
+            read-only apart from a superadmin's delete, so the create this
+            button takes is the route's (#1258) */}
         <GatedButton
-          gate="model:create"
+          gate="route:create"
           className="ml-auto"
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.projectId}
         >
-          + Add model
+          + {t("pages.models.emptyAction")}
         </GatedButton>
       </Toolbar>
 
       <div className="flex flex-wrap items-center gap-2.5">
         {(
           [
-            ["all", "All"],
-            ["db", "DB-managed"],
+            ["all", t("pages.models.origin.all")],
+            ["db", t("pages.models.origin.db")],
             // a deployment with nothing in rolter.toml has no config tier to
             // filter by; the chip and its legend appear once one exists
-            ...(counts.config > 0 ? [["config", "Config"]] : []),
+            ...(counts.config > 0 ? [["config", t("pages.models.origin.config")]] : []),
           ] as [Origin, string][]
         ).map(([key, label]) => (
           <button
@@ -297,7 +320,7 @@ export default function Models() {
               <Lock className="h-3 w-3" />
               config
             </Pill>
-            shipped in config · immutable
+            {t("pages.models.configLegend")}
           </span>
         )}
       </div>
@@ -311,24 +334,34 @@ export default function Models() {
       )}
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Add/edit/delete is unavailable: {scopeMessage}. Read-only view still works.
+          {t("common.scopeReadOnly", { reason: scopeMessage })}
         </p>
       )}
 
       <ListTable>
         <ListHeader grid={GRID}>
-          <SortLabel label="Model" col="name" sort={sort} onCycle={(c) => cycle(c as never)} />
           <SortLabel
-            label="Provider"
+            label={t("pages.models.columns.model")}
+            col="name"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
+            label={t("common.provider")}
             col="provider"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <span>Strategy</span>
-          <SortLabel label="Origin" col="origin" sort={sort} onCycle={(c) => cycle(c as never)} />
-          <span className="text-right">In · out /Mtok</span>
+          <span>{t("pages.models.columns.strategy")}</span>
           <SortLabel
-            label="Weight"
+            label={t("pages.models.columns.origin")}
+            col="origin"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <span className="text-right">{t("pages.models.columns.price")}</span>
+          <SortLabel
+            label={t("pages.models.columns.weight")}
             col="weight"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
@@ -347,13 +380,19 @@ export default function Models() {
               {r.locked && (
                 <span
                   className="flex-none cursor-help text-[color:var(--text-subtle)]"
-                  title="Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock."
+                  title={t("pages.models.lockedHint")}
                 >
                   <Lock className="h-3 w-3" />
                 </span>
               )}
             </div>
-            <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+            <span
+              className={cn(
+                "truncate font-mono text-xs text-[color:var(--text-secondary)]",
+                r.providerNames.length > 1 && "cursor-help",
+              )}
+              title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
+            >
               {r.providerName}
             </span>
             <div>
@@ -369,7 +408,7 @@ export default function Models() {
                   border="var(--border-default)"
                 >
                   <Lock className="h-3 w-3" />
-                  read-only
+                  {t("pages.models.readOnlyPill")}
                 </Pill>
               ) : (
                 <Pill
@@ -386,27 +425,46 @@ export default function Models() {
               {r.weight}
             </span>
             <div className="flex items-center justify-end gap-1.5">
+              {/* a config-file model opens read-only, so only the
+                  editable half of this control is gated (#1258) */}
               <Button
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
-                disabled={r.origin === "db" && !r.route}
+                aria-label={t(
+                  r.origin === "config"
+                    ? "pages.models.viewAria"
+                    : "pages.models.editAria",
+                  { model: r.name },
+                )}
+                title={r.origin === "config" ? undefined : routeUpdateGate.reason}
+                disabled={
+                  r.origin === "db" && (!r.route || routeUpdateGate.denied)
+                }
                 onClick={() =>
                   r.origin === "config"
                     ? setSheet({ mode: "view", configModel: r.entry })
                     : r.route && setSheet({ mode: "edit", route: r.route })
                 }
               >
-                {r.origin === "config" ? "View" : "Edit"}
+                {r.origin === "config"
+                  ? t("pages.models.view")
+                  : t("pages.models.edit")}
               </Button>
               {r.origin === "db" && (
                 <button
                   type="button"
-                  title="Delete model"
-                  aria-label={`Delete model ${r.name}`}
-                  disabled={removeModel.isPending && deleteTarget?.model === r.entry.model}
+                  title={
+                    deleteGate.reason ??
+                    t("pages.models.deleteAria", { model: r.name })
+                  }
+                  aria-label={t("pages.models.deleteAria", { model: r.name })}
+                  disabled={
+                    deleteGate.denied ||
+                    (removeModel.isPending && deleteTarget?.model === r.entry.model)
+                  }
                   onClick={() => setDeleteTarget(r.entry)}
-                  className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+                  className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {removeModel.isPending && deleteTarget?.model === r.entry.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 </button>
@@ -431,7 +489,7 @@ export default function Models() {
                 </Button>
               ) : (
                 <GatedButton
-                  gate="model:create"
+                  gate="route:create"
                   disabled={scopeBlocked || !scope.projectId}
                   onClick={() => setSheet({ mode: "add" })}
                 >
@@ -459,10 +517,13 @@ export default function Models() {
 
       <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
-          <DialogTitle>Delete model</DialogTitle>
+          <DialogTitle>{t("pages.models.deleteTitle")}</DialogTitle>
           <DialogDescription>
-            This removes all routes and targets for{" "}
-            <span className="font-mono">{deleteTarget?.model}</span>. This cannot be undone.
+            <Trans
+              i18nKey="pages.models.deleteBody"
+              values={{ model: deleteTarget?.model }}
+              components={[<span key="model" className="font-mono" />]}
+            />
           </DialogDescription>
         </DialogHeader>
         {removeModel.isError && (
@@ -470,7 +531,7 @@ export default function Models() {
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             variant="destructive"
@@ -493,7 +554,7 @@ export default function Models() {
               });
             }}
           >
-            Delete
+            {t("common.delete")}
           </Button>
         </DialogFooter>
       </Dialog>

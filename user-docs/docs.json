@@ -12,6 +12,16 @@
     "dark": "/logo.svg"
   },
   "favicon": "/logo.svg",
+  "seo": {
+    "metatags": {
+      "og:site_name": "Rolter",
+      "og:title": "Rolter — OpenAI- and Anthropic-compatible AI gateway",
+      "og:description": "A high-performance AI gateway and load balancer with drop-in OpenAI and Anthropic compatibility, smart routing, virtual keys and cost tracking.",
+      "og:image": "/images/og.png",
+      "twitter:card": "summary_large_image",
+      "twitter:image": "/images/og.png"
+    }
+  },
   "navbar": {
     "primary": {
       "type": "github",
@@ -65,6 +75,8 @@
               "configuration/compatibility",
               "configuration/client-settings",
               "configuration/model-settings",
+              "configuration/labels",
+              "configuration/mcp-servers",
               "configuration/gemini-interactions"
             ]
           },
@@ -84,6 +96,7 @@
               "security/authentication",
               "security/rbac",
               "security/single-sign-on",
+              "security/two-factor-authentication",
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",
@@ -112,6 +125,13 @@
               "deployment/air-gapped",
               "deployment/backup-and-restore"
             ]
+          },
+          {
+            "group": "Project",
+            "pages": [
+              "community/versioning",
+              "community/brand"
+            ]
           }
         ]
       },
@@ -128,6 +148,7 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/stability",
               "api/ui-events",
               "api/version",
               "api/control-plane-openapi"

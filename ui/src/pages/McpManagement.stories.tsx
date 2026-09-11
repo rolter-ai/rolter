@@ -78,7 +78,7 @@ export const CatalogValidatesEndpoint: Story = {
     await expect(dialog.getByRole("button", { name: "Register server" })).toBeDisabled();
   },
 };
-export const CatalogExplainsDeleteCascade: Story = { render: () => <Harness fetchStub={routed()}><McpCatalog /></Harness>, play: async ({ canvasElement }) => { const canvas = within(canvasElement); await userEvent.click(await canvas.findByRole("button", { name: "Delete GitHub" })); const body = within(document.body); await expect(body.getByText(/removes every OAuth grant and token session/)).toBeVisible(); await expect(body.getByRole("button", { name: "Delete server" })).toBeEnabled(); } };
+export const CatalogExplainsDeleteCascade: Story = { render: () => <Harness fetchStub={routed()}><McpCatalog /></Harness>, play: async ({ canvasElement }) => { const canvas = within(canvasElement); await userEvent.click(await canvas.findByRole("button", { name: "Delete server GitHub" })); const body = within(document.body); await expect(body.getByText(/removes every OAuth grant and token session/)).toBeVisible(); await expect(body.getByRole("button", { name: "Delete server" })).toBeEnabled(); } };
 
 // the shared `recording` helper keeps method and url. the client save has to be
 // asserted on its *body* too: a PUT that silently dropped the scopes, or that
@@ -105,7 +105,7 @@ export const CatalogRegistersOAuthClient: Story = {
   render: () => <Harness fetchStub={clientSaves.stub}><McpCatalog /></Harness>,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Configure GitHub" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "Configure server GitHub" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     // the redirect uri is deployment-derived, so it is read back rather than
     // guessed from the browser's origin
@@ -132,7 +132,7 @@ export const CatalogRefusesAHalfClient: Story = {
   render: () => <Harness fetchStub={routed()}><McpCatalog /></Harness>,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Configure Sentry" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "Configure server Sentry" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.type(dialog.getByLabelText("Client ID"), "Iv1.abc123");
     await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
@@ -220,7 +220,8 @@ export const ToolGroupConfirmsBeforeDeleting: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Triage")).toBeVisible());
-    const del = () => canvas.getByRole("button", { name: "Delete" });
+    // by name, not by position: the row control names the group (#1214)
+    const del = () => canvas.getByRole("button", { name: "Delete tool group Triage" });
 
     await userEvent.click(del());
     await cancelConfirmation();

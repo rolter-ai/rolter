@@ -24,6 +24,8 @@ mod easy_up;
 mod init;
 #[cfg(feature = "postgres")]
 mod kek;
+#[cfg(feature = "postgres")]
+mod mfa;
 mod preflight;
 mod update_notice;
 
@@ -61,6 +63,9 @@ enum Command {
     /// export the live configuration as an importable rolter.toml
     #[cfg(feature = "postgres")]
     Config(config::ConfigArgs),
+    /// break-glass management of local accounts' second factor
+    #[cfg(feature = "postgres")]
+    Mfa(mfa::MfaArgs),
 }
 
 #[tokio::main]
@@ -81,5 +86,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Kek(args) => kek::run(args).await,
         #[cfg(feature = "postgres")]
         Command::Config(args) => config::run(args).await,
+        #[cfg(feature = "postgres")]
+        Command::Mfa(args) => mfa::run(args).await,
     }
 }

@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "repository traits and storage backends for rolter"
+description = "repository traits and storage backends for rolter — internal crate, no stable rust api"
 
 [dependencies]
+rust_decimal.workspace = true
 rolter-core.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
@@ -18,10 +19,16 @@ serde_json = { workspace = true, optional = true }
 aes-gcm = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+# only the `test-support` schema guard needs a runtime of its own, to drop a
+# schema from `Drop`, which cannot await
+tokio = { workspace = true, optional = true }
 
 # postgres / redis / clickhouse backends land behind feature flags; see ROADMAP
 [features]
 default = []
+# per-test schema isolation for downstream crates' postgres tests; a dev-only
+# feature that adds nothing to a production build
+test-support = ["dep:tokio"]
 postgres = [
   "sqlx",
   "sqlx/json",

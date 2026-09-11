@@ -1,0 +1,196 @@
+---
+title: "Rolter Brand Usage Guidelines"
+sidebarTitle: "Brand guidelines"
+description: "How to use the Rolter mark, the accent and folkloric reds, the вышивка ornament and the Geist type in docs, decks, integrations and third-party pages — with clear space, minimum sizes and the things not to do."
+---
+
+Rolter's identity is one idea carried through everything: a cross-stitch. The
+mark is stitched, the ornament is stitched, and the two reds are the ones a
+folkloric embroidery actually uses. This page is the contract for anyone
+placing that identity somewhere — a README, a conference slide, an integration
+listing, a blog post about running Rolter.
+
+Everything here is already in the repository. The mark is `assets/logo.svg`,
+the colours are tokens in `ui/src/index.css`, and the type ships from
+`node_modules`. Nothing needs downloading, and nothing here resolves to a CDN:
+Rolter has to run air-gapped, and so does anything that represents it.
+
+## The mark
+
+<img src="/logo.svg" alt="The Rolter mark" width="96" height="96" noZoom />
+
+The mark is a cross-stitch diamond: **29 rounded squares** on a 7-unit grid
+inside a `63 × 63` viewBox, in two reds. The bright red draws the outer
+lattice and the single centre stitch; the darker red fills the ring between
+them. That split is what makes it read as embroidery rather than as a pixel
+grid, so neither red may be dropped or recoloured independently.
+
+| | |
+| --- | --- |
+| **File** | `assets/logo.svg` (also vendored at `user-docs/logo.svg` and `ui/public/logo-mark.svg`) |
+| **Geometry** | 29 rects, `6.2 × 6.2` with a `1` corner radius, pitch 7, `viewBox="0 0 63 63"` |
+| **Colours** | 17 stitches `#ff4017`, 12 stitches `#b41d21` |
+| **Background** | none — the mark is transparent and takes the surface under it |
+
+### Clear space
+
+Keep **one stitch pitch** of empty space on every side — that is `7` units in
+the mark's own coordinates, or **⅑ of the rendered width**. At a 63 px mark
+that is 7 px; at a 180 px mark it is 20 px. Nothing enters that margin: no
+wordmark, no rule, no card edge, no other logo.
+
+The clear space is a minimum, not a target. On a title slide or a social
+preview, give it far more.
+
+### Minimum size
+
+**24 px** for the mark on screen, **8 mm** in print. Below that the 0.8-unit
+gaps between stitches close up and the diamond fuses into a blob — the one
+thing the mark is not allowed to become. Where you need something smaller,
+use the favicon (`ui/public/favicon.ico` / `favicon.svg`), which is drawn for
+that size, rather than shrinking the mark further.
+
+### Light and dark
+
+`user-docs/docs.json` points `logo.light` and `logo.dark` at the same
+`/logo.svg`, and that is deliberate, not an oversight. The mark is
+red-on-transparent, and both reds carry their shape on a light and a dark
+surface:
+
+| Stitch colour | On `#ffffff` | On `--surface-base` `#111113` |
+| --- | --- | --- |
+| `#ff4017` `--red-500` | 3.50:1 | 5.38:1 |
+| `#b41d21` `--red-folk` | 6.69:1 | 2.82:1 |
+
+The folk red is the weaker of the two on dark, but it never carries the
+silhouette: it only fills stitches held inside the bright-red lattice, so the
+mark's outline is a 5.38:1 shape on the dashboard surface. There is therefore
+no `logo-dark.svg`, and adding one would fork a file that does not need
+forking. If a future mark ever puts `--red-folk` on the outer edge, that
+conclusion changes and the files split.
+
+Do not place the mark on a mid-tone: between roughly `#606060` and `#a0a0a0`
+both reds fall under 3:1. Put it on a light surface, on the graphite family,
+or in its own clear-space panel.
+
+## Colour
+
+Two reds, and they are not interchangeable.
+
+| Token | Value | Role |
+| --- | --- | --- |
+| `--red-500` | `#ff4017` | The **accent**. Interactive and attention colour: the active nav marker, a focus accent, the mark's lattice, the one rule on a hero. |
+| `--red-folk` | `#b41d21` | The **folkloric** red. Ornament only: the вышивка rule, the mark's inner stitches, a chart series. Never a label, never a link. |
+
+`--red-folk` is `2.82:1` on the dashboard surface, which is under the 4.5:1
+floor for text. When brand red has to *be* text, use `--red-folk-text`
+(`#ff5a3c`, 6.09:1) — the same family lifted until it reads. The full set,
+including `--red-600`, `--red-700`, `--red-tint` and `--red-tint-strong`, is
+in `ui/src/index.css`.
+
+Red is a seasoning. On any given surface it should account for a few percent
+of the pixels: one accent, one ornament, and graphite for everything else.
+A wall of `#ff4017` is off-brand even though every pixel of it is on-palette.
+
+The neutral ground is the zinc ramp — `#111113` (`--surface-base`), `#18181b`
+(`--surface-app`), `#1f1f23`, `#27272a` — with `#fafafa` for primary text.
+Take these from the tokens; never re-type a hex.
+
+## The вышивка ornament
+
+`.vyshivka-rule` in `ui/src/index.css` is the cross-stitch band: a 10 px
+checkerboard of two offset 45° gradients in `--red-folk`. `.vyshivka-dots` is
+its quieter dotted sibling, for dividers.
+
+It is a **ceremonial** device. It marks a threshold — a moment where somebody
+arrives, is welcomed, or is handed something — and it loses all of that if it
+turns into a decorative border.
+
+**Appropriate**
+
+- Ceremonial surfaces: the sign-in card (`ui/src/pages/Login.tsx`) and the
+  invitation acceptance card (`ui/src/pages/AcceptInvite.tsx`), where it runs
+  full-bleed across the top of the card at full strength.
+- Brand surfaces: a title slide, a README header, the social preview image —
+  one band at one edge.
+- As a whisper elsewhere: `ScreenHeader` runs it at `0.28` opacity, and
+  `EmptyState` uses a 64 px stub of it. Both are deliberately faint.
+
+**Not appropriate**
+
+- More than one or two instances on a screen. It is punctuation, not texture.
+- Around a data surface: tables, charts, log drawers, forms, dialogs. It
+  competes with the thing the operator is reading.
+- As a page background, a full-screen tile, or a frame around content.
+- Recoloured. It is `--red-folk`, always. A green or blue вышивка is not the
+  ornament with a different hue, it is a different ornament.
+- Animated, rotated, or scaled off the 10 px tile.
+
+<Note>
+  "Вышивка" is Russian for embroidery. The class name is kept in the original
+  because the motif is a specific folk tradition rather than a generic
+  cross-hatch, and naming it that way is a reminder of where it came from.
+</Note>
+
+## Type
+
+**Geist** for everything, **Geist Mono** for anything a machine wrote: model
+ids, keys, JSON, logs, CLI output.
+
+Both ship as `@fontsource-variable/geist` and `@fontsource-variable/geist-mono`
+and bundle into `ui/dist/assets/*.woff2` at build time. They are never fetched
+from Google Fonts or any other font service — that would break the air-gapped
+guarantee on the first page load. If you are producing an asset outside this
+repository, take the `.woff2` files from `node_modules/@fontsource-variable/`
+and embed them.
+
+The stacks are `--font-sans` and `--font-mono`. Fall back to the system UI
+sans and to `ui-monospace` only where Geist genuinely cannot be embedded;
+never substitute Inter, Roboto or Arial, which flatten the wordmark's
+distinctive `t` and `r`.
+
+The wordmark is the word **rolter**, set in Geist SemiBold, lowercase, with
+tight tracking (`-0.04em` at display sizes). It is lowercase everywhere,
+including at the start of a sentence in UI copy and in the browser tab title.
+Prose in this documentation capitalises it as "Rolter" for readability; the
+mark and the wordmark do not.
+
+## Social preview
+
+`user-docs/images/og.png` is the 1200 × 630 preview used for the documentation
+site and the repository. Its source is `assets/og.svg`, and
+`ui/scripts/render-og.ts` rasterises it with the bundled Chromium and the
+bundled Geist, so the PNG can be regenerated byte-for-byte from any checkout:
+
+```bash
+cd ui && bun scripts/render-og.ts
+```
+
+Edit the SVG, re-render, and commit both. The PNG is also vendored at
+`ui/public/og.png` so the dashboard's own `og:image` resolves locally instead
+of pointing at a hosted URL.
+
+## Don'ts
+
+- Do not recolour the mark, invert it, or render it in a single red.
+- Do not add a gradient, a shadow, a glow, a stroke or a bevel to it.
+- Do not rotate, skew, stretch or squash it — scale uniformly or not at all.
+- Do not put it on a busy photograph, a mid-tone grey, or a red background.
+- Do not enclose it in a circle, a rounded square or any other badge; the
+  diamond silhouette *is* the containment.
+- Do not rebuild it from the stitches into a different arrangement, and do not
+  animate the stitches individually.
+- Do not set the wordmark in a font other than Geist, and do not capitalise it.
+- Do not lock the mark to another logo without the full clear space between
+  them, and do not build a combined "Rolter × …" lockup.
+- Do not use the mark to imply that Rolter endorses your product. Describing
+  an integration ("works with Rolter") is fine; a partner badge is not.
+- Do not hot-link any of these assets from a CDN. Copy them into your project.
+
+## Licence
+
+The Rolter source is open, and the mark is not the source. Use it to refer to
+Rolter — to link to it, document it, or say your project integrates with it —
+following this page. Do not use it as your own product's mark, as part of one,
+or in a way that suggests an official relationship. If you are unsure, open an
+issue on [the repository](https://github.com/rolter-ai/rolter) and ask.

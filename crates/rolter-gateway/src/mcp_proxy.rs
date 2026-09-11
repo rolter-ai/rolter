@@ -11,6 +11,9 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
 
+use rolter_core::{McpAuthKind, McpServerConfig};
+use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
+
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -104,34 +107,86 @@ async fn proxy(
             "mcp_transport_unsupported",
         );
     }
-    let Some(session) = snapshot
-        .mcp_oauth_sessions
-        .get(&(server.id.clone(), key.user_id.clone()))
-    else {
-        return error(
-            StatusCode::FORBIDDEN,
-            "no live MCP OAuth session authorizes this user and server",
-            "mcp_session_unauthorized",
-        );
+    // the credential is chosen by what the server row says it is. only `oauth`
+    // consults the per-user session; the static kinds are a deployment-wide
+    // credential and deliberately do not require one, which is the whole point
+    // of #952 — before it, every kind fell through to the session check and a
+    // configured bearer token did nothing
+    let auth = match server.auth_kind {
+        McpAuthKind::Oauth => {
+            let Some(session) = snapshot
+                .mcp_oauth_sessions
+                .get(&(server.id.clone(), key.user_id.clone()))
+            else {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "no live MCP OAuth session authorizes this user and server",
+                    "mcp_session_unauthorized",
+                );
+            };
+            if chrono::Utc::now() >= session.expires_at {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "MCP OAuth session has expired",
+                    "mcp_session_expired",
+                );
+            }
+            if server
+                .required_scopes
+                .iter()
+                .any(|scope| !session.scopes.contains(scope))
+            {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "MCP OAuth session does not cover the server's required scopes",
+                    "mcp_scope_denied",
+                );
+            }
+            McpUpstreamAuth::Bearer(&session.access_token)
+        }
+        McpAuthKind::Bearer => {
+            let Some(credential) = server.credential.as_deref() else {
+                return missing_credential(&server.slug);
+            };
+            McpUpstreamAuth::Bearer(credential)
+        }
+        McpAuthKind::Header => {
+            let Some(credential) = server.credential.as_deref() else {
+                return missing_credential(&server.slug);
+            };
+            // the shape constraint in migration 0069 makes the header name
+            // non-null for this kind; a row written around it is a
+            // misconfiguration rather than an open server
+            let Some(name) = server.auth_header_name.as_deref() else {
+                return error(
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        "MCP server '{}' authenticates with a header but names none",
+                        server.slug
+                    ),
+                    "mcp_credential_unavailable",
+                );
+            };
+            McpUpstreamAuth::Header {
+                name,
+                value: credential,
+            }
+        }
+        McpAuthKind::None => McpUpstreamAuth::None,
+        // a kind this build does not know. presenting nothing would quietly
+        // downgrade a server the control plane believes is authenticated
+        McpAuthKind::Unknown => {
+            return error(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "MCP server '{}' uses an authentication kind this gateway does not support; \
+                     upgrade the gateway to match the control plane",
+                    server.slug
+                ),
+                "mcp_auth_kind_unsupported",
+            )
+        }
     };
-    if chrono::Utc::now() >= session.expires_at {
-        return error(
-            StatusCode::FORBIDDEN,
-            "MCP OAuth session has expired",
-            "mcp_session_expired",
-        );
-    }
-    if server
-        .required_scopes
-        .iter()
-        .any(|scope| !session.scopes.contains(scope))
-    {
-        return error(
-            StatusCode::FORBIDDEN,
-            "MCP OAuth session does not cover the server's required scopes",
-            "mcp_scope_denied",
-        );
-    }
 
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
@@ -142,12 +197,13 @@ async fn proxy(
     };
     match state
         .forwarder
-        .forward_bearer(
+        .forward_mcp(
             method,
             &url,
             end_to_end_headers(headers),
             body,
-            &session.access_token,
+            auth,
+            transport_overrides(server),
         )
         .await
     {
@@ -157,6 +213,37 @@ async fn proxy(
             format!("MCP upstream request failed: {upstream}"),
             "mcp_upstream_error",
         ),
+    }
+}
+
+/// A server configured to present a credential that did not reach the snapshot.
+///
+/// The usual cause is `ROLTER_KEK` being unset or rotated on the control plane,
+/// so the sealed value could not be unsealed. Refusing with a message that says
+/// so beats presenting nothing and letting the upstream return its own 401,
+/// which would look like the operator's token being wrong.
+fn missing_credential(slug: &str) -> Response {
+    error(
+        StatusCode::BAD_GATEWAY,
+        format!(
+            "MCP server '{slug}' is configured with a stored credential that is not available to \
+             the gateway; check that ROLTER_KEK is set on the control plane"
+        ),
+        "mcp_credential_unavailable",
+    )
+}
+
+/// The server's transport overrides, in the form the forwarder takes. A `None`
+/// column inherits the deployment default rather than becoming a zero.
+fn transport_overrides(server: &McpServerConfig) -> McpTransportOverrides {
+    McpTransportOverrides {
+        connect_timeout: server
+            .connect_timeout_ms
+            .map(std::time::Duration::from_millis),
+        request_timeout: server
+            .request_timeout_ms
+            .map(std::time::Duration::from_millis),
+        max_retries: server.max_retries.unwrap_or(0),
     }
 }
 
@@ -263,6 +350,8 @@ mod tests {
             url: "http://127.0.0.1:9".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:execute".to_string()],
+            auth_kind: McpAuthKind::Oauth,
+            ..Default::default()
         });
         config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
             id: "session-1".to_string(),

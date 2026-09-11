@@ -72,7 +72,9 @@ describe("findLiterals", () => {
     const source = `
       // <p>Not actually rendered</p>
       /* <Field label="Also not rendered" /> */
+      /**
        * <span>Nor this one</span>
+       */
     `;
     expect(texts(source)).toEqual([]);
   });
@@ -187,4 +189,222 @@ test("reads the message of a thrown error", () => {
     "gateway request failed: ${res.status}",
   ]);
   expect(texts('throw new Error("scope-1");')).toEqual([]);
+});
+
+// the ratchet only holds if the detected set is a property of the code and not
+// of where the lines break (#1143)
+describe("findLiterals is independent of formatting", () => {
+  /** the same component, once as dense one-line JSX and once as a formatter
+   * would wrap it. nothing is added or removed, only whitespace moves */
+  const oneLine = `
+    export function Composer({ pick, busy, cancelLabel = "Cancel" }: Props) {
+      return <div className="flex gap-2"><input type="file" accept="image/*" onChange={pick} /><Button aria-label="Attach image"><Paperclip className="h-4 w-4" /></Button><Field label="Upstream model name" placeholder="Message…" /><p className="text-sm">Upload an audio file to transcribe.</p><Button disabled={busy}>{busy ? "Sending…" : "Send prompt"}</Button></div>;
+    }
+    /* ---------------- transcript ---------------- */
+  `;
+  const wrapped = `
+    export function Composer({
+      pick,
+      busy,
+      cancelLabel = "Cancel",
+    }: Props) {
+      return (
+        <div className="flex gap-2">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={pick}
+          />
+          <Button aria-label="Attach image">
+            <Paperclip className="h-4 w-4" />
+          </Button>
+          <Field
+            label="Upstream model name"
+            placeholder="Message…"
+          />
+          <p className="text-sm">
+            Upload an audio file to transcribe.
+          </p>
+          <Button disabled={busy}>
+            {busy ? "Sending…" : "Send prompt"}
+          </Button>
+        </div>
+      );
+    }
+    /* ---------------- transcript ---------------- */
+  `;
+
+  test("one-line and wrapped spellings yield the identical literal set", () => {
+    expect(new Set(texts(wrapped))).toEqual(new Set(texts(oneLine)));
+  });
+
+  test("and that set is the copy actually in the source", () => {
+    expect([...new Set(texts(wrapped))].sort()).toEqual([
+      "Attach image",
+      "Cancel",
+      "Message…",
+      "Send prompt",
+      "Sending…",
+      "Upload an audio file to transcribe.",
+      "Upstream model name",
+    ]);
+  });
+
+  // `accept="image/*"` opened a block comment for the comment-stripping regex,
+  // so every literal between it and the next `*/` — a hundred lines later in
+  // `Playground.tsx` — was invisible to the gate (#1143)
+  test("a `/*` inside a string literal does not open a comment", () => {
+    const source = `
+      <input accept="image/*" />
+      <Button aria-label="Attach image">Attach</Button>
+      /* ---------------- next section ---------------- */
+    `;
+    expect(texts(source)).toEqual(["Attach image", "Attach"]);
+  });
+
+  // `HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_\`|~-]+$/` in ClientSettings.tsx carries
+  // a quote, a backtick and a `*`: read as ordinary code it desynchronises
+  // everything after it
+  test("a regex literal is not read as a string, a comment or copy", () => {
+    const source = [
+      "const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;",
+      '<Field label="Header name" />',
+    ].join("\n");
+    expect(texts(source)).toEqual(["Header name"]);
+  });
+
+  // JSX prose is not code: an apostrophe in it does not open a string, and a
+  // URL in it does not open a comment
+  test("keeps reading prose that carries an apostrophe or a url", () => {
+    expect(texts("<p>The gateway&apos;s base URL</p>")).toEqual(["The gateway&apos;s base URL"]);
+    expect(texts("<code>https://your-rolter-host/scim/v2</code>")).toEqual([]);
+    expect(texts("<p>Paste it into your connector</p><p>Rotate the token</p>")).toEqual([
+      "Paste it into your connector",
+      "Rotate the token",
+    ]);
+  });
+
+  // a multi-line template literal is a value: its newlines are not formatting
+  test("leaves a multi-line template literal alone", () => {
+    const source = [
+      "const snippet = `curl ${base}/v1/chat/completions \\\\",
+      '  -H "Authorization: Bearer $KEY"`;',
+      '<Field label="Request preview" />',
+    ].join("\n");
+    expect(texts(source)).toEqual(["Request preview"]);
+  });
+});
+
+// prose that shares a text node with an interpolation was invisible to the
+// gate: `TEXT` matches a run that may not contain a brace, so a whole
+// grammatical class of copy — the class that most needs a catalog entry,
+// because interpolation order differs by language — never entered the ratchet
+// (#1355)
+describe("findLiterals sees prose beside an interpolation", () => {
+  test("reads text that follows an interpolation", () => {
+    expect(texts("<p>{active.name} owns external enforcement</p>")).toEqual([
+      "{…} owns external enforcement",
+    ]);
+  });
+
+  test("reads text that precedes an interpolation", () => {
+    expect(texts("<p>Charged to {team.name}</p>")).toEqual(["Charged to {…}"]);
+  });
+
+  test("reads text on both sides, and between two of them, as one sentence", () => {
+    expect(texts("<p>Charged to {name} monthly, {plan} plan</p>")).toEqual([
+      "Charged to {…} monthly, {…} plan",
+    ]);
+    expect(texts("<span>{used} of {limit} keys</span>")).toEqual(["{…} of {…} keys"]);
+  });
+
+  // a separator between two values is not copy, and a baseline full of `{…} ·
+  // {…}` would bury the sentences that are
+  test("ignores a run that is only punctuation or whitespace", () => {
+    expect(texts("<span>{a} · {b}</span>")).toEqual([]);
+    expect(texts("<span>{count} ({total})</span>")).toEqual([]);
+    expect(texts("<span>{first} — {second}</span>")).toEqual([]);
+    expect(texts("<Badge>{status}</Badge>")).toEqual([]);
+  });
+
+  // `{" "}` is how a formatter is told to keep a space; it is whitespace, not a
+  // value, so it does not become a placeholder in the middle of a sentence
+  test("treats the explicit JSX space as a space", () => {
+    const source = ['<p>', '  Governs {affected.length}{" "}', "  routes today", "</p>"].join("\n");
+    expect(texts(source)).toEqual(["Governs {…} routes today"]);
+  });
+
+  // the closing `>` of a generic is not the end of a tag. unlike `TEXT`, this
+  // pattern spans braces, so a misread `>` swallows whole statements — both of
+  // these reported code as copy while the check was missing
+  test("does not read a closing generic as a tag", () => {
+    const source = [
+      "const [rows, setRows] = React.useState<Row[]>({ ok: true });",
+      "async function getText(url: string): Promise<string> { return (await fetch(url)).text(); }",
+      "export interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {",
+      "  label: React.ReactNode;",
+      "}",
+      "const ARROWS: Record<string, string> = { up: '^' };",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  // half a sentence through the catalogs is still half a sentence hardcoded
+  test("reports the prose left beside a translated fragment", () => {
+    expect(texts('<p>{t("pages.x.owner", { name })} today</p>')).toEqual(["{…} today"]);
+    expect(texts('<p>{t("pages.x.a")} {t("pages.x.b")}</p>')).toEqual([]);
+  });
+
+  test("reports the sentence once, on the line the text starts", () => {
+    const found = findLiterals("\n<p>Charged to {name} monthly</p>", "src/x.tsx");
+    expect(found).toEqual([
+      { file: "src/x.tsx", line: 2, text: "Charged to {…} monthly", kind: "text" },
+    ]);
+  });
+});
+
+// a comparison operator survived `TEXT`'s `(?<!=)` lookbehind, so the `>` of
+// `a > b` read as a closing tag and the code up to the next `<` read as a text
+// node — code recorded as copy, and #958 would have tried to translate it
+// (#1370)
+describe("findLiterals tells a comparison from a tag", () => {
+  test("ignores a comparison operator", () => {
+    const source = [
+      "const f = (a: number, b: number, c: number, d: number) => a > b && c < d;",
+      "const over = usage.total > limit.total && usage.spend < cap;",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("ignores an arrow and a `>=`", () => {
+    const source = [
+      "const at = (n: number) => n >= threshold && n <= ceiling;",
+      "const hot = rows.filter((r) => r.count >= 10 && r.count < 99);",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("ignores a closing generic", () => {
+    const source = [
+      "export interface TableProps<T> extends React.HTMLAttributes<HTMLDivElement> { rows: T[] }",
+      "const rows = useQuery<Row[], Error>({ queryKey: ['rows'] });",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  // the comparison must not eat the element behind it either: the run it
+  // reported ended at the `<` of the very tag that carries the copy
+  test("still reads an element that follows a comparison", () => {
+    const source = ["const over = used > limit;", "return <p>Usage is over the limit.</p>;"].join(
+      "\n",
+    );
+    expect(texts(source)).toEqual(["Usage is over the limit."]);
+  });
+
+  // the `=>` of a handler sits inside the tag it belongs to, so a tag scan that
+  // stopped at the first `>` would drop the label of every button in the app
+  test("reads an element whose attributes hold an arrow handler", () => {
+    const source = '<Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>';
+    expect(texts(source)).toEqual(["Cancel"]);
+  });
 });

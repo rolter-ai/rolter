@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
@@ -50,15 +50,17 @@ const inRange = (value: string, min: number, max: number, integer = false) => {
 };
 
 // mirrors the server's validation so a bad value is caught before the round
-// trip; the server stays the authority and its message is surfaced on reject
+// trip; the server stays the authority and its message is surfaced on reject.
+// it names a catalog key rather than carrying english copy — the screen renders
+// it, which is where `t` lives
 function validate(form: FormState): string | null {
   if (form.defaultModel.length > 256) {
-    return "Default model must be at most 256 characters.";
+    return "pages.modelSettings.validation.defaultModel";
   }
-  if (!inRange(form.temperature, 0, 2)) return "Temperature must be between 0 and 2.";
-  if (!inRange(form.topP, 0, 1)) return "Top-p must be between 0 and 1.";
+  if (!inRange(form.temperature, 0, 2)) return "pages.modelSettings.validation.temperature";
+  if (!inRange(form.topP, 0, 1)) return "pages.modelSettings.validation.topP";
   if (!inRange(form.maxTokens, 1, 1_000_000, true)) {
-    return "Max tokens must be a whole number between 1 and 1000000.";
+    return "pages.modelSettings.validation.maxTokens";
   }
   return null;
 }
@@ -147,7 +149,8 @@ function ModelSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  const localErrorKey = validate(form);
+  const localError = localErrorKey ? t(localErrorKey) : null;
   const active = form.enabled && hasAnyDefault(form);
 
   return (
@@ -156,54 +159,54 @@ function ModelSettingsScreen() {
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">Apply defaults</span>
+              <span className="text-sm font-medium">
+                {t("pages.modelSettings.applyDefaults")}
+              </span>
               <Badge tone={active ? "success" : "neutral"} className="font-mono text-[10px] uppercase">
-                {active ? "active" : "inactive"}
+                {active
+                  ? t("pages.modelSettings.active")
+                  : t("pages.modelSettings.inactive")}
               </Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Fill in the parameters below when a request omits them. A value the
-              client sent is never overwritten, so turning this on cannot change
-              a request that was already explicit. With it off, request bodies
-              reach the provider untouched.
+              {t("pages.modelSettings.applyDefaultsDesc")}
             </p>
           </div>
           <Switch
             checked={form.enabled}
-            aria-label="Apply defaults"
+            aria-label={t("pages.modelSettings.applyDefaults")}
             onCheckedChange={(v) => set({ enabled: v })}
           />
         </div>
         {form.enabled && !hasAnyDefault(form) && (
           <p className="text-xs text-[color:var(--text-subtle)]">
-            No defaults are set yet, so nothing is applied. Fill in at least one
-            field below.
+            {t("pages.modelSettings.noDefaults")}
           </p>
         )}
       </section>
 
       <Card
-        title="Sampling"
-        desc="Applied to chat, messages and responses requests. Embeddings, audio and image endpoints take no sampling parameters and are left alone."
+        title={t("pages.modelSettings.sampling.title")}
+        desc={t("pages.modelSettings.sampling.desc")}
         dimmed={!form.enabled}
       >
         <Field
-          label="Temperature"
+          label={t("pages.modelSettings.sampling.temperature")}
           hint="0 – 2"
           value={form.temperature}
           disabled={!form.enabled}
           onChange={(v) => set({ temperature: v })}
         />
         <Field
-          label="Top-p"
+          label={t("pages.modelSettings.sampling.topP")}
           hint="0 – 1"
           value={form.topP}
           disabled={!form.enabled}
           onChange={(v) => set({ topP: v })}
         />
         <Field
-          label="Max tokens"
-          hint="Completion length cap"
+          label={t("pages.modelSettings.sampling.maxTokens")}
+          hint={t("pages.modelSettings.sampling.maxTokensHint")}
           value={form.maxTokens}
           disabled={!form.enabled}
           onChange={(v) => set({ maxTokens: v })}
@@ -211,13 +214,13 @@ function ModelSettingsScreen() {
       </Card>
 
       <Card
-        title="Model"
-        desc="Used when a request arrives without a model. Leave this empty to keep rejecting such requests instead of silently picking one for the caller."
+        title={t("pages.modelSettings.model.title")}
+        desc={t("pages.modelSettings.model.desc")}
         dimmed={!form.enabled}
       >
         <Field
-          label="Default model"
-          hint="A routed model or group-slug/model address"
+          label={t("pages.modelSettings.model.defaultModel")}
+          hint={t("pages.modelSettings.model.defaultModelHint")}
           wide
           value={form.defaultModel}
           disabled={!form.enabled}
@@ -226,17 +229,16 @@ function ModelSettingsScreen() {
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        Upstream timeouts and the retry budget are deployment-wide and live under{" "}
-        <span className="text-[color:var(--text-secondary)]">
-          Settings &rsaquo; Performance Tuning
-        </span>
-        .
+        <Trans
+          i18nKey="pages.modelSettings.timeoutsNote"
+          components={[<span key="where" className="text-[color:var(--text-secondary)]" />]}
+        />
       </p>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
         <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
-          {save.isPending ? "Saving…" : "Save Changes"}
+          {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>
@@ -285,6 +287,7 @@ function Field({
   wide?: boolean;
   onChange: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const id = React.useId();
   return (
     <div className="flex flex-col gap-1.5">
@@ -294,7 +297,7 @@ function Field({
       <Input
         id={id}
         className={wide ? "min-w-[320px]" : "max-w-[160px]"}
-        placeholder="provider default"
+        placeholder={t("pages.modelSettings.providerDefault")}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}

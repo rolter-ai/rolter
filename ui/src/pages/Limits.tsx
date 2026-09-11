@@ -37,6 +37,7 @@ import {
   type RateLimitRow,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
+import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -152,24 +153,34 @@ export default function Limits() {
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
+  // the scope field is a name picker whenever the scope type has rows to offer
+  // and a bare uuid box otherwise; the hint has to say which one it is, since
+  // "the project this cap applies to" reads as nonsense over an empty uuid
+  // field (#1202)
+  const hasPicker =
+    (scopeType === "org" && scope.orgs.length > 0) ||
+    (scopeType === "team" && scope.teams.length > 0) ||
+    (scopeType === "project" && scope.projects.length > 0) ||
+    (scopeType === "virtual_key" && (virtualKeys.data?.length ?? 0) > 0) ||
+    (scopeType === "business_unit" && (businessUnits.data?.length ?? 0) > 0) ||
+    (scopeType === "customer" && (customers.data?.length ?? 0) > 0);
+
   return (
     <PageBody className="gap-[22px]">
 
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
-          Scope defaults are unavailable: {scopeMessage}. Pick a scope manually below.
+          {t("pages.limits.scopeBlocked", { detail: scopeMessage })}
         </p>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Scope</CardTitle>
-          <CardDescription>
-            Budgets and rate limits below apply to this scope.
-          </CardDescription>
+          <CardTitle>{t("pages.limits.scopeTitle")}</CardTitle>
+          <CardDescription>{t("pages.limits.scopeBody")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
-          <Field label="Scope type">
+          <Field label={t("pages.limits.scopeTypeLabel")}>
             <Select
               value={scopeType}
               onChange={(e) => {
@@ -184,10 +195,15 @@ export default function Limits() {
               ))}
             </Select>
           </Field>
-          <Field label="Scope" hint={t("pages.limits.scopeHint", { type: t(`pages.limits.scopeTypes.${scopeType}`) })}>
+          <Field
+            label={t("pages.limits.scopeLabel")}
+            hint={t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
+              type: t(`pages.limits.scopeTypes.${scopeType}`),
+            })}
+          >
             {scopeType === "org" && scope.orgs.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select an org</option>
+                <option value="">{t("pages.limits.selectOrg")}</option>
                 {scope.orgs.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
@@ -196,7 +212,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "team" && scope.teams.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a team</option>
+                <option value="">{t("pages.limits.selectTeam")}</option>
                 {scope.teams.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -205,7 +221,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "project" && scope.projects.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a project</option>
+                <option value="">{t("pages.limits.selectProject")}</option>
                 {scope.projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -214,7 +230,7 @@ export default function Limits() {
               </Select>
             ) : scopeType === "virtual_key" && virtualKeys.data && virtualKeys.data.length > 0 ? (
               <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a virtual key</option>
+                <option value="">{t("pages.limits.selectVirtualKey")}</option>
                 {virtualKeys.data.map((k) => (
                   <option key={k.id} value={k.id}>
                     {k.name || k.key_prefix}
@@ -256,7 +272,7 @@ export default function Limits() {
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-0.5">
-            <h2 className="text-base font-medium">Budgets</h2>
+            <h2 className="text-base font-medium">{t("pages.limits.budgetsTitle")}</h2>
             <span className="text-xs text-muted-foreground">
               {t("pages.limits.budgetsHint")}
             </span>
@@ -269,7 +285,7 @@ export default function Limits() {
             disabled={!scopeId}
           >
             <Plus className="h-4 w-4" />
-            Add budget
+            {t("pages.limits.budgetsAdd")}
           </GatedButton>
         </div>
         {budgets.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
@@ -308,7 +324,7 @@ export default function Limits() {
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-0.5">
-            <h2 className="text-base font-medium">Rate limits</h2>
+            <h2 className="text-base font-medium">{t("pages.limits.rateLimitsTitle")}</h2>
             <span className="text-xs text-muted-foreground">
               {t("pages.limits.rateLimitsHint")}
             </span>
@@ -321,7 +337,7 @@ export default function Limits() {
             disabled={!scopeId}
           >
             <Plus className="h-4 w-4" />
-            Add rate limit
+            {t("pages.limits.rateLimitsAdd")}
           </GatedButton>
         </div>
         {rateLimits.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
@@ -389,6 +405,14 @@ function BudgetCard({
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  const deleteGate = useGate("budget:delete");
+  // the label names the row: the grid is a wall of identical cards otherwise,
+  // and "Delete budget" said three times tells a screen reader nothing (#1214)
+  const label = t("pages.limits.deleteBudgetAria", {
+    amount: fmt.currency(Number(budget.limit_usd), currency),
+    period: budget.period,
+    scope: budget.scope_id,
+  });
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2.5">
@@ -408,11 +432,11 @@ function BudgetCard({
         )}
         <button
           type="button"
-          title="Delete budget"
-          aria-label="Delete budget"
-          disabled={deleting}
+          title={deleteGate.reason ?? label}
+          aria-label={label}
+          disabled={deleting || deleteGate.denied}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </button>
@@ -436,19 +460,36 @@ function RateLimitCard({
   onDelete: () => void;
   deleting: boolean;
 }) {
+  const { t } = useTranslation();
+  const deleteGate = useGate("rate_limit:delete");
+  // the caps are the only thing that tells two limits on one scope apart, so
+  // they are what the accessible name carries (#1214)
+  const caps =
+    [
+      limit.rpm != null ? `${limit.rpm} rpm` : null,
+      limit.tpm != null ? `${limit.tpm} tpm` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || t("pages.limits.noCaps");
+  const label = t("pages.limits.deleteRateLimitAria", {
+    limit: caps,
+    scope: limit.scope_id,
+  });
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         {limit.rpm != null && <Badge tone="outline">{limit.rpm} rpm</Badge>}
         {limit.tpm != null && <Badge tone="outline">{limit.tpm} tpm</Badge>}
-        {limit.rpm == null && limit.tpm == null && <Badge tone="neutral">no caps</Badge>}
+        {limit.rpm == null && limit.tpm == null && (
+          <Badge tone="neutral">{t("pages.limits.noCaps")}</Badge>
+        )}
         <button
           type="button"
-          title="Delete rate limit"
-          aria-label="Delete rate limit"
-          disabled={deleting}
+          title={deleteGate.reason ?? label}
+          aria-label={label}
+          disabled={deleting || deleteGate.denied}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none"
+          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
         </button>
@@ -520,17 +561,17 @@ function AddBudgetDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add budget"
-      subtitle={`Spend cap for ${scopeType}:${scopeId} — delete and recreate to change it`}
+      title={t("pages.limits.budgetSheetTitle")}
+      subtitle={t("pages.limits.budgetSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
       dirty={limitUsd !== "100" || period !== "30d" || unpriced !== ""}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(limitUsd.trim() && period.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Limit (USD)">
+        <Field label={t("pages.limits.budgetLimitLabel")}>
           <Input
             type="number"
             min={0}
@@ -539,7 +580,10 @@ function AddBudgetDialog({
             onChange={(e) => setLimitUsd(e.target.value)}
           />
         </Field>
-        <Field label="Period" hint="e.g. 30d, 7d, 1d">
+        <Field
+          label={t("pages.limits.budgetPeriodLabel")}
+          hint={t("pages.limits.budgetPeriodHint")}
+        >
           <Input value={period} onChange={(e) => setPeriod(e.target.value)} />
         </Field>
         <Field
@@ -618,32 +662,32 @@ function AddRateLimitDialog({
     <EditorSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Add rate limit"
-      subtitle={`Throughput caps for ${scopeType}:${scopeId} — blank leaves a field uncapped`}
+      title={t("pages.limits.rateLimitSheetTitle")}
+      subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
       dirty={Boolean(rpm || tpm)}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel="Create"
+      saveLabel={t("common.create")}
       canSave={Boolean(rpm.trim() || tpm.trim())}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label="Requests per minute (optional)">
+        <Field label={t("pages.limits.rpmLabel")}>
           <Input
             type="number"
             min={0}
             value={rpm}
             onChange={(e) => setRpm(e.target.value)}
-            placeholder="unlimited"
+            placeholder={t("pages.limits.uncapped")}
           />
         </Field>
-        <Field label="Tokens per minute (optional)">
+        <Field label={t("pages.limits.tpmLabel")}>
           <Input
             type="number"
             min={0}
             value={tpm}
             onChange={(e) => setTpm(e.target.value)}
-            placeholder="unlimited"
+            placeholder={t("pages.limits.uncapped")}
           />
         </Field>
       </div>

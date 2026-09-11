@@ -82,6 +82,86 @@ the Postgres-backed `rolter-store`/`rolter-control` suites share one database an
 reset the schema per test, so they run in a single-threaded group to avoid
 clobbering each other.
 
+## The Postgres test database
+
+The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
+a database they may write to:
+
+```bash
+ROLTER_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/rolter_test \
+  cargo nextest run -p rolter-store -p rolter-control --features postgres
+```
+
+Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
+`search_path`, because plain `cargo test` — which the coverage job runs — puts
+every test in one process as a thread, and a shared `public` schema would race
+on DDL. Build it through
+[`rolter_store::postgres::test_schema::TestSchema`](../../crates/rolter-store/src/postgres/test_schema.rs)
+rather than by hand; other crates reach it through the store's `test-support`
+feature, which `rolter-control` already carries as a dev-dependency.
+
+**Hold the guard for the whole test.** The schema is dropped when `TestSchema`
+is, so a binding let go early takes the tables with it:
+
+```rust
+let db = TestSchema::migrated(&url).await;   // guard lives to the end of the test
+let pool = db.pool().clone();
+```
+
+Cleanup runs from `Drop`, which also runs while a panicking test unwinds, so a
+failing test reclaims its schema too. Two cases still leave residue, and both
+are handled by a sweep the first `TestSchema` in a process performs:
+
+- a process killed hard — SIGKILL, a `nextest` timeout, a laptop losing power —
+  never runs `Drop` at all
+- runs predating this mechanism (before #1364) never dropped anything
+
+The sweep drops every `test_<pid>_<seq>` schema whose pid is not a live
+process, in batches: each schema carries the full migration set, and dropping
+thousands in one transaction runs the lock table out of shared memory. It is
+deliberately one-sided — a schema whose pid *is* live is always kept, so a suite
+running concurrently in another process can never lose its schema, and a pid the
+operating system has recycled only defers a drop to a later run.
+
+So the database needs occasional attention rather than none: a crash-heavy
+afternoon can leave schemas behind until the next run reclaims them, and a
+database that has not been used for tests since #1364 landed still carries
+whatever earlier runs orphaned. Check what is there with:
+
+```sql
+select count(*) from information_schema.schemata where schema_name like 'test\_%';
+```
+
+Schemas from the older helpers used `seed_*` and `export_*` names with no pid in
+them, so the sweep cannot prove they are dead and leaves them alone. Nothing
+creates those names any more, so drop them once by hand — in batches, for the
+same lock-table reason:
+
+```sql
+do $$
+declare victim text;
+begin
+  loop
+    select schema_name::text into victim
+    from information_schema.schemata
+    where schema_name like 'seed\_%' or schema_name like 'export\_%'
+    limit 1;
+    exit when victim is null;
+    execute 'drop schema ' || quote_ident(victim) || ' cascade';
+    commit;
+  end loop;
+end $$;
+```
+
+One schema per statement is deliberate. A migrated schema holds around 210
+relations and `cascade` locks every one of them, so even ten schemas in a
+single transaction exhausts the lock table — the `out of shared memory` the
+issue describes is reachable at far fewer schemas than it sounds.
+
+When a failing test's rows *are* the evidence, set `ROLTER_TEST_KEEP_SCHEMA=1`:
+the guard then keeps every schema it creates (printing each name) and skips the
+sweep, so nothing is reclaimed until you drop it yourself.
+
 ## Layout
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.
@@ -165,6 +245,27 @@ cargo install cargo-llvm-cov
 cargo llvm-cov --workspace --all-features --summary-only   # quick %
 cargo llvm-cov --workspace --all-features --html           # browsable report
 ```
+
+### The coverage job runs a different runner
+
+Everything else runs under nextest, which gives each test **its own process**.
+`cargo llvm-cov` shells out to plain `cargo test`, so the coverage job runs the
+whole suite as **threads in one process** sharing one environment. Two rules
+follow, and both have bitten:
+
+- **Never set a process-wide environment variable to a value only your test
+  wants.** `Kek::from_env()` is read at request time, so a test that installs
+  its own `ROLTER_KEK` is read by another test's in-flight request, and a value
+  sealed under one key then fails to open under the next. The symptom lands on
+  whichever unrelated seal-then-open test was mid-flight, never on the test that
+  caused it. `control_integration.rs` installs one shared `TEST_KEK` for exactly
+  this reason (#1351); a test needing a non-matching key builds it with
+  `Kek::from_secret` rather than through the environment.
+- **Postgres tests must use a per-test schema** (`search_path`), since this job
+  shares one database across concurrently running tests.
+
+A comment saying "runs in its own process (nextest)" is true of every job except
+this one, which is what makes the trap easy to walk into.
 
 CI runs coverage in the `coverage` job of `quality.yml` and enforces a
 **ratcheting baseline**: the committed baseline lives in
@@ -267,12 +368,101 @@ line was left behind.)
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
-whole document once the play function has finished, and fails the story on any
-**serious** or **critical** violation. The rule set is `wcag2a` + `wcag2aa` +
-`best-practice`, with exactly two rules disabled — `document-title` and
-`html-has-lang`, which describe Storybook's own iframe rather than the
-dashboard. The whole document rather than `#storybook-root`, because dialogs,
-sheets and toasts portal to `<body>` and those are the ones worth checking.
+whole document once the play function has finished, and fails the story on
+**any violation at any impact** — minor and moderate included. The rule set is
+`wcag2a` + `wcag2aa` + `best-practice`, and every disabled rule is named in
+`DISABLED_RULES` with the reason beside it. The whole document rather than
+`#storybook-root`, because dialogs, sheets and toasts portal to `<body>` and
+those are the ones worth checking.
+
+##### The moderate/minor band, measured
+
+The gate shipped as serious+critical only (#1181); #1244 measured what the
+other half contained before turning it on. Over all 695 stories:
+
+| rule | impact | nodes | stories | decision |
+|---|---|---:|---:|---|
+| `region` | moderate | 3177 | 488 | off by default — page-level |
+| `landmark-one-main` | moderate | 593 | 593 | off by default — page-level |
+| `page-has-heading-one` | moderate | 570 | 570 | off by default — page-level |
+| `empty-table-header` | minor | 13 | 13 | fixed |
+| `heading-order` | moderate | 11 | 11 | fixed |
+| `landmark-unique` | moderate | 9 | 9 | fixed |
+
+The three page-level rules all describe a *page*. A story normally mounts one
+component, or one screen body, into a bare iframe with no app shell around it:
+the landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
+and `components/ScreenHeader.tsx`. Asserting them on a component story would
+only ever fail, and satisfying them would mean every story grew a fake shell
+that ships nowhere — so `DISABLED_RULES` turns them off for the default case.
+
+They are off by default, not unchecked (#1353). Two story files mount a whole
+page and turn them back on by name:
+
+| Story file | What it mounts | Widths |
+|---|---|---|
+| `ui/src/App.stories.tsx` | the assembled shell — rail + header + screen, signed in (#1239) | 1280, 768, 375 |
+| `ui/src/pages/Login.stories.tsx` | the signed-out login page, which has no shell around it | desktop |
+
+Both spread `withPageA11y` from `ui/src/lib/story-a11y.ts` into their meta
+`parameters`; `postVisit` merges `parameters.a11y.rules` over `DISABLED_RULES`,
+so an override is per-story and additive and cannot loosen the gate for
+anything else. Spread it into `parameters`, never as a bare story field — the
+JSDoc docgen transform appends a `parameters: { docs: … }` of its own to every
+meta and would replace a whole-object spread silently, leaving the story green
+and unchecked.
+
+##### Two guards, because prose did not hold (#1373)
+
+The first version of the override above shipped as `...withPageA11y` at meta
+level and ran green asserting nothing; it was caught by printing the merged
+rule map by hand. A gate that can be switched off without a word is the one
+failure worth spending code on, so the placement rule is now enforced twice:
+
+| Guard | Where | What it catches |
+|---|---|---|
+| `parameters.a11y.expectRules` | `.storybook/test-runner.ts` `postVisit` | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the runner fails the story if any of them is not enabled in the map it actually merged. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
+| `bun run check:stories` | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters` |
+
+The shapes are read from the fixture modules rather than listed in the checker,
+so a fixture added later is covered the day it is written. A third story file
+that mounts a whole page needs its title added to `PAGE_A11Y_STORY_ID` in
+`ui/src/lib/story-a11y.ts`; `story-a11y.test.ts` fails if the pattern and the
+files that spread the fixture disagree.
+
+Moving the spread up one level fails like this:
+
+```
+screens-login--wrong-password: axe rules region, landmark-one-main,
+page-has-heading-one should be enabled for this story but are not. spread
+`withPageA11y` from src/lib/story-a11y.ts *inside* the meta's `parameters`
+object (`parameters: { ...withPageA11y }`) — spread as a bare story or meta
+field it is replaced by the docgen transform and the story passes asserting
+nothing (#1373).
+```
+
+`parameters: { a11y: { disable: true } }` still opts a story out of the axe
+gate entirely, the `expectRules` check included — that is one explicit,
+reviewable line, which is the opposite of the silent drop these guards exist
+for.
+
+That is what a separate `@axe-core/playwright` pass in `ui/e2e/` would have
+bought, for a fraction of the cost: no new dependency, and it runs on every PR
+with the rest of the story gate rather than only where Playwright does. The one
+fix it asked for was `Login.tsx`, whose card is now a `<main>`.
+
+The three fixed ones were small and real: an empty `<th>` over the actions
+column in Cluster and User provisioning (now an `sr-only` `common.rowActions`),
+an `<h4>` under an `<h2>` in Single sign-on, and the two unnamed `<aside>`
+landmarks on Prompt repository and Skills repository.
+
+Re-measure any time — set `ROLTER_AXE_TALLY` to a file path and the runner
+appends one JSON line per story listing every violation at every impact,
+including the excluded rules, without failing anything:
+
+```
+ROLTER_AXE_TALLY=/tmp/axe.jsonl bun run test-storybook --url http://127.0.0.1:6011
+```
 
 The failure prints the story id, then two tables: the rule and its impact, then
 the CSS selector and the HTML of each offending node. `color-contrast` also
@@ -283,7 +473,9 @@ to one screen with `bun run test-storybook --url … -- -t "Keys"`.
 
 A story can opt out with `parameters: { a11y: { disable: true } }` and a comment
 saying why. None currently does — treat needing one as a signal that the screen,
-not the checker, is wrong.
+not the checker, is wrong. The inverse, `parameters: { a11y: { rules: { … } } }`,
+re-enables a rule `DISABLED_RULES` turns off; it is for stories that mount a
+whole page, and the two that do are listed above.
 
 #### The screen-story harness
 

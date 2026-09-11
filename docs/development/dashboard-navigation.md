@@ -35,6 +35,37 @@ viewport addon only sizes the preview iframe inside the Storybook UI, so
 without that hook a "fits at 375px" story would be measured at 1280 and assert
 nothing.
 
+## The assembled shell
+
+The three shapes above are the rail's. The shell is the rail *plus* the screen
+header that opens it and the route that dismisses it, and until #1239 nothing
+mounted all three together: the drawer's open state is owned by `App`, its
+trigger lives in `ScreenHeader`, and the `useEffect` on `location.pathname`
+that closes it is a third place again. Each half had a story; the composition
+had none.
+
+`ui/src/pages/shell-harness.tsx` is the fixture that mounts it. It stacks the
+providers in the order `main.tsx` does — query client, toasts, a session
+already in `localStorage`, a `MemoryRouter` at the requested route, `App` —
+over a fetch stub that answers `/auth/me`, the RBAC pair, the org/team/project
+chain, `/version` and the landing screen's own data. Anything it does not
+name falls through to `[]`, so a screen the drawer navigates to lands in its
+empty state rather than an error. It is a sibling of `pages/story-harness.tsx`
+rather than more of it: that module is imported by every screen story, and
+pulling `App` into it would pull every page into every one of those bundles.
+
+`ui/src/App.stories.tsx` uses it for the three widths — `Desktop` (full rail,
+splitter, the booted route marked `aria-current`), `Tablet` (52px icon strip,
+no splitter) and `Mobile` (no rail at all, the hamburger opens the drawer, and
+picking an entry both navigates and closes it). All three read their copy out
+of the `en` catalog rather than repeating it.
+
+The story caught a real defect the moment it existed: the screen's scroll
+container in `App.tsx` was scrollable without being focusable, so on any
+viewport where a screen overflows, everything below the fold was mouse-only.
+It now carries `tabIndex={0}` and a `role="region"` named by the screen title,
+the same contract `ListTable` and `CodeBlock` already sign.
+
 ## Collapse
 
 `collapsible` puts a toggle in the brand row that folds the rail down to a
@@ -90,3 +121,69 @@ back to this screen") for anything missing. Every leaf had been built long
 before, so the fallback rendered nowhere — dead code that still advertised that
 the rail was allowed to point at a screen which does not exist. Both the set and
 the placeholder are gone; the test is what keeps the table complete.
+
+## The experimental marker
+
+`SUBSYSTEMS` in `crates/rolter-core/src/stability.rs` is the only list of what
+this build ships as experimental (#1385). It travels on `GET /api/v1/version`
+as `experimental`, and each entry carries the `nav_keys` it surfaces on — so
+the mapping from subsystem to nav leaf has one owner, and `ui/` never keeps a
+second copy that can drift out of step with the backend's.
+
+`useStability` in `ui/src/lib/version.ts` turns that into a map of nav leaf key
+→ note. It shares `useVersionStatus`'s query key, so the shell still makes one
+request for the two things it reads out of that answer, and it is tolerant on
+every path that can fail: an older control plane with no `experimental` field,
+a network error, or a session still being checked all yield an empty map. The
+rail then renders with no markers, which is the correct answer rather than an
+error — a rail that will not render is a far worse outcome than a rail missing
+a badge.
+
+`toNavItem` in `ui/src/App.tsx` sets `experimental` and `experimentalNote` on
+the `NavItem`s whose key the map names. The marker rides along with the
+individual entry: the grouping is untouched and there is no "experimental"
+section, which was an explicit constraint of #1386.
+
+Two shapes, because the rail has two widths:
+
+- **Full width** — a `Badge` beside the label carrying `shell.experimental`,
+  with the build's own one-line note as its `title`. The badge is inside the
+  button, so the entry's accessible name is "Tool groups Experimental" and a
+  screen reader gets the marker without having to find a sibling element.
+- **Folded to icons** — no room for a word, so the marker is a decorative dot
+  on the corner of the entry's icon, mirroring the footer's update hint. The
+  word moves into `shell.experimentalItem`, the button's `title`; on a button
+  with no text content that tooltip is also its accessible name.
+
+The page header deliberately carries no marker. #1386 asked for the nav alone,
+and the rail is where an operator is choosing what to rely on.
+
+Stories: `ExperimentalItems`, `ExperimentalItemsCollapsed` and
+`ExperimentalItemsNarrow` in `nav-sidebar.stories.tsx` cover the two shapes and
+the narrowest width the rail can be dragged to; `ExperimentalMarker` and
+`ExperimentalMarkerOnIconRail` in `App.stories.tsx` cover the whole path from
+the endpoint's answer to the marked entry.
+
+## The tab strip
+
+`ui/src/components/ui/tabs.tsx` is the in-page counterpart to the rail: an
+underline strip of `role="tab"` buttons inside a `role="tablist"`, used by
+`Rbac`, `Playground` and `CodeSnippetDialog`. It follows the WAI-ARIA tablist
+pattern, which is a keyboard contract, not styling:
+
+- **One tab stop.** A roving tabindex puts `tabIndex={0}` on the selected tab
+  and `-1` on the rest, so `Tab` walks past the whole strip in one press
+  instead of one per tab. A `value` matching no tab still leaves the first tab
+  reachable — a strip with no tab stop is a keyboard trap in reverse.
+- **Arrows move selection.** `←`/`→` step and wrap at both ends, `Home` and
+  `End` jump to the edges. Selection follows focus (automatic activation),
+  which is the pattern's default for panels that are cheap to render; all three
+  call sites are.
+- **Panels are optional.** A `TabItem` may carry `id` and `panelId`; the tab
+  then gets `aria-controls` and the caller's `role="tabpanel"` points back with
+  `aria-labelledby`. Call sites that render no panel omit both and are
+  unchanged — the relationship is opt-in, so adding it to the primitive did not
+  ripple through the screens (#1273).
+
+Stories: `WalksWithArrowKeys` and `LinkedToPanel` in `tabs.stories.tsx` cover
+the roving tabindex, the wrap, `Home`/`End` and the panel wiring.

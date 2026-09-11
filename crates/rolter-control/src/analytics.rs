@@ -465,6 +465,14 @@ pub struct InvocationsQuery {
 /// it is set. The gateway decides that per request, against the catalogue that
 /// applied at the time, so a caller that instead re-derives it from today's
 /// model prices re-judges old rows against new prices and drifts (#1226).
+///
+/// `request_id` breaks ties in the sort. The gateway stamps each row with its
+/// own request time (#1210), but `ts` is a `DateTime64(3)` and a burst of
+/// concurrent requests really does begin inside one millisecond, so `ts` alone
+/// is not a total order. ClickHouse is then free to return tied rows in any
+/// order it likes, and because this list pages with `limit`/`offset` that order
+/// need not be the same on the next page — a tied row can be served twice or
+/// skipped entirely (#1344).
 fn invocations_sql(status_expr: &str) -> String {
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
@@ -486,7 +494,7 @@ fn invocations_sql(status_expr: &str) -> String {
            and ({{customer:String}} = '' \
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
            and {status_expr} \
-         order by ts desc \
+         order by ts desc, request_id desc \
          limit {{limit:UInt32}} offset {{offset:UInt32}} format JSON"
     )
 }
@@ -620,6 +628,21 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
+    }
+
+    #[test]
+    fn invocations_sql_orders_by_a_total_key_so_paging_cannot_repeat_a_row() {
+        for status in ["all", "error", "success"] {
+            let sql = invocations_sql(status_predicate(status).expect("status is whitelisted"));
+            // ts is a DateTime64(3): a burst of concurrent requests shares one
+            // millisecond even though every row carries its own request time,
+            // so ordering on ts alone leaves tied rows in an arbitrary order
+            // that limit/offset paging can repeat or skip (#1344)
+            assert!(
+                sql.contains("order by ts desc, request_id desc"),
+                "invocations must order on a total key, got: {sql}"
+            );
+        }
     }
 
     #[test]

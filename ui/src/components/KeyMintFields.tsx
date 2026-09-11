@@ -1,8 +1,18 @@
+import { useQuery } from "@tanstack/react-query";
+import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { LoadError } from "@/components/LoadError";
+import { ListSkeleton } from "@/components/LoadingState";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FilterCheckList } from "@/components/ui/filter-panel";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Tag } from "@/components/ui/tag";
+import { fetchRoutes } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 
 // the name + expiry + reach block shared by the two screens that mint a virtual
@@ -85,21 +95,177 @@ export function KeyExpiryField({
   );
 }
 
+/** what `useRouteModels` hands the allow-list field */
+export interface RouteModels {
+  /** the model addresses the project routes, deduplicated and sorted */
+  models: string[];
+  loading: boolean;
+  error: unknown;
+  retry: () => void;
+}
+
+/**
+ * The models a project can route to, for the allow-list to tick off.
+ *
+ * `retry: false` on purpose: a member without route read access gets a 403
+ * that asking again will not improve, and the field is deliberately usable
+ * without the list — it falls back to typing an address by hand.
+ */
+export function useRouteModels(
+  projectId: string | undefined,
+  /** false while the sheet is closed: nothing is there to populate yet */
+  enabled = true,
+): RouteModels {
+  const query = useQuery({
+    queryKey: ["routes", projectId],
+    queryFn: () => fetchRoutes(projectId as string),
+    enabled: enabled && !!projectId,
+    retry: false,
+  });
+  const models = React.useMemo(
+    () => [...new Set((query.data ?? []).map((r) => r.model))].sort(),
+    [query.data],
+  );
+  return {
+    models,
+    loading: query.isLoading,
+    error: query.error,
+    retry: () => void query.refetch(),
+  };
+}
+
+/**
+ * The models a key may ask for, ticked off the project's own routes.
+ *
+ * It used to be a comma-separated text box, which meant an operator had to
+ * know and spell every model address correctly and a typo produced an
+ * allow-list matching nothing — silently, since the control plane stores the
+ * strings as given (#1345). The routes the project actually serves are the
+ * list now, and the wire format is unchanged: the same array of addresses.
+ *
+ * Free-form entry stays, because an allow-list may legitimately name an
+ * address this project does not route today — one a bootstrap-config route
+ * serves, or one a route about to be created will. For the same reason an
+ * address already on the key that no route offers is kept and shown as a
+ * custom entry rather than dropped: dropping it would quietly widen the key.
+ */
 export function KeyModelsField({
   value,
   onChange,
+  options = [],
+  loading = false,
+  error,
+  onRetry,
 }: {
-  value: string;
-  onChange: (value: string) => void;
+  /** the allow-list exactly as it goes on the wire */
+  value: string[];
+  onChange: (value: string[]) => void;
+  /** model addresses the project routes, offered as ticks */
+  options?: string[];
+  /** the route lookup is still in flight */
+  loading?: boolean;
+  /** the route lookup failed; free-form entry carries on regardless */
+  error?: unknown;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation();
+  const [draft, setDraft] = React.useState("");
+  // the label names the free-form input rather than whichever tick or chip
+  // happens to come first in the DOM
+  const inputId = React.useId();
+  const custom = value.filter((m) => !options.includes(m));
+  const offered = [...options, ...custom];
+
+  const toggle = (model: string) =>
+    onChange(
+      value.includes(model) ? value.filter((m) => m !== model) : [...value, model],
+    );
+
+  // a paste of the old comma-separated form still lands as several entries,
+  // so nothing an operator already has written down stops working
+  const addDraft = () => {
+    const added = parseModels(draft).filter((m) => !value.includes(m));
+    if (added.length > 0) onChange([...value, ...added]);
+    setDraft("");
+  };
+
   return (
-    <Field label={t("keyMint.models")} hint={t("keyMint.modelsHint")}>
-      <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={t("keyMint.modelsPlaceholder")}
-      />
+    <Field
+      label={t("keyMint.models")}
+      htmlFor={inputId}
+      hint={
+        value.length === 0
+          ? t("keyMint.modelsAll")
+          : t("keyMint.modelsSome", { count: value.length })
+      }
+    >
+      <div className="space-y-2">
+        {value.length > 0 && (
+          <ul aria-label={t("keyMint.modelsSelected")} className="flex flex-wrap gap-1.5">
+            {value.map((model) => (
+              <li key={model}>
+                <Tag
+                  removeLabel={t("keyMint.modelsRemove", { model })}
+                  onRemove={() => toggle(model)}
+                >
+                  {model}
+                </Tag>
+              </li>
+            ))}
+          </ul>
+        )}
+        {loading ? (
+          <ListSkeleton rows={3} />
+        ) : error ? (
+          <LoadError error={error} resource={t("errors.resources.routes")} onRetry={onRetry} />
+        ) : offered.length === 0 ? (
+          <EmptyState
+            className="rounded-md border border-dashed border-border py-6"
+            uxTarget="key-model-allowlist"
+            title={t("keyMint.modelsEmpty")}
+            description={t("keyMint.modelsEmptyBody")}
+          />
+        ) : (
+          <FilterCheckList
+            options={offered.map((model) => ({
+              value: model,
+              label: options.includes(model) ? (
+                model
+              ) : (
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 truncate">{model}</span>
+                  <Badge tone="outline">{t("keyMint.modelsCustom")}</Badge>
+                </span>
+              ),
+            }))}
+            selected={value}
+            onChange={onChange}
+          />
+        )}
+        <div className="flex gap-2">
+          <Input
+            id={inputId}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // enter inside a sheet would otherwise submit the form with a
+              // half-typed address still in the box
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              addDraft();
+            }}
+            placeholder={t("keyMint.modelsPlaceholder")}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            disabled={parseModels(draft).length === 0}
+            onClick={addDraft}
+          >
+            {t("keyMint.modelsAdd")}
+          </Button>
+        </div>
+      </div>
     </Field>
   );
 }

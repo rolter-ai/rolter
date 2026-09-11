@@ -481,7 +481,7 @@ function TemplateIndex({
 }) {
   const { t } = useTranslation();
   return (
-    <aside className="overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
+    <aside aria-label={t("pages.promptRepo.templates")} className="overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
       <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-3 py-2.5">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">{t("pages.promptRepo.templates")}</p>
@@ -565,6 +565,9 @@ function PromptWorkbench({
   const problem = draftProblem(draft);
   const problemText = problem && t(`pages.promptRepo.${problem.key}`, { name: problem.name || t("pages.promptRepo.problemUnnamed") });
   const selectedPublished = baseVersion?.version === template.published_version;
+  // publishing, rolling back, saving a version and renaming are one guard in
+  // crates/rolter-control/src/crud.rs — `prompt_template:update` — so the
+  // header gates on that and reserves `prompt_template:delete` for the delete
   return (
     <main className="min-w-0 overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3 sm:px-5">
@@ -578,19 +581,19 @@ function PromptWorkbench({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {baseVersion && !selectedPublished && (
-              <Button variant="outline" disabled={pending} onClick={() => onPublish(baseVersion.version)}>
+              <GatedButton gate="prompt_template:update" variant="outline" disabled={pending} onClick={() => onPublish(baseVersion.version)}>
                 <Check className="h-4 w-4" /> {t("pages.promptRepo.publishVersion", { version: baseVersion.version })}
-              </Button>
+              </GatedButton>
             )}
-            <Button disabled={pending || !!problem} onClick={onSave}>
+            <GatedButton gate="prompt_template:update" disabled={pending || !!problem} onClick={onSave}>
               <FilePlus2 className="h-4 w-4" /> {pending ? t("pages.promptRepo.saving") : t("pages.promptRepo.saveNewDraft")}
-            </Button>
-            <Button variant="ghost" aria-label={t("pages.promptRepo.renameAction", { name: template.name })} onClick={onRename}>
+            </GatedButton>
+            <GatedButton gate="prompt_template:update" variant="ghost" aria-label={t("pages.promptRepo.renameAction", { name: template.name })} onClick={onRename}>
               <Pencil className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" aria-label={t("pages.promptRepo.deleteAction", { name: template.name })} onClick={onDelete}>
+            </GatedButton>
+            <GatedButton gate="prompt_template:delete" variant="ghost" aria-label={t("pages.promptRepo.deleteAction", { name: template.name })} onClick={onDelete}>
               <Trash2 className="h-4 w-4" />
-            </Button>
+            </GatedButton>
           </div>
         </div>
         <div className="mt-3 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -728,7 +731,7 @@ function PreviewPanel({ variables, decorators, samples, onSamplesChange }: { var
   const resolved = (content: string) => content.replace(/{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}/g, (_match, name: string) => samples[name] || variables.find((variable) => variable.name === name)?.default || `{{ ${name} }}`);
   const missing = variables.filter((variable) => variable.required && !samples[variable.name]);
   return (
-    <aside className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0">
+    <aside aria-label={t("pages.promptRepo.previewTitle")} className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0">
       <SectionHeading eyebrow={t("pages.promptRepo.liveRenderEyebrow")} title={t("pages.promptRepo.previewTitle")} description={t("pages.promptRepo.previewDescription")} />
       {variables.length > 0 && <div className="mb-5 space-y-2">{variables.map((variable) => <label key={variable.name} className="block text-xs font-medium">{variable.name || t("pages.promptRepo.unnamedVariable")}{variable.required && <span className="ml-1 text-[color:var(--red-folk-text)]">{t("pages.promptRepo.requiredMark")}</span>}<Input className="mt-1" aria-label={t("pages.promptRepo.sampleValueAria", { name: variable.name || t("pages.promptRepo.unnamedVariableLower") })} value={samples[variable.name] ?? ""} placeholder={variable.default ? t("pages.promptRepo.samplePlaceholderDefault", { value: variable.default }) : t("pages.promptRepo.samplePlaceholder")} onChange={(event) => onSamplesChange({ ...samples, [variable.name]: event.target.value })} /></label>)}</div>}
       {missing.length > 0 && <p role="status" className="mb-3 rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5 p-2.5 text-xs text-[color:var(--text-secondary)]">{t("pages.promptRepo.missingSamples", { names: missing.map((variable) => variable.name).join(", ") })}</p>}
@@ -752,7 +755,7 @@ export function VersionRail({ className, template, versions, selectedVersion, lo
   const { t } = useTranslation();
   const format = useFormat();
   return (
-    <aside className={cn("overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]", className)}>
+    <aside aria-label={t("pages.promptRepo.versionHistory")} className={cn("overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]", className)}>
       <div className="border-b border-[color:var(--border-subtle)] px-4 py-3"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">{t("pages.promptRepo.versionHistory")}</p><p className="mt-1 text-xs text-muted-foreground">{t("pages.promptRepo.versionHistoryHint")}</p></div>
       <div className="max-h-[30rem] space-y-1 overflow-y-auto p-2 2xl:max-h-[calc(100vh-14rem)]">
         {loading ? <Skeleton width="100%" height={180} radius={8} /> : versions.length === 0 ? <p className="px-2 py-5 text-center text-xs text-muted-foreground">{t("pages.promptRepo.noSavedVersions")}</p> : versions.map((version) => {
@@ -763,7 +766,7 @@ export function VersionRail({ className, template, versions, selectedVersion, lo
               <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground"><Clock3 className="h-3 w-3" />{format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}</p>
               <p className="mt-1 text-[0.6875rem] text-[color:var(--text-subtle)]">{t("pages.promptRepo.versionCounts", { variables: version.variables.length, decorators: version.decorators.length })}</p>
             </button>
-            {!published && template.published_version && <Button variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.promptRepo.rollbackTo", { version: version.version })}</Button>}
+            {!published && template.published_version && <GatedButton gate="prompt_template:update" variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.promptRepo.rollbackTo", { version: version.version })}</GatedButton>}
           </div>;
         })}
       </div>

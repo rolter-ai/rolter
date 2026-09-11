@@ -169,15 +169,17 @@ export const ConfirmsBeforeDeletingARoute: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    const buttons = canvas.getAllByRole("button", { name: /delete route/i });
+    // by name, not by index: every row control names the route it acts on,
+    // so the story asserts on the control it means (#1214)
+    const button = canvas.getByRole("button", { name: "Delete route gpt-4o" });
 
     // cancelling must leave the route alone — the half a manual click-through
     // never checks
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await cancelConfirmation();
     deletes.expectNotSent("DELETE", "/api/v1/routes/route-1");
 
-    await userEvent.click(buttons[0]);
+    await userEvent.click(button);
     await confirmDestructive(/gpt-4o/, /delete route/i);
     await deletes.expectSent("DELETE", "/api/v1/routes/route-1");
     // the confirmation closes on success, so the outcome is announced where it
@@ -202,7 +204,7 @@ export const DeletingARoute: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    await userEvent.click(canvas.getAllByRole("button", { name: /delete route/i })[0]);
+    await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }));
     await confirmDestructive(/gpt-4o/, /delete route/i);
     const dialog = within(document.body).getByRole("dialog");
     await waitFor(() =>
@@ -229,7 +231,7 @@ export const DeleteFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    await userEvent.click(canvas.getAllByRole("button", { name: /delete route/i })[0]);
+    await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }));
     await confirmDestructive(/gpt-4o/, /delete route/i);
 
     const dialog = within(document.body).getByRole("dialog");

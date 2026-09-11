@@ -9,9 +9,11 @@
 - [Caching](architecture/caching.md)
 - [Config & hot reload](architecture/config-and-hot-reload.md)
 - [Data model](architecture/data-model.md)
+- [Labels](architecture/labels.md)
 - [RBAC & auth](architecture/rbac-and-auth.md)
 - [Invitations](architecture/invitations.md)
 - [Single sign-on (OIDC)](architecture/sso.md)
+- [Two-factor authentication](architecture/two-factor-auth.md)
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
@@ -40,6 +42,7 @@
   - [ADR-0029 — Hosted-provider host-pin opt-out](adr/2026-09-02-hosted-provider-host-pin-opt-out.md)
   - [ADR-0030 — Control-plane OpenAPI document](adr/2026-09-08-control-plane-openapi-document.md)
   - [ADR-0031 — Feature-enablement model](adr/2026-09-08-feature-enablement-model.md)
+  - [ADR-0032 — What 1.0.0 guarantees, surface by surface](adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
 
 # API
 
@@ -62,7 +65,9 @@
 - [Commit conventions](development/commit-conventions.md)
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)
+- [The ci-ok gate and the title-edit fast path](development/ci-gating.md)
 - [API stability and the semver gate](development/api-stability.md)
+- [Stability markers](development/stability-markers.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 

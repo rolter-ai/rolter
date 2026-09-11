@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { useGate, type Capability } from "@/lib/can";
 import { cn } from "@/lib/utils";
 
 // shared building blocks for the control-plane screens ported from the design
@@ -231,15 +232,29 @@ export function SortLabel({
 }
 
 // icon-button used across rows (edit / delete / view)
+//
+// `gate` is the `resource:action` the row control needs, and an icon button
+// with no text needs the refusal spelled out in its `title` more than a
+// labelled one does, not less (#1258).
 export function RowIconButton({
   danger,
   className,
+  gate,
+  disabled,
+  title,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  danger?: boolean;
+  gate?: Capability;
+}) {
+  const { denied, reason } = useGate(gate);
   return (
     <button
       type="button"
+      disabled={disabled || denied}
+      title={denied ? reason : title}
       className={cn(
+        denied && "cursor-not-allowed opacity-50",
         "flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] bg-transparent p-[5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         danger
           ? "text-[color:var(--status-danger-text)] hover:bg-[color:var(--red-tint)]"

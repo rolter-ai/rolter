@@ -11,9 +11,9 @@ import {
   KeyReachSummary,
   MAX_KEY_NAME_LEN,
   NEVER,
-  parseModels,
   type CacheMode,
 } from "./KeyMintFields";
+import { ApiError } from "@/lib/api";
 
 /**
  * The mint block as both screens assemble it — the admin editor on Keys and
@@ -21,14 +21,24 @@ import {
  * #945 introduced (a name and an expiry are required) cannot hold on one
  * screen and not the other.
  */
+/** the models a project with routes offers as ticks */
+const ROUTED = ["claude-sonnet", "fake-llm", "gpt-4o"];
+
 function MintForm({
   initialName = "",
   initialTtl = String(DEFAULT_KEY_TTL_DAYS),
-  initialModels = "",
+  initialModels = [],
+  options = ROUTED,
+  loading = false,
+  error,
 }: {
   initialName?: string;
   initialTtl?: string;
-  initialModels?: string;
+  initialModels?: string[];
+  /** what the project's routes offer; empty stands for a project with none */
+  options?: string[];
+  loading?: boolean;
+  error?: unknown;
 }) {
   const [name, setName] = React.useState(initialName);
   const [ttl, setTtl] = React.useState(initialTtl);
@@ -38,9 +48,15 @@ function MintForm({
     <div className="max-w-md space-y-4">
       <KeyNameField value={name} onChange={setName} />
       <KeyExpiryField value={ttl} onChange={setTtl} />
-      <KeyModelsField value={models} onChange={setModels} />
+      <KeyModelsField
+        value={models}
+        onChange={setModels}
+        options={options}
+        loading={loading}
+        error={error}
+      />
       <KeyCacheField value={cache} onChange={setCache} />
-      <KeyReachSummary project="Gateway" models={parseModels(models)} ttl={ttl} />
+      <KeyReachSummary project="Gateway" models={models} ttl={ttl} />
     </div>
   );
 }
@@ -70,7 +86,7 @@ export const Default: Story = {
 /** A filled-in draft, narrowed to two models. */
 export const Filled: Story = {
   render: () => (
-    <MintForm initialName="ci-runner" initialModels="gpt-4o, claude-sonnet" />
+    <MintForm initialName="ci-runner" initialModels={["gpt-4o", "claude-sonnet"]} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -116,7 +132,7 @@ export const ReachSummaryTracksTheDraft: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("Every model this project can route to")).toBeVisible();
-    await userEvent.type(canvas.getByLabelText(/model allow-list/i), "gpt-4o");
+    await userEvent.click(canvas.getByRole("checkbox", { name: "gpt-4o" }));
     await expect(canvas.getByText("One model: gpt-4o")).toBeVisible();
     await expect(
       canvas.queryByText("Every model this project can route to"),
@@ -156,5 +172,91 @@ export const ScopedToProviders: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("One provider: openai-prod")).toBeVisible();
     await expect(canvas.getByText(/^Until /)).toBeVisible();
+  },
+};
+
+/**
+ * The allow-list is the project's own routes, ticked off (#1345). Typing a
+ * model address used to be the only way to fill this in, and a typo produced
+ * an allow-list matching nothing — silently, since the strings are stored as
+ * given.
+ */
+export const ModelsFromRoutes: Story = {
+  render: () => <MintForm />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByRole("checkbox")).toHaveLength(ROUTED.length);
+    await userEvent.click(canvas.getByRole("checkbox", { name: "claude-sonnet" }));
+    await userEvent.click(canvas.getByRole("checkbox", { name: "fake-llm" }));
+    await expect(canvas.getByText("2 models allowed")).toBeVisible();
+    // the chip removes the same entry the tick added, and names it while
+    // doing so — "Remove" alone tells a screen reader nothing about which
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Remove fake-llm from the allow-list" }),
+    );
+    await expect(canvas.getByRole("checkbox", { name: "fake-llm" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    await expect(canvas.getByText("1 model allowed")).toBeVisible();
+  },
+};
+
+/**
+ * A project with no routes yet still has to be able to mint a narrowed key:
+ * the address may be one a route about to be created will serve, so the field
+ * falls back to free-form entry rather than locking the operator out.
+ */
+export const ModelsWithoutRoutes: Story = {
+  render: () => <MintForm options={[]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("No routes in this project yet")).toBeVisible();
+    await userEvent.type(canvas.getByLabelText(/model allow-list/i), "gpt-4o-mini");
+    await userEvent.click(canvas.getByRole("button", { name: "Add" }));
+    await expect(canvas.getByText("One model: gpt-4o-mini")).toBeVisible();
+  },
+};
+
+/**
+ * An allow-list already naming an address no route offers keeps it. Dropping
+ * it because it is not on the list would quietly widen the key, which is the
+ * one change nobody would notice until the bill arrived.
+ */
+export const ModelsKeepUnknownEntry: Story = {
+  render: () => <MintForm initialModels={["gpt-4o", "legacy-davinci"]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const kept = canvas.getByRole("checkbox", { name: /legacy-davinci/ });
+    await expect(kept).toHaveAttribute("aria-checked", "true");
+    await expect(within(kept).getByText("Custom")).toBeVisible();
+    await expect(canvas.getByText("2 models allowed")).toBeVisible();
+  },
+};
+
+/** While the route lookup is in flight, held open at the height of the list. */
+export const ModelsLoading: Story = {
+  render: () => <MintForm loading />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByLabelText("Loading…").length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * A member without route read access gets a 403 that asking again will not
+ * fix. The field says so and keeps free-form entry, rather than pretending the
+ * project routes nothing.
+ */
+export const ModelsLoadFailed: Story = {
+  render: () => <MintForm error={new ApiError("forbidden", 403)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("alert")).toHaveTextContent(
+      "You do not have access to routes",
+    );
+    await userEvent.type(canvas.getByLabelText(/model allow-list/i), "gpt-4o");
+    await userEvent.click(canvas.getByRole("button", { name: "Add" }));
+    await expect(canvas.getByText("One model: gpt-4o")).toBeVisible();
   },
 };
