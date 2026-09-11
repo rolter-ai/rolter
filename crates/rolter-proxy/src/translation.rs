@@ -648,11 +648,11 @@ fn responses_from_openai(v: Value) -> Value {
     let input = v
         .pointer("/usage/prompt_tokens")
         .cloned()
-        .unwrap_or(json!(0));
+        .unwrap_or_else(|| json!(0));
     let output = v
         .pointer("/usage/completion_tokens")
         .cloned()
-        .unwrap_or(json!(0));
+        .unwrap_or_else(|| json!(0));
     json!({"id":v.get("id").cloned().unwrap_or_else(|| json!("resp_rolter")),"object":"response","status":"completed","model":v.get("model").cloned().unwrap_or(Value::Null),"output":[{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":content}],"usage":{"input_tokens":input,"output_tokens":output,"total_tokens":input.as_u64().unwrap_or(0) + output.as_u64().unwrap_or(0)}})
 }
 
@@ -698,7 +698,7 @@ fn openai_request(mut v: Value) -> Value {
         if role == "tool" {
             out.push(json!({"role":"user","content":[{
                 "type":"tool_result",
-                "tool_use_id":message.get("tool_call_id").cloned().unwrap_or(Value::String(String::new())),
+                "tool_use_id":message.get("tool_call_id").cloned().unwrap_or_else(|| Value::String(String::new())),
                 "content":content_text(message.get("content"))
             }]}));
             continue;
@@ -714,8 +714,8 @@ fn openai_request(mut v: Value) -> Value {
                     .unwrap_or_else(|| json!({}));
                 content.push(json!({
                     "type":"tool_use",
-                    "id":call.get("id").cloned().unwrap_or(Value::String(String::new())),
-                    "name":function.get("name").cloned().unwrap_or(Value::String(String::new())),
+                    "id":call.get("id").cloned().unwrap_or_else(|| Value::String(String::new())),
+                    "name":function.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                     "input":input
                 }));
             }
@@ -747,7 +747,7 @@ fn openai_request(mut v: Value) -> Value {
         for tool in tools {
             if let Some(function) = tool.get("function").cloned() {
                 let mut translated = json!({
-                    "name":function.get("name").cloned().unwrap_or(Value::String(String::new())),
+                    "name":function.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                     "input_schema":function.get("parameters").cloned().unwrap_or_else(|| json!({"type":"object"}))
                 });
                 if let Some(description) = function.get("description").filter(|v| !v.is_null()) {
@@ -837,7 +837,7 @@ fn anthropic_request(mut v: Value) -> Value {
             let name = tool
                 .get("name")
                 .cloned()
-                .unwrap_or(Value::String(String::new()));
+                .unwrap_or_else(|| Value::String(String::new()));
             let parameters = tool
                 .get("input_schema")
                 .cloned()
@@ -868,7 +868,7 @@ fn openai_content(content: Option<&Value>, system: bool) -> Vec<Value> {
         Some(Value::String(text)) => vec![json!({"type":"text","text":text})],
         Some(Value::Array(parts)) => parts.iter().map(|part| {
             match part.get("type").and_then(Value::as_str) {
-                Some("text") | Some("input_text") => json!({"type":"text","text":part.get("text").cloned().unwrap_or(Value::String(String::new()))}),
+                Some("text") | Some("input_text") => json!({"type":"text","text":part.get("text").cloned().unwrap_or_else(|| Value::String(String::new()))}),
                 Some("image_url") | Some("image_file") | Some("input_image") => openai_image(part),
                 Some("input_file") | Some("file") => openai_document(part),
                 _ => part.clone(),
@@ -976,7 +976,7 @@ fn anthropic_block_to_openai(block: Value) -> Value {
             file
         }
         Some("text") => {
-            json!({"type":"text","text":block.get("text").cloned().unwrap_or(Value::String(String::new()))})
+            json!({"type":"text","text":block.get("text").cloned().unwrap_or_else(|| Value::String(String::new()))})
         }
         _ => block,
     }
@@ -1041,7 +1041,7 @@ fn openai_response(v: Value) -> Value {
         "model":v.get("model").cloned().unwrap_or(Value::Null),
         "content":content,
         "stop_reason":openai_finish(choice.get("finish_reason")),"stop_sequence":Value::Null,
-        "usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or(json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or(json!(0))}
+        "usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}
     })
 }
 
@@ -1140,7 +1140,7 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
                             .unwrap_or_else(|| json!({}));
                         parts.push(json!({
                             "functionCall": {
-                                "name": function.get("name").cloned().unwrap_or(Value::String(String::new())),
+                                "name": function.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                                 "args": args
                             }
                         }));
@@ -1198,7 +1198,7 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
             .filter_map(|tool| tool.get("function"))
             .map(|function| {
                 let mut decl = json!({
-                    "name": function.get("name").cloned().unwrap_or(Value::String(String::new()))
+                    "name": function.get("name").cloned().unwrap_or_else(|| Value::String(String::new()))
                 });
                 if let Some(description) = function.get("description").filter(|v| !v.is_null()) {
                     decl["description"] = description.clone();
@@ -1256,7 +1256,7 @@ fn gemini_parts_from_content(content: Option<&Value>) -> Result<Vec<Value>> {
             .iter()
             .map(|part| match part.get("type").and_then(Value::as_str) {
                 Some("text") | Some("input_text") => Ok(json!({
-                    "text": part.get("text").cloned().unwrap_or(Value::String(String::new()))
+                    "text": part.get("text").cloned().unwrap_or_else(|| Value::String(String::new()))
                 })),
                 Some("image_url") | Some("input_image") => {
                     let url = part
@@ -1304,7 +1304,7 @@ fn gemini_to_openai(v: Value) -> Value {
                 "id": format!("call_{}", calls.len()),
                 "type": "function",
                 "function": {
-                    "name": function_call.get("name").cloned().unwrap_or(Value::String(String::new())),
+                    "name": function_call.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                     "arguments": serde_json::to_string(&args).unwrap_or_else(|_| "{}".into())
                 }
             }));
@@ -1430,8 +1430,8 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
                     let function = call.get("function").unwrap_or(&Value::Null);
                     input.push(json!({
                         "type": "function_call",
-                        "call_id": call.get("id").cloned().unwrap_or(Value::String(String::new())),
-                        "name": function.get("name").cloned().unwrap_or(Value::String(String::new())),
+                        "call_id": call.get("id").cloned().unwrap_or_else(|| Value::String(String::new())),
+                        "name": function.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                         "arguments": interaction_arguments(function.get("arguments"))
                     }));
                 }
@@ -1513,7 +1513,7 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             .map(|function| {
                 let mut declaration = json!({
                     "type": "function",
-                    "name": function.get("name").cloned().unwrap_or(Value::String(String::new()))
+                    "name": function.get("name").cloned().unwrap_or_else(|| Value::String(String::new()))
                 });
                 if let Some(description) = function.get("description").filter(|v| !v.is_null()) {
                     declaration["description"] = description.clone();
@@ -1571,7 +1571,7 @@ fn interaction_parts_from_content(content: Option<&Value>) -> Result<Vec<Value>>
             .map(|part| match part.get("type").and_then(Value::as_str) {
                 Some("text") | Some("input_text") => Ok(json!({
                     "type": "text",
-                    "text": part.get("text").cloned().unwrap_or(Value::String(String::new()))
+                    "text": part.get("text").cloned().unwrap_or_else(|| Value::String(String::new()))
                 })),
                 Some("image_url") | Some("input_image") => {
                     let url = part
@@ -1642,7 +1642,7 @@ fn interactions_to_openai(v: Value) -> Value {
                     "id": step.get("call_id").or_else(|| step.get("id")).cloned().unwrap_or_else(|| json!(format!("call_{index}"))),
                     "type": "function",
                     "function": {
-                        "name": step.get("name").cloned().unwrap_or(Value::String(String::new())),
+                        "name": step.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                         "arguments": interaction_arguments(step.get("arguments"))
                     }
                 }));
@@ -1874,11 +1874,11 @@ impl SseConverter {
                 }
             }
             Some("content_block_delta") => match v.pointer("/delta/type").and_then(Value::as_str) {
-                Some("text_delta") => chunks.push(openai_chunk(&self.state, json!({"content":v.pointer("/delta/text").cloned().unwrap_or(Value::String(String::new()))}), Value::Null, None)),
+                Some("text_delta") => chunks.push(openai_chunk(&self.state, json!({"content":v.pointer("/delta/text").cloned().unwrap_or_else(|| Value::String(String::new()))}), Value::Null, None)),
                 Some("input_json_delta") => {
                     let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     let ti = self.state.tool_indexes.get(&index).copied().unwrap_or(0);
-                    chunks.push(openai_chunk(&self.state, json!({"tool_calls":[{"index":ti,"function":{"arguments":v.pointer("/delta/partial_json").cloned().unwrap_or(Value::String(String::new()))}}]}), Value::Null, None));
+                    chunks.push(openai_chunk(&self.state, json!({"tool_calls":[{"index":ti,"function":{"arguments":v.pointer("/delta/partial_json").cloned().unwrap_or_else(|| Value::String(String::new()))}}]}), Value::Null, None));
                 }
                 _ => {}
             },
@@ -1918,7 +1918,7 @@ impl SseConverter {
         let delta = v.pointer("/choices/0/delta").unwrap_or(&Value::Null);
         if !self.state.message_start_sent {
             self.state.message_start_sent = true;
-            out.push(sse(Some("message_start"), &json!({"type":"message_start","message":{"id":self.state.id,"type":"message","role":"assistant","model":self.state.model,"content":[],"stop_reason":Value::Null,"stop_sequence":Value::Null,"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or(json!(0)),"output_tokens":0}}})));
+            out.push(sse(Some("message_start"), &json!({"type":"message_start","message":{"id":self.state.id,"type":"message","role":"assistant","model":self.state.model,"content":[],"stop_reason":Value::Null,"stop_sequence":Value::Null,"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":0}}})));
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             if !self.state.open_text {
@@ -1957,12 +1957,12 @@ impl SseConverter {
                     &json!({"type":"content_block_stop","index":block_index}),
                 ));
             }
-            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":openai_finish(Some(reason)),"stop_sequence":Value::Null},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or(json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or(json!(0))}})));
+            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":openai_finish(Some(reason)),"stop_sequence":Value::Null},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}})));
         } else if v.get("usage").is_some() {
             // OpenAI commonly sends usage in a final choices-less chunk. Keep
             // it visible to Anthropic clients and to the gateway's accounting
             // stream instead of losing it after the finish-reason event.
-            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or(json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or(json!(0))}})));
+            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}})));
         }
         out
     }
@@ -1995,9 +1995,9 @@ impl SseConverter {
         }
         if let Some(usage) = v.get("usage") {
             self.state.response_usage = json!({
-                "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or_else(|| usage.get("input_tokens").cloned().unwrap_or(json!(0))),
-                "output_tokens": usage.get("completion_tokens").cloned().unwrap_or_else(|| usage.get("output_tokens").cloned().unwrap_or(json!(0))),
-                "total_tokens": usage.get("total_tokens").cloned().unwrap_or(json!(0)),
+                "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or_else(|| usage.get("input_tokens").cloned().unwrap_or_else(|| json!(0))),
+                "output_tokens": usage.get("completion_tokens").cloned().unwrap_or_else(|| usage.get("output_tokens").cloned().unwrap_or_else(|| json!(0))),
+                "total_tokens": usage.get("total_tokens").cloned().unwrap_or_else(|| json!(0)),
             });
         }
         let mut out = Vec::new();
@@ -2114,7 +2114,7 @@ impl SseConverter {
                         "id": format!("call_{ti}"),
                         "type": "function",
                         "function": {
-                            "name": function_call.get("name").cloned().unwrap_or(Value::String(String::new())),
+                            "name": function_call.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                             "arguments": serde_json::to_string(&args).unwrap_or_else(|_| "{}".into())
                         }
                     }]}),
@@ -2134,8 +2134,8 @@ impl SseConverter {
                 gemini_finish(Some(reason))
             };
             let usage = json!({
-                "input_tokens": v.pointer("/usageMetadata/promptTokenCount").cloned().unwrap_or(json!(0)),
-                "output_tokens": v.pointer("/usageMetadata/candidatesTokenCount").cloned().unwrap_or(json!(0)),
+                "input_tokens": v.pointer("/usageMetadata/promptTokenCount").cloned().unwrap_or_else(|| json!(0)),
+                "output_tokens": v.pointer("/usageMetadata/candidatesTokenCount").cloned().unwrap_or_else(|| json!(0)),
             });
             out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
             if emit_done {
@@ -2198,7 +2198,7 @@ impl SseConverter {
                             "id": step.get("call_id").or_else(|| step.get("id")).cloned().unwrap_or_else(|| json!(format!("call_{tool_index}"))),
                             "type": "function",
                             "function": {
-                                "name": step.get("name").cloned().unwrap_or(Value::String(String::new())),
+                                "name": step.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
                                 "arguments": ""
                             }
                         }]}),
@@ -2217,7 +2217,7 @@ impl SseConverter {
                             &self.state,
                             json!({"tool_calls":[{
                                 "index": tool_index,
-                                "function": {"arguments": delta.get("arguments").cloned().unwrap_or(Value::String(String::new()))}
+                                "function": {"arguments": delta.get("arguments").cloned().unwrap_or_else(|| Value::String(String::new()))}
                             }]}),
                             Value::Null,
                             None,
@@ -2382,12 +2382,12 @@ fn openai_chunk(
             .get("input_tokens")
             .or_else(|| u.get("prompt_tokens"))
             .cloned()
-            .unwrap_or(json!(0));
+            .unwrap_or_else(|| json!(0));
         let completion = u
             .get("output_tokens")
             .or_else(|| u.get("completion_tokens"))
             .cloned()
-            .unwrap_or(json!(0));
+            .unwrap_or_else(|| json!(0));
         let total = prompt.as_u64().unwrap_or(0) + completion.as_u64().unwrap_or(0);
         value["usage"] =
             json!({"prompt_tokens":prompt,"completion_tokens":completion,"total_tokens":total});

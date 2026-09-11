@@ -1206,6 +1206,10 @@ mod tests {
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),
+        (
+            "mcp_oauth_discovery.rs",
+            include_str!("mcp_oauth_discovery.rs"),
+        ),
         ("mcp_oauth_flow.rs", include_str!("mcp_oauth_flow.rs")),
         ("me.rs", include_str!("me.rs")),
         ("mfa.rs", include_str!("mfa.rs")),

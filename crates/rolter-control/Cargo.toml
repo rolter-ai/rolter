@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "rolter control plane: management api and static ui host"
+description = "rolter control plane: management api and static ui host — internal crate, no stable rust api"
 
 [[bin]]
 name = "rolter-control"
@@ -31,6 +31,7 @@ tokio-tungstenite.workspace = true
 redis.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rust_decimal.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -61,6 +62,9 @@ ldap3 = { workspace = true, optional = true }
 # straight from the system RNG; 0.14 deprecated `SecretKey::random` and its
 # `rand_core` re-export no longer carries an `OsRng` this graph can reach
 p256 = { version = "0.14", features = ["ecdsa", "pkcs8", "pem", "getrandom"] }
+# the postgres tests build their isolated schema through the store's guard, so
+# a schema is reclaimed when the test finishes (#1364)
+rolter-store = { workspace = true, features = ["test-support"] }
 
 [features]
 default = []

@@ -556,7 +556,7 @@ fn to_base_currency(
     price: &ModelPriceConfig,
     base: &str,
 ) -> Option<ModelPriceConfig> {
-    let factor = fx.convert(1.0, &price.currency, base)?;
+    let factor = fx.convert(rust_decimal::Decimal::ONE, &price.currency, base)?;
     Some(ModelPriceConfig {
         model: price.model.clone(),
         input_per_mtok: price.input_per_mtok * factor,
@@ -572,11 +572,17 @@ fn to_base_currency(
 /// relative order between targets matters to the scorer, and summing both
 /// sides ranks sensibly without assuming a token mix. Unknown = `0.0`
 /// (scored neutrally).
+///
+/// `f64` on purpose, and one of the few money-adjacent values #967 leaves
+/// alone: nothing is billed from this number. It is a ranking key the scorer
+/// compares against its siblings, so the exactness a `Decimal` would buy has
+/// nothing here to spend itself on.
 fn target_costs(
     targets: &[Target],
     public_model: &str,
     prices: &HashMap<String, ModelPriceConfig>,
 ) -> Vec<f64> {
+    use rust_decimal::prelude::ToPrimitive;
     targets
         .iter()
         .map(|t| {
@@ -584,7 +590,7 @@ fn target_costs(
             prices
                 .get(model)
                 .or_else(|| prices.get(public_model))
-                .map(|p| p.input_per_mtok + p.output_per_mtok)
+                .and_then(|p| (p.input_per_mtok + p.output_per_mtok).to_f64())
                 .unwrap_or(0.0)
         })
         .collect()
@@ -861,8 +867,17 @@ fn breaker_idle_ttl(open_secs: u64) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
 
-    fn price(model: &str, input: f64, output: f64) -> ModelPriceConfig {
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
+
+    fn price(model: &str, input: Decimal, output: Decimal) -> ModelPriceConfig {
         ModelPriceConfig {
             model: model.to_string(),
             input_per_mtok: input,
@@ -883,8 +898,11 @@ mod tests {
     #[test]
     fn target_costs_prefer_upstream_model_price() {
         let prices: HashMap<String, ModelPriceConfig> = [
-            ("gpt".to_string(), price("gpt", 2.0, 8.0)),
-            ("gpt-mini".to_string(), price("gpt-mini", 0.1, 0.4)),
+            ("gpt".to_string(), price("gpt", d("2.0"), d("8.0"))),
+            (
+                "gpt-mini".to_string(),
+                price("gpt-mini", d("0.1"), d("0.4")),
+            ),
         ]
         .into();
         let targets = vec![
@@ -908,11 +926,11 @@ mod tests {
         // the #650 acceptance case: a EUR-priced model must accrue spend in the
         // USD budget at the configured rate, not at face value
         let mut config = GatewayConfig::default();
-        config.currency.rates.insert("EUR".to_string(), 1.10);
+        config.currency.rates.insert("EUR".to_string(), d("1.10"));
         config.model_prices.push(ModelPriceConfig {
             model: "mistral-large".to_string(),
-            input_per_mtok: 2.0,
-            output_per_mtok: 6.0,
+            input_per_mtok: d("2.0"),
+            output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             currency: "EUR".to_string(),
         });
@@ -921,10 +939,12 @@ mod tests {
 
         let price = snap.prices.get("mistral-large").expect("price kept");
         assert_eq!(price.currency, "USD");
-        assert!((price.input_per_mtok - 2.2).abs() < 1e-12, "{price:?}");
-        assert!((price.output_per_mtok - 6.6).abs() < 1e-12, "{price:?}");
+        // exact now, not within an epsilon: 2.0 * 1.10 and 6.0 * 1.10 are
+        // both exact in decimal, and were not in binary (#967)
+        assert_eq!(price.input_per_mtok, d("2.200"), "{price:?}");
+        assert_eq!(price.output_per_mtok, d("6.600"), "{price:?}");
         // 1M input + 1M output: EUR 8.00 -> USD 8.80, not USD 8.00
-        assert!((price.cost(1_000_000, 1_000_000, 0) - 8.8).abs() < 1e-9);
+        assert_eq!(price.cost(1_000_000, 1_000_000, 0), d("8.800000"));
         assert_eq!(snap.base_currency, "USD");
     }
 
@@ -935,8 +955,8 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.model_prices.push(ModelPriceConfig {
             model: "priced-in-doubloons".to_string(),
-            input_per_mtok: 2.0,
-            output_per_mtok: 6.0,
+            input_per_mtok: d("2.0"),
+            output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             currency: "DBL".to_string(),
         });
@@ -951,11 +971,11 @@ mod tests {
         // their USD-priced models converted the other way
         let mut config = GatewayConfig::default();
         config.currency.base = "EUR".to_string();
-        config.currency.rates.insert("USD".to_string(), 0.9);
+        config.currency.rates.insert("USD".to_string(), d("0.9"));
         config.model_prices.push(ModelPriceConfig {
             model: "gpt-4o".to_string(),
-            input_per_mtok: 10.0,
-            output_per_mtok: 0.0,
+            input_per_mtok: d("10.0"),
+            output_per_mtok: d("0.0"),
             cached_input_per_mtok: None,
             currency: "USD".to_string(),
         });
@@ -963,7 +983,7 @@ mod tests {
         let snap = Snapshot::build(&config, &loads);
         let price = snap.prices.get("gpt-4o").expect("price kept");
         assert_eq!(snap.base_currency, "EUR");
-        assert!((price.input_per_mtok - 9.0).abs() < 1e-12, "{price:?}");
+        assert_eq!(price.input_per_mtok, d("9.0"), "{price:?}");
     }
 
     #[test]

@@ -1,0 +1,210 @@
+---
+title: "Rolter Versioning and Compatibility Promise"
+sidebarTitle: "Versioning & compatibility"
+description: "What a Rolter major version guarantees on each surface — the OpenAI/Anthropic gateway API, the control API, config files, the database schema and the Rust crates — plus the deprecation window before anything is removed."
+---
+
+A version number is a promise about what will keep working when you upgrade.
+This page is that promise, written out per surface, because the surfaces do not
+all get the same answer: Rolter fully controls its own management API, only
+partly controls the OpenAI- and Anthropic-shaped gateway API, and does not
+intend its Rust crates to be a public library at all.
+
+The reasoning behind each decision is in
+[ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+
+## The short version
+
+| Surface | What a major version guarantees |
+|---|---|
+| `/v1/*` gateway API | Fidelity to the OpenAI and Anthropic dialects, and Rolter's own additions (auth, addressing, errors) are held stable |
+| `/api/v1/*` control API | Additive only; nothing is removed without **two minor releases and 90 days** of notice |
+| `rolter.toml` and env vars | A config file accepted by `X.0.0` is accepted by every `X.y.z`, with the same meaning |
+| Database schema | Forward only. There is no downgrade; roll back by restoring a backup |
+| Rust crates on crates.io | **No promise.** They are internal implementation detail |
+
+Subsystems marked **experimental** are exempt from all of it — see
+[the exemption](#the-experimental-exemption) below.
+
+---
+
+## The gateway API (`/v1/*`)
+
+Rolter speaks the OpenAI and Anthropic wire formats so your existing SDKs work
+unchanged. That is exactly what makes a "we will never change `/v1/*`" promise
+impossible to keep: the schema belongs to OpenAI and Anthropic, they change it
+without asking us, and the `v1` in the path is theirs too — SDKs hardcode it, so
+there is no `/v2/` for Rolter to move to.
+
+So the promise is to the **dialect**, not to a frozen schema.
+
+**What Rolter guarantees:**
+
+- A request the upstream provider's own API accepts is accepted by Rolter and
+  forwarded, and the response is shaped the way that provider shapes it.
+  Unknown body fields travel through rather than being rejected.
+- The parts of `/v1/*` that are Rolter's own are held stable, on the same terms
+  as [the control API](#the-control-api-apiv1) below: the virtual-key auth
+  scheme (`Authorization: Bearer` and `x-api-key`), the way you address a model
+  (route names and `provider-slug/model`), the shape of Rolter's error envelope,
+  Rolter's own request and response headers, and the shape of `GET /v1/models`.
+
+**What happens when an upstream dialect changes:**
+
+Rolter follows it. A change that exists only to restore fidelity with OpenAI or
+Anthropic is **not** treated as a Rolter breaking change and does not wait for a
+major release — refusing to follow would break every client that also talks to
+the real provider, which is the opposite of the compatibility you installed
+Rolter for. These changes are called out in the release notes as upstream
+dialect changes so you can see them coming.
+
+<Note>
+  The practical test: if the field you depend on appears in OpenAI's or
+  Anthropic's documentation, your guarantee is that Rolter keeps up with them.
+  If it appears only in Rolter's documentation, your guarantee is Rolter's.
+</Note>
+
+---
+
+## The control API (`/api/v1/*`)
+
+This is the surface Rolter fully owns — the one the dashboard and any SDK you
+build against it depend on. It gets the real promise.
+
+**Additive changes ship in any release.** New endpoints, new optional request
+fields, new response fields, new values in an enum documented as open. Write
+clients that ignore fields they do not recognise, and none of these will ever
+break you.
+
+**Nothing published in the OpenAPI document is removed or changed
+incompatibly without a deprecation period of at least two minor releases and at
+least 90 days, whichever ends later.** The clock starts with the release that
+publishes the deprecation. During the window the element keeps working and you
+are told about it in three places:
+
+- the release notes for the release that starts the window;
+- `deprecated: true` on the operation or schema in
+  [the served OpenAPI document](/api/control-plane-openapi), so your code
+  generator sees it;
+- `Deprecation` and `Sunset` response headers on the affected responses, so you
+  can find out from the wire without reading a changelog.
+
+After the window, the removal ships in an ordinary minor release.
+
+Why two minors *and* 90 days? A release count alone is meaningless when the
+release cadence is not fixed — two minor releases can be a fortnight. A time
+period alone can pass without a release, so nobody ever sees the notice.
+Together they mean the deprecation appears in at least two sets of release notes
+*and* survives a quarterly upgrade cycle, so a team that upgrades once a quarter
+meets the warning at least once before it bites.
+
+**One exception:** a change required to fix a security vulnerability may shorten
+the window. It is still announced, and the advisory says why.
+
+`/api/v2/` is reserved for a wholesale reshaping of the management API, served
+alongside `v1` — it will not be spent on a single removed field.
+
+---
+
+## Config files and environment variables
+
+A `rolter.toml` and an environment that a `X.0.0` binary accepts are accepted by
+every later `X.y.z` binary, and mean the same thing. New keys are optional and
+default to the behaviour you already had, so an upgrade never changes what your
+existing file does.
+
+Removing a key, or changing what an existing key means, follows the same window
+as the control API: **two minor releases and 90 days**, announced in the release
+notes, with the old key still honoured and `rolter check` warning about it for
+the whole window.
+
+<Warning>
+  Unknown keys are **ignored, not rejected**. That is what lets an older binary
+  start against a newer config file, but it also means a typo is silent. Run
+  `rolter check` against your config as part of your deploy — it is the only
+  thing that will tell you a key is not doing what you think it is.
+</Warning>
+
+---
+
+## The database schema
+
+Migrations are append-only and run forward only. There are no `down` scripts and
+none are planned.
+
+- **Upgrading:** take a backup, start the newer binary, and it migrates the
+  database itself.
+- **Rolling back:** restore the backup. See
+  [Backup and restore](/deployment/backup-and-restore). Pointing an older binary
+  at a database a newer one has already migrated is not a supported
+  configuration.
+
+Two things make this less sharp in practice than it sounds, and neither is a
+guarantee you should build a rollback plan on:
+
+- The gateway never talks to Postgres. It reads its configuration from the
+  control plane's snapshot endpoint, so schema compatibility is a question
+  between the control plane and its own database — and those two ship together.
+- Because migrations only ever add, an older control plane will usually keep
+  running against a schema a newer one has migrated, which is what makes a
+  rolling upgrade survivable. A migration that changes the meaning of an
+  existing column breaks this; such a migration is treated as a breaking change
+  and announced as one.
+
+---
+
+## The Rust crates
+
+Rolter publishes several crates to crates.io — `rolter-core`, `rolter-store`,
+`rolter-balancer` and the rest. **They are internal implementation detail and
+carry no compatibility promise at all.** Any public item in any of them may
+change or disappear in any release, including a patch release.
+
+They are on crates.io only because `cargo install rolter` cannot resolve unless
+every crate in the dependency graph is published. They share the product's
+version number, so that number tells you which Rolter you have — not that a Rust
+API is frozen.
+
+Each crate's own `description` and its documentation say the same thing, so you
+find out at `cargo add` time rather than at upgrade time.
+
+If you want to build on Rolter, build on its HTTP surfaces — those are the ones
+this page makes promises about. If you have a real use case for a stable Rust
+API,
+[open an issue](https://github.com/rolter-ai/rolter/issues/new); it is a
+decision that can be revisited for a named need, not a door bolted shut.
+
+---
+
+## The experimental exemption
+
+A handful of subsystems are still finding their shape. They carry an
+**experimental** marker, and that marker is a documented exemption from
+everything above: an experimental subsystem may change shape or be removed in a
+**minor** release, with no deprecation window.
+
+The exemption is deliberately narrow and deliberately visible. The dashboard
+puts an *Experimental* badge beside the affected nav entries, and
+[`GET /api/v1/stability`](/api/stability) is the machine-readable list.
+Everything absent from that list is stable and carries the promises on this
+page.
+
+---
+
+## What "breaking change" means in the release notes
+
+Once `1.0` has shipped, a release marked breaking means one specific thing: a
+change to a promised surface that ships **without** a completed deprecation
+window. That is a change we could not give notice for, it comes with a written
+migration note, and it takes Rolter to the next major version.
+
+It deliberately does **not** mean any of these:
+
+- a removal that completed its deprecation window — the window was the notice,
+  and the removal ships as an ordinary release;
+- a change to a Rust crate's API, which is internal;
+- Rolter tracking a change OpenAI or Anthropic made to their dialect;
+- a change to a subsystem carrying the experimental marker.
+
+The rule behind it: if a change *could* have been deprecated first, it must be —
+and then it is not breaking.

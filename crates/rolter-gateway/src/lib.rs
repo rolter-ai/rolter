@@ -6,6 +6,12 @@
 //!
 //! The binary is a thin wrapper over [`run`]; the unified `rolter` launcher
 //! reuses the same entrypoint as its `gateway` subcommand.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 mod adaptive_telemetry;
 mod admin_proxy;
@@ -106,6 +112,8 @@ pub struct Args {
 /// and telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut config = if args.config.exists() {
+        // `load` also warns about every key in the file rolter does not read
+        // (#1434); unknown keys stay non-fatal, so this never blocks the boot
         GatewayConfig::load(&args.config)?
     } else {
         tracing::warn!(path = %args.config.display(), "config file not found, starting with empty config");

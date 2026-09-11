@@ -61,14 +61,24 @@ pub(crate) struct OidcIdentityProvider {
     discovery: Discovery,
     provider: SsoProvider,
     secret: Option<String>,
+    /// the redirect URI recorded when the login started, replayed verbatim on
+    /// the token exchange. OAuth requires the two to match, so it is read back
+    /// from the login state rather than recomputed
+    redirect_uri: String,
 }
 
 impl OidcIdentityProvider {
-    pub(crate) fn new(discovery: Discovery, provider: SsoProvider, secret: Option<String>) -> Self {
+    pub(crate) fn new(
+        discovery: Discovery,
+        provider: SsoProvider,
+        secret: Option<String>,
+        redirect_uri: String,
+    ) -> Self {
         Self {
             discovery,
             provider,
             secret,
+            redirect_uri,
         }
     }
 }
@@ -95,6 +105,7 @@ impl IdentityProvider for OidcIdentityProvider {
             self.secret.as_deref(),
             &code,
             &verifier,
+            &self.redirect_uri,
         )
         .await
         .map_err(api_error_message)
@@ -187,17 +198,15 @@ fn api_error_message(err: ApiError) -> String {
 /// Public base URL of this control plane, used to build the redirect URI the
 /// provider will send the code back to. Derived from configuration rather than
 /// the request so a spoofed `Host` header cannot redirect a code elsewhere.
-pub(crate) fn public_base_url() -> String {
-    std::env::var("ROLTER_PUBLIC_URL")
-        .ok()
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:4001".to_string())
-        .trim_end_matches('/')
-        .to_string()
+///
+/// It is resolved once when the state is built, so every read within a login
+/// flow sees the same value; see [`crate::ControlState::public_url`].
+pub(crate) fn public_base_url(state: &ControlState) -> &str {
+    &state.public_url
 }
 
-fn redirect_uri(slug: &str) -> String {
-    format!("{}/auth/sso/{slug}/callback", public_base_url())
+fn redirect_uri(base: &str, slug: &str) -> String {
+    format!("{base}/auth/sso/{slug}/callback")
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +306,7 @@ async fn start_login(
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
     let nonce = random_token();
-    let redirect = redirect_uri(&slug);
+    let redirect = redirect_uri(public_base_url(&state), &slug);
     SsoRepo(pool(&state))
         .start_login(&csrf_state, provider.id, &verifier, &nonce, &redirect)
         .await?;
@@ -440,7 +449,12 @@ async fn callback(
         .ok_or_else(|| invalid("ROLTER_KEK must be configured to use the sso client secret"))?;
     let secret = SsoRepo(pool(&state)).client_secret(&kek, &provider).await?;
 
-    let identity_provider = OidcIdentityProvider::new(discovery, provider.clone(), secret);
+    let identity_provider = OidcIdentityProvider::new(
+        discovery,
+        provider.clone(),
+        secret,
+        login.redirect_uri.clone(),
+    );
     let identity = identity_provider
         .resolve(Credential::AuthorizationCode {
             code,
@@ -524,11 +538,12 @@ async fn exchange_code(
     secret: Option<&str>,
     code: &str,
     verifier: &str,
+    redirect_uri: &str,
 ) -> ApiResult<String> {
     let mut form = vec![
         ("grant_type", "authorization_code".to_string()),
         ("code", code.to_string()),
-        ("redirect_uri", redirect_uri(&provider.slug)),
+        ("redirect_uri", redirect_uri.to_string()),
         ("client_id", provider.client_id.clone()),
         ("code_verifier", verifier.to_string()),
     ];
@@ -1186,10 +1201,10 @@ mod tests {
     #[test]
     fn redirect_uri_comes_from_configuration_not_the_request() {
         // an open redirect here would hand an authorization code to whoever
-        // controls the Host header, so the value is deployment-owned
-        let uri = redirect_uri("keycloak");
-        assert!(uri.ends_with("/auth/sso/keycloak/callback"));
-        assert!(uri.starts_with(&public_base_url()));
+        // controls the Host header, so the base is deployment-owned and passed
+        // in rather than derived from anything the caller sent
+        let uri = redirect_uri("https://rolter.example.com", "keycloak");
+        assert_eq!(uri, "https://rolter.example.com/auth/sso/keycloak/callback");
     }
 
     #[test]

@@ -2,9 +2,16 @@
 //!
 //! This crate holds the configuration model, domain error type and telemetry
 //! bootstrap that every other rolter crate depends on.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 pub mod access_policy;
 pub mod config;
+pub mod config_lint;
 pub mod currency;
 pub mod error;
 pub mod guardrail_webhook;
@@ -23,14 +30,15 @@ pub use config::{
     BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CacheConfig,
     ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy, FeatureFlagsConfig,
     GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig, LoggingConfig,
-    McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig, ModelLimits,
-    ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode, ParamPolicy,
-    PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig,
-    RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache,
-    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig, TlsConfig,
-    UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
+    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig,
+    ModelLimits, ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode,
+    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
+    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
+    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig,
+    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
     MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
 };
+pub use config_lint::{unknown_keys, UnknownKey};
 pub use currency::{CurrencyConfig, CurrencyConverter, StaticRates, DEFAULT_BASE_CURRENCY};
 pub use error::{Error, Result};
 pub use guardrail_webhook::{

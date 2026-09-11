@@ -75,6 +75,14 @@ pub struct SeedSummary {
 /// Idempotently bootstrap `pool`: org, default team/project, optional admin,
 /// optional bootstrap-toml import. Assumes migrations have already run.
 pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSummary> {
+    // before the first insert, not with the import at the end of it: an
+    // operator who sees `api_key_evn` named while the org is still being
+    // created can stop and fix the file, rather than finding out from a
+    // half-seeded database that the provider it named has no credential (#1434)
+    if let Some(path) = &opts.import {
+        lint_import_file(path);
+    }
+
     let org_name = if opts.org.trim().is_empty() {
         "default"
     } else {
@@ -132,6 +140,19 @@ pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSumma
         admin_email: opts.admin_email.clone(),
         admin_created,
     })
+}
+
+/// Warn about keys in the bootstrap file that the config model ignores.
+///
+/// Returns how many were reported, so the emission is assertable without a
+/// database. Nothing here can fail the import: an unknown key never stopped the
+/// file from loading and must not start now, and a file that cannot be read at
+/// all is reported with the error it deserves by the import itself.
+fn lint_import_file(path: &Path) -> usize {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => rolter_core::config_lint::warn_unknown_keys_once(path, &raw),
+        Err(_) => 0,
+    }
 }
 
 fn slugify(name: &str) -> String {
@@ -728,11 +749,15 @@ async fn import_prompt_template(
 
 #[cfg(test)]
 mod tests {
-    use super::{declares_payload_capture, import_bootstrap_toml, import_prompt_template, slugify};
+    use super::{
+        declares_payload_capture, import_bootstrap_toml, import_prompt_template, lint_import_file,
+        slugify,
+    };
     use rolter_core::{
         Decorator, DecoratorPosition, DecoratorRole, PromptTemplate, TemplateVariable,
     };
     use rolter_store::postgres::repo::{ProviderRepo, RouteRepo, RouteTargetRepo};
+    use rolter_store::postgres::test_schema::TestSchema;
     use std::collections::HashMap;
     use uuid::Uuid;
 
@@ -743,14 +768,51 @@ mod tests {
         assert_eq!(slugify("  multi  space "), "multi-space");
     }
 
+    /// #1434: a mistyped key in the imported file seeds nothing, and the
+    /// database ends up quietly missing the setting the operator wrote.
+    #[test]
+    fn an_unrecognised_key_in_the_import_file_is_reported_without_stopping_the_import() {
+        let dir = tempdir("lint-import");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+name = "local"
+kind = "openai_compatible"
+api_base = "http://127.0.0.1:8000/v1"
+api_key_evn = "LOCAL_API_KEY"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(lint_import_file(&path), 1);
+        // and the file the lint complained about is still perfectly importable:
+        // nothing about an unknown key may abort a seed
+        let config =
+            rolter_core::GatewayConfig::load(&path).expect("an unknown key never blocks the load");
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn a_missing_import_file_is_not_this_lint_to_report() {
+        // the import itself fails with a readable error; a second complaint
+        // about a file nobody can read adds nothing
+        assert_eq!(
+            lint_import_file(&tempdir("lint-absent").join("nope.toml")),
+            0
+        );
+    }
+
     /// #927: a re-import of an edited file used to log `imported provider` and
     /// change nothing. The operator's next signal was a 401 from the upstream,
     /// which reads as a bad key rather than as config that was never applied.
     #[tokio::test]
     async fn reimporting_an_edited_file_applies_the_edits() {
-        let Some(pool) = scratch_db("reimport").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
 
         let dir = tempdir("reimport");
@@ -868,9 +930,10 @@ weight = 7
     /// exactly as the dashboard left it.
     #[tokio::test]
     async fn a_declared_capture_policy_lands_in_logging_settings() {
-        let Some(pool) = scratch_db("capture").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
         let settings = rolter_store::postgres::repo::LoggingSettingsRepo(&pool);
 
@@ -928,9 +991,10 @@ models = ["gpt-4o"]
     /// clobber it.
     #[tokio::test]
     async fn a_reimport_leaves_a_dashboard_sealed_credential_alone() {
-        let Some(pool) = scratch_db("sealed").await else {
+        let Some(db) = scratch_db().await else {
             return;
         };
+        let pool = db.pool().clone();
         let (org_id, project_id) = bootstrap_org(&pool).await;
 
         let dir = tempdir("sealed");
@@ -993,24 +1057,14 @@ api_key_env = "OPENAI_API_KEY"
     }
 
     /// A schema of its own per test: the coverage job runs plain `cargo test`
-    /// against a shared database and would otherwise race.
-    async fn scratch_db(label: &str) -> Option<sqlx::PgPool> {
+    /// against a shared database and would otherwise race. The guard drops the
+    /// schema when the test finishes, panic included (#1364).
+    async fn scratch_db() -> Option<TestSchema> {
         let url = std::env::var("ROLTER_TEST_DATABASE_URL").ok().or_else(|| {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             None
         })?;
-        let schema = format!("seed_{label}_{}", Uuid::new_v4().simple());
-        let admin = rolter_store::postgres::connect(&url).await.unwrap();
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-        let separator = if url.contains('?') { '&' } else { '?' };
-        let scoped = format!("{url}{separator}options=-c%20search_path%3D{schema}");
-        let pool = rolter_store::postgres::connect(&scoped).await.unwrap();
-        rolter_store::postgres::run_migrations(&pool).await.unwrap();
-        Some(pool)
+        Some(TestSchema::migrated(&url).await)
     }
 
     async fn bootstrap_org(pool: &sqlx::PgPool) -> (Uuid, Uuid) {
@@ -1033,21 +1087,10 @@ api_key_env = "OPENAI_API_KEY"
 
     #[tokio::test]
     async fn prompt_template_seed_is_idempotent_and_rejects_version_drift() {
-        let Ok(url) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        let Some(db) = scratch_db().await else {
             return;
         };
-        let schema = format!("seed_test_{}", Uuid::new_v4().simple());
-        let admin = rolter_store::postgres::connect(&url).await.unwrap();
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        admin.close().await;
-        let separator = if url.contains('?') { '&' } else { '?' };
-        let scoped_url = format!("{url}{separator}options=-c%20search_path%3D{schema}");
-        let pool = rolter_store::postgres::connect(&scoped_url).await.unwrap();
-        rolter_store::postgres::run_migrations(&pool).await.unwrap();
+        let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
             "insert into orgs (name, slug) values ('acme', 'acme') returning id",
         )

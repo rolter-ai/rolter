@@ -111,7 +111,7 @@ somewhere the IdP does not gate.
 
 | Setting | Where | Notes |
 | --- | --- | --- |
-| `ROLTER_PUBLIC_URL` | env | the control plane's externally reachable base URL; the redirect URI is derived from it. Defaults to `http://localhost:4001` |
+| `ROLTER_PUBLIC_URL` | env | the control plane's externally reachable base URL; the redirect URI is derived from it. Defaults to `http://localhost:4001`, and is read once at startup so a change needs a restart |
 | `ROLTER_KEK` | env | required to store or read a client secret; the secret is sealed with AES-256-GCM exactly like provider credentials |
 | `ROLTER_SESSION_PEPPER` | env | session tokens are stored as peppered digests, same as local logins |
 

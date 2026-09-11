@@ -479,6 +479,37 @@ fn custom_api_base_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding>
         .collect()
 }
 
+/// Report every key in the file the config model does not recognise (#1424).
+///
+/// rolter's config types have no `deny_unknown_fields` on purpose: a file
+/// written for one build must stay loadable by an older one, so an unknown key
+/// is ignored rather than rejected. The price is that `connect_sesc` produces
+/// no error, no log line and the default value, which is indistinguishable from
+/// a setting that did not take effect for some other reason.
+///
+/// A warning is the whole point: the file is still valid and the process will
+/// still start, so nothing here may be fatal. `--strict` promotes it, which is
+/// the setting a CI job that lints a config wants.
+///
+/// The same keys are logged by [`rolter_core::GatewayConfig::load`] at startup,
+/// through the same [`rolter_core::config_lint::describe`] sentence, so the
+/// report here and the gateway's log say one thing rather than two (#1434).
+fn unknown_key_findings(raw: &str) -> Vec<Finding> {
+    let Ok(unknown) = rolter_core::config_lint::unknown_keys(raw) else {
+        // not parseable as TOML at all — already reported by the load below
+        return Vec::new();
+    };
+    unknown
+        .into_iter()
+        .map(|key| {
+            Finding::warn(
+                format!("unrecognised config key {}", key.path),
+                rolter_core::config_lint::describe(&key),
+            )
+        })
+        .collect()
+}
+
 pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
     let mut findings = run_checks(&ProcessEnv);
 
@@ -490,6 +521,9 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
 
     // the config file is optional: a fully DB-backed deployment has none
     if let Some(path) = args.config.as_deref() {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            findings.extend(unknown_key_findings(&raw));
+        }
         match rolter_core::GatewayConfig::load(std::path::Path::new(path)) {
             Ok(config) => findings.extend(custom_api_base_findings(&config)),
             Err(error) => findings.push(Finding::error(
@@ -585,6 +619,91 @@ mod tests {
         assert!(!failed, "{text}");
         assert!(text.contains("openrouter-edge"), "{text}");
         assert!(report(&findings, true).1, "--strict has to fail on it");
+    }
+
+    /// a config exercising all three shapes at once: a top-level table, a key
+    /// nested inside one, and a key inside an array of tables
+    const TYPO_CONFIG: &str = r#"
+        [server]
+        port = 8080
+        prot = 9090
+
+        [timeouts]
+        connect_sesc = 3
+
+        [[providers]]
+        name = "local"
+        kind = "openai_compatible"
+        api_base = "http://127.0.0.1:8000/v1"
+        api_key_evn = "LOCAL_API_KEY"
+
+        [[routes]]
+        model = "local-chat"
+        [[routes.targets]]
+        provider = "local"
+        wieght = 2
+        "#;
+
+    #[test]
+    fn unrecognised_keys_are_reported_with_their_path_and_a_suggestion() {
+        let findings = unknown_key_findings(TYPO_CONFIG);
+        assert_eq!(
+            titles(&findings),
+            [
+                "unrecognised config key providers[0].api_key_evn",
+                "unrecognised config key routes[0].targets[0].wieght",
+                "unrecognised config key server.prot",
+                "unrecognised config key timeouts.connect_sesc",
+            ]
+        );
+        assert!(
+            findings[3].detail.contains("Did you mean `connect_secs`?"),
+            "{}",
+            findings[3].detail
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_key_warns_but_strict_makes_it_a_failure() {
+        let findings = unknown_key_findings(TYPO_CONFIG);
+        assert!(
+            findings.iter().all(|finding| !finding.fatal),
+            "the file is still valid toml and still loads; nothing here may block a boot"
+        );
+        assert!(!report(&findings, false).1, "a warning must not fail a run");
+        assert!(
+            report(&findings, true).1,
+            "--strict is what a CI config lint runs"
+        );
+
+        // and the config it warned about still parses, unchanged
+        let config = rolter_core::GatewayConfig::from_toml_str(TYPO_CONFIG).expect("still valid");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn a_clean_config_produces_no_unknown_key_findings() {
+        let findings = unknown_key_findings(
+            r#"
+            [server]
+            port = 8080
+
+            [[providers]]
+            name = "local"
+            kind = "openai_compatible"
+            api_base = "http://127.0.0.1:8000/v1"
+            api_key_env = "LOCAL_API_KEY"
+            "#,
+        );
+        assert!(findings.is_empty(), "{:?}", titles(&findings));
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_is_left_to_the_loader_to_report() {
+        // one clear "this file is not usable" error beats that error plus a
+        // pile of speculative key warnings
+        assert!(unknown_key_findings("{ not toml at all").is_empty());
     }
 
     #[test]

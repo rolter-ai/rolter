@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use rolter_core::{BudgetConfig, BudgetScope, UnpricedPolicy};
+use rust_decimal::Decimal;
 use tokio::sync::OnceCell;
 
 /// Scope identity of a request, taken from its virtual key. An empty string
@@ -143,7 +144,18 @@ impl BudgetEnforcer {
             .await
             .unwrap_or_else(|_| vec![None; applicable.len()]);
         for (budget, spent) in applicable.into_iter().zip(spents) {
-            let spent = spent.and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+            // Redis hands back the counter as a decimal string. Parsing it as
+            // `Decimal` rather than `f64` makes this comparison exact at the
+            // boundary — `spend == limit` is now a testable state, and two
+            // gateways reading the same counter cannot disagree about which
+            // side of the cap it falls on (#967).
+            //
+            // the counter is still *accumulated* by `INCRBYFLOAT`, which is
+            // binary long-double inside Redis; making the accumulation exact
+            // needs an integer-unit scheme and is the next slice of #967
+            let spent = spent
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .unwrap_or(Decimal::ZERO);
             if spent >= budget.limit_usd {
                 return Some((*budget).clone());
             }
@@ -320,11 +332,19 @@ mod tests {
     use super::*;
     use rolter_core::BudgetPeriod;
 
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
+
     fn budget(scope: BudgetScope, id: &str) -> BudgetConfig {
         BudgetConfig {
             scope,
             id: id.to_string(),
-            limit_usd: 10.0,
+            limit_usd: d("10.0"),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
         }

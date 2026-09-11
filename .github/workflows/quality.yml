@@ -610,15 +610,16 @@ jobs:
       - name: cargo check (macos)
         run: cargo check --workspace --all-features
 
-  # ── semver: no accidental breaking API change on the guarded crates ─────────
+  # ── semver: notice when a shared crate's rust API moved ─────────────────────
   # scoped deliberately. the baseline is the previous release *tag*, not the
-  # published crate, and only the crates listed in GUARDED are checked — the
-  # rest are pre-1.0 implementation detail that breaks on purpose. what each
-  # surface promises, and how a crate joins or leaves the list, is written down
-  # in docs/development/api-stability.md (#1217). still informational; it is
-  # promoted to blocking when 1.0 fixes the surfaces for real (#922).
+  # published crate, and only the crates listed in GUARDED are checked. this is
+  # a review signal, never a gate: ADR-0032 (#922) decides that no rolter crate
+  # offers a stable rust API at 1.0, so `continue-on-error` stays on and this
+  # job never joins ci-ok's needs — a gate enforcing a promise the ADR disclaims
+  # would be worse than either choice alone. what each surface actually promises
+  # is in docs/development/api-stability.md (#1217).
   semver-checks:
-    name: semver-checks (informational)
+    name: semver-checks (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
     env:

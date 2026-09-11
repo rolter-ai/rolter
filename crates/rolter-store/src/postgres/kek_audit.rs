@@ -478,10 +478,12 @@ mod tests {
             return;
         };
         let kek = Kek::from_secret("the-kek-that-sealed-this-database");
-        let original = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let original_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let original = original_db.pool().clone();
         seed_sealed_provider(&original, &kek, "acme", "sk-upstream-secret").await;
 
-        let restored = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let restored_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let restored = restored_db.pool().clone();
         copy_provider_keys(&original, &restored).await;
 
         let audit = audit_kek(&restored, &kek).await.expect("audit");
@@ -512,10 +514,12 @@ mod tests {
             return;
         };
         let sealed_with = Kek::from_secret("the-kek-that-sealed-this-database");
-        let original = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let original_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let original = original_db.pool().clone();
         seed_sealed_provider(&original, &sealed_with, "acme", "sk-upstream-secret").await;
 
-        let restored = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let restored_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let restored = restored_db.pool().clone();
         copy_provider_keys(&original, &restored).await;
 
         // the whole failure mode of #923: the dump restored cleanly, the KEK
@@ -538,7 +542,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let pool_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let pool = pool_db.pool().clone();
         let audit = audit_kek(&pool, &Kek::from_secret("any-kek-at-all"))
             .await
             .expect("audit");
@@ -556,7 +561,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let pool_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let pool = pool_db.pool().clone();
         for column in SEALED_COLUMNS {
             assert!(
                 column_exists(&pool, column).await.expect("probe column"),
@@ -615,12 +621,14 @@ mod tests {
             return;
         }
         let kek = Kek::from_secret("the-kek-that-sealed-this-database");
-        let (original, source_schema) =
-            crate::postgres::test_support::fresh_scoped_pool_named(&url).await;
+        let original_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let original = original_db.pool().clone();
+        let source_schema = original_db.schema().to_string();
         seed_sealed_provider(&original, &kek, "acme", "sk-upstream-secret").await;
 
-        let (restored, target_schema) =
-            crate::postgres::test_support::fresh_scoped_pool_named(&url).await;
+        let restored_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let restored = restored_db.pool().clone();
+        let target_schema = restored_db.schema().to_string();
         // a data-only dump: the target was migrated from scratch, which is what
         // the runbook says to do so a restore cannot resurrect an old schema
         let mut dump = std::process::Command::new("pg_dump");
@@ -700,7 +708,8 @@ mod tests {
         };
         let old = Kek::from_secret("the-kek-that-sealed-this-database");
         let new = Kek::from_secret("the-kek-we-are-rotating-to");
-        let pool = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let pool_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let pool = pool_db.pool().clone();
         seed_sealed_provider(&pool, &old, "acme", "sk-upstream-secret").await;
         seed_sealed_provider(&pool, &old, "globex", "sk-second-secret").await;
 
@@ -739,7 +748,8 @@ mod tests {
             return;
         };
         let sealed_with = Kek::from_secret("the-kek-that-sealed-this-database");
-        let pool = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let pool_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let pool = pool_db.pool().clone();
         seed_sealed_provider(&pool, &sealed_with, "acme", "sk-upstream-secret").await;
         let before: (Vec<u8>, Vec<u8>) =
             sqlx::query_as("select ciphertext, nonce from provider_keys")
@@ -780,7 +790,8 @@ mod tests {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
-        let pool = crate::postgres::test_support::fresh_scoped_pool(&url).await;
+        let pool_db = crate::postgres::test_schema::TestSchema::migrated(&url).await;
+        let pool = pool_db.pool().clone();
         let found: Vec<(String, String)> = sqlx::query_as(
             "select table_name, column_name from information_schema.columns
              where table_schema = any(current_schemas(false))

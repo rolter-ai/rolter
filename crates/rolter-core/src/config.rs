@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use rustls_pki_types::{pem::PemObject, CertificateDer};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -1454,8 +1455,47 @@ pub struct VirtualKeyRecord {
     pub access_policy: Option<crate::access_policy::ModelPolicy>,
 }
 
+/// How the gateway authenticates to an MCP server.
+///
+/// The string form is the `auth_kind` column of `mcp_servers`, whose check
+/// constraint is the authority on the set (migration `0069`). An unrecognised
+/// value deserializes to [`McpAuthKind::None`] rather than failing the whole
+/// snapshot: a newer control plane may name a kind this gateway predates, and
+/// refusing to authenticate is the safe reading of "I do not know what this
+/// is" — the alternative is a gateway that drops every server on the snapshot
+/// floor because one row is from the future.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthKind {
+    /// no credential is presented; the server is open or network-restricted
+    #[default]
+    None,
+    /// `Authorization: Bearer <credential>`
+    Bearer,
+    /// `<auth_header_name>: <credential>`
+    Header,
+    /// a token minted per user by the consent flow, not a stored credential
+    Oauth,
+    /// a kind this build does not know; treated as [`McpAuthKind::None`]
+    #[serde(other)]
+    Unknown,
+}
+
 /// An organization-scoped MCP endpoint available to the gateway.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `credential` is plaintext. It is unsealed from the KEK when the snapshot is
+/// built and travels over `/internal/snapshot`, which is already the
+/// credential-bearing control-to-data-plane channel — the same route
+/// [`McpOAuthSessionConfig::access_token`] takes. The [`std::fmt::Debug`] impl
+/// below redacts it so it cannot reach a log line or a crash dump through the
+/// snapshot being formatted (#952).
+///
+/// `Default` exists for the fixtures that construct this everywhere, so a test
+/// naming one field does not have to spell out the rest; the production mapping
+/// in `rolter-store` still writes every field out. The default is the
+/// unauthenticated server with no overrides, matching the `auth_kind` column's
+/// own default.
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub id: String,
     pub org_id: String,
@@ -1465,6 +1505,46 @@ pub struct McpServerConfig {
     /// OAuth scopes every call through this server must carry.
     #[serde(default)]
     pub required_scopes: Vec<String>,
+    /// how to authenticate; `oauth` keeps the per-user consent flow
+    #[serde(default)]
+    pub auth_kind: McpAuthKind,
+    /// the header an API key is presented in, for [`McpAuthKind::Header`]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header_name: Option<String>,
+    /// the unsealed static credential, absent for `none`/`oauth` and for a row
+    /// whose ciphertext could not be decrypted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    /// per-server transport overrides; `None` inherits the deployment default
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpServerConfig")
+            .field("id", &self.id)
+            .field("org_id", &self.org_id)
+            .field("slug", &self.slug)
+            .field("url", &self.url)
+            .field("transport", &self.transport)
+            .field("required_scopes", &self.required_scopes)
+            .field("auth_kind", &self.auth_kind)
+            .field("auth_header_name", &self.auth_header_name)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("request_timeout_ms", &self.request_timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.
@@ -1508,13 +1588,26 @@ impl VirtualKeyRecord {
 pub struct ModelPriceConfig {
     /// public model name this price applies to
     pub model: String,
-    #[serde(default)]
-    pub input_per_mtok: f64,
-    #[serde(default)]
-    pub output_per_mtok: f64,
+    /// The rates are [`Decimal`], not `f64`: the `model_prices` columns behind
+    /// them are `numeric(12,6)`, and parsing that into binary floating point
+    /// discards the exactness the column was chosen for (#967).
+    ///
+    /// They stay *on the wire* as JSON numbers. `/internal/snapshot` carries a
+    /// `config_version`, which is a change counter rather than a schema
+    /// version, so control plane and gateway at different builds exchange the
+    /// same shape during any rolling upgrade — emitting a string here would
+    /// break an older gateway mid-upgrade, silently, on the money path. At
+    /// `numeric(12,6)` there is no precision to lose in the round trip; the
+    /// representation has to change only when a unit with more significant
+    /// digits than `f64` carries actually exists, which is the crypto
+    /// settlement `currency.rs` anticipates and nothing yet implements.
+    #[serde(default, with = "rust_decimal::serde::float")]
+    pub input_per_mtok: Decimal,
+    #[serde(default, with = "rust_decimal::serde::float")]
+    pub output_per_mtok: Decimal,
     /// price for cache-hit input tokens; falls back to `input_per_mtok`
-    #[serde(default)]
-    pub cached_input_per_mtok: Option<f64>,
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub cached_input_per_mtok: Option<Decimal>,
     /// currency the rates above are denominated in. An open code — ISO-4217
     /// today, a crypto or custom settlement unit tomorrow — resolved against
     /// [`crate::CurrencyConfig`]'s rate table, never against a fixed enum
@@ -1528,20 +1621,23 @@ impl ModelPriceConfig {
     ///
     /// `cached_input` is the portion of `prompt` tokens served from cache
     /// (priced at the cached rate when set); pass 0 when unknown.
-    pub fn cost(&self, prompt: u32, completion: u32, cached_input: u32) -> f64 {
+    pub fn cost(&self, prompt: u32, completion: u32, cached_input: u32) -> Decimal {
         let cached = cached_input.min(prompt);
         let fresh = prompt - cached;
         let cached_rate = self.cached_input_per_mtok.unwrap_or(self.input_per_mtok);
-        (fresh as f64 * self.input_per_mtok
-            + cached as f64 * cached_rate
-            + completion as f64 * self.output_per_mtok)
-            / 1_000_000.0
+        // exact: token counts are integers and the rates are decimal, so the
+        // only inexact step left would be the division, and a power of ten
+        // divides exactly in a base-ten representation
+        (Decimal::from(fresh) * self.input_per_mtok
+            + Decimal::from(cached) * cached_rate
+            + Decimal::from(completion) * self.output_per_mtok)
+            / Decimal::from(1_000_000u32)
     }
 
     /// [`Self::cost`] under its former name, from when every price was assumed
     /// to be USD. It is not USD unless [`Self::currency`] says so.
     #[deprecated(note = "renamed to `cost`: the result is in `self.currency`, not necessarily USD")]
-    pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> f64 {
+    pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> Decimal {
         self.cost(prompt, completion, cached_input)
     }
 }
@@ -1631,8 +1727,17 @@ pub struct BudgetConfig {
     /// id of the scoped entity (org/team/project/virtual-key id), matched
     /// against the request's key scope chain
     pub id: String,
-    /// spend cap in USD for the window
-    pub limit_usd: f64,
+    /// spend cap for the window, denominated in the deployment's base currency
+    /// despite the field name — `_usd` predates multi-currency support and
+    /// renaming it is a wire change #967 leaves to its own slice.
+    ///
+    /// `Decimal`, so that `spend >= limit` has an exact boundary and two nodes
+    /// summing the same requests cannot disagree about whether the cap was
+    /// crossed (#967). The Postgres column behind it is already
+    /// `numeric(12,4)`. JSON numbers on the wire, for the reason
+    /// [`ModelPriceConfig`] gives.
+    #[serde(with = "rust_decimal::serde::float")]
+    pub limit_usd: Decimal,
     #[serde(default)]
     pub period: BudgetPeriod,
     /// this budget's own answer to unpriced traffic, overriding the
@@ -2655,8 +2760,15 @@ impl GatewayConfig {
     }
 
     /// Load a configuration from a TOML file on disk.
+    ///
+    /// Keys the config model does not recognise are logged as warnings and then
+    /// ignored (#1434). The lint lives here rather than in each binary so no
+    /// load path can be added without it: a typo that silently leaves a setting
+    /// at its default is a startup-time problem everywhere the file is read,
+    /// not only under `rolter check`.
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
+        crate::config_lint::warn_unknown_keys_once(path, &raw);
         let config = Self::from_toml_str(&raw)?;
         config.validate_ca_bundles().map_err(|problems| {
             crate::Error::Config(format!(
@@ -3245,7 +3357,8 @@ impl GatewayConfig {
         }
 
         for budget in &self.budgets {
-            if budget.limit_usd <= 0.0 || budget.limit_usd.is_nan() {
+            // a Decimal is never NaN, so the emptiness check is now just sign
+            if budget.limit_usd <= Decimal::ZERO {
                 problems.push(format!(
                     "budget for {:?} '{}' has a non-positive limit_usd",
                     budget.scope, budget.id
@@ -3516,6 +3629,14 @@ fn is_proxy_reference(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
 
     // --- api_base / /v1 semantics (#947) ---
 
@@ -4515,26 +4636,139 @@ mod tests {
     fn cost_from_token_counts() {
         let price = ModelPriceConfig {
             model: "gpt-4o".to_string(),
-            input_per_mtok: 2.5,
-            output_per_mtok: 10.0,
+            input_per_mtok: d("2.5"),
+            output_per_mtok: d("10.0"),
             cached_input_per_mtok: None,
             currency: "USD".to_string(),
         };
-        // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075
-        assert!((price.cost(1000, 500, 0) - 0.0075).abs() < 1e-12);
+        // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075, and now
+        // exactly that rather than within an epsilon of it (#967)
+        assert_eq!(price.cost(1000, 500, 0), d("0.0075"));
+    }
+
+    /// The failure #967 is actually about: at `f64`, a price whose decimal
+    /// expansion is not a binary fraction accumulates error, and the classic
+    /// demonstration is that a tenth plus two tenths is not three tenths.
+    /// Decimal makes the same sum exact.
+    #[test]
+    fn accumulating_cost_is_exact_where_f64_drifts() {
+        let price = ModelPriceConfig {
+            model: "drifty".to_string(),
+            // 0.1 and 0.2 are both unrepresentable in binary floating point
+            input_per_mtok: d("0.1"),
+            output_per_mtok: d("0.2"),
+            cached_input_per_mtok: None,
+            currency: "USD".to_string(),
+        };
+        // one million of each: 0.1 + 0.2, which in f64 is 0.30000000000000004
+        assert_eq!(price.cost(1_000_000, 1_000_000, 0), d("0.300000"));
+        assert_ne!(0.1_f64 + 0.2_f64, 0.3_f64, "the f64 this replaces");
+
+        // and a thousand small requests sum to exactly what one big one costs,
+        // which is the property a budget counter is comparing against
+        let one_big = price.cost(1_000_000, 0, 0);
+        let summed: rust_decimal::Decimal = (0..1_000).map(|_| price.cost(1_000, 0, 0)).sum();
+        assert_eq!(summed, one_big);
+    }
+
+    /// A settlement unit with 18 decimal places — an ETH-style wei — survives
+    /// the price type without loss. This is the representable-range failure the
+    /// issue calls disqualifying for `f64`, which carries ~15-16 significant
+    /// digits and cannot hold one wei beside a whole ether.
+    #[test]
+    fn an_eighteen_decimal_unit_round_trips_without_loss() {
+        let one_wei = d("0.000000000000000001");
+        let price = ModelPriceConfig {
+            model: "crypto-priced".to_string(),
+            input_per_mtok: one_wei,
+            output_per_mtok: d("0"),
+            cached_input_per_mtok: None,
+            currency: "ETH".to_string(),
+        };
+        assert_eq!(price.input_per_mtok, one_wei);
+        assert_eq!(price.input_per_mtok.scale(), 18);
+
+        // a whole unit and one wei are distinguishable side by side, which is
+        // exactly what f64 cannot do
+        let one_eth = d("1");
+        assert_ne!(one_eth + one_wei, one_eth);
+        assert_eq!((one_eth + one_wei) - one_eth, one_wei);
+
+        // 1e6 tokens at one wei per Mtok is one wei, not zero
+        assert_eq!(price.cost(1_000_000, 0, 0), one_wei);
+    }
+
+    /// The snapshot is exchanged between a control plane and a gateway that may
+    /// be different builds, and it carries a `config_version` change counter
+    /// rather than a schema version — so there is no negotiation and no way for
+    /// an older reader to say it wants numbers. Prices and limits therefore stay
+    /// JSON *numbers*, which is what `rust_decimal`'s default string form would
+    /// have quietly changed (#967).
+    #[test]
+    fn prices_and_limits_stay_json_numbers_on_the_wire() {
+        let price = ModelPriceConfig {
+            model: "gpt-4o".to_string(),
+            input_per_mtok: d("2.5"),
+            output_per_mtok: d("10"),
+            cached_input_per_mtok: Some(d("1.25")),
+            currency: "USD".to_string(),
+        };
+        let json = serde_json::to_value(&price).expect("serializes");
+        assert!(json["input_per_mtok"].is_number(), "{json}");
+        assert!(json["output_per_mtok"].is_number(), "{json}");
+        assert!(json["cached_input_per_mtok"].is_number(), "{json}");
+
+        // and a number is still what comes back in
+        let parsed: ModelPriceConfig = serde_json::from_value(json).expect("round trips");
+        assert_eq!(parsed.input_per_mtok, d("2.5"));
+        assert_eq!(parsed.cached_input_per_mtok, Some(d("1.25")));
+
+        let budget = BudgetConfig {
+            scope: BudgetScope::Org,
+            id: "org-1".to_string(),
+            limit_usd: d("100.5"),
+            period: BudgetPeriod::default(),
+            unpriced_policy: None,
+        };
+        let json = serde_json::to_value(&budget).expect("serializes");
+        assert!(json["limit_usd"].is_number(), "{json}");
+
+        // the currency rate table too, which the dashboard reads
+        let currency = crate::CurrencyConfig {
+            base: "USD".to_string(),
+            rates: HashMap::from([("EUR".to_string(), d("1.10"))]),
+        };
+        let json = serde_json::to_value(&currency).expect("serializes");
+        assert!(json["rates"]["EUR"].is_number(), "{json}");
+        let parsed: crate::CurrencyConfig = serde_json::from_value(json).expect("round trips");
+        assert_eq!(parsed.rates.get("EUR"), Some(&d("1.10")));
+    }
+
+    /// A budget limit is compared, not reported, so the boundary has to be a
+    /// state a test can name. `spend == limit` is over the cap, and the value
+    /// just below it is not — neither of which is expressible when both sides
+    /// are binary floats carrying rounding from wherever they were summed.
+    #[test]
+    fn a_budget_limit_has_an_exact_boundary() {
+        let limit = d("10.0000");
+        assert!(limit >= limit, "spend exactly at the limit is over it");
+        assert!(d("9.9999") < limit);
+        // the value one ten-thousandth under the cap — the smallest step the
+        // numeric(12,4) column can express — is strictly under it
+        assert_ne!(d("9.9999"), limit);
     }
 
     #[test]
     fn cost_applies_cached_rate() {
         let price = ModelPriceConfig {
             model: "gpt-4o".to_string(),
-            input_per_mtok: 2.0,
-            output_per_mtok: 0.0,
-            cached_input_per_mtok: Some(0.5),
+            input_per_mtok: d("2.0"),
+            output_per_mtok: d("0.0"),
+            cached_input_per_mtok: Some(d("0.5")),
             currency: "USD".to_string(),
         };
         // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
-        assert!((price.cost(1000, 0, 400) - 0.0014).abs() < 1e-12);
+        assert_eq!(price.cost(1000, 0, 400), d("0.0014"));
     }
 
     #[test]
@@ -4544,8 +4778,8 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.model_prices.push(ModelPriceConfig {
             model: "mistral-large".to_string(),
-            input_per_mtok: 2.0,
-            output_per_mtok: 6.0,
+            input_per_mtok: d("2.0"),
+            output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             currency: "EUR".to_string(),
         });
@@ -4558,7 +4792,7 @@ mod tests {
         );
 
         // adding a rate is the entire fix — no code change, no enum edit
-        config.currency.rates.insert("EUR".to_string(), 1.10);
+        config.currency.rates.insert("EUR".to_string(), d("1.10"));
         let problems = config.validate().err().unwrap_or_default();
         assert!(
             !problems.iter().any(|p| p.contains("mistral-large")),
@@ -4571,8 +4805,8 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.model_prices.push(ModelPriceConfig {
             model: "gpt-4o".to_string(),
-            input_per_mtok: 2.5,
-            output_per_mtok: 10.0,
+            input_per_mtok: d("2.5"),
+            output_per_mtok: d("10.0"),
             cached_input_per_mtok: None,
             currency: "usd".to_string(),
         });
@@ -5178,6 +5412,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:read".to_string()],
+            auth_kind: McpAuthKind::Oauth,
+            ..Default::default()
         });
         config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
             id: "session-1".to_string(),
@@ -5190,6 +5426,76 @@ mod tests {
         assert!(config.validate().is_ok(), "{:?}", config.validate());
     }
 
+    /// The credential travels in the snapshot as plaintext, so the one thing
+    /// that must never happen is it reaching a log line because something
+    /// formatted the config. `Debug` is how that would happen (#952).
+    #[test]
+    fn an_mcp_credential_is_redacted_in_debug_output() {
+        let server = McpServerConfig {
+            id: "server-1".to_string(),
+            slug: "docs".to_string(),
+            auth_kind: McpAuthKind::Bearer,
+            credential: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+        let rendered = format!("{server:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "the credential leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("REDACTED"), "{rendered}");
+        // the absent case must be distinguishable from the redacted one, or a
+        // server with no credential reads as one whose secret was withheld
+        let open = McpServerConfig {
+            slug: "open".to_string(),
+            ..Default::default()
+        };
+        assert!(format!("{open:?}").contains("credential: None"));
+    }
+
+    /// A kind from a newer control plane must not deserialize to something
+    /// this build would act on. It lands on `Unknown`, which the proxy refuses
+    /// rather than treating as an open server (#952).
+    #[test]
+    fn an_unrecognised_mcp_auth_kind_deserializes_to_unknown() {
+        let parsed: McpServerConfig = serde_json::from_str(
+            r#"{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                "transport":"streamable_http","auth_kind":"mtls"}"#,
+        )
+        .expect("an unknown kind must not fail the whole snapshot");
+        assert_eq!(parsed.auth_kind, McpAuthKind::Unknown);
+
+        // and the four it does know still round-trip
+        for (raw, expected) in [
+            ("none", McpAuthKind::None),
+            ("bearer", McpAuthKind::Bearer),
+            ("header", McpAuthKind::Header),
+            ("oauth", McpAuthKind::Oauth),
+        ] {
+            let json = format!(
+                r#"{{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                     "transport":"streamable_http","auth_kind":"{raw}"}}"#
+            );
+            let parsed: McpServerConfig = serde_json::from_str(&json).expect(raw);
+            assert_eq!(parsed.auth_kind, expected, "{raw}");
+        }
+    }
+
+    /// A snapshot from a control plane that predates #952 carries no auth
+    /// fields at all. It must still load — that is the forward/backward
+    /// compatibility the config model promises.
+    #[test]
+    fn an_mcp_server_from_an_older_control_plane_still_deserializes() {
+        let parsed: McpServerConfig = serde_json::from_str(
+            r#"{"id":"s","org_id":"o","slug":"x","url":"https://e.example.com",
+                "transport":"streamable_http","required_scopes":["tools:read"]}"#,
+        )
+        .expect("the pre-#952 shape must still load");
+        assert_eq!(parsed.auth_kind, McpAuthKind::None);
+        assert!(parsed.credential.is_none());
+        assert!(parsed.request_timeout_ms.is_none());
+    }
+
     #[test]
     fn validate_rejects_mcp_session_missing_required_scope() {
         let mut config = GatewayConfig::default();
@@ -5200,6 +5506,8 @@ mod tests {
             url: "https://mcp.example.com".to_string(),
             transport: "streamable_http".to_string(),
             required_scopes: vec!["tools:execute".to_string()],
+            auth_kind: McpAuthKind::Oauth,
+            ..Default::default()
         });
         config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
             id: "session-1".to_string(),

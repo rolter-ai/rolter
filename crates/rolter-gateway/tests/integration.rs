@@ -21,6 +21,12 @@ use rolter_core::{
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
+/// A decimal literal for tests; see the note in `rolter-core`'s test module on
+/// why `dec!` is not used (#967).
+fn d(literal: &str) -> rust_decimal::Decimal {
+    literal.parse().expect("a valid decimal literal")
+}
+
 /// Bind an axum app to an ephemeral port and serve it in the background,
 /// returning the bound address.
 async fn serve(app: Router) -> SocketAddr {
@@ -143,6 +149,8 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
         url: format!("http://{upstream}/rpc"),
         transport: "streamable_http".to_string(),
         required_scopes: vec!["tools:execute".to_string()],
+        auth_kind: rolter_core::McpAuthKind::Oauth,
+        ..Default::default()
     });
     config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
         id: "session-1".to_string(),
@@ -174,6 +182,203 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
             "uri": "/rpc/messages?cursor=next",
             "body": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}",
         })
+    );
+}
+
+/// A static credential is the point of #952: before it, a `bearer`/`header`
+/// server was refused for want of an OAuth session however it was configured,
+/// so the stored credential could not be observed on the wire at all.
+///
+/// Both kinds are exercised against one upstream that echoes what it received,
+/// because "the credential is sent" and "it is sent in the right place" are
+/// separate claims and the second is the one a wrong implementation gets wrong.
+#[tokio::test]
+async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session() {
+    async fn echo(headers: axum::http::HeaderMap) -> Json<Value> {
+        Json(json!({
+            "authorization": headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            "x_tenant_key": headers.get("x-tenant-key").and_then(|value| value.to_str().ok()),
+        }))
+    }
+
+    let upstream = serve(Router::new().route("/{*path}", any(echo))).await;
+    let mut config = GatewayConfig::default();
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        access_policy: None,
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
+        id: "key-1".to_string(),
+        org_id: "org-1".to_string(),
+        team_id: "team-1".to_string(),
+        project_id: "project-1".to_string(),
+        user_id: "user-1".to_string(),
+        models: Vec::new(),
+        providers: Vec::new(),
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+    });
+    config.mcp_servers.push(McpServerConfig {
+        id: "server-bearer".to_string(),
+        org_id: "org-1".to_string(),
+        slug: "bearer-server".to_string(),
+        url: format!("http://{upstream}/rpc"),
+        transport: "streamable_http".to_string(),
+        auth_kind: rolter_core::McpAuthKind::Bearer,
+        credential: Some("static-bearer-token".to_string()),
+        ..Default::default()
+    });
+    config.mcp_servers.push(McpServerConfig {
+        id: "server-header".to_string(),
+        org_id: "org-1".to_string(),
+        slug: "header-server".to_string(),
+        url: format!("http://{upstream}/rpc"),
+        transport: "streamable_http".to_string(),
+        auth_kind: rolter_core::McpAuthKind::Header,
+        auth_header_name: Some("x-tenant-key".to_string()),
+        credential: Some("static-api-key".to_string()),
+        ..Default::default()
+    });
+    // deliberately no mcp_oauth_sessions: a static credential must not need one
+    let gateway = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let bearer: Value = client
+        .post(format!("http://{gateway}/mcp/bearer-server/messages"))
+        .header("x-api-key", "sk-user-owned")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        bearer,
+        json!({"authorization": "Bearer static-bearer-token", "x_tenant_key": null}),
+        "a bearer credential belongs in Authorization and nowhere else"
+    );
+
+    let header: Value = client
+        .post(format!("http://{gateway}/mcp/header-server/messages"))
+        .header("x-api-key", "sk-user-owned")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        header,
+        json!({"authorization": null, "x_tenant_key": "static-api-key"}),
+        "a header credential must go in its own header and must not also set Authorization"
+    );
+}
+
+/// A server configured to present a credential the gateway does not have is a
+/// misconfiguration that has to say so. Forwarding with no credential would
+/// surface as the upstream's own 401 and send the operator looking at their
+/// token rather than at their KEK (#952).
+#[tokio::test]
+async fn mcp_proxy_refuses_a_credentialled_server_whose_secret_did_not_arrive() {
+    let mut config = GatewayConfig::default();
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        access_policy: None,
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
+        id: "key-1".to_string(),
+        org_id: "org-1".to_string(),
+        team_id: "team-1".to_string(),
+        project_id: "project-1".to_string(),
+        user_id: "user-1".to_string(),
+        models: Vec::new(),
+        providers: Vec::new(),
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+    });
+    config.mcp_servers.push(McpServerConfig {
+        id: "server-1".to_string(),
+        org_id: "org-1".to_string(),
+        slug: "sealed".to_string(),
+        // 127.0.0.1:9 is the discard port: reaching it would be the bug
+        url: "http://127.0.0.1:9/rpc".to_string(),
+        transport: "streamable_http".to_string(),
+        auth_kind: rolter_core::McpAuthKind::Bearer,
+        credential: None,
+        ..Default::default()
+    });
+    let gateway = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/sealed/messages"))
+        .header("x-api-key", "sk-user-owned")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "mcp_credential_unavailable");
+}
+
+/// The per-server `request_timeout_ms` override has to bound a slow upstream,
+/// and bound it at the server's value rather than the deployment's (#952).
+#[tokio::test]
+async fn mcp_proxy_applies_the_per_server_request_timeout() {
+    async fn slow() -> Json<Value> {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        Json(json!({"never": "reached"}))
+    }
+
+    let upstream = serve(Router::new().route("/{*path}", any(slow))).await;
+    let mut config = GatewayConfig::default();
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        access_policy: None,
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
+        id: "key-1".to_string(),
+        org_id: "org-1".to_string(),
+        team_id: "team-1".to_string(),
+        project_id: "project-1".to_string(),
+        user_id: "user-1".to_string(),
+        models: Vec::new(),
+        providers: Vec::new(),
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+    });
+    config.mcp_servers.push(McpServerConfig {
+        id: "server-1".to_string(),
+        org_id: "org-1".to_string(),
+        slug: "slow".to_string(),
+        url: format!("http://{upstream}/rpc"),
+        transport: "streamable_http".to_string(),
+        auth_kind: rolter_core::McpAuthKind::None,
+        request_timeout_ms: Some(250),
+        ..Default::default()
+    });
+    let gateway = serve_gateway(&config).await;
+
+    let started = std::time::Instant::now();
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/slow/messages"))
+        .header("x-api-key", "sk-user-owned")
+        .send()
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "mcp_upstream_error");
+    // the upstream sleeps for 30s; anything near that means the override was
+    // ignored and the deployment default applied instead
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the 250ms override should have ended this, took {elapsed:?}"
     );
 }
 
@@ -3317,8 +3522,8 @@ async fn unpriced_block_serves_a_model_that_has_a_price() {
     config.unpriced_policy = UnpricedPolicy::Block;
     config.model_prices.push(ModelPriceConfig {
         model: "priced-model".to_string(),
-        input_per_mtok: 1.0,
-        output_per_mtok: 2.0,
+        input_per_mtok: d("1.0"),
+        output_per_mtok: d("2.0"),
         cached_input_per_mtok: None,
         currency: "USD".to_string(),
     });

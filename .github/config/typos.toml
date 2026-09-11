@@ -47,6 +47,17 @@ extend-ignore-re = [
   # dictionary reads the third one as a typo for "of"; correcting it would
   # delete the vector
   '"fo"',
+  # deliberately-misspelled config keys in the `rolter check` unknown-key
+  # fixtures (#1424) and in the docs that show its output. every one of them is
+  # the subject of a test asserting the typo is reported with the real key
+  # suggested — correcting them would delete what the tests check
+  "api_key_evn",
+  "connect_timout_ms",
+  "wieght",
+  "defualt",
+  # "nam": a truncated `name` in the suggestion-distance test, which pins that a
+  # three-letter key still gets its obvious match
+  "\"nam\"",
   # SigNoz's own dashboard schema misspells this field. the provisioned
   # dashboards (#956) are parsed by SigNoz, not by us — correcting the spelling
   # would make the import silently drop the setting
