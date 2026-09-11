@@ -1071,7 +1071,7 @@ impl PostgresConfigStore {
                     scope,
                     id: r.scope_id.to_string(),
                     // decimal stored as text; a malformed value disables the cap
-                    // an unparseable limit means "no effective cap", the same
+                    // a limit that does not parse means "no effective cap", the same
                     // fail-open this had as `f64::INFINITY`; `numeric(12,4)`
                     // cannot actually produce one
                     limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
