@@ -118,6 +118,18 @@ upstream. The cache write is skipped when the values have not changed:
 `mcp_servers` carries a statement-level `bump_config_version()` trigger, and an
 unconditional write would wake every gateway on every consent.
 
+**Moving a server's URL invalidates the cache** (#1416). The cached endpoints
+belong to whatever authorization server the *old* URL's metadata named, so
+`PATCH /api/v1/mcp-servers/{id}` clears all four `oauth_discovered_*` columns
+whenever the update actually changes `url`. Without that, a refresh landing
+between the edit and the next interactive authorize would post to the previous
+server's token endpoint while naming the new canonical URI in `resource` — it
+fails closed, since a compliant authorization server refuses the mismatched
+audience, but it fails for the wrong reason and re-discovery is the right
+answer. The clearing is part of the same `update` statement that writes the URL,
+for the trigger reason above: a second statement would bump `config_version`
+twice for one edit, and an edit that leaves `url` alone clears nothing.
+
 **Hand-configured endpoints remain the fallback.** `authorize_url` and
 `token_url` are now optional on `PUT .../oauth-client`, and the preference order
 is discovery, then the last cached discovery, then what an operator typed. A row
