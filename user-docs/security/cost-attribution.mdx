@@ -133,7 +133,7 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 Both accept a comma-separated set — `customer=<uuid>,<uuid>` — matching the filter rail, where several can be ticked at once. An id that nothing was attributed to matches nothing: a filter narrows, it never widens.
 
-Because the filtering happens in the database, `limit` and `offset` mean what they say under a filter. Paging through a unit's requests pages through *that unit's* requests.
+Because the filtering happens in the database, `limit` and the page cursor mean what they say under a filter. Paging through a unit's requests pages through *that unit's* requests — see [paging the invocation log](/observability/logs-and-cost#paging-the-invocation-log).
 
 <Note>
 For a whole-window total rather than individual requests, `by-attribution` is still the cheaper question — it aggregates in ClickHouse instead of returning rows.

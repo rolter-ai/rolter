@@ -14,7 +14,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::analytics::{
-    clamp_limit, client_or_503, query_failed, window_params, WindowQuery, WHERE_WINDOW,
+    clamp_limit, client_or_503, keyset_predicate, next_keyset_cursor, parse_keyset_cursor,
+    query_failed, window_params, WindowQuery, WHERE_WINDOW,
 };
 use crate::crud::{ApiError, ApiResult};
 use crate::rbac::{authorize_superadmin, Principal};
@@ -220,19 +221,6 @@ struct McpLogsQuery {
     cursor: Option<String>,
 }
 
-fn parse_cursor(cursor: Option<&str>) -> Result<(String, String), &'static str> {
-    let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
-        return Ok((String::new(), String::new()));
-    };
-    let Some((timestamp, event_id)) = cursor.split_once('|') else {
-        return Err("cursor must be timestamp|event_id");
-    };
-    if timestamp.is_empty() || event_id.is_empty() || timestamp.len() > 64 || event_id.len() > 256 {
-        return Err("cursor must be timestamp|event_id");
-    }
-    Ok((timestamp.to_string(), event_id.to_string()))
-}
-
 fn validate_filter(value: Option<&str>, label: &str) -> Result<(), String> {
     if value.is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control)) {
         return Err(format!("{label} filter is invalid"));
@@ -242,13 +230,11 @@ fn validate_filter(value: Option<&str>, label: &str) -> Result<(), String> {
 
 /// Build the keyset-paginated event list query.
 ///
-/// The cursor bound parses with `parseDateTime64BestEffortOrZero`: an absent
-/// cursor binds `cursor_ts` to `''`, and ClickHouse evaluates the strict parse
-/// of that constant even though the `= ''` disjunct already short-circuits the
-/// predicate, failing the whole query with "Cannot read DateTime: neither Date
-/// nor Time was parsed successfully" — every first page failed (#1177). The
-/// `= ''` guard stays, so pagination semantics are unchanged.
+/// The cursor bound comes from the shared [`keyset_predicate`], which the
+/// invocations list pages on too — one place owns the `OrZero` parse that an
+/// absent cursor depends on (#1177).
 fn list_events_sql() -> String {
+    let cursor = keyset_predicate("event_id");
     format!(
         "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
                 virtual_key_id, user_id, request_id, trace_id, error \
@@ -259,8 +245,7 @@ fn list_events_sql() -> String {
            and ({{status:String}} = '' or status = {{status:String}}) \
            and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \
            and ({{user:String}} = '' or user_id = {{user:String}}) \
-           and ({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
-                or (ts = parseDateTime64BestEffortOrZero({{cursor_ts:String}}) and event_id < {{cursor_event_id:String}})) \
+           and {cursor} \
          order by ts desc, event_id desc limit {{limit:UInt32}} format JSON"
     )
 }
@@ -289,7 +274,7 @@ async fn list_events(
                 .into_response();
         }
     }
-    let (cursor_ts, cursor_event_id) = match parse_cursor(q.cursor.as_deref()) {
+    let (cursor_ts, cursor_event_id) = match parse_keyset_cursor(q.cursor.as_deref(), "event_id") {
         Ok(cursor) => cursor,
         Err(message) => {
             return (
@@ -318,20 +303,14 @@ async fn list_events(
         ("key", q.key.unwrap_or_default()),
         ("user", q.user.unwrap_or_default()),
         ("cursor_ts", cursor_ts),
-        ("cursor_event_id", cursor_event_id),
+        ("cursor_id", cursor_event_id),
         ("limit", limit.to_string()),
     ] {
         params.push((format!("param_{name}"), value));
     }
     match ch.query(&sql, &params).await {
         Ok(data) => {
-            let next_cursor = data.last().and_then(|row| {
-                Some(format!(
-                    "{}|{}",
-                    row.get("ts")?.as_str()?,
-                    row.get("event_id")?.as_str()?
-                ))
-            });
+            let next_cursor = next_keyset_cursor(&data, "event_id");
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
         }
         Err(error) => query_failed("mcp log query failed", &error),
@@ -469,7 +448,7 @@ mod tests {
         assert_eq!(sql.matches("parseDateTime64BestEffortOrZero(").count(), 4);
         // the short-circuit guard stays, so keyset pagination is unchanged
         assert!(sql.contains("{cursor_ts:String} = '' or ts < "));
-        assert!(sql.contains("and event_id < {cursor_event_id:String}"));
+        assert!(sql.contains("and event_id < {cursor_id:String}"));
     }
 
     #[test]
@@ -490,8 +469,12 @@ mod tests {
 
     #[test]
     fn cursor_requires_timestamp_and_event_id() {
-        assert!(parse_cursor(Some("2026-07-19 12:00:00.000|evt-1")).is_ok());
-        assert!(parse_cursor(Some("not-a-cursor")).is_err());
+        assert!(parse_keyset_cursor(Some("2026-07-19 12:00:00.000|evt-1"), "event_id").is_ok());
+        // the rejection names this list's own id column
+        assert_eq!(
+            parse_keyset_cursor(Some("not-a-cursor"), "event_id"),
+            Err("cursor must be timestamp|event_id".to_string())
+        );
     }
 
     #[test]

@@ -74,6 +74,39 @@ impl Payload {
     }
 }
 
+/// One documented query parameter.
+///
+/// Path parameters are derived from the path template, but a query parameter
+/// exists nowhere in the route, so an undocumented one is unreachable from the
+/// reference: a caller cannot page a list whose cursor is not written down.
+#[derive(Clone, Copy)]
+struct QueryParam {
+    name: &'static str,
+    /// the JSON Schema type of the value
+    ty: &'static str,
+    description: &'static str,
+}
+
+impl QueryParam {
+    const fn new(name: &'static str, ty: &'static str, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            description,
+        }
+    }
+
+    fn to_json(self) -> Value {
+        json!({
+            "name": self.name,
+            "in": "query",
+            "required": false,
+            "description": self.description,
+            "schema": {"type": self.ty}
+        })
+    }
+}
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -85,6 +118,9 @@ struct Op {
     tag: &'static str,
     request: Payload,
     ok: Payload,
+    /// query parameters worth documenting; empty for an operation whose query
+    /// string only narrows what it returns
+    query: &'static [QueryParam],
     /// reachable without a credential
     public: bool,
 }
@@ -104,6 +140,7 @@ impl Op {
             tag: "",
             request: Payload::Empty,
             ok: Payload::Open,
+            query: &[],
             public: false,
         }
     }
@@ -139,6 +176,11 @@ impl Op {
         self
     }
 
+    fn query(mut self, params: &'static [QueryParam]) -> Self {
+        self.query = params;
+        self
+    }
+
     fn public(mut self) -> Self {
         self.public = true;
         self
@@ -149,6 +191,14 @@ impl Op {
         op.insert("summary".into(), json!(self.summary));
         op.insert("operationId".into(), json!(self.id));
         op.insert("tags".into(), json!([self.tag]));
+        if !self.query.is_empty() {
+            // operation-level parameters, so they merge with the path item's
+            // own path parameters rather than replacing them
+            op.insert(
+                "parameters".into(),
+                Value::Array(self.query.iter().map(|p| p.to_json()).collect()),
+            );
+        }
         if let Some(schema) = self.request.schema() {
             op.insert(
                 "requestBody".into(),
@@ -178,6 +228,43 @@ impl Op {
         Value::Object(op)
     }
 }
+
+/// The invocation log's query string. Written down because it is keyset-paged:
+/// a caller that does not know to send back `next_cursor` as `cursor` cannot
+/// reach the second page at all (#1394).
+const INVOCATIONS_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+    QueryParam::new("model", "string", "exact model name; omit for every model"),
+    QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
+    QueryParam::new(
+        "business_unit",
+        "string",
+        "comma-separated business unit ids; omit for every unit",
+    ),
+    QueryParam::new(
+        "customer",
+        "string",
+        "comma-separated customer ids; omit for every customer",
+    ),
+    QueryParam::new("status", "string", "all|error|success; defaults to all"),
+    QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
+    QueryParam::new(
+        "cursor",
+        "string",
+        "the preceding page's `next_cursor`; omit for the first page. paging is \
+         a keyset over `(ts, request_id)`, so rows logged between two pages \
+         cannot repeat or hide a row",
+    ),
+];
 
 /// Stamp one tag across a group of operations, so the table reads as the
 /// grouping the dashboard and the SDKs use rather than repeating a literal.
@@ -1253,7 +1340,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/analytics/invocations",
                 "listInvocations",
                 "Page individual request records",
-            ),
+            )
+            .query(INVOCATIONS_QUERY),
         ],
     ));
 
@@ -2686,6 +2774,30 @@ mod tests {
         assert!(doc["paths"]["/api/v1/routes/{id}"]["delete"]["responses"]["204"].is_object());
         // the probes are reachable without a credential
         assert_eq!(doc["paths"]["/healthz"]["get"]["security"], json!([]));
+    }
+
+    #[test]
+    fn the_invocation_log_documents_its_cursor_and_no_offset() {
+        let doc = document();
+        let params = doc["paths"]["/api/v1/analytics/invocations"]["get"]["parameters"]
+            .as_array()
+            .expect("the invocation log declares its query parameters")
+            .clone();
+        let names: BTreeSet<&str> = params
+            .iter()
+            .map(|p| p["name"].as_str().expect("a parameter has a name"))
+            .collect();
+        assert!(names.contains("cursor"), "{names:?}");
+        assert!(names.contains("limit"), "{names:?}");
+        // the list no longer pages on an offset, so documenting one would send
+        // a caller down a path that silently returns the same page (#1394)
+        assert!(!names.contains("offset"), "{names:?}");
+        let cursor = params
+            .iter()
+            .find(|p| p["name"] == "cursor")
+            .expect("cursor is documented");
+        assert_eq!(cursor["in"], "query");
+        assert_eq!(cursor["schema"]["type"], "string");
     }
 
     #[test]
