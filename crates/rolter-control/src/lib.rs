@@ -61,6 +61,9 @@ mod login_throttle;
 mod mcp_logs;
 #[cfg(feature = "postgres")]
 mod mcp_oauth;
+/// RFC 9728 / 8707 / 9207 conformance for the MCP OAuth client (#1347)
+#[cfg(feature = "postgres")]
+mod mcp_oauth_discovery;
 #[cfg(feature = "postgres")]
 mod mcp_oauth_flow;
 #[cfg(feature = "postgres")]
