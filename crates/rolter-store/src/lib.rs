@@ -3,6 +3,12 @@
 //! The MVP ships an in-memory [`ConfigStore`]. Postgres (source of truth),
 //! Redis (cache + pub/sub) and ClickHouse (logs) backends implement the same
 //! traits behind cargo features as the control plane is built out.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;

@@ -6,6 +6,12 @@
 //! with minimal copying. Cross-protocol requests are normalized by the
 //! extensible translation registry before dispatch; responses are translated by
 //! the gateway while they stream back to the caller.
+//!
+//! **Internal crate.** It is published only so `cargo install rolter` can
+//! resolve, and it offers no stable Rust API: any public item here may change
+//! or disappear in any release, including a patch release. Build against
+//! rolter's HTTP surfaces instead — see
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 pub mod egress_resolver;
 pub mod pool;

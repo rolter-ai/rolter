@@ -45,6 +45,12 @@ body = """
 git_tag_enable = false
 git_release_enable = false
 dependencies_update = true
+# release-plz runs cargo-semver-checks on every library package by default and
+# lets the result drive the bump. no rolter crate offers a stable rust API
+# (ADR-0032, #922), and all crates share one version, so a shared helper
+# changing shape would major-bump the whole product — binaries, wheel and
+# docker tag included. the version is driven by commit types and nothing else.
+semver_check = false
 # crates.io publishing is enabled: release-plz publishes every workspace member
 # in dependency order (rolter-core -> auth/balancer/proxy -> store -> gateway/
 # control -> rolter) using CARGO_REGISTRY_TOKEN, gated behind the ROL-103

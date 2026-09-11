@@ -6,6 +6,12 @@ description: "The Rolter gateway exposes OpenAI and Anthropic-compatible endpoin
 
 Rolter is a high-performance AI gateway written in Rust that sits in front of your upstream model providers. Any SDK or HTTP client that already speaks the OpenAI or Anthropic API works with Rolter unchanged — point it at the gateway base URL and supply a Rolter virtual key. Rolter handles authentication, load balancing, retries, rate limiting, and spend enforcement before the request ever reaches an upstream.
 
+<Note>
+  What this surface guarantees across upgrades — and what happens when OpenAI or
+  Anthropic change their own dialect — is stated in
+  [Versioning & compatibility](/community/versioning).
+</Note>
+
 ## Base URL
 
 ```text

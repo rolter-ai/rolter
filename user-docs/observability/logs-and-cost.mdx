@@ -45,6 +45,8 @@ Every proxied request writes one row to the `request_logs` table with the follow
 
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
+
+  `ts` is stored as `DateTime64(3)`, so requests that genuinely begin inside the same millisecond still share a timestamp. `GET /api/v1/analytics/invocations` therefore orders by `ts desc, request_id desc`: a tied pair keeps a stable, repeatable order, which is what stops a row appearing on two pages or on none.
 </Note>
 
 ## Configuration reference
