@@ -337,6 +337,13 @@ Define per-model token pricing so Rolter can compute a `cost_usd` value on every
   The public model name this price applies to. Must match a route's `model` field.
 </ParamField>
 
+<Note>
+  Prices and budget limits are written as numbers but computed in exact decimal
+  arithmetic, so a rate like `0.1` is a tenth rather than its nearest binary
+  approximation. See [Budgets & Rate Limits](/security/budgets-and-rate-limits)
+  for what that does and does not cover.
+</Note>
+
 <ParamField path="input_per_mtok" type="float">
   USD per million input (prompt) tokens.
 </ParamField>

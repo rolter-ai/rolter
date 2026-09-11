@@ -34,6 +34,20 @@ Before budgets can track spend, Rolter needs to know the cost of each model's to
   Currency the rates above are denominated in. Any code works — ISO-4217, a crypto unit, an internal credit — as long as `[currency.rates]` can convert it to the base currency.
 </ParamField>
 
+<Note>
+  Rates are written as ordinary numbers here, but Rolter computes with them in
+  **exact decimal arithmetic**, not binary floating point. A rate of `0.1` means
+  a tenth rather than the nearest binary approximation of one, so per-request
+  costs and currency conversions carry no rounding drift, and a budget's
+  `spend >= limit` test has an exact boundary rather than one that depends on
+  the order requests happened to be summed in.
+
+  One caveat while this rolls out: the spend *counter* itself still accumulates
+  in Redis in floating point, so a long-running counter can still drift very
+  slightly from the exact sum of its requests. Making the accumulation exact too
+  is tracked in [#967](https://github.com/rolter-ai/rolter/issues/967).
+</Note>
+
 ```toml rolter.toml
 [[model_prices]]
 model = "gpt-4o"

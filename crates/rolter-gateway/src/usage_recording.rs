@@ -110,6 +110,14 @@ mod tests {
     use super::*;
     use rolter_core::{BudgetConfig, BudgetPeriod, BudgetScope};
 
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
+
     fn scope() -> crate::budgets::ScopeIds {
         crate::budgets::ScopeIds {
             org: "org-1".to_string(),
@@ -121,7 +129,7 @@ mod tests {
         Arc::new(vec![BudgetConfig {
             scope: BudgetScope::Org,
             id: "org-1".to_string(),
-            limit_usd: 1_000.0,
+            limit_usd: d("1000.0"),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
         }])

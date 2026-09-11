@@ -19,6 +19,7 @@ use bytes::Bytes;
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use crossbeam_queue::ArrayQueue;
 use futures_util::Stream;
+use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -739,11 +740,18 @@ impl UsageLoggingStream {
         // a missing price is recorded as such rather than collapsing to a zero
         // that reads like a free request (#969)
         log.unpriced = u8::from(self.price.is_none());
-        log.cost_usd = self
+        // the cost is computed exactly (#967) and then narrowed to `f64` here,
+        // because `request_logs.cost_usd` is a ClickHouse `Float64` and the
+        // budget counter behind `record` below is a Redis `INCRBYFLOAT`.
+        // Those two sinks are the remaining inexact links in the chain and each
+        // has its own follow-up; narrowing in one named place keeps them
+        // findable rather than scattering `as f64` through the hot path
+        let cost = self
             .price
             .as_ref()
             .map(|p| p.cost(usage.prompt, usage.completion, usage.cache_read))
-            .unwrap_or(0.0);
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+        log.cost_usd = cost.to_f64().unwrap_or(0.0);
         log.latency_ms = self.started.elapsed().as_millis() as u32;
         log.ttft_ms = self.ttft_ms.unwrap_or(log.latency_ms);
         // add this request's cost to its budget counters and its tokens to its
@@ -1111,6 +1119,14 @@ impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
 
     #[test]
     fn usage_buffer_pool_reuses_small_buffers() {
@@ -1892,8 +1908,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         ))]);
         let price = Some(rolter_core::ModelPriceConfig {
             model: "gpt-4o".to_string(),
-            input_per_mtok: 1_000_000.0, // 1 usd per token, for an exact assert
-            output_per_mtok: 1_000_000.0,
+            input_per_mtok: d("1000000.0"), // 1 usd per token, for an exact assert
+            output_per_mtok: d("1000000.0"),
             cached_input_per_mtok: None,
             currency: "USD".to_string(),
         });

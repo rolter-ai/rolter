@@ -103,6 +103,7 @@ mod ui_config;
 mod ui_events;
 pub mod update_check;
 
+use rust_decimal::prelude::ToPrimitive;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1709,9 +1710,18 @@ async fn get_currency(State(state): State<ControlState>) -> Json<CurrencySetting
     let codes = state.currency.codes();
     // report rates under the same normalized spelling as `codes`, so the
     // dashboard can look one up by the code it was handed
+    // the rate table is `Decimal` internally (#967) but this is the dashboard's
+    // JSON, and `/api/v1/*` is additive within `v1` per ADR-0032 — turning a
+    // number into a string here would break every client reading it
     let rates = codes
         .iter()
-        .filter_map(|code| state.currency.rate(code).map(|rate| (code.clone(), rate)))
+        .filter_map(|code| {
+            state
+                .currency
+                .rate(code)
+                .and_then(|rate| rate.to_f64())
+                .map(|rate| (code.clone(), rate))
+        })
         .collect();
     Json(CurrencySettings {
         base: state.currency.base_code(),
@@ -2062,6 +2072,14 @@ mod pool_config_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
 
     // `Args::default()` restates clap's `default_value`s, so a knob retuned on
     // the field but not in the impl would silently give an embedder a
@@ -2576,7 +2594,7 @@ mod tests {
     async fn a_configured_currency_is_offered_without_a_code_change() {
         let body = currency_settings(state_with_currency(rolter_core::CurrencyConfig {
             base: "USD".to_string(),
-            rates: std::collections::HashMap::from([("RUB".to_string(), 0.011)]),
+            rates: std::collections::HashMap::from([("RUB".to_string(), d("0.011"))]),
         }))
         .await;
         assert_eq!(body["codes"], serde_json::json!(["USD", "RUB"]));
@@ -2590,7 +2608,7 @@ mod tests {
     async fn a_currency_without_a_rate_is_not_offered() {
         let body = currency_settings(state_with_currency(rolter_core::CurrencyConfig {
             base: "EUR".to_string(),
-            rates: std::collections::HashMap::from([("RUB".to_string(), 0.0097)]),
+            rates: std::collections::HashMap::from([("RUB".to_string(), d("0.0097"))]),
         }))
         .await;
         assert_eq!(body["codes"], serde_json::json!(["EUR", "RUB"]));
@@ -2604,8 +2622,8 @@ mod tests {
         let body = currency_settings(state_with_currency(rolter_core::CurrencyConfig {
             base: "rub".to_string(),
             rates: std::collections::HashMap::from([
-                ("USD".to_string(), 91.0),
-                ("EUR".to_string(), 99.0),
+                ("USD".to_string(), d("91.0")),
+                ("EUR".to_string(), d("99.0")),
             ]),
         }))
         .await;
