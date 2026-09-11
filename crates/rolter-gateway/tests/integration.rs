@@ -21,6 +21,12 @@ use rolter_core::{
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
+/// A decimal literal for tests; see the note in `rolter-core`'s test module on
+/// why `dec!` is not used (#967).
+fn d(literal: &str) -> rust_decimal::Decimal {
+    literal.parse().expect("a valid decimal literal")
+}
+
 /// Bind an axum app to an ephemeral port and serve it in the background,
 /// returning the bound address.
 async fn serve(app: Router) -> SocketAddr {
@@ -3516,8 +3522,8 @@ async fn unpriced_block_serves_a_model_that_has_a_price() {
     config.unpriced_policy = UnpricedPolicy::Block;
     config.model_prices.push(ModelPriceConfig {
         model: "priced-model".to_string(),
-        input_per_mtok: 1.0,
-        output_per_mtok: 2.0,
+        input_per_mtok: d("1.0"),
+        output_per_mtok: d("2.0"),
         cached_input_per_mtok: None,
         currency: "USD".to_string(),
     });

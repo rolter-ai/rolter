@@ -17,6 +17,7 @@ use rolter_core::{
     ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, UnpricedPolicy,
     VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
+use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
@@ -1025,9 +1026,13 @@ impl PostgresConfigStore {
             .into_iter()
             .map(|r| ModelPriceConfig {
                 model: r.model,
-                // decimals are stored as text; a malformed value prices at zero
-                input_per_mtok: r.input_per_mtok.parse().unwrap_or(0.0),
-                output_per_mtok: r.output_per_mtok.parse().unwrap_or(0.0),
+                // the columns are `numeric(12,6)` cast to text, and parsed
+                // straight into `Decimal` — this is the read #967 is about,
+                // where the exactness the column was chosen for used to be
+                // discarded into an `f64`. a malformed value still prices at
+                // zero, which `numeric` cannot actually produce
+                input_per_mtok: r.input_per_mtok.parse().unwrap_or(Decimal::ZERO),
+                output_per_mtok: r.output_per_mtok.parse().unwrap_or(Decimal::ZERO),
                 cached_input_per_mtok: r.cached_input_per_mtok.and_then(|v| v.parse().ok()),
                 // the column has always existed and the dashboard has always
                 // written it; it just never reached the config (#650), so every
@@ -1066,7 +1071,10 @@ impl PostgresConfigStore {
                     scope,
                     id: r.scope_id.to_string(),
                     // decimal stored as text; a malformed value disables the cap
-                    limit_usd: r.limit_usd.parse().unwrap_or(f64::INFINITY),
+                    // a limit that does not parse means "no effective cap", the same
+                    // fail-open this had as `f64::INFINITY`; `numeric(12,4)`
+                    // cannot actually produce one
+                    limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
                 })
@@ -1465,6 +1473,14 @@ impl ConfigStore for PostgresConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
+    /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
+    /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
+    /// production position, which is a poor trade for test ergonomics (#967).
+    fn d(literal: &str) -> rust_decimal::Decimal {
+        literal.parse().expect("a valid decimal literal")
+    }
 
     fn database_url() -> Option<String> {
         std::env::var("ROLTER_TEST_DATABASE_URL").ok()
@@ -2340,11 +2356,11 @@ mod tests {
 
         assert_eq!(config.model_prices.len(), 2);
         assert_eq!(config.model_prices[0].model, "gpt-4o");
-        assert_eq!(config.model_prices[0].input_per_mtok, 3.0);
-        assert_eq!(config.model_prices[0].output_per_mtok, 15.0);
-        assert_eq!(config.model_prices[0].cached_input_per_mtok, Some(1.5));
+        assert_eq!(config.model_prices[0].input_per_mtok, d("3.0"));
+        assert_eq!(config.model_prices[0].output_per_mtok, d("15.0"));
+        assert_eq!(config.model_prices[0].cached_input_per_mtok, Some(d("1.5")));
         assert_eq!(config.model_prices[1].model, "gpt-4o-mini");
-        assert_eq!(config.model_prices[1].input_per_mtok, 0.15);
+        assert_eq!(config.model_prices[1].input_per_mtok, d("0.15"));
         assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
     }
 
@@ -2544,7 +2560,7 @@ mod tests {
         let config = store.load().await.unwrap();
 
         assert_eq!(config.budgets.len(), 1);
-        assert_eq!(config.budgets[0].limit_usd, 100.5);
+        assert_eq!(config.budgets[0].limit_usd, d("100.5"));
     }
 
     // governance dimensions carry their own caps, so a business-unit budget and
@@ -2603,7 +2619,7 @@ mod tests {
             .find(|b| b.scope == BudgetScope::BusinessUnit)
             .expect("business-unit budget in snapshot");
         assert_eq!(budget.id, unit_id.to_string());
-        assert_eq!(budget.limit_usd, 250.0);
+        assert_eq!(budget.limit_usd, d("250.0"));
 
         let limit = config
             .rate_limits

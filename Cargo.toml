@@ -36,6 +36,14 @@ hyper = "1"
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# exact decimal arithmetic for money (#967). the postgres columns are already
+# `numeric`; this stops the exactness being discarded the moment a price is read
+rust_decimal = { version = "1", features = [
+  "serde",
+  "serde-with-float",
+  "maths",
+  "std",
+], default-features = false }
 toml = "1.1"
 # reports the keys a deserialize silently dropped. rolter's config types must
 # keep ignoring unknown keys at runtime (forward compatibility), so `rolter

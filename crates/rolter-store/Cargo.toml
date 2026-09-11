@@ -7,6 +7,7 @@ repository.workspace = true
 description = "repository traits and storage backends for rolter — internal crate, no stable rust api"
 
 [dependencies]
+rust_decimal.workspace = true
 rolter-core.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
