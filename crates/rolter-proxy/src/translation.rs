@@ -1122,7 +1122,7 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
                     "role": "user",
                     "parts": [{
                         "functionResponse": {
-                            "name": message.get("tool_call_id").cloned().unwrap_or(Value::String("tool".into())),
+                            "name": message.get("tool_call_id").cloned().unwrap_or_else(|| Value::String("tool".into())),
                             "response": {"result": content_text(message.get("content"))}
                         }
                     }]
@@ -1408,7 +1408,7 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             "tool" => {
                 let mut item = json!({
                     "type": "function_result",
-                    "call_id": message.get("tool_call_id").cloned().unwrap_or(Value::String("tool".into())),
+                    "call_id": message.get("tool_call_id").cloned().unwrap_or_else(|| Value::String("tool".into())),
                     "result": [{"type": "text", "text": content_text(message.get("content"))}]
                 });
                 if let Some(name) = message.get("name").filter(|v| !v.is_null()) {
