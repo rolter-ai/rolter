@@ -53,3 +53,6 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 ## 2026-09-11 - Eager Evaluation in unwrap_or
 **Learning:** Using `.unwrap_or()` with arguments that perform heap allocations (like `String::new()` via `Value::String` or the `json!()` macro) causes eager evaluation. This means the allocation happens every time, even when the `Some` branch is taken, which introduces severe overhead on hot paths like JSON translation loops.
 **Action:** Always prefer `.unwrap_or_else(|| ...)` for fallbacks that allocate memory (like strings, vecs, or `serde_json::Value` structures) to guarantee lazy evaluation and avoid unnecessary heap allocations.
+## 2026-09-12 - Preserving lazy evaluation in Value::String
+**Learning:** When initializing JSON object defaults or fallbacks in loops, using `.unwrap_or(Value::String(...))` eagerly allocates the fallback string inside the enum variant even when the value exists, which negatively impacts translation performance.
+**Action:** Switch eager fallbacks wrapping `Value::String` and other allocating variants to `.unwrap_or_else(|| Value::String(...))` inside JSON translation layers.
