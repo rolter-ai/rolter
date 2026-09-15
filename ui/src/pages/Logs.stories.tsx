@@ -26,10 +26,17 @@ import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-view
 // rather than a second copy of it
 const fmt = formattersFor("en");
 
-const PRICED_AT = "2026-10-05T12:34:56.789Z";
+// every fixture row gets its own stamp, 350ms after the one before, so the
+// time column can never look right while it renders one value for every row.
+// the #1202 audit read exactly that off a constant here and filed it as a
+// backend bug (#1344, #1393)
+const BASE_TS = Date.parse("2026-10-05T12:34:56.789Z");
+const STEP_MS = 350;
+let seq = 0;
+const nextTs = () => new Date(BASE_TS + STEP_MS * seq++).toISOString();
 
 const row = (over: Partial<InvocationRow>): InvocationRow => ({
-  ts: PRICED_AT,
+  ts: nextTs(),
   request_id: "req-1",
   trace_id: "trace-1",
   org_id: "org-1",
@@ -153,11 +160,48 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // one house stamp for the timestamp column, milliseconds included, and one
-    // grouped number for tokens — neither follows the browser locale (#1182)
-    await expect(await canvas.findAllByText(fmt.dateTimeMs(PRICED_AT))).toHaveLength(2);
+    // one house stamp per row for the timestamp column, milliseconds included,
+    // and one grouped number for tokens — neither follows the browser locale (#1182)
+    for (const r of ROWS)
+      await expect(await canvas.findAllByText(fmt.dateTimeMs(r.ts))).toHaveLength(1);
     await expect(await canvas.findAllByText(fmt.number(12345))).toHaveLength(2);
     await expect(await canvas.findByText(fmt.currency(0.0123, "USD"))).toBeInTheDocument();
+  },
+};
+
+// a burst: three requests a few hundred ms apart, then two that landed inside
+// the same millisecond. the tie is real traffic, not a fixture mistake
+const BURST_AT = Date.parse("2026-10-05T00:02:22.061Z");
+const burstTs = (ms: number) => new Date(BURST_AT + ms).toISOString();
+const BURST: InvocationRow[] = [
+  row({ request_id: "req-b1", ts: burstTs(0) }),
+  row({ request_id: "req-b2", ts: burstTs(250) }),
+  row({ request_id: "req-b3", ts: burstTs(500) }),
+  row({ request_id: "req-b4", ts: burstTs(750) }),
+  row({ request_id: "req-b5", ts: burstTs(750) }),
+];
+
+/**
+ * #1393: every row renders the time it was served, not one shared value. A
+ * regression that collapsed the column to a single stamp would otherwise look
+ * plausible on a fixture that only ever had one.
+ */
+export const EveryRowShowsItsOwnTimestamp: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(BURST)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(BURST[0].ts));
+    const stamps = Array.from(canvasElement.querySelectorAll("tbody tr"), (tr) =>
+      tr.querySelector("td")?.textContent ?? "",
+    );
+    await expect(stamps).toEqual(BURST.map((r) => fmt.dateTimeMs(r.ts)));
+    // four distinct instants, milliseconds included, and the tie kept both rows
+    await expect(new Set(stamps).size).toBe(4);
+    await expect(canvas.getAllByText(fmt.dateTimeMs(burstTs(750)))).toHaveLength(2);
   },
 };
 
@@ -282,7 +326,7 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findAllByText(fmt.dateTimeMs(PRICED_AT));
+    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
     await expectNoHorizontalOverflow();
   },
 };
@@ -296,7 +340,7 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findAllByText(fmt.dateTimeMs(PRICED_AT));
+    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
     await expectNoHorizontalOverflow();
   },
 };
