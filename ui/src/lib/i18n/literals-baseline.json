@@ -32,9 +32,6 @@
   "src/pages/Logs.tsx": [
     "p{…}"
   ],
-  "src/pages/McpLogs.tsx": [
-    "{…} ms"
-  ],
   "src/pages/Models.tsx": [
     "color-mix(in srgb, var(--status-success) 32%, transparent)"
   ],
