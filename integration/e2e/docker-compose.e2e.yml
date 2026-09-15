@@ -79,6 +79,10 @@ services:
       - "4002:4002"
     environment:
       RUST_LOG: info
+      # control defaults to a loopback bind since #971; inside a container that
+      # leaves the published 4001 port with no listener on eth0, so every host
+      # connection resets. safe to widen here: ROLTER_ADMIN_TOKEN is set below
+      ROLTER_CONTROL_HOST: 0.0.0.0
       ROLTER_DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
       ROLTER_REDIS_URL: redis://redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
