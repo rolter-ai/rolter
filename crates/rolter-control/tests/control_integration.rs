@@ -9159,7 +9159,8 @@ async fn mcp_transport_overrides_are_per_server_and_revertible() {
 #[tokio::test]
 async fn org_projects_lists_every_team_in_the_org_and_no_other() {
     skip_without_db!();
-    let pool = fresh_pool().await;
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
         .await
         .unwrap();
