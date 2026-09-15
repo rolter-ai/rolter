@@ -539,6 +539,36 @@ impl Forwarder {
         Err(last.unwrap_or_else(|| Error::Upstream("MCP upstream request failed".to_string())))
     }
 
+    /// Forward an arbitrary HTTP request with a gateway-owned bearer token.
+    ///
+    /// Superseded by [`Forwarder::forward_mcp`], which also carries the
+    /// non-bearer credential kinds and the per-server transport overrides. Kept
+    /// as a delegating shim because the method was public in `v0.1.0` and
+    /// `cargo-semver-checks` compares against that baseline, so renaming it
+    /// outright reads as an unannounced breaking change (#1473).
+    // no `since`: the workspace version is still 0.1.0, and naming a release
+    // that has not happened would be wrong the moment release-plz picks another
+    #[deprecated(note = "use `forward_mcp`, which also takes a credential kind and \
+                         per-server transport overrides")]
+    pub async fn forward_bearer(
+        &self,
+        method: Method,
+        url: &str,
+        headers: reqwest::header::HeaderMap,
+        body: Bytes,
+        bearer: &str,
+    ) -> Result<Response> {
+        self.forward_mcp(
+            method,
+            url,
+            headers,
+            body,
+            McpUpstreamAuth::Bearer(bearer),
+            McpTransportOverrides::default(),
+        )
+        .await
+    }
+
     /// A client whose connect timeout matches `connect_timeout`, built once per
     /// distinct value and reused thereafter.
     fn mcp_client(&self, connect_timeout: Option<Duration>) -> Client {
@@ -1675,5 +1705,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_deprecated_bearer_shim_still_reaches_the_mcp_path() {
+        // the shim exists only to keep the v0.1.0 symbol present for
+        // cargo-semver-checks (#1473), so the thing worth asserting is that it
+        // still applies the credential rather than silently dropping it
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+
+        let fwd = Forwarder::new();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_static("Bearer client-chosen"),
+        );
+        #[allow(deprecated)]
+        let response = fwd
+            .forward_bearer(
+                Method::POST,
+                &format!("http://{addr}/mcp"),
+                headers,
+                Bytes::from_static(b"{}"),
+                "gateway-owned",
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let head = capture.await.unwrap();
+        assert!(
+            head.contains("authorization: bearer gateway-owned"),
+            "shim dropped the gateway credential:\n{head}"
+        );
+        assert!(
+            !head.contains("client-chosen"),
+            "shim let the client choose the downstream credential:\n{head}"
+        );
     }
 }

@@ -98,6 +98,34 @@ and it lives in [Stability markers](stability-markers.md): an `experimental`
 marker is a documented exemption saying the subsystem may change shape or be
 removed in a minor release.
 
+## Renaming a public item on a guarded crate
+
+The job reports a rename as `inherent_method_missing` — it cannot tell a rename
+from a deletion, and both read the same to anything outside the crate. So on a
+guarded crate a rename is not a free refactor, and it has exactly two honest
+endings:
+
+- **Keep the old name as a deprecated shim.** Leave the `pub` item in place,
+  mark it ``#[deprecated(note = "use `<new name>`")]``, and have it delegate to
+  the new one. The symbol is still in the API, the job stays green, and every
+  in-tree caller moves to the new name in the same pull request. This is what
+  `rolter_proxy::Forwarder::forward_bearer` is: #1446 renamed it to
+  `forward_mcp`, which left the job red on every pull request until #1473 put
+  the shim back.
+- **Drop the old name and say so.** Delete it outright and state in the pull
+  request description that moving the API was the point. The job goes red, and
+  that red is the record.
+
+What is not an option is renaming quietly. The job is `continue-on-error`, so
+nothing blocks the merge — the failure just becomes permanent background noise
+on every later pull request, which is how a review signal stops being read at
+all. Do not add a `since` to the `#[deprecated]` unless the release that
+deprecates it is already known; release-plz picks the version from commit types,
+so a guessed one is wrong as often as not.
+
+A shim is removed in a pull request whose title carries the `!` and a
+`BREAKING CHANGE:` footer, once no caller is left.
+
 ## At 1.0 — the job stays advisory
 
 An earlier version of this page planned to promote the job at 1.0: drop
