@@ -353,6 +353,12 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("CreateProject"))
             .ok(Payload::Ref("Project")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/projects",
+                "listOrgProjects",
+                "List every project in an organization, across all of its teams",
+            )
+            .ok(Payload::List("OrgProject")),
             Op::delete("/api/v1/projects/{id}", "deleteProject", "Delete a project"),
             Op::get(
                 "/api/v1/orgs/{org_id}/business-units",
@@ -1882,6 +1888,15 @@ fn tenancy_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["id", "team_id", "name", "created_at"],
             "properties": {"id": uuid, "team_id": uuid, "name": string, "created_at": timestamp}
+        },
+        "OrgProject": {
+            "type": "object",
+            "description": "A project listed org-wide, carrying the name of the team that owns it so callers can group without a request per team.",
+            "required": ["id", "team_id", "team_name", "name", "created_at"],
+            "properties": {
+                "id": uuid, "team_id": uuid, "team_name": string,
+                "name": string, "created_at": timestamp
+            }
         },
         "CreateProject": {
             "type": "object",

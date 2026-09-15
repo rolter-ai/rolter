@@ -1,13 +1,13 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Select } from "@/components/ui/select";
 import {
-  fetchProjects,
+  fetchOrgProjects,
   fetchTeams,
-  type ProjectRow,
+  type OrgProjectRow,
   type TeamRow,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -23,10 +23,10 @@ import { cn } from "@/lib/utils";
  * before this the only way to reach a project in another team was to move the
  * switcher first and come back.
  *
- * There is no org-wide projects endpoint (#1357), so the projects are
- * fanned out one query per team and grouped under the team they belong to —
- * two teams may each have a "prod", and an ungrouped flat list would offer the
- * operator two identical options.
+ * `GET /api/v1/orgs/{org_id}/projects` answers the whole org in one request
+ * (#1357), and each project carries the team that owns it, so the options are
+ * still grouped by team — two teams may each have a "prod", and an ungrouped
+ * flat list would offer the operator two identical options.
  */
 
 /** `""` is the org itself; anything else is `team:<id>` or `project:<id>` */
@@ -56,7 +56,7 @@ export function scopeTargetIds(target: ScopeTarget): {
 
 export interface TeamProjects {
   team: TeamRow;
-  projects: ProjectRow[];
+  projects: OrgProjectRow[];
 }
 
 export interface OrgScope {
@@ -64,7 +64,7 @@ export interface OrgScope {
   /** every team in the org with the projects under it, teams in list order */
   byTeam: TeamProjects[];
   isLoading: boolean;
-  /** the teams request, or any of the per-team project requests, that failed */
+  /** whichever of the two requests failed */
   error: unknown;
   refetch: () => void;
   /**
@@ -95,7 +95,8 @@ const SHARED: {
 } = { refetchOnMount: false, retryOnMount: false, retry: false };
 
 /**
- * Every team in `orgId` and every project under those teams.
+ * Every team in `orgId` and every project under those teams, in two requests
+ * whatever the size of the org.
  *
  * Shares react-query's cache with `useScope()` — the teams query key is the
  * same — so a screen that mounts both pays for one teams request.
@@ -110,20 +111,25 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
 
   const teamRows = teams.data ?? [];
 
-  const projects = useQueries({
-    queries: teamRows.map((team) => ({
-      queryKey: ["scope", "projects", team.id],
-      queryFn: () => fetchProjects(team.id),
-      ...SHARED,
-    })),
+  // one request for the whole org, not one per team. its own key rather than
+  // the per-team `["scope", "projects", teamId]` the switcher uses: the two
+  // answer different questions and neither can be served from the other's cache
+  const projects = useQuery({
+    queryKey: ["scope", "orgProjects", orgId],
+    queryFn: () => fetchOrgProjects(orgId as string),
+    enabled: !!orgId,
+    ...SHARED,
   });
 
-  // plain values rather than memos: the fan-out is a handful of arrays, and a
-  // memo over `useQueries` results would need the query data itself as its
-  // dependency, which is a new array on every settle anyway
-  const byTeam: TeamProjects[] = teamRows.map((team, i) => ({
+  const projectRows = projects.data ?? [];
+
+  // plain values rather than memos: these are two small arrays, and a memo over
+  // query data would need that data as its dependency, which is a new array on
+  // every settle anyway. teams carry the order, so a team with no project of
+  // its own is still offered as a scope
+  const byTeam: TeamProjects[] = teamRows.map((team) => ({
     team,
-    projects: projects[i]?.data ?? [],
+    projects: projectRows.filter((project) => project.team_id === team.id),
   }));
 
   const nameFor = (scope: {
@@ -131,11 +137,8 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
     project_id?: string | null;
   }): string | undefined => {
     if (scope.project_id) {
-      for (const entry of byTeam) {
-        const project = entry.projects.find((p) => p.id === scope.project_id);
-        if (project) return project.name;
-      }
-      return scope.project_id;
+      const project = projectRows.find((p) => p.id === scope.project_id);
+      return project?.name ?? scope.project_id;
     }
     if (scope.team_id) {
       return (
@@ -148,11 +151,11 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
   return {
     teams: teamRows,
     byTeam,
-    isLoading: teams.isLoading || projects.some((q) => q.isLoading),
-    error: teams.error ?? projects.find((q) => q.error)?.error ?? null,
+    isLoading: teams.isLoading || projects.isLoading,
+    error: teams.error ?? projects.error ?? null,
     refetch: () => {
       teams.refetch();
-      for (const q of projects) q.refetch();
+      projects.refetch();
     },
     nameFor,
   };
@@ -163,8 +166,8 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
  * teams.
  *
  * The scope is part of a form row rather than a region of its own, so the three
- * states are control-sized: a `ControlSkeleton` while the fan-out is in flight,
- * a line under the select when the org has no teams to narrow to, and a
+ * states are control-sized: a `ControlSkeleton` while the two requests are in
+ * flight, a line under the select when the org has no teams to narrow to, and a
  * `LoadError` under a select that still offers the org — a failed team list
  * makes the narrower scopes unreachable, not the org-wide mapping the operator
  * was probably writing anyway.
