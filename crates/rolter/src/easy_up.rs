@@ -332,6 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn the_bundled_example_config_is_lint_clean() {
+        // the byte-equality test above plus rolter-core's
+        // `the_shipped_example_config_is_clean` only prove this transitively,
+        // and the copy exists precisely so it *may* diverge one day. lint the
+        // bytes `easy-up` actually writes, so relaxing the equality check
+        // cannot silently drop coverage on the file operators start from
+        let findings =
+            rolter_core::config_lint::unknown_keys(EXAMPLE_CONFIG).expect("bundled example parses");
+        assert!(
+            findings.is_empty(),
+            "crates/rolter/rolter.example.toml has unrecognised keys: {:?}",
+            findings
+                .iter()
+                .map(rolter_core::config_lint::describe)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn ensure_config_writes_when_missing_and_is_idempotent() {
         let dir = std::env::temp_dir().join(format!("rolter-easyup-{}", std::process::id()));
         let path = dir.join("rolter.toml");
