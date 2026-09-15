@@ -856,10 +856,7 @@ fn anthropic_request(mut v: Value) -> Value {
             Value::Object(m) if m.get("type") == Some(&json!("tool")) => {
                 json!({"type":"function","function":{"name":m.get("name").cloned().unwrap_or(Value::Null)}})
             }
-            Value::Object(m) => m
-                .get("type")
-                .cloned()
-                .unwrap_or(Value::Object(m)),
+            Value::Object(m) => m.get("type").cloned().unwrap_or(Value::Object(m)),
             other => other,
         };
     }
