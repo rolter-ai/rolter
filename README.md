@@ -126,14 +126,14 @@ rolter stands on the shoulders of great open-source projects and research. See o
 - `crates/rolter-core` — config model, domain types, errors, telemetry
 - `crates/rolter-balancer` — load-balancing strategies (incl. approximate cache-aware)
 - `crates/rolter-proxy` — upstream forwarding, header injection, streaming
-- `crates/rolter-store` — repository traits + in-memory store (Postgres/Redis/ClickHouse next)
+- `crates/rolter-store` — storage traits, `postgres` feature backend (source of truth), ClickHouse-backed request logs
 - `crates/rolter-auth` — virtual keys, roles, access checks
 - `crates/rolter-gateway` — data-plane binary
 - `crates/rolter-control` — control-plane binary + static UI host
 - `crates/rolter` — unified `rolter` launcher (`gateway` / `control` / `easy-up`)
 - `ui/` — Vite + React + shadcn/ui dashboard
 - `docs/`, `user-docs/` — architecture/ADRs and the user documentation site
-- `migrations/`, `clickhouse/` — database schemas
+- `crates/rolter-store/migrations/`, `clickhouse/` — database schemas
 
 > **The library crates are internal.** `rolter-core`, `rolter-auth`,
 > `rolter-balancer`, `rolter-proxy`, `rolter-store`, `rolter-gateway` and
