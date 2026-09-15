@@ -13,15 +13,13 @@ const TEAMS = [
 ];
 
 // each team has a project called "prod": the reason the options are grouped by
-// team rather than listed flat
-const PROJECTS: Record<string, { id: string; team_id: string; name: string; created_at: string }[]> =
-  {
-    "team-1": [
-      { id: "project-1", team_id: "team-1", name: "Gateway", created_at: NOW },
-      { id: "project-2", team_id: "team-1", name: "prod", created_at: NOW },
-    ],
-    "team-2": [{ id: "project-3", team_id: "team-2", name: "prod", created_at: NOW }],
-  };
+// team rather than listed flat. one org-wide list, as the endpoint returns it —
+// every row naming the team that owns it
+const PROJECTS = [
+  { id: "project-1", team_id: "team-1", team_name: "Platform", name: "Gateway", created_at: NOW },
+  { id: "project-2", team_id: "team-1", team_name: "Platform", name: "prod", created_at: NOW },
+  { id: "project-3", team_id: "team-2", team_name: "Payments", name: "prod", created_at: NOW },
+];
 
 /**
  * The org chain, answered directly rather than through `scoped()`.
@@ -34,15 +32,14 @@ const chain =
   (
     over: {
       teams?: () => Response | Promise<Response>;
-      projects?: (teamId: string) => Response | Promise<Response>;
+      projects?: () => Response | Promise<Response>;
     } = {},
   ): FetchStub =>
   async (input) => {
     const path = new URL(String(input), "http://localhost").pathname;
     if (path === "/api/v1/orgs") return json([ORG]);
-    const projects = /^\/api\/v1\/teams\/([^/]+)\/projects$/.exec(path);
-    if (projects) {
-      return (over.projects ?? ((id: string) => json(PROJECTS[id] ?? [])))(projects[1]);
+    if (/^\/api\/v1\/orgs\/[^/]+\/projects$/.test(path)) {
+      return (over.projects ?? (() => json(PROJECTS)))();
     }
     if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) {
       return (over.teams ?? (() => json(TEAMS)))();
@@ -115,7 +112,7 @@ export const PicksAProjectInAnotherTeam: Story = {
   },
 };
 
-/** One request per team, so the fan-out gets a control-sized placeholder. */
+/** Two requests, and a control-sized placeholder until both have answered. */
 export const Loading: Story = {
   args: { fetchStub: () => new Promise<Response>(() => {}) },
   play: async ({ canvasElement }) => {
@@ -147,20 +144,21 @@ export const TeamsFailed: Story = {
   },
 };
 
-/** One team's projects failing is the same story, one level down. */
+/** The project list failing is the same story, one level down. */
 export const ProjectsFailed: Story = {
   args: {
-    fetchStub: chain({
-      projects: (id) =>
-        id === "team-2"
-          ? json({ error: { message: "boom" } }, 500)
-          : json(PROJECTS[id] ?? []),
-    }),
+    fetchStub: chain({ projects: () => json({ error: { message: "boom" } }, 500) }),
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
       expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/),
     );
+    // the teams still loaded, so the picker keeps offering them
+    await expect(
+      within(canvas.getByLabelText("Where the role applies")).getByRole("group", {
+        name: "Teams",
+      }),
+    ).toBeInTheDocument();
   },
 };

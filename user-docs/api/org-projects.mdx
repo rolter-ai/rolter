@@ -1,0 +1,105 @@
+---
+title: "Listing Every Project in an Organization"
+sidebarTitle: "Org projects"
+description: "GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team."
+---
+
+Projects live under teams, so `GET /api/v1/teams/{team_id}/projects` answers for
+one team at a time. Anything that has to name a project *anywhere* in the
+organization — an SCIM or SSO group mapping, a scope picker, a report that walks
+the whole tenancy — would otherwise list the teams and then issue one request
+per team. In an org with 40 teams that is 41 round trips to fill one list.
+
+`GET /api/v1/orgs/{org_id}/projects` is that list in one request.
+
+## Request
+
+```http
+GET /api/v1/orgs/{org_id}/projects
+Authorization: Bearer <session or admin token>
+```
+
+```bash
+curl -s https://control.example.com/api/v1/orgs/$ORG_ID/projects \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+There are no query parameters. The organization id is the only input.
+
+## Response
+
+```json
+[
+  {
+    "id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+    "team_id": "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+    "team_name": "Platform",
+    "name": "gateway",
+    "created_at": "2026-01-14T09:03:11.482Z"
+  },
+  {
+    "id": "8f2a41c7-9b3d-4c55-bb1e-71a0c2e4d9f3",
+    "team_id": "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+    "team_name": "Platform",
+    "name": "prod",
+    "created_at": "2026-01-14T09:04:02.117Z"
+  },
+  {
+    "id": "c41d7e02-3a8b-4f19-8f2c-5d9e1a7b3c04",
+    "team_id": "9a8b7c6d-5e4f-4031-9182-736455ab90cd",
+    "team_name": "Payments",
+    "name": "prod",
+    "created_at": "2026-02-02T15:41:37.903Z"
+  }
+]
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | uuid | the project |
+| `team_id` | uuid | the team that owns it |
+| `team_name` | string | that team's name, carried on the row |
+| `name` | string | the project's name, unique only within its team |
+| `created_at` | RFC 3339 | when the project was created |
+
+Rows are ordered by team name and then project name, so the result arrives
+already grouped.
+
+<Note>
+  **`team_name` is why this is one request and not two.** A project name is
+  unique only inside its team, so two teams may each own a `prod`. A caller
+  rendering an org-wide list has to say which `prod` it means, and carrying the
+  team's name on the row is what lets it group by team without fetching the team
+  list as well.
+</Note>
+
+## Authorization
+
+The `project` capability's read action, checked at the **organization** scope:
+a viewer membership on the org is enough, and a membership in one of its teams
+is not. The answer spans every team, so the authority has to be the org's.
+
+This is the same capability `GET /api/v1/teams/{team_id}/projects` takes — that
+route just checks it against the team you named. `GET /api/v1/rbac/matrix`
+publishes the row, and `GET /api/v1/rbac/effective?org_id=...` reports whether
+the calling account holds it here.
+
+A caller without it is refused with `403`, and an unauthenticated one with
+`401`, in the standard error shape:
+
+```json
+{
+  "error": {
+    "message": "forbidden",
+    "type": "forbidden",
+    "code": "forbidden"
+  }
+}
+```
+
+## When to use the per-team route instead
+
+Use `GET /api/v1/teams/{team_id}/projects` when you already know the team — it
+is narrower, and it is the route a team-scoped account can reach without any
+org-level membership. Reach for the org-wide list only when the question really
+is org-wide.

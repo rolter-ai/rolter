@@ -106,7 +106,7 @@ the repo: on first use of a machine, tell the session "this machine is
 - Any table the data plane consumes must bump `config_version` inside the write transaction, via a `bump_config_version()` statement trigger (`0003_config_version_trigger.sql`, `0029_*`, `0031_*` are the models to copy). Without it `/internal/snapshot` never propagates the change and the gateway silently serves stale config.
 - Postgres tests must run in an isolated schema (per-test `search_path`); the coverage job runs plain `cargo test` against a shared database and will race otherwise. Build the schema through `rolter_store::postgres::test_schema::TestSchema` and bind the guard for the whole test — it drops the schema when the test finishes, panic included, and a hand-rolled `create schema` leaks one per test until the local database dies (#1364). See `docs/development/testing.md`.
 - `rolter-control` CRUD tests only build under `--features postgres`. Check both feature sets before pushing.
-- `cargo hack check --each-feature --workspace` runs in CI: every feature must compile alone, so never let a feature-gated item leak into a default-feature path.
+- `cargo hack check --each-feature --workspace` runs in CI under `RUSTFLAGS=-D warnings`: every feature must compile alone *and warning-free*, so never let a feature-gated item leak into a default-feature path, and gate a helper whose only caller is feature-gated with the same `#[cfg]` rather than leaving it dead under the other combinations (#1399). Reproduce with `RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets`; the default clippy run only covers default features and will not catch these.
 - A crate's `postgres` feature enables its dependencies', never the other way round, so `rolter-control/postgres` can be on while `rolter/postgres` is off. Never write an exhaustive struct literal of a dependency's type whose fields that dependency feature-gates — use `..Default::default()`, since your own `#[cfg]` cannot see the dependency's feature (#1295). The `cross-crate feature combination` step in `quality.yml` builds that combination.
 
 ## Maintenance matrix
@@ -189,7 +189,8 @@ This repo uses **Conventional Commits** for commit messages and PR titles. Forma
 ```
 
 - **types**: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`
-- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`, `release`, `e2e`
+- **scopes**: `gateway`, `balancer`, `proxy`, `core`, `store`, `auth`, `control`, `ui`, `docs`, `infra`, `ci`, `deps`, `deps-dev`, `release`, `e2e`
+  - `deps-dev` is dependabot's prefix for a devDependency bump and exists so those land unedited. A grouped bump is titled `chore(deps)`; a **major** bump falls outside the `minor`/`patch` groups in `.github/dependabot.yml` and arrives on its own as `chore(deps-dev)` (#1453). Write `deps` by hand — reach for `deps-dev` only when a bot already did.
 - subject is imperative, lowercase, ≤ 72 chars, no trailing period
 - breaking changes: add `!` after the scope (`feat(core)!: ...`) and a `BREAKING CHANGE:` footer
 

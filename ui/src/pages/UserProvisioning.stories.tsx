@@ -69,13 +69,23 @@ const PROJECTS: Record<string, { id: string; team_id: string; name: string; crea
   "team-2": [{ id: "proj-2", team_id: "team-2", name: "checkout", created_at: NOW }],
 };
 
+// the same projects as the org-wide endpoint returns them: one list, every row
+// naming its owning team, which is what the mapping form's picker reads (#1357)
+const ORG_PROJECTS = TEAMS.flatMap((team) =>
+  (PROJECTS[team.id] ?? []).map((project) => ({ ...project, team_name: team.name })),
+);
+
 // the screen resolves its org through useScope(), which fetches orgs, teams and
 // projects before the token list is even enabled — so every stub has to route
 // by url rather than answer one shape
 function scoped(
   tokens: (init?: RequestInit) => Promise<Response>,
   mappings: (init?: RequestInit) => Promise<Response> = async () => json([]),
-  chain: { teams?: () => Promise<Response>; projects?: () => Promise<Response> } = {},
+  chain: {
+    teams?: () => Promise<Response>;
+    projects?: () => Promise<Response>;
+    orgProjects?: () => Promise<Response>;
+  } = {},
 ): FetchStub {
   return async (input, init) => {
     const url = String(input);
@@ -86,6 +96,9 @@ function scoped(
     // the projects route also contains "/teams", so it is matched first
     const projects = /^\/api\/v1\/teams\/([^/]+)\/projects$/.exec(path);
     if (projects) return (chain.projects ?? (async () => json(PROJECTS[projects[1]] ?? [])))();
+    if (/^\/api\/v1\/orgs\/[^/]+\/projects$/.test(path)) {
+      return (chain.orgProjects ?? (async () => json(ORG_PROJECTS)))();
+    }
     if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) {
       return (chain.teams ?? (async () => json(TEAMS)))();
     }
@@ -449,8 +462,8 @@ export const ScopePickerHasNoTeams: Story = {
   },
 };
 
-// the teams the picker fans out over can fail on their own: the narrower scopes
-// go away, the org-wide mapping the operator was probably writing does not
+// the team list the picker reads can fail on its own: the narrower scopes go
+// away, the org-wide mapping the operator was probably writing does not
 export const ScopePickerCannotListTeams: Story = {
   render: () => (
     <Harness

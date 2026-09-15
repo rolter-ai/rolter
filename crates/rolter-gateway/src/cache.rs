@@ -86,10 +86,7 @@ impl ResponseCache {
         let mut out = String::with_capacity(namespace.len() + 1 + digest.len() * 2);
         out.push_str(namespace);
         out.push(':');
-        for byte in digest {
-            out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-            out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
-        }
+        out.push_str(&rolter_auth::hex::encode(&digest));
         out
     }
 
