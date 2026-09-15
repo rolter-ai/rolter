@@ -21,8 +21,8 @@ use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::{AdvancedModelConfig, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
-    AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, Project,
-    PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
+    AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
+    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
     ProviderGroupMember, RateLimit, Route, RouteTarget, Skill, SkillVersion, Team, User,
     VirtualKey,
 };
@@ -51,6 +51,7 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/teams/{team_id}/projects",
             get(list_projects).post(create_project),
         )
+        .route("/api/v1/orgs/{org_id}/projects", get(list_org_projects))
         .route("/api/v1/projects/{id}", delete(delete_project))
         .route(
             "/api/v1/orgs/{org_id}/business-units",
@@ -1939,6 +1940,32 @@ async fn list_projects(
     let chain = ScopeChain::from_team(pool(&state), team_id).await?;
     authorize(&state, &principal, chain, cap!("project", Read)).await?;
     Ok(Json(ProjectRepo(pool(&state)).list(team_id).await?))
+}
+
+/// `GET /api/v1/orgs/{org_id}/projects` — every project in the org.
+///
+/// The per-team route above answers one team at a time, so a caller that needs
+/// to name any project in the org — an SCIM or SSO group mapping, which may
+/// grant anywhere inside its own org — had to fan out one request per team
+/// (#1357). Each row carries its `team_id` and the team's name so the caller
+/// can still group by team without that fan-out.
+///
+/// Guarded at org scope with the same `project:read` capability the per-team
+/// route takes: the answer spans every team, so the authority has to be the
+/// org's rather than any one team's.
+async fn list_org_projects(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<OrgProject>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("project", Read),
+    )
+    .await?;
+    Ok(Json(ProjectRepo(pool(&state)).list_for_org(org_id).await?))
 }
 
 #[derive(Deserialize)]

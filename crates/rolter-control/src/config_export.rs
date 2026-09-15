@@ -370,6 +370,84 @@ mod tests {
     use super::*;
     use rolter_core::{ParamPolicy, ProviderKind, Target};
 
+    /// Everything the export claims to round-trip, in one file.
+    ///
+    /// Shared by the round-trip test, which imports it into a real database,
+    /// and by the unknown-key lint below, which parses it directly — one
+    /// fixture, so a section added to the export is covered by both rather than
+    /// drifting into being covered by one.
+    const FIXTURE: &str = r#"
+[[providers]]
+name = "openai-primary"
+slug = "openai-primary"
+kind = "openai"
+api_base = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[providers]]
+name = "vllm-1"
+slug = "vllm-1"
+kind = "openai_compatible"
+api_base = "http://vllm-1:8000"
+
+[[provider_groups]]
+name = "cluster"
+slug = "cluster"
+strategy = "cache_aware"
+[[provider_groups.members]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 2
+
+[[routes]]
+model = "gpt-4o"
+strategy = "round_robin"
+[routes.params]
+temperature = 0.0
+max_tokens = 1024
+[routes.param_policy]
+mode = "deny"
+allow = ["max_tokens"]
+[[routes.targets]]
+provider = "openai-primary"
+model = "gpt-4o"
+weight = 1
+
+[[routes]]
+model = "llama"
+strategy = "cache_aware"
+[[routes.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 3
+
+[[model_prices]]
+model = "gpt-4o"
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+currency = "USD"
+
+[prompt_templates]
+enabled = true
+[[prompt_templates.templates]]
+id = "support-preamble"
+version = 1
+routes = ["gpt-4o"]
+[[prompt_templates.templates.variables]]
+name = "persona"
+default = "a helpful support assistant"
+[[prompt_templates.templates.decorators]]
+role = "system"
+position = "prepend"
+content = "You are {{ persona }}."
+
+[logging.payload_capture]
+enabled = true
+max_bytes = 32768
+redact_fields = ["authorization"]
+models = ["gpt-4o"]
+"#;
+
     /// `ModelRoute` carries no `Default`, so fixtures spell it out once here
     /// rather than in every test.
     fn route(model: &str) -> ModelRoute {
@@ -517,6 +595,70 @@ mod tests {
         assert_eq!(render(&config), render(&config));
     }
 
+    /// [`FIXTURE`] as a `GatewayConfig`, plus the fields the renderer only
+    /// writes conditionally, so one document exercises every key the exporter
+    /// can emit.
+    fn representative_config() -> GatewayConfig {
+        let mut config = GatewayConfig::from_toml_str(FIXTURE).expect("the fixture must parse");
+        let vllm = config
+            .providers
+            .iter_mut()
+            .find(|p| p.name == "vllm-1")
+            .expect("the fixture has a vllm provider");
+        vllm.egress_proxy = Some("http://egress:3128".to_string());
+        vllm.egress_proxies = vec![
+            "http://egress-a:3128".to_string(),
+            "http://egress-b:3128".to_string(),
+        ];
+        let price = config
+            .model_prices
+            .first_mut()
+            .expect("the fixture has a price");
+        price.cached_input_per_mtok = Some(rust_decimal::Decimal::new(125, 2));
+        // exported behind a comment telling the operator to drop it, but
+        // exported all the same, so the key has to be one rolter reads
+        config.logging.payload_capture.virtual_key_ids =
+            vec!["7a1f0f7e-0000-0000-0000-000000000000".to_string()];
+        config
+    }
+
+    /// The export must be a file rolter itself does not complain about.
+    ///
+    /// Since #1438 every config load path lints the document for keys no config
+    /// struct claims and warns about each one at startup. An exporter whose
+    /// field vocabulary drifts from the config model would therefore greet an
+    /// operator with "unrecognised config key" on a file rolter wrote — the
+    /// tool contradicting itself on the first promotion (#1439). Re-parsing,
+    /// which the tests above already check, does not catch this: an unknown key
+    /// parses fine and is silently ignored, which is the whole reason the lint
+    /// exists.
+    #[test]
+    fn the_exported_config_carries_no_unrecognised_keys() {
+        let rendered = render(&representative_config());
+        let findings =
+            rolter_core::config_lint::unknown_keys(&rendered).expect("the export must be toml");
+        assert!(
+            findings.is_empty(),
+            "rolter config export emitted keys rolter does not read: {:?}\n{rendered}",
+            findings.iter().map(ToString::to_string).collect::<Vec<_>>()
+        );
+    }
+
+    /// The same guarantee for the other end of the range: a deployment with
+    /// nothing configured still exports `[logging.payload_capture]` and the
+    /// header, and neither may carry a key the loader ignores.
+    #[test]
+    fn an_empty_deployment_exports_no_unrecognised_keys() {
+        let rendered = render(&GatewayConfig::default());
+        let findings =
+            rolter_core::config_lint::unknown_keys(&rendered).expect("the export must be toml");
+        assert!(
+            findings.is_empty(),
+            "an empty export emitted keys rolter does not read: {:?}\n{rendered}",
+            findings.iter().map(ToString::to_string).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_stored_template_id_exports_as_its_slug() {
         assert_eq!(
@@ -538,78 +680,7 @@ mod tests {
         use rolter_store::ConfigStore;
         use uuid::Uuid;
 
-        /// Everything the export claims to round-trip, in one file.
-        const FIXTURE: &str = r#"
-[[providers]]
-name = "openai-primary"
-slug = "openai-primary"
-kind = "openai"
-api_base = "https://api.openai.com"
-api_key_env = "OPENAI_API_KEY"
-
-[[providers]]
-name = "vllm-1"
-slug = "vllm-1"
-kind = "openai_compatible"
-api_base = "http://vllm-1:8000"
-
-[[provider_groups]]
-name = "cluster"
-slug = "cluster"
-strategy = "cache_aware"
-[[provider_groups.members]]
-provider = "vllm-1"
-model = "meta-llama/Llama-3.1-8B-Instruct"
-weight = 2
-
-[[routes]]
-model = "gpt-4o"
-strategy = "round_robin"
-[routes.params]
-temperature = 0.0
-max_tokens = 1024
-[routes.param_policy]
-mode = "deny"
-allow = ["max_tokens"]
-[[routes.targets]]
-provider = "openai-primary"
-model = "gpt-4o"
-weight = 1
-
-[[routes]]
-model = "llama"
-strategy = "cache_aware"
-[[routes.targets]]
-provider = "vllm-1"
-model = "meta-llama/Llama-3.1-8B-Instruct"
-weight = 3
-
-[[model_prices]]
-model = "gpt-4o"
-input_per_mtok = 2.5
-output_per_mtok = 10.0
-currency = "USD"
-
-[prompt_templates]
-enabled = true
-[[prompt_templates.templates]]
-id = "support-preamble"
-version = 1
-routes = ["gpt-4o"]
-[[prompt_templates.templates.variables]]
-name = "persona"
-default = "a helpful support assistant"
-[[prompt_templates.templates.decorators]]
-role = "system"
-position = "prepend"
-content = "You are {{ persona }}."
-
-[logging.payload_capture]
-enabled = true
-max_bytes = 32768
-redact_fields = ["authorization"]
-models = ["gpt-4o"]
-"#;
+        use super::FIXTURE;
 
         #[tokio::test]
         async fn an_export_reimports_to_a_byte_identical_export() {

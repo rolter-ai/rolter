@@ -62,7 +62,9 @@ export function StatusRow({
     <Tag
       className={cn(
         "flex w-full items-center gap-1.5 border-none bg-transparent px-0 py-0.5 text-left text-[color:var(--text-secondary)]",
-        interactive ? "cursor-pointer hover:opacity-80" : "cursor-default",
+        interactive
+          ? "cursor-pointer hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+          : "cursor-default",
         className,
       )}
       onClick={onClick}
@@ -70,7 +72,10 @@ export function StatusRow({
       {...props}
     >
       <span
-        className={cn("flex-none text-[10px] leading-none", breathe && "animate-pulse")}
+        className={cn(
+          "flex-none text-[10px] leading-none",
+          breathe && "animate-pulse",
+        )}
         style={{ color }}
         aria-hidden
       >
@@ -78,12 +83,19 @@ export function StatusRow({
       </span>
       <span
         className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase tracking-wide"
-        style={colorText ? { color: LABEL_COLORS[status] ?? LABEL_COLORS.idle } : undefined}
+        style={
+          colorText
+            ? { color: LABEL_COLORS[status] ?? LABEL_COLORS.idle }
+            : undefined
+        }
       >
         {label}
       </span>
       {chevron && (
-        <span className="ml-auto flex-none text-[9px] text-[color:var(--text-subtle)]" aria-hidden>
+        <span
+          className="ml-auto flex-none text-[9px] text-[color:var(--text-subtle)]"
+          aria-hidden
+        >
           ▸
         </span>
       )}

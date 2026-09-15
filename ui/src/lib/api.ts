@@ -722,8 +722,30 @@ export function fetchTeams(orgId: string): Promise<TeamRow[]> {
   return getJson<TeamRow[]>(`/api/v1/orgs/${orgId}/teams`);
 }
 
+/**
+ * A project listed org-wide, carrying the name of the team that owns it.
+ *
+ * Two teams may each own a "prod", so a control that names a project anywhere
+ * in the org groups by team — and the team's name rides along with the row so
+ * that grouping costs no extra request.
+ */
+export interface OrgProjectRow extends ProjectRow {
+  team_name: string;
+}
+
 export function fetchProjects(teamId: string): Promise<ProjectRow[]> {
   return getJson<ProjectRow[]>(`/api/v1/teams/${teamId}/projects`);
+}
+
+/**
+ * Every project in the org, across all of its teams, in one request.
+ *
+ * The per-team `fetchProjects` is what a caller wants when it already knows the
+ * team. Anything that has to name a project *anywhere* in the org would
+ * otherwise pay one request per team (#1357).
+ */
+export function fetchOrgProjects(orgId: string): Promise<OrgProjectRow[]> {
+  return getJson<OrgProjectRow[]>(`/api/v1/orgs/${orgId}/projects`);
 }
 
 export function createOrg(input: {
