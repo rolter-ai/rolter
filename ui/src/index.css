@@ -101,7 +101,7 @@
          danger  #ff6f66  4.78:1 worst
        colour a status *label* with these; colour a status *shape* with the
        fill hue above. there is no light theme, so no tailwind `dark` variant
-       either — see docs/development/dashboard-theme.md */
+       either — see docs/dev-docs/development/dashboard-theme.md */
     --status-success-text: #38c163;
     --status-warning-text: var(--status-warning);
     --status-info-text: #6ba1ff;

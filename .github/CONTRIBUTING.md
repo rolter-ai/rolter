@@ -1,7 +1,7 @@
 # Contributing to rolter
 
 Thanks for helping build rolter! This is a short pointer; the full guide lives
-in [`docs/development/contributing.md`](docs/development/contributing.md).
+in [`docs/dev-docs/development/contributing.md`](docs/dev-docs/development/contributing.md).
 
 ## Quick start
 
@@ -13,17 +13,17 @@ in [`docs/development/contributing.md`](docs/development/contributing.md).
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test --workspace
    ```
-4. Use [Conventional Commits](docs/development/commit-conventions.md) for commit
+4. Use [Conventional Commits](docs/dev-docs/development/commit-conventions.md) for commit
    messages and the PR title.
 5. Link issues with `Closes #N` / `Refs #N`.
 6. Open a PR, fill in the template, and make sure CI is green.
 
 ## More
 
-- Full contributing guide: [`docs/development/contributing.md`](docs/development/contributing.md)
-- Dev setup: [`docs/development/setup.md`](docs/development/setup.md)
-- Testing: [`docs/development/testing.md`](docs/development/testing.md)
-- Architecture: [`docs/architecture/overview.md`](docs/architecture/overview.md)
+- Full contributing guide: [`docs/dev-docs/development/contributing.md`](docs/dev-docs/development/contributing.md)
+- Dev setup: [`docs/dev-docs/development/setup.md`](docs/dev-docs/development/setup.md)
+- Testing: [`docs/dev-docs/development/testing.md`](docs/dev-docs/development/testing.md)
+- Architecture: [`docs/dev-docs/architecture/overview.md`](docs/dev-docs/architecture/overview.md)
 - Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 - Security policy: [`SECURITY.md`](SECURITY.md)
 

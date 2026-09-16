@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 // the status fill hue, the label off the matching --status-*-text token that is
 // contrast-checked against both the tint and --surface-base (#1199). the theme
 // is dark-only, so there are no tailwind `dark` variants here — see
-// docs/development/dashboard-theme.md
+// docs/dev-docs/development/dashboard-theme.md
 const badgeVariants = cva(
   "inline-flex items-center gap-1 h-5 px-2 rounded-sm border text-[0.625rem] font-medium leading-none whitespace-nowrap",
   {

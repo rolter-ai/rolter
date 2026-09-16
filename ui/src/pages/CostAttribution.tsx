@@ -436,7 +436,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   };
 
   // a noun cannot be interpolated into a sentence frame and still decline, so
-  // each kind names its own key (docs/development/i18n.md)
+  // each kind names its own key (docs/dev-docs/development/i18n.md)
   const summaryKey =
     kind === "unit"
       ? "pages.costAttribution.unitSummary"

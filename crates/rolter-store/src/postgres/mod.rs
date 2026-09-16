@@ -160,7 +160,7 @@ pub async fn pending_migrations(pool: &PgPool) -> Result<Vec<i64>> {
 /// `public` schema during DDL, and gets it back when the test finishes.
 ///
 /// Available to other crates' tests behind the `test-support` feature; see
-/// `docs/development/testing.md`.
+/// `docs/dev-docs/development/testing.md`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_schema;
 

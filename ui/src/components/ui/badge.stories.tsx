@@ -23,7 +23,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 // the token each coloured tone must resolve its label to. the theme is
-// dark-only (docs/development/dashboard-theme.md), so a tone that drifts back
+// dark-only (docs/dev-docs/development/dashboard-theme.md), so a tone that drifts back
 // to a raw Tailwind palette colour — or grows a tailwind `dark` variant nothing
 // can ever activate — is the regression this story guards (#1199)
 const TONE_TOKENS = {

@@ -9,7 +9,7 @@
 //
 // Nothing here imports the tokeniser. `code-highlight.ts` does, and it is
 // reached through a dynamic `import()` from `CodeBlock`, so a screen that never
-// shows code pays nothing for the grammars. See docs/development/highlighting.md.
+// shows code pays nothing for the grammars. See docs/dev-docs/development/highlighting.md.
 
 /**
  * The languages the dashboard highlights.

@@ -39,7 +39,7 @@ privileged local access already granted by the operator.
 
 ## Hardening & operational guidance
 
-See [`docs/architecture/security.md`](docs/architecture/security.md) for the
+See [`docs/dev-docs/architecture/security.md`](docs/dev-docs/architecture/security.md) for the
 threat model, secret handling (envelope encryption, `ROLTER_KEK`),
 transport, and tenant isolation. Key reminders:
 

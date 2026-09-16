@@ -758,7 +758,7 @@ where
         // that by-name match is off the request path — these are observable
         // instruments, so the SDK drives them on its export interval while the
         // hot path only does `fetch_add` on a named atomic. audited against
-        // OTel's don't-wrap guidance in #815; see docs/architecture/observability.md
+        // OTel's don't-wrap guidance in #815; see docs/dev-docs/architecture/observability.md
         for (kind, name, help, _) in collect() {
             let pick = collect.clone();
             let observe = move |value: &dyn Fn(u64)| {
