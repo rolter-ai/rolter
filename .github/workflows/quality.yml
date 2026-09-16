@@ -294,12 +294,20 @@ jobs:
 
   # ── workflow security: zizmor static analysis ───────────────────────────────
   # catches workflow security smells (unpinned actions, template injection in
-  # run:, over-broad GITHUB_TOKEN). informational for now; promote to blocking
-  # once the baseline is clean.
+  # run:, over-broad GITHUB_TOKEN). a **merge gate** since #1456: the baseline
+  # was clean at `medium`, and an informational job that nobody has to fix is
+  # one everybody learns to scroll past — a regression to 34 findings went
+  # unnoticed for exactly that reason (#1325), and an unreachable action pin
+  # (#1227) rode along on every PR for weeks as accepted noise. blocking is
+  # what makes a clean baseline stay clean.
+  #
+  # threshold is `--min-severity=medium --persona=regular`, the setting the
+  # baseline was proven clean against. the four `# zizmor: ignore[...]`
+  # suppressions in the tree were each re-read in #1456 and each still carries
+  # the reason it was added; see docs/development/testing.md.
   zizmor:
-    name: zizmor (informational)
+    name: zizmor
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:

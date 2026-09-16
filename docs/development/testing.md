@@ -287,7 +287,7 @@ Policy (ROL-246):
 
 ## CI
 
-`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
 
 ### UI dependencies and the lockfile
 
@@ -337,6 +337,43 @@ docker run --rm -v "$PWD:/repo" -w /repo \
   ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
   dir . --config .github/config/gitleaks.toml --redact --exit-code 1
 ```
+### Workflow security (zizmor)
+
+The `zizmor` job audits `.github/workflows/` and `.github/actions/` for workflow
+security smells — unpinned or impostor action refs, template injection into
+`run:`, over-broad `GITHUB_TOKEN` scopes, cache poisoning, dangerous triggers.
+It is a **merge gate** (#1456): a finding fails `quality`, which fails `ci-ok`.
+
+It ran as informational (`continue-on-error: true`) until the baseline was
+clean. That state is what the promotion is a reaction to: a regression to 34
+findings went unnoticed precisely because nothing failed on it (#1325), and an
+action pinned to an unreachable commit (#1227) was waved through as noise on
+every PR for weeks. A check nobody has to fix is a check nobody reads.
+
+The gate runs at `--min-severity=medium --persona=regular`, the setting the
+baseline was proven clean against. Reproduce a CI run locally:
+
+```bash
+uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+  .github/workflows/ .github/actions/
+```
+
+Some audits query the GitHub API (`impostor-commit`, `stale-action-refs`), so
+export a `GH_TOKEN` — or pass `--offline` to skip them, which is enough for a
+quick check but is **not** what CI runs.
+
+Fix a finding rather than silencing it. Where a finding is genuinely a
+false positive for this repository, suppress that one rule on that one step with
+`# zizmor: ignore[<rule>]` and put the reason in a comment directly above it —
+a bare suppression is indistinguishable from the noise this gate exists to stop.
+The four suppressions in the tree today are:
+
+| Where | Rule | Why |
+|---|---|---|
+| `engine-integration.yml` — `Swatinem/rust-cache` | `cache-poisoning` | nothing this workflow builds is published, so the cache cannot poison a release |
+| `release-plz.yml` — both `actions/checkout` steps | `artipacked` | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on |
+| `project-automation.yml` — `pull_request_target` | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id and literal field names to `run:` |
+
 ### Storybook play tests
 
 The `storybook` job builds the static Storybook, serves it, and runs the
