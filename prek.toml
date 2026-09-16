@@ -145,6 +145,13 @@ types = ["text"]
 exclude = "^docs/mermaid\\.min\\.js$"
 
 [[repos.hooks]]
+id = "no-agent-session-urls"
+name = "no agent session urls in the commit message"
+entry = "bash scripts/check-agent-session-urls.sh --file"
+language = "system"
+stages = ["commit-msg"]
+
+[[repos.hooks]]
 id = "migrations-immutable"
 name = "migrations are append-only"
 entry = "bash scripts/check-migrations-immutable.sh"
