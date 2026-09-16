@@ -509,11 +509,11 @@ export function newViolations(found: Literal[], baseline: Baseline): Literal[] {
  * off; leaving them recorded would let the same literal come back unnoticed.
  */
 export function staleBaseline(found: Literal[], baseline: Baseline): string[] {
-  const live = new Set(found.map((l) => `${l.file} ${l.text}`));
+  const live = new Set(found.map((l) => `${l.file}\0${l.text}`));
   const stale: string[] = [];
   for (const [file, texts] of Object.entries(baseline)) {
     for (const text of texts) {
-      if (!live.has(`${file} ${text}`)) stale.push(`${file}: ${text}`);
+      if (!live.has(`${file}\0${text}`)) stale.push(`${file}: ${text}`);
     }
   }
   return stale;
