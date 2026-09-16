@@ -529,7 +529,7 @@ fn unknown_key_findings(raw: &str) -> Vec<Finding> {
 fn migration_findings(raw: &str, out: &mut String) -> Vec<Finding> {
     let report = match rolter_core::plan_config_migration(raw) {
         Ok(report) => report,
-        // unparseable as TOML; the load below reports it properly
+        // unparsable as TOML; the load below reports it properly
         Err(_) => return Vec::new(),
     };
 
@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_config_is_left_to_the_loader_to_report() {
+    fn an_unparsable_config_is_left_to_the_loader_to_report() {
         let mut out = String::new();
         let findings = migration_findings("this is not = = toml", &mut out);
         assert!(findings.is_empty());
