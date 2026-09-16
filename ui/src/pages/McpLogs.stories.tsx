@@ -65,6 +65,10 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+    // latency goes through useFormat and the analytics.ms unit, not a bare template (#1379)
+    expect(canvas.getByText("410 ms")).toBeInTheDocument();
+    expect(canvas.getByText("980 ms")).toBeInTheDocument();
+    expect(canvas.getAllByText("320 ms").length).toBeGreaterThan(0);
   },
 };
 

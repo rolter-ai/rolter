@@ -55,6 +55,8 @@ const GRID = "150px 1.1fr 1.3fr 130px 110px 90px";
 // cursor-paginated table, and a per-event detail drawer with redacted payloads
 function McpLogsScreen() {
   const { t } = useTranslation();
+  const fmt = useFormat();
+  const ms = (v: number) => t("analytics.ms", { value: fmt.number(Math.round(v)) });
   const [status, setStatus] = React.useState("");
   const [transport, setTransport] = React.useState("");
   const [cursors, setCursors] = React.useState<string[]>([]);
@@ -126,8 +128,8 @@ function McpLogsScreen() {
           label={t("pages.mcpLogs.failures")}
           value={summary.data ? String(summary.data.failures) : "—"}
         />
-        <McpStat label={t("pages.mcpLogs.avgLatency")} value={latencyStat(summary.data?.avg_latency_ms)} />
-        <McpStat label={t("pages.mcpLogs.p95Latency")} value={latencyStat(summary.data?.p95_latency_ms)} />
+        <McpStat label={t("pages.mcpLogs.avgLatency")} value={latencyStat(summary.data?.avg_latency_ms, ms)} />
+        <McpStat label={t("pages.mcpLogs.p95Latency")} value={latencyStat(summary.data?.p95_latency_ms, ms)} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
@@ -237,6 +239,7 @@ function McpLogsScreen() {
 }
 
 function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
+  const { t } = useTranslation();
   const fmt = useFormat();
   const tone = statusTone(row.status);
   return (
@@ -259,17 +262,18 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
         {row.transport}
       </span>
       <span className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
-        {row.latency_ms} ms
+        {t("analytics.ms", { value: fmt.number(Math.round(row.latency_ms)) })}
       </span>
     </ListRow>
   );
 }
 
 // an empty window averages to null (or nan) upstream; that is "no calls", not
-// a latency of "null ms"
-function latencyStat(value: number | null | undefined): string {
+// a latency of "null ms". `ms` renders a finite value through the dashboard
+// locale and the `analytics.ms` unit
+function latencyStat(value: number | null | undefined, ms: (v: number) => string): string {
   if (value == null || !Number.isFinite(Number(value))) return "—";
-  return `${Math.round(Number(value))} ms`;
+  return ms(Number(value));
 }
 
 function McpStat({ label, value }: { label: string; value: string }) {
@@ -320,7 +324,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DrawerStat label={t("pages.mcpLogs.status")} value={d.status} />
-            <DrawerStat label={t("pages.mcpLogs.latency")} value={`${d.latency_ms} ms`} />
+            <DrawerStat label={t("pages.mcpLogs.latency")} value={t("analytics.ms", { value: fmt.number(Math.round(d.latency_ms)) })} />
             <DrawerStat label={t("pages.mcpLogs.transport")} value={d.transport} />
             <DrawerStat label={t("pages.mcpLogs.time")} value={fmt.dateTime(d.ts)} />
             <DrawerStat label={t("pages.mcpLogs.request")} value={d.request_id || "—"} />
