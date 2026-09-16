@@ -57,6 +57,13 @@ be, and then it is not breaking.
 - Link issues from the body/footer: `Closes #123`, `Refs #123`.
 - PR title must be a single valid Conventional Commit line (enforced by CI via `amannn/action-semantic-pull-request`).
 - Squash-merge so the PR title becomes the commit on `master`; keeps history releasable and changelog-friendly.
+- Never put a coding agent's session or remote-connection URL in a commit
+  message, a PR body, or anywhere else — once merged, a commit message can
+  only be corrected with a history rewrite. `scripts/check-agent-session-urls.sh`
+  enforces this as the `no-agent-session-urls` prek hook (`commit-msg` stage)
+  and as the `session-urls` job in `quality.yml`, which re-checks every commit
+  in the PR and the PR body itself so a `--no-verify` push is still caught.
+  See #1406.
 
 ## Tooling
 
