@@ -126,6 +126,32 @@ so a guessed one is wrong as often as not.
 A shim is removed in a pull request whose title carries the `!` and a
 `BREAKING CHANGE:` footer, once no caller is left.
 
+### Why the deprecation lint is allowed off
+
+`#[deprecated]` is itself a *minor*-level change to `cargo-semver-checks`
+(`type_method_marked_deprecated`), and the guarded crates run at
+`--release-type patch`. Taken literally that makes the first ending above
+impossible: adding the attribute fails the same job that restoring the symbol
+was meant to fix, so the only green move would be a silent shim with no marker
+saying it is going away.
+
+That reading is backwards here. The lint protects downstream crates from an
+unexpected compiler warning against a Rust API
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) says was
+never stable, while deprecate-then-delegate is precisely the behaviour worth
+encouraging on a guarded crate. So `rolter-proxy` turns that one lint off, in
+its own `Cargo.toml`:
+
+```toml
+[package.metadata.cargo-semver-checks.lints]
+type_method_marked_deprecated = "allow"
+```
+
+Per-crate and per-lint on purpose. Nothing else is silenced — a removal, a
+signature change or a visibility change on any guarded crate still fails — and
+the next crate to deprecate something adds its own line rather than inheriting a
+workspace-wide exemption it never asked for.
+
 ## At 1.0 — the job stays advisory
 
 An earlier version of this page planned to promote the job at 1.0: drop
