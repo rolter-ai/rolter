@@ -102,10 +102,36 @@ Both palettes live in `ui/src/index.css`:
 | `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s provider bars | 3:1 — a fill carries a shape |
 | `--avatar-1` … `--avatar-6` | the `Users.tsx` chips | 4.5:1 against `#ffffff` — the chip carries initials |
 
-The ratio for each entry is recorded in the comment beside it, measured on
-`--surface-card` (`#111113`) for the chart hues, because that is what every
-chart in the dashboard sits on. Three inherited entries are under the graphical
-floor and are tracked separately (#1269); nothing new may join them.
+The ratio for each entry is recorded in the comment beside it. For the chart
+hues that is the worst of the four surfaces — a chart can sit on a card, a
+sheet or a panel, and the donut draws its slices over a `--surface-subtle`
+track — which is `--surface-subtle` (`#27272a`) for every entry:
+
+| Token | Value | Worst ratio (`#27272a`) | On `#111113` |
+|---|---|---|---|
+| `--chart-1` | `--red-600` `#e5342a` | 3.44:1 | 4.36:1 |
+| `--chart-2` | `--zinc-400` `#a1a1aa` | 5.81:1 | 7.36:1 |
+| `--chart-3` | `--status-info` `#3b82f6` | 4.05:1 | 5.13:1 |
+| `--chart-4` | `--status-success` `#16a34a` | 4.52:1 | 5.72:1 |
+| `--chart-5` | `--status-warning` `#f59e0b` | 6.94:1 | 8.78:1 |
+| `--chart-6` | `--red-500` `#ff4017` | 4.25:1 | 5.39:1 |
+| `--chart-7` | `--zinc-500` `#71717a` | 3.08:1 | 3.90:1 |
+| `--chart-8` | `--zinc-300` `#d4d4d8` | 10.08:1 | 12.76:1 |
+| `--chart-other` | `--zinc-700` `#3f3f46` | 1.43:1, exempt | 1.81:1 |
+
+`--chart-1` used to be `--red-folk` (2.23:1 worst) and `--chart-7` used to be
+`--zinc-600` (1.93:1 worst). Both were lifted in #1269. `--chart-1` matters
+most: as the first colour it paints the largest donut slice and the top
+provider bar. axe cannot catch this, because its `color-contrast` rule only
+checks text, so the story gate stays green whatever the chart hues are.
+
+`--chart-other` is exempt on purpose. It is the tail a donut rolls its long
+series into, it is meant to be quieter than the named slices, and it never
+carries meaning alone: its legend row names it and gives its share as text at
+full contrast. Lifting it past 3:1 would put it between `--chart-7` and
+`--chart-2`, where it would read as one more named series. Never use it for a
+series that has no legend row. Any other new entry has to clear 3:1 on all four
+surfaces.
 
 A component reads the sequence by index and never re-lists the hues:
 
