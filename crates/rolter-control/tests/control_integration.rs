@@ -7494,6 +7494,239 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     );
 }
 
+/// #1432: re-pinning `oauth_issuer` (or flipping `oauth_discovery`) while
+/// leaving the server's `url` alone must invalidate the discovery cache the
+/// same way moving the url does — otherwise the cached triple from the old
+/// authorization server shadows the correction on every path that never
+/// probes (the background refresher here, chosen because it is exactly the
+/// path #1432 names).
+#[tokio::test]
+async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // the discovered server, and a second one standing in for the
+    // authorization server an operator rotates to
+    let (authz, stub) = stub_authz::serve_stub_with_metadata(true).await;
+    let (authz2, stub2) = stub_authz::serve_stub_with_metadata(true).await;
+    let resource = stub_resource::serve_stub(&authz).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "RepinOrg", "slug": "repin-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple")
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("insert into users (email, password_hash) values ($1, $2) returning id")
+            .bind("repin@example.com")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+        .bind(user_id)
+        .bind(uuid::Uuid::parse_str(&org_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "repin@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Repinnable", "slug": "repinnable", "url": resource}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    let server_uuid = uuid::Uuid::parse_str(&server_id).unwrap();
+
+    let registered = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"client_id": "rolter", "default_scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), 200);
+
+    // one interactive authorize discovers and caches the first server
+    let started: Value = client
+        .post(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"scopes": ["tools:read"]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let auth_url = started["authorization_url"].as_str().unwrap().to_string();
+    let state = url_param(&auth_url, "state");
+    let cached_first = discovery_cache(&pool, server_uuid).await;
+    assert_eq!(
+        cached_first,
+        (
+            Some(authz.clone()),
+            Some(format!("{authz}/authorize")),
+            Some(format!("{authz}/token")),
+            true,
+            true
+        ),
+        "discovery should have cached the first stub authorization server"
+    );
+
+    // complete the login so there is a session with a refresh token to renew
+    stub.answer(
+        200,
+        json!({
+            "access_token": "access-1",
+            "refresh_token": "refresh-1",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "tools:read"
+        }),
+    );
+    let consented_resp = client
+        .get(format!(
+            "{base}/auth/mcp/callback?code=code-1&state={state}&iss={}",
+            authz.replace(':', "%3A").replace('/', "%2F")
+        ))
+        .send()
+        .await
+        .unwrap();
+    let consented_status = consented_resp.status();
+    let consented_text = consented_resp.text().await.unwrap();
+    assert_eq!(consented_status, 200, "{consented_text}");
+    let consented: Value = serde_json::from_str(&consented_text).unwrap();
+    let session_id = consented["session_id"].as_str().unwrap().to_string();
+
+    // an edit that touches neither the issuer nor the discovery mode must not
+    // invalidate the cache — re-registering the same client with a rotated
+    // secret is exactly this kind of edit
+    let before = config_version(&pool).await;
+    let resecreted = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "client_id": "rolter",
+            "default_scopes": ["tools:read"],
+            "client_secret": "rotated-secret"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resecreted.status(), 200);
+    assert_eq!(
+        discovery_cache(&pool, server_uuid).await,
+        cached_first,
+        "an edit that left the issuer and discovery mode alone must not invalidate the cache"
+    );
+    assert_eq!(
+        config_version(&pool).await - before,
+        1,
+        "one edit must bump config_version exactly once"
+    );
+
+    // the operator rotates to a different authorization server: a new issuer
+    // and fallback endpoints, discovery left on "auto"
+    let before = config_version(&pool).await;
+    let repinned = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "client_id": "rolter",
+            "default_scopes": ["tools:read"],
+            "issuer": authz2,
+            "authorize_url": format!("{authz2}/authorize"),
+            "token_url": format!("{authz2}/token")
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(repinned.status(), 200, "{}", repinned.text().await.unwrap());
+    assert_eq!(
+        discovery_cache(&pool, server_uuid).await,
+        (None, None, None, false, false),
+        "re-pinning the issuer must clear the endpoints discovered for the old one"
+    );
+    // the clearing rides on the update that wrote the issuer; a second
+    // statement would bump config_version twice for one logical edit
+    assert_eq!(
+        config_version(&pool).await - before,
+        1,
+        "clearing the cache must not cost a second config_version bump"
+    );
+
+    // a refresh never probes (#1432): with the cache gone it must fall back to
+    // the newly configured endpoint rather than the stale cached one
+    let calls_before = (stub.calls(), stub2.calls());
+    stub2.answer(
+        200,
+        json!({
+            "access_token": "access-2",
+            "refresh_token": "refresh-2",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        }),
+    );
+    let refreshed: Value = client
+        .post(format!("{base}/api/v1/mcp/sessions/{session_id}/refresh"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refreshed["id"], json!(session_id));
+    assert_eq!(
+        (stub.calls(), stub2.calls()),
+        (calls_before.0, calls_before.1 + 1),
+        "the refresh must reach the corrected authorization server, not the stale cached one"
+    );
+}
+
 /// Cross-tenant isolation on the exchange path: a member of another org may not
 /// refresh or exchange a session they do not own, and the answer is a 404 —
 /// whether a session exists elsewhere is not something to probe for.

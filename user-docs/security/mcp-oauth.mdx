@@ -151,10 +151,12 @@ what you see when something goes wrong:
     document is really about that server before using it. What it resolves is
     remembered, so renewals never re-probe.
 
-    Changing the server's `url` forgets it again, since the remembered
-    endpoints belong to the authorization server the old URL pointed at. The
-    next consent re-discovers from the new URL; a renewal in between fails
-    rather than reaching for the previous server.
+    Changing the server's `url`, its pinned `issuer`, or its `discovery` mode
+    forgets it again, since the remembered endpoints belong to the
+    authorization server the old value named. The next consent re-discovers;
+    a renewal in between fails rather than reaching for the previous server.
+    An edit that touches none of those three fields — rotating the client
+    secret, say — leaves what was already discovered in place.
   </Accordion>
 
   <Accordion title="Every token is bound to one server">

@@ -143,6 +143,38 @@ const CLEAR_DISCOVERY_ON_URL_CHANGE: &str = "\
     oauth_discovered_at = case when url is distinct from $3 \
         then null else oauth_discovered_at end";
 
+/// Assignments that drop the discovery cache when, and only when, the oauth
+/// client edit actually changes the pinned issuer or the discovery mode
+/// (#1432).
+///
+/// A hand-pinned `oauth_issuer` or a switch between `auto` and `manual`
+/// describes a different authorization server, or opts out of discovery
+/// entirely — so cached endpoints resolved under the old choice must not
+/// outlive it. Without this, `resolve_client`'s discovery-then-cache-then-
+/// configured order let a stale cache shadow the correction an operator just
+/// made: the two paths that never probe (the background refresher and the
+/// on-behalf-of exchange) kept using the previously discovered issuer and
+/// endpoints until the next interactive authorize happened to re-run
+/// discovery.
+///
+/// `$9` and `$10` are the new issuer and discovery mode; the bare
+/// `oauth_issuer` / `oauth_discovery` on the right compare against the row's
+/// value before this statement, the same trick `CLEAR_DISCOVERY_ON_URL_CHANGE`
+/// uses and for the same reason: `mcp_servers` carries a statement-level
+/// `bump_config_version()` trigger, so a separate clearing statement would
+/// bump the snapshot version twice for one logical edit.
+const CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE: &str = "\
+    oauth_discovered_issuer = case when oauth_issuer is distinct from $9 \
+        or oauth_discovery is distinct from $10 then null else oauth_discovered_issuer end, \
+    oauth_discovered_authorize_url = case when oauth_issuer is distinct from $9 \
+        or oauth_discovery is distinct from $10 then null else oauth_discovered_authorize_url end, \
+    oauth_discovered_token_url = case when oauth_issuer is distinct from $9 \
+        or oauth_discovery is distinct from $10 then null else oauth_discovered_token_url end, \
+    oauth_discovered_iss_supported = case when oauth_issuer is distinct from $9 \
+        or oauth_discovery is distinct from $10 then false else oauth_discovered_iss_supported end, \
+    oauth_discovered_at = case when oauth_issuer is distinct from $9 \
+        or oauth_discovery is distinct from $10 then null else oauth_discovered_at end";
+
 impl McpServerRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<McpServer>> {
         sqlx::query_as(&format!(
@@ -300,6 +332,15 @@ impl McpServerRepo<'_> {
     /// Register (or replace) the OAuth client rolter presents to this server's
     /// authorization server. [`McpOAuthClient::client_secret`] is sealed before
     /// it is written.
+    ///
+    /// Also invalidates the discovery cache when the edit moves the pinned
+    /// issuer or the discovery mode — the cached endpoints were resolved
+    /// under the old choice, so a refresh before the next interactive
+    /// authorize would otherwise keep using them (#1432, the same class of
+    /// staleness #1416 fixed for `url`). The clearing rides on this statement
+    /// rather than following it because `mcp_servers` carries a
+    /// statement-level `bump_config_version()` trigger; see
+    /// `CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE` above for the whole argument.
     pub async fn set_oauth_client(
         &self,
         kek: &super::super::crypto::Kek,
@@ -324,7 +365,8 @@ impl McpServerRepo<'_> {
                 "update mcp_servers set authorize_url = $2, token_url = $3, client_id = $4, \
                         default_scopes = $5, oauth_issuer = $9, oauth_discovery = $10, \
                         client_secret_ciphertext = case when $6 then $7 else client_secret_ciphertext end, \
-                        client_secret_nonce = case when $6 then $8 else client_secret_nonce end \
+                        client_secret_nonce = case when $6 then $8 else client_secret_nonce end, \
+                        {CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
             ))
             .bind(id)
