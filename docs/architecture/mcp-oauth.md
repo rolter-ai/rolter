@@ -138,6 +138,19 @@ nothing for a server that publishes nothing, and the configured pair is used.
 `"discovery": "manual"` pins a server to the configured pair and skips the probe
 entirely, which is worth setting for a server known to publish no metadata.
 
+**Re-pinning the issuer or the discovery mode invalidates the cache the same
+way** (#1432). The cached triple belongs to whatever authorization server the
+*old* issuer and discovery choice named, so `PUT .../oauth-client` clears all
+four `oauth_discovered_*` columns whenever the update actually changes
+`oauth_issuer` or `oauth_discovery` — same trigger, same reasoning as the URL
+case above, and folded into the same statement for the same
+`bump_config_version()` reason. Without it, an operator correcting a rotated
+`oauth_issuer` while staying on `"discovery": "auto"` saw no effect on the
+refresher or the on-behalf-of exchange, which never probe and were still
+reading the stale cache; only the next interactive `POST .../oauth/authorize`
+happened to re-run discovery and overwrite it. An edit that leaves both fields
+alone — a secret rotation, say — clears nothing.
+
 ### RFC 8707 — resource indicators
 
 Every authorization request and every token request — code, refresh and exchange
