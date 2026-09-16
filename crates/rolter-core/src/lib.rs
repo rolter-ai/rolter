@@ -12,6 +12,7 @@
 pub mod access_policy;
 pub mod config;
 pub mod config_lint;
+pub mod config_migrate;
 pub mod currency;
 pub mod error;
 pub mod guardrail_webhook;
@@ -39,6 +40,11 @@ pub use config::{
     MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
 };
 pub use config_lint::{unknown_keys, UnknownKey};
+pub use config_migrate::{
+    migrate as migrate_config, plan as plan_config_migration, Change as ConfigChange,
+    Migration as ConfigMigration, Report as ConfigMigrationReport, Step as ConfigMigrationStep,
+    CURRENT_SCHEMA_VERSION,
+};
 pub use currency::{CurrencyConfig, CurrencyConverter, StaticRates, DEFAULT_BASE_CURRENCY};
 pub use error::{Error, Result};
 pub use guardrail_webhook::{

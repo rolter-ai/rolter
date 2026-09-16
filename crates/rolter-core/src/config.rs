@@ -12,6 +12,16 @@ const COMPLEXITY_POLICY_PARAM: &str = "_rolter_complexity";
 /// Root bootstrap configuration loaded from a TOML file or the database.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct GatewayConfig {
+    /// Schema version this file was written for (#326).
+    ///
+    /// Absent on every file written before the stamp existed, which is why it
+    /// is optional and why [`crate::config_migrate::PRE_STAMP_SCHEMA_VERSION`]
+    /// stands in for absence rather than the chain treating it as a special
+    /// case. Set by [`crate::config_migrate::migrate`] on the way through, so a
+    /// loaded config always reports the version it was understood as, not the
+    /// version the file on disk carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
     #[serde(default)]
     pub server: ServerConfig,
     /// outbound TLS trust configuration shared by upstream providers
@@ -2692,6 +2702,24 @@ impl GatewayConfig {
         // ADR-0022). the remaining document deserializes normally; the `providers`
         // / `provider_groups` struct fields default to empty and are set below.
         let mut doc: toml::Value = toml::from_str(s)?;
+        // carry an older file forward before anything reads it (#326). this runs
+        // ahead of the tiered-section extraction below on purpose: a migration
+        // may rewrite `providers` / `provider_groups`, and it has to do so while
+        // they are still part of the document
+        if let Some(table) = doc.as_table_mut() {
+            let report = crate::config_migrate::migrate(table);
+            if report.ahead {
+                // a file from a newer build. loading it unchanged is the
+                // deliberate choice — see config_migrate's module docs on why a
+                // rollback must not be the thing the stamp breaks
+                tracing::warn!(
+                    file_version = report.from,
+                    understood_version = crate::config_migrate::CURRENT_SCHEMA_VERSION,
+                    "config schema_version is newer than this build understands; \
+                     loading it as-is. keys this build does not know are ignored"
+                );
+            }
+        }
         let mut provider_readonly = Vec::new();
         let mut provider_defaults = Vec::new();
         let mut group_readonly = Vec::new();

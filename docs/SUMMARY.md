@@ -8,6 +8,7 @@
 - [Load balancing](architecture/load-balancing.md)
 - [Caching](architecture/caching.md)
 - [Config & hot reload](architecture/config-and-hot-reload.md)
+- [Config schema migrations](architecture/config-schema-migrations.md)
 - [Data model](architecture/data-model.md)
 - [Labels](architecture/labels.md)
 - [RBAC & auth](architecture/rbac-and-auth.md)
