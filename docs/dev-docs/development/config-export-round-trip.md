@@ -28,7 +28,7 @@ A new section belongs in **both** modules or in neither:
 4. The `HEADER` constant, which tells the operator what round-trips and what
    does not. A section added to the exporter and not to the header is a silent
    promise.
-5. `user-docs/configuration/config-export.mdx`, whose table mirrors the header.
+5. `docs/user-docs/configuration/config-export.mdx`, whose table mirrors the header.
 
 Exporting something the importer ignores is worse than not exporting it: the
 file then looks like a complete description of the deployment while a re-import

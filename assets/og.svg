@@ -7,7 +7,7 @@
       #ff4017 --red-500        #b41d21 --red-folk
       #fafafa --text-primary   #a1a1aa --text-muted   #93939e --text-subtle
     Type is Geist / Geist Mono, the same vendored families the dashboard ships.
-    Render to user-docs/images/og.png and ui/public/og.png with
+    Render to docs/user-docs/images/og.png and ui/public/og.png with
     `bun scripts/render-og.ts` from ui/, which supplies the fonts from
     node_modules — nothing here is fetched at render time or at runtime.
   -->

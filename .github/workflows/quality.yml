@@ -304,7 +304,7 @@ jobs:
   # threshold is `--min-severity=medium --persona=regular`, the setting the
   # baseline was proven clean against. the four `# zizmor: ignore[...]`
   # suppressions in the tree were each re-read in #1456 and each still carries
-  # the reason it was added; see docs/development/testing.md.
+  # the reason it was added; see docs/dev-docs/development/testing.md.
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest
@@ -633,14 +633,14 @@ jobs:
   # offers a stable rust API at 1.0, so `continue-on-error` stays on and this
   # job never joins ci-ok's needs — a gate enforcing a promise the ADR disclaims
   # would be worse than either choice alone. what each surface actually promises
-  # is in docs/development/api-stability.md (#1217).
+  # is in docs/dev-docs/development/api-stability.md (#1217).
   semver-checks:
     name: semver-checks (advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
       # crates whose rust API is checked for patch-level compatibility against
-      # the last release tag. keep in sync with docs/development/api-stability.md
+      # the last release tag. keep in sync with docs/dev-docs/development/api-stability.md
       GUARDED: -p rolter-auth -p rolter-balancer -p rolter-gateway -p rolter-proxy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

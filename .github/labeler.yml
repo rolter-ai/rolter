@@ -26,7 +26,6 @@ docs:
   - changed-files:
       - any-glob-to-any-file:
           - "docs/**"
-          - "user-docs/**"
           - "**/*.md"
 
 ci-cd:

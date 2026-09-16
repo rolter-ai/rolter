@@ -87,11 +87,11 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Outbound trace-context propagation to vLLM/SGLang/TGI (`crates/rolter-proxy` forwards the caller's trace context)
 - [x] Prometheus exporter: per-model latency histograms (TTFT/total), counters, config-version gauge
 - [x] Federate/scrape upstream engine `/metrics` (queue depth → balancer load view)
-- [x] Backend recipes: SigNoz, Datadog, Grafana, Langfuse (LLM traces + cost) (`user-docs/observability/tracing.mdx`)
+- [x] Backend recipes: SigNoz, Datadog, Grafana, Langfuse (LLM traces + cost) (`docs/user-docs/observability/tracing.mdx`)
 - [x] OTel Collector example config in `infra/` (`infra/otel/collector.yaml`, `collector.compose.yaml`)
 
 ## Phase 8 — Providers & modalities
-- [x] Providers: Azure OpenAI, Bedrock, Vertex, Gemini, Mistral, Groq, OpenRouter (and ~40 more `ProviderKind` variants; see `user-docs/configuration/`)
+- [x] Providers: Azure OpenAI, Bedrock, Vertex, Gemini, Mistral, Groq, OpenRouter (and ~40 more `ProviderKind` variants; see `docs/user-docs/configuration/`)
 - [x] OpenAI⇄Anthropic request/response translation (+ streaming)
 - [x] `/v1/embeddings` (OpenAI-compatible passthrough; built-in `fake-llm` serves deterministic vectors)
 - [x] `/v1/images/generations` (OpenAI-compatible passthrough; built-in `fake-llm` returns a deterministic 1x1 png)
@@ -126,7 +126,7 @@ Full-featured hostable web control panel, not a read-only dashboard.
 ## Cross-cutting / tech debt
 - [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke` in `quality.yml`)
 - [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml`, `.github/scripts/coverage-ratchet.sh`)
-- [x] Document and enforce the `ci-ok` branch-protection policy (#448 — `docs/development/testing.md`)
+- [x] Document and enforce the `ci-ok` branch-protection policy (#448 — `docs/dev-docs/development/testing.md`)
 - [x] Publish `rolter` to PyPI (`rolter` 0.0.11 is live; `uv tool install rolter`). All crates publish to crates.io at the same version through release-plz.
 - [x] Integration tests for the gateway (mock upstream) + streaming assertions
 - [x] `criterion` benches for `pick`/trie (#436)

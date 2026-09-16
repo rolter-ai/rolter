@@ -94,8 +94,8 @@ lint/typecheck script, run it too.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).
 - Open the PR as a draft, mark it ready once `ci-ok` is green. Do not merge and
   never pass `--delete-branch`.
-- Ship the `user-docs/` update in the same PR when behaviour changes, including
-  the `user-docs/docs.json` nav line — an unlisted page is invisible.
+- Ship the `docs/user-docs/` update in the same PR when behaviour changes, including
+  the `docs/user-docs/docs.json` nav line — an unlisted page is invisible.
 - File a GitHub issue for anything out of scope and add it to the board:
   `gh project item-add 1 --owner rolter-ai --url <url>`.
 

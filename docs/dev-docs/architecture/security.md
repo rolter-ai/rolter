@@ -231,7 +231,7 @@ most deployments. Revisit both if the planes ever cross an untrusted network.
 
 ## External PII sanitization (#848)
 
-The gateway can hand request content — and optionally response content — to a self-hosted de-identification service before it reaches a provider. Configured under `[pii_sanitizer]`; see `user-docs/security/pii-sanitizer.mdx` for the operator-facing contract.
+The gateway can hand request content — and optionally response content — to a self-hosted de-identification service before it reaches a provider. Configured under `[pii_sanitizer]`; see `docs/user-docs/security/pii-sanitizer.mdx` for the operator-facing contract.
 
 The design property worth stating precisely: **the placeholder→plaintext mapping never enters the gateway process.** The sanitizer substitutes deterministic placeholders and returns an opaque restoration token; rolter holds the token and nothing else. There is therefore no log line, metric label, span attribute or cached body from which the original values can be recovered, and no in-memory table for a crash dump to expose.
 
@@ -314,7 +314,7 @@ key, and the presented secret is never echoed back.
 
 The dashboard follows the same vocabulary: **Virtual Keys** and **My Virtual
 Keys** mint the client credential, the provider sheet says *Provider key*, and
-the Playground's key field says which one it wants. `user-docs/security/which-key`
+the Playground's key field says which one it wants. `docs/user-docs/security/which-key`
 is the user-facing version of this table.
 
 ## Threat model (high level)

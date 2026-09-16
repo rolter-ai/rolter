@@ -102,7 +102,7 @@ entirely in how rarely it appears.
    `the_docs_page_lists_exactly_these_subsystems` test compares the two lists
    row for row, so a marker cannot ship without the paragraph that explains what
    it exempts the subsystem from.
-3. If the subsystem has a `user-docs/` page, put the note at the top of it, in
+3. If the subsystem has a `docs/user-docs/` page, put the note at the top of it, in
    the reader's words rather than these.
 4. `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx`, checked by
    `every_nav_key_is_claimed_once_and_exists_in_the_dashboard_nav`. Leave it

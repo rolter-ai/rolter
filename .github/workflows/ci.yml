@@ -147,7 +147,7 @@ jobs:
   # push build and on the `workflow_dispatch` run that gates the release PR). adding/removing jobs then never requires touching branch protection
   # settings. see ROL-124. the rules this job enforces, and why the `edited`
   # fast-path exists at all, are written up in
-  # `docs/development/ci-gating.md`.
+  # `docs/dev-docs/development/ci-gating.md`.
   ci-ok:
     name: ci-ok
     if: always()

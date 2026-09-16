@@ -6,14 +6,13 @@ title = "rolter gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "documentation carries placeholder credentials in examples (e.g. the dev virtual key sk-rolter-dev in curl snippets). real secrets come from env vars or the encrypted store and never live in docs, so exempt the docs trees from secret scanning while all code, configs, and examples elsewhere stay covered. also exempt data-table/column identifier literals (`key:`/`header:` field names like p95_latency_ms), which the generic-api-key rule false-positives on — these are UI field names, never secrets. and exempt `key_prefix`, which is by definition the non-secret leading fragment of a virtual key: the store keeps only a hash of the key itself, and the prefix exists precisely so a key can be named in the dashboard and in logs without revealing it."
+description = "documentation carries placeholder credentials in examples (e.g. the dev virtual key sk-rolter-dev in curl snippets). real secrets come from env vars or the encrypted store and never live in docs, so exempt the docs tree (docs/dev-docs and docs/user-docs) from secret scanning while all code, configs, and examples elsewhere stay covered. also exempt data-table/column identifier literals (`key:`/`header:` field names like p95_latency_ms), which the generic-api-key rule false-positives on — these are UI field names, never secrets. and exempt `key_prefix`, which is by definition the non-secret leading fragment of a virtual key: the store keeps only a hash of the key itself, and the prefix exists precisely so a key can be named in the dashboard and in logs without revealing it."
 #
 # `integration/dogfood/` is the fake upstream fleet (#924). Its keys authenticate
 # against a script on loopback and nothing else — they are checked in precisely
 # so the fleet is reproducible, and both halves of each pair live in the repo, so
 # there is no secret to leak. Scoped to that directory, not to `integration/`.
 paths = [
-  '''user-docs/.*''',
   '''docs/.*''',
   '''README\.md''',
   '''integration/dogfood/.*''',

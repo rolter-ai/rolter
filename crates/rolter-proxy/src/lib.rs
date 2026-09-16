@@ -11,7 +11,7 @@
 //! resolve, and it offers no stable Rust API: any public item here may change
 //! or disappear in any release, including a patch release. Build against
 //! rolter's HTTP surfaces instead — see
-//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 pub mod egress_resolver;
 pub mod pool;

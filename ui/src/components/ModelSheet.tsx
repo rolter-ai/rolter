@@ -129,7 +129,7 @@ interface ModelDraft {
  * that were never theirs (#977).
  */
 const PRICING_DOCS_URL =
-  "https://github.com/rolter-ai/rolter/blob/master/user-docs/observability/logs-and-cost.mdx#cost-tracking";
+  "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/observability/logs-and-cost.mdx#cost-tracking";
 
 const MODALITIES: Modality[] = ["chat", "embedding", "image", "audio"];
 const PARAM_TYPES: ParamType[] = ["string", "int", "float", "boolean", "enum"];
