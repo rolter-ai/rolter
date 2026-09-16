@@ -202,11 +202,13 @@ jobs:
 
   # ── hygiene: no agent session urls in commits or the pr body ────────────────
   # a commit-msg prek hook catches this locally, but `--no-verify` still
-  # bypasses it — this is the backstop. checks every commit the pr introduces
-  # plus the pr body itself, so a url added after the local hook ran (an
-  # amend, a body edit) is still caught. see #1406.
+  # bypasses it — this is the backstop for the commit messages the pr
+  # introduces, so a url added by an amend or a --no-verify push is still
+  # caught. the pr *body* is checked by the `session-urls` job in ci.yml
+  # instead, not here: a body edit skips this whole workflow, so a check that
+  # lives here can never see one. see #1406.
   session-urls:
-    name: no agent session urls
+    name: no agent session urls (commits)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -220,10 +222,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/check-agent-session-urls.sh --commit-range "${BASE_SHA}..${HEAD_SHA}"
-      - name: check pr body
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: bash scripts/check-agent-session-urls.sh --text "$PR_BODY"
 
   # ── storage: migrations are append-only ─────────────────────────────────────
   # sqlx checksums every applied migration, so editing a shipped file breaks

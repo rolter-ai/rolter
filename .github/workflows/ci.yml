@@ -56,6 +56,31 @@ jobs:
     if: github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
 
+  # the pr-body half of the agent-session-url check (#1406) lives here rather
+  # than in quality.yml, and the reason is the `edited` fast path directly
+  # above: a body edit skips the whole quality workflow, and `ci-ok` then
+  # accepts the earlier gate run as proof. that is correct for a title change,
+  # but it means a session url *added to the body after ci went green* would
+  # never be re-checked — the one bypass the backstop in quality.yml cannot
+  # see, since it reads the body from the event payload of a run that already
+  # happened. this job runs on every pull_request action, `edited` included, so
+  # editing the body always re-validates it. the commit-range half stays in
+  # quality.yml, where it belongs: it only needs to run when commits change.
+  session-urls:
+    name: no agent session urls (pr body)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: check pr body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash scripts/check-agent-session-urls.sh --text "$PR_BODY"
+
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -151,7 +176,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [quality, pr-title, codeql]
+    needs: [quality, pr-title, codeql, session-urls]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -223,10 +248,11 @@ jobs:
       - name: assert required jobs succeeded
         run: |
           set -euo pipefail
-          echo "quality:  ${{ needs.quality.result }}"
-          echo "pr-title: ${{ needs.pr-title.result }}"
-          echo "codeql:   ${{ needs.codeql.result }}"
-          echo "action:   ${GITHUB_EVENT_ACTION}"
+          echo "quality:      ${{ needs.quality.result }}"
+          echo "pr-title:     ${{ needs.pr-title.result }}"
+          echo "codeql:       ${{ needs.codeql.result }}"
+          echo "session-urls: ${{ needs.session-urls.result }}"
+          echo "action:       ${GITHUB_EVENT_ACTION}"
           # quality and codeql must succeed; pr-title may be skipped (push and
           # workflow_dispatch builds)
           # but must not have failed. on a title-only `edited` event the heavy
@@ -251,6 +277,15 @@ jobs:
           fi
           if [ "${{ needs.pr-title.result }}" = "failure" ]; then
             echo "::error::pr-title check failed"
+            exit 1
+          fi
+          # unlike the heavy jobs this one is never skipped on `edited` — that
+          # is the whole point of it living here — so anything but success on a
+          # pull_request build is a failure. it is skipped on push and
+          # workflow_dispatch builds, where there is no pr body to check
+          if [ "${{ needs.session-urls.result }}" != "success" ] \
+             && [ "${{ needs.session-urls.result }}" != "skipped" ]; then
+            echo "::error::a coding-agent session url is present in the pr body"
             exit 1
           fi
           echo "all required checks green"
