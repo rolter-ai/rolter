@@ -12,11 +12,7 @@ description = "documentation carries placeholder credentials in examples (e.g. t
 # against a script on loopback and nothing else — they are checked in precisely
 # so the fleet is reproducible, and both halves of each pair live in the repo, so
 # there is no secret to leak. Scoped to that directory, not to `integration/`.
-paths = [
-  '''docs/.*''',
-  '''README\.md''',
-  '''integration/dogfood/.*''',
-]
+paths = ['''docs/.*''', '''README\.md''', '''integration/dogfood/.*''']
 # match against the whole source line, not just the detected token, so the
 # allowlist is anchored to the column-definition shape rather than the value
 regexTarget = "line"
