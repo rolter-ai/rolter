@@ -19,7 +19,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 | `crates/rolter-control` | control-plane binary, CRUD API, `/internal/snapshot`, UI host |
 | `crates/rolter` | unified launcher (`gateway` / `control` / `easy-up`) |
 | `ui/` | dashboard SPA (also a `publish = false` Cargo member so release-plz sees UI commits) |
-| `docs/` | architecture, ADRs, developer docs (mdBook; `SUMMARY.md` is the nav) |
+| `docs/dev-docs/` | architecture, ADRs, developer docs (mdBook; `SUMMARY.md` is the nav) |
 | `docs/user-docs/` | end-user documentation site (Mintlify; `docs.json` is the nav) |
 | `integration/`, `charts/`, `docker/`, `infra/` | engine integration suite, Helm chart, compose, deployment |
 
@@ -130,10 +130,10 @@ When you change the thing on the left, the entries on the right must change with
 | Changed the gateway HTTP surface | update `crates/rolter-gateway/tests/integration.rs`; keep the OpenAI and Anthropic dialects in sync; update `docs/dev-docs/api/openai-and-anthropic.md` and `docs/user-docs/api/` |
 | Changed configuration keys | `crates/rolter-core/src/config.rs`, `rolter.example.toml`, `.env.example`, `charts/` values, `docker/docker-compose.yml`, `docs/user-docs/configuration/` |
 | Marked a subsystem experimental, or graduated one | add, edit or remove the `SubsystemStability` row in `crates/rolter-core/src/stability.rs` (keep it sorted by `id`; an `id` is published and never renamed); update the table in `docs/dev-docs/development/stability-markers.md` — the `the_docs_page_lists_exactly_these_subsystems` test compares them row for row; put the note at the top of the subsystem's `docs/user-docs/` page; `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx` and are checked against it. Graduating belongs in the PR that closes the gap the note names, never in a sweep |
-| Added a doc page | add it to `docs/SUMMARY.md` (mdBook nav) or to the matching `"pages"` group in `docs/user-docs/docs.json` (Mintlify nav) — an unlisted page is invisible |
+| Added a doc page | add it to `docs/dev-docs/SUMMARY.md` (mdBook nav) or to the matching `"pages"` group in `docs/user-docs/docs.json` (Mintlify nav) — an unlisted page is invisible |
 | Added an ADR | `docs/dev-docs/adr/NNNN-*.md` plus its line in `docs/dev-docs/adr/README.md`; English only; commit as plain `docs:` since `adr` is not an allowed scope |
 | Added or changed a workflow | pin new actions to a full commit SHA; add a least-privilege `permissions:` block; keep `uvx zizmor` and `actionlint` clean; if it is a merge gate, add it to `ci-ok`'s `needs:` in `.github/workflows/ci.yml` |
-| Changed behaviour of any feature | ship the `docs/` (and `docs/user-docs/` where user-facing) update in the *same* PR, plus the index/nav line; update `TODO.md` / `ROADMAP.md` when the roadmap moves |
+| Changed behaviour of any feature | ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the *same* PR, plus the index/nav line; update `TODO.md` / `ROADMAP.md` when the roadmap moves |
 
 ## Dashboard design
 
@@ -206,7 +206,7 @@ docs(architecture): document reload-free config propagation
 - PR titles must be a single valid Conventional Commit line (CI checks this); append the issue number in brackets, e.g. `feat(gateway): built-in fake-llm default model [#98]`.
 - Branch names follow `<type>/<issue-number>-<short-description>` with the same Conventional Commit types, e.g. `fix/94-models-auth`. Never use a person or agent name as the prefix.
 - Keep each PR one logical change; for dependent work use plain `git` branches (or `git worktree`) stacked on one another.
-- Keep PRs focused; update `docs/` and `TODO.md` when behavior changes.
+- Keep PRs focused; update `docs/dev-docs/` (and `docs/user-docs/` where user-facing) and `TODO.md` when behavior changes.
 - Include a co-author trailer identifying the agent that made the commit, using
   that agent's own name and email (for example,
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).

@@ -101,7 +101,7 @@ which failure was pre-existing.
 - Open the PR as a draft, then mark it ready once `ci-ok` is green. Do not merge
   and never pass `--delete-branch`.
 - Ship the `docs/` (and `docs/user-docs/` where user-facing) update in the *same* PR,
-  including the `docs/SUMMARY.md` or `docs/user-docs/docs.json` nav line — an
+  including the `docs/dev-docs/SUMMARY.md` or `docs/user-docs/docs.json` nav line — an
   unlisted page is invisible.
 - File a GitHub issue for anything you find that is out of scope, and add it to
   the board: `gh project item-add 1 --owner rolter-ai --url <url>`.
