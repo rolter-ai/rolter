@@ -145,6 +145,7 @@
               "api/chat-completions",
               "api/completions",
               "api/messages",
+              "api/realtime",
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
