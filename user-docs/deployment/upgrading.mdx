@@ -1,0 +1,79 @@
+---
+title: "Upgrading Rolter"
+sidebarTitle: "Upgrading"
+description: "How Rolter carries your configuration across a version boundary, how to preview an upgrade before you run it, and why skipping releases is safe."
+---
+
+Upgrading Rolter should be a change of image tag. Your `rolter.toml` is carried forward for you, and skipping releases costs nothing — you do not have to step through intermediate versions to get from an old build to a current one.
+
+This page covers the config half of an upgrade. The database half is separate and already automatic: schema migrations are embedded in the binary and applied on start, and they are append-only, so the same rules apply there.
+
+## Preview an upgrade before you run it
+
+Run the new build against your existing config with `--migrations`:
+
+```bash
+rolter check --config rolter.toml --migrations
+```
+
+It reads the file and reports what the new build would do with it. Nothing is written — not by this command, and not by the gateway at boot.
+
+```
+config schema: version 1 -> 2, 1 migration(s) pending
+  1 -> 2  rewrite the deprecated [[providers]] / [[provider_groups]] arrays as the tiered { readonly, default } tables (ADR-0022)
+      providers: the deprecated [[providers]] array becomes [providers] readonly = [...]; 7 entries moved to the readonly tier
+```
+
+The listing is exhaustive. Anything not named there is untouched.
+
+<Note>
+  A pending migration is not a fault. It is reported as a warning so that a CI job running `rolter check --strict` can notice a config drifting behind, but a config that is behind starts normally and serves traffic normally.
+</Note>
+
+## What `schema_version` is
+
+A `rolter.toml` may carry a version stamp at the top:
+
+```toml
+schema_version = 2
+```
+
+It tells Rolter which spelling of the config the file was written for. You do not have to add it. A file without one is treated as the oldest version, which is correct for every config written before the stamp existed.
+
+## Skipping releases
+
+Migrations form a chain, and upgrading applies every step from your file's version up to the running build's. Going from version 1 to version 4 runs the same three steps in the same order as three separate upgrades would, in one pass.
+
+There is no version you have to stop at on the way.
+
+## Rolling back
+
+Rolling back to an older Rolter is supported, and the config will not be what stops you.
+
+Rolter's config types never reject a key they do not recognise. An older build reading a newer file ignores what it has not heard of and starts. The same holds for the stamp itself: a build that meets a `schema_version` from the future loads the file unchanged rather than refusing.
+
+```
+warn   config is newer than this build
+       The file is stamped schema_version 5, and this build understands 2. It loads
+       unchanged and keys this build does not know are ignored, so a rollback still
+       starts — but settings written for the newer version are silently inactive.
+```
+
+That last clause is the part to plan around. A rollback starts, but any setting that only the newer build understood stops taking effect, silently — the value is in the file and nothing reads it. Check the release notes for what you configured between the two versions.
+
+<Warning>
+  Database migrations do **not** roll back. Rolter's schema migrations are forward-only, so an older binary may meet a database schema newer than it expects. Restore from a backup taken before the upgrade if you need to go back across a migration — see [Backup & restore](/deployment/backup-and-restore).
+</Warning>
+
+## Upgrading a multi-replica deployment
+
+During a rolling upgrade your control plane and your gateways are briefly different builds. Config migration is per-process and happens at load, so each replica carries its own file forward independently and a mixed fleet is not a problem for the config.
+
+The control-plane-to-gateway snapshot is a separate matter and is not yet version-negotiated. Until it is, upgrade the gateways and the control plane from the same release rather than leaving a mixed fleet running longer than a rollout takes.
+
+## A checklist
+
+1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.
+2. Run `rolter check --config rolter.toml --migrations` with the **new** binary and read the plan.
+3. Roll out. Config migrates in memory on start; database migrations apply on the control plane's start.
+4. Confirm the gateway serves traffic and the dashboard lists your providers.

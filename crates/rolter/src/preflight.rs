@@ -67,6 +67,11 @@ pub struct CheckArgs {
     /// off by default so `rolter check` stays offline and side-effect free
     #[arg(long)]
     pub connect: bool,
+
+    /// report the config-schema migrations this build would apply to the file,
+    /// without writing anything. the pre-flight preview for an upgrade (#326)
+    #[arg(long)]
+    pub migrations: bool,
 }
 
 /// One finding. `fatal` decides the exit code; a warning is printed and the
@@ -510,6 +515,83 @@ fn unknown_key_findings(raw: &str) -> Vec<Finding> {
         .collect()
 }
 
+/// Render the migration plan for a config file, and the finding that goes with it.
+///
+/// This is a preview, not an action: nothing is written, here or at load time.
+/// The gateway migrates the parsed document in memory on every boot, so a file
+/// that is behind still starts — which is the whole point of #326, and why a
+/// pending migration is a warning rather than an error.
+///
+/// Printed only under `--migrations`. An operator who has never stamped their
+/// file would otherwise meet this on every `rolter check` of a perfectly
+/// working deployment, and a warning everyone learns to skip past is worse than
+/// no warning.
+fn migration_findings(raw: &str, out: &mut String) -> Vec<Finding> {
+    let report = match rolter_core::plan_config_migration(raw) {
+        Ok(report) => report,
+        // unparseable as TOML; the load below reports it properly
+        Err(_) => return Vec::new(),
+    };
+
+    if report.ahead {
+        let _ = writeln!(
+            out,
+            "config schema: file is version {}, this build understands {}\n",
+            report.from,
+            rolter_core::CURRENT_SCHEMA_VERSION
+        );
+        return vec![Finding::warn(
+            "config is newer than this build",
+            format!(
+                "The file is stamped schema_version {}, and this build understands {}. It loads \
+                 unchanged and keys this build does not know are ignored, so a rollback still \
+                 starts — but settings written for the newer version are silently inactive.",
+                report.from,
+                rolter_core::CURRENT_SCHEMA_VERSION
+            ),
+        )];
+    }
+
+    if report.is_empty() {
+        let _ = writeln!(
+            out,
+            "config schema: version {}, up to date; no migrations pending\n",
+            report.to
+        );
+        return Vec::new();
+    }
+
+    let _ = writeln!(
+        out,
+        "config schema: version {} -> {}, {} migration(s) pending",
+        report.from,
+        report.to,
+        report
+            .steps
+            .iter()
+            .filter(|s| !s.changes.is_empty())
+            .count()
+    );
+    for step in report.steps.iter().filter(|s| !s.changes.is_empty()) {
+        let _ = writeln!(out, "  {} -> {}  {}", step.from, step.to, step.summary);
+        for change in &step.changes {
+            let _ = writeln!(out, "      {}: {}", change.path, change.detail);
+        }
+    }
+    out.push('\n');
+
+    vec![Finding::warn(
+        "config is written for an older schema version",
+        format!(
+            "The file is schema_version {} and this build writes {}. rolter migrates it in \
+             memory on every load, so nothing here is broken and no action is required to \
+             start — this is a preview of what the upgrade does, not a fault. The listing \
+             above is every change; nothing else in the file is touched.",
+            report.from, report.to
+        ),
+    )]
+}
+
 pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
     let mut findings = run_checks(&ProcessEnv);
 
@@ -520,9 +602,13 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
     }
 
     // the config file is optional: a fully DB-backed deployment has none
+    let mut preamble = String::new();
     if let Some(path) = args.config.as_deref() {
         if let Ok(raw) = std::fs::read_to_string(path) {
             findings.extend(unknown_key_findings(&raw));
+            if args.migrations {
+                findings.extend(migration_findings(&raw, &mut preamble));
+            }
         }
         match rolter_core::GatewayConfig::load(std::path::Path::new(path)) {
             Ok(config) => findings.extend(custom_api_base_findings(&config)),
@@ -534,7 +620,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
     }
 
     let (text, failed) = report(&findings, args.strict);
-    print!("{text}");
+    print!("{preamble}{text}");
     if failed {
         anyhow::bail!("pre-boot validation failed; refusing to report this deployment as ready");
     }
@@ -576,6 +662,85 @@ mod tests {
 
     fn titles(findings: &[Finding]) -> Vec<&str> {
         findings.iter().map(|f| f.title.as_str()).collect()
+    }
+
+    /// A deployment in the deprecated flat-array shape, as an operator on an
+    /// older release has it on disk.
+    const LEGACY_CONFIG: &str = r#"
+        [[providers]]
+        name = "openai-main"
+        kind = "openai"
+        api_base = "https://api.openai.com"
+        api_key_env = "OPENAI_API_KEY"
+
+        [[routes]]
+        model = "chat"
+        [[routes.targets]]
+        provider = "openai-main"
+    "#;
+
+    #[test]
+    fn the_migration_preview_names_every_pending_step_and_warns_without_failing() {
+        let mut out = String::new();
+        let findings = migration_findings(LEGACY_CONFIG, &mut out);
+
+        assert!(
+            out.contains("version 1 -> 2"),
+            "the preview must name both versions: {out}"
+        );
+        assert!(
+            out.contains("readonly"),
+            "the preview must say what the step does: {out}"
+        );
+        assert_eq!(
+            titles(&findings),
+            ["config is written for an older schema version"]
+        );
+        // a file that is merely behind must never block a boot
+        assert!(findings.iter().all(|f| !f.fatal));
+        let (_, failed) = report(&findings, false);
+        assert!(!failed, "a pending migration is not a pre-boot failure");
+    }
+
+    #[test]
+    fn an_up_to_date_config_reports_nothing_pending() {
+        let raw = "schema_version = 2\n";
+        let mut out = String::new();
+        let findings = migration_findings(raw, &mut out);
+
+        assert!(out.contains("up to date"), "{out}");
+        assert!(findings.is_empty(), "{:?}", titles(&findings));
+    }
+
+    /// The rollback promise: a file from a newer build warns, and still loads.
+    #[test]
+    fn a_config_from_a_newer_build_warns_but_is_not_fatal() {
+        let raw = format!(
+            "schema_version = {}\n",
+            rolter_core::CURRENT_SCHEMA_VERSION + 1
+        );
+        let mut out = String::new();
+        let findings = migration_findings(&raw, &mut out);
+
+        assert!(out.contains("this build understands"), "{out}");
+        assert_eq!(titles(&findings), ["config is newer than this build"]);
+        assert!(findings.iter().all(|f| !f.fatal));
+        let (_, failed) = report(&findings, false);
+        assert!(
+            !failed,
+            "a rollback must not be reported as a pre-boot failure"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_config_is_left_to_the_loader_to_report() {
+        let mut out = String::new();
+        let findings = migration_findings("this is not = = toml", &mut out);
+        assert!(findings.is_empty());
+        assert!(
+            out.is_empty(),
+            "no preview for a file that does not parse: {out}"
+        );
     }
 
     #[test]
