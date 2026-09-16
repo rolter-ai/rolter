@@ -82,10 +82,18 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
      sign out). `close` dismisses the popover. takes precedence over
      user.onClick. */
   userMenu?: (close: () => void) => React.ReactNode;
-  /* bifrost-style extras — all optional so existing call sites keep working */
+  /* optional rail chrome, each piece off unless asked for so a bare call site
+     renders just brand, groups and user block */
+  /* a filter box under the brand that narrows the groups to matching items.
+     hidden while the rail is folded to icons */
   searchable?: boolean;
+  /* a toggle in the header that folds the rail to an icon-only strip and back.
+     not offered in the drawer, which closes instead */
   collapsible?: boolean;
+  /* start folded. the icon-rail viewport folds regardless */
   defaultCollapsed?: boolean;
+  /* icon links in the footer row ahead of footerExtra and the version — docs,
+     support and the like. each opens `href` or runs `onClick` */
   footerLinks?: NavFooterLink[];
   /* rendered in the footer row after the links and before the version — the
      locale picker sits here, so it stays on screen whatever the active route.
