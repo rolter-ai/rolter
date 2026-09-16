@@ -1,0 +1,70 @@
+---
+title: "Realtime"
+sidebarTitle: "Realtime"
+description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and what it does not yet cover."
+---
+
+<Warning>
+  **Experimental.** `/v1/realtime` carries the `realtime`
+  [stability marker](/api/stability) and may change shape or be withdrawn in a
+  minor release. More importantly: a realtime session is admitted against
+  process-local caps only. **Budgets, rate limits, guardrails, usage recording
+  and cost attribution all sit on the HTTP request path and do not see it** —
+  spend through a realtime session is neither capped nor recorded. Treat it as
+  a preview, not something to meter a deployment on.
+</Warning>
+
+`/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
+Rolter authenticates the request and selects an upstream before accepting the
+client's WebSocket upgrade, then pins that upstream and its provider key for
+the life of the session.
+
+## Connect
+
+Send the usual gateway virtual key and the public route model as a query
+parameter:
+
+```text
+wss://gateway.example.com/v1/realtime?model=gpt-realtime
+```
+
+Authenticate with `Authorization: Bearer <virtual-key>` the same way you would
+for `/v1/chat/completions`. The `model` value selects a route the same way it
+does everywhere else in the gateway.
+
+## What is relayed
+
+Text, binary audio and WebSocket control frames are relayed in both
+directions without application-level buffering, including `session.update`,
+`input_audio_buffer.*`, `response.*` and function-call events.
+
+If the upstream connection drops, the client must reconnect — rolter does not
+fail a live session over to another target, because replaying audio or tool
+events mid-session is not safe to do automatically.
+
+## Current limits
+
+- **WebRTC/browser ephemeral-token handoff is not exposed.** Only the
+  WebSocket-first flow is supported today.
+- **No failover.** A dropped upstream ends the session; there is no
+  session-affinity retry the way HTTP routes get.
+- **Outside budgets, rate limits, guardrails, usage recording and cost
+  attribution.** These are enforced on the HTTP request path, which a
+  long-lived WebSocket session never travels after the initial upgrade. A
+  virtual key with a budget or a rate limit is not protected against realtime
+  spend.
+
+## `[realtime]` configuration
+
+The gateway's own `[realtime]` config block is the *only* thing that bounds a
+session, and it is process-local rather than organization- or key-scoped:
+
+- `max_connections` (default `1000`) — concurrent sessions this gateway
+  process admits
+- `max_session_secs` (default `3600`) — hard session-duration limit
+- `idle_timeout_secs` (default `300`) — closes a session when neither side
+  sends a frame
+
+Set any value to `0` to disable that particular limit. See
+[Configuration](/configuration/config-file) for where `[realtime]` lives in
+`rolter.toml`.
