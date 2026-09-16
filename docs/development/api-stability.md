@@ -98,6 +98,60 @@ and it lives in [Stability markers](stability-markers.md): an `experimental`
 marker is a documented exemption saying the subsystem may change shape or be
 removed in a minor release.
 
+## Renaming a public item on a guarded crate
+
+The job reports a rename as `inherent_method_missing` — it cannot tell a rename
+from a deletion, and both read the same to anything outside the crate. So on a
+guarded crate a rename is not a free refactor, and it has exactly two honest
+endings:
+
+- **Keep the old name as a deprecated shim.** Leave the `pub` item in place,
+  mark it ``#[deprecated(note = "use `<new name>`")]``, and have it delegate to
+  the new one. The symbol is still in the API, the job stays green, and every
+  in-tree caller moves to the new name in the same pull request. This is what
+  `rolter_proxy::Forwarder::forward_bearer` is: #1446 renamed it to
+  `forward_mcp`, which left the job red on every pull request until #1473 put
+  the shim back.
+- **Drop the old name and say so.** Delete it outright and state in the pull
+  request description that moving the API was the point. The job goes red, and
+  that red is the record.
+
+What is not an option is renaming quietly. The job is `continue-on-error`, so
+nothing blocks the merge — the failure just becomes permanent background noise
+on every later pull request, which is how a review signal stops being read at
+all. Do not add a `since` to the `#[deprecated]` unless the release that
+deprecates it is already known; release-plz picks the version from commit types,
+so a guessed one is wrong as often as not.
+
+A shim is removed in a pull request whose title carries the `!` and a
+`BREAKING CHANGE:` footer, once no caller is left.
+
+### Why the deprecation lint is allowed off
+
+`#[deprecated]` is itself a *minor*-level change to `cargo-semver-checks`
+(`type_method_marked_deprecated`), and the guarded crates run at
+`--release-type patch`. Taken literally that makes the first ending above
+impossible: adding the attribute fails the same job that restoring the symbol
+was meant to fix, so the only green move would be a silent shim with no marker
+saying it is going away.
+
+That reading is backwards here. The lint protects downstream crates from an
+unexpected compiler warning against a Rust API
+[ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) says was
+never stable, while deprecate-then-delegate is precisely the behaviour worth
+encouraging on a guarded crate. So `rolter-proxy` turns that one lint off, in
+its own `Cargo.toml`:
+
+```toml
+[package.metadata.cargo-semver-checks.lints]
+type_method_marked_deprecated = "allow"
+```
+
+Per-crate and per-lint on purpose. Nothing else is silenced — a removal, a
+signature change or a visibility change on any guarded crate still fails — and
+the next crate to deprecate something adds its own line rather than inheriting a
+workspace-wide exemption it never asked for.
+
 ## At 1.0 — the job stays advisory
 
 An earlier version of this page planned to promote the job at 1.0: drop

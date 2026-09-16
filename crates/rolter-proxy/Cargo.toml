@@ -6,6 +6,15 @@ license.workspace = true
 repository.workspace = true
 description = "upstream provider forwarding and translation for rolter — internal crate, no stable rust api"
 
+# the semver job runs at --release-type patch, where adding a `#[deprecated]`
+# counts as a minor-level change and fails. that reading is backwards here:
+# deprecate-then-delegate is the behaviour we want on a guarded crate, and the
+# only thing the lint protects is a downstream compiler warning against a rust
+# api ADR-0032 says was never stable. without this, keeping the forward_bearer
+# shim green would mean dropping the attribute that says it is going away
+[package.metadata.cargo-semver-checks.lints]
+type_method_marked_deprecated = "allow"
+
 [dependencies]
 rolter-core.workspace = true
 reqwest.workspace = true
