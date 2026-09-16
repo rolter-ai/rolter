@@ -1,0 +1,16 @@
+# cargo-audit configuration, read by the scheduled `audit` workflow
+#
+# cargo audit scans every package in Cargo.lock, including optional
+# dependencies that are never compiled. cargo-deny (.config/deny.toml) walks
+# the resolved graph instead, so an entry here is only for an advisory that
+# is present in the lockfile but unreachable from any build rolter makes
+
+[advisories]
+ignore = [
+  # rsa, Marvin timing attack, no fixed release. the only dependent is
+  # sqlx-mysql, an optional sqlx backend that sqlx and sqlx-macros-core record
+  # in the lockfile; rolter enables only the postgres backend, and
+  # `cargo tree -i rsa --all-features --target all` finds nothing. drop this
+  # entry if a mysql feature is ever enabled (#1481)
+  "RUSTSEC-2023-0071",
+]
