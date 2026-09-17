@@ -62,7 +62,11 @@ export function Field({
   // wrapped and the first labelable control in them is bound after mount.
   const [wrapped, setWrapped] = React.useState<string>();
   const wrapper = React.useRef<HTMLDivElement>(null);
+  const root = React.useRef<HTMLDivElement>(null);
   const byHand = !control && !htmlFor;
+  // an explicit htmlFor over several children named the control but still left
+  // its hint and error undescribed, so an invalid input sounded valid (#1527)
+  const multi = !control && !!htmlFor;
   const controlId =
     htmlFor ?? control?.props.id ?? (control ? generated : wrapped);
   // the error or hint below the control is tied to it as its description, and
@@ -88,12 +92,15 @@ export function Field({
   // Layout effect rather than effect, so the association exists before paint
   // and before a story's first query.
   React.useLayoutEffect(() => {
-    if (!byHand) return;
-    const node = wrapper.current?.querySelector<HTMLElement>(LABELABLE) ?? null;
+    if (!byHand && !multi) return;
+    const node = multi
+      ? (root.current?.querySelector<HTMLElement>(`[id="${CSS.escape(htmlFor ?? "")}"]`) ?? null)
+      : (wrapper.current?.querySelector<HTMLElement>(LABELABLE) ?? null);
     if (!node) {
       // a field with a label and nothing to attach it to is the bug this
-      // component exists to prevent, and it is invisible on screen
-      if (import.meta.env.DEV && label) {
+      // component exists to prevent, and it is invisible on screen; an
+      // explicit htmlFor already names its control, wherever that lives
+      if (byHand && import.meta.env.DEV && label) {
         console.warn(
           `Field: "${label}" wraps no labelable control, so its label names ` +
             "nothing. Pass htmlFor and put the matching id on the control.",
@@ -104,11 +111,13 @@ export function Field({
     // only what this field added is removed again, so a control that carries
     // its own id or description keeps it
     const added: string[] = [];
-    if (!node.id) {
-      node.id = generated;
-      added.push("id");
+    if (byHand) {
+      if (!node.id) {
+        node.id = generated;
+        added.push("id");
+      }
+      setWrapped(node.id);
     }
-    setWrapped(node.id);
     if (message && !node.hasAttribute("aria-describedby")) {
       node.setAttribute("aria-describedby", messageId);
       added.push("aria-describedby");
@@ -120,10 +129,10 @@ export function Field({
     return () => {
       for (const attribute of added) node.removeAttribute(attribute);
     };
-  }, [byHand, children, error, generated, label, message, messageId]);
+  }, [byHand, children, error, generated, htmlFor, label, message, messageId, multi]);
 
   return (
-    <div className={cn("space-y-1.5", className)} {...props}>
+    <div ref={root} className={cn("space-y-1.5", className)} {...props}>
       {label && (
         <div className="flex items-center gap-1.5">
           <label htmlFor={controlId} className="text-sm font-medium leading-none">
