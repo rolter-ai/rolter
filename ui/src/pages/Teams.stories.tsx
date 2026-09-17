@@ -158,14 +158,15 @@ export const RefusedToAViewer: Story = {
   },
 };
 
-// the empty state repeats the create control, but it cannot be asserted here:
-// the screen's team list *is* the scope's, so an org with no teams leaves
-// `useScope` loading, the effective-permissions query never runs, and every
-// control on the screen renders enabled. That is a gap in the gate rather than
-// in the story — see #1623.
+// the empty state repeats the create control, and this is the case #1623
+// thought could not be gated: the screen's team list *is* the scope's, so an
+// org with no teams was believed to leave `useScope` loading forever, the
+// effective-permissions query unasked, and every control on the screen enabled.
+// It does not — a disabled query is settled, not pending — and this story is
+// what keeps it that way
 export const RefusedToAMember: Story = {
   render: () => (
-    <Harness fetchStub={orgThen(() => json(TEAMS))} role="member">
+    <Harness fetchStub={orgThen(() => json([]))} role="member">
       <Teams />
     </Harness>
   ),
