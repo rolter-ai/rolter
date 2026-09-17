@@ -189,16 +189,22 @@ export const Add: Story = {
     // one; asserting before the seed raced it and read whichever state won
     // (#1500)
     await seeded(dialog);
+    // each error is read through its own field's description, so it is the
+    // field that is invalid rather than some text somewhere on the sheet (#1527)
+    const upstream = dialog.getByLabelText("Upstream model name");
+    await expect(upstream).toHaveAttribute("aria-invalid", "true");
+    await expect(upstream).toHaveAccessibleDescription(/Enter the model id exactly/);
     // the primary action keeps its place and greys out while the draft is
-    // incomplete (#1265), with the first blocking reason beside it — read
-    // through the button's own description so no sibling field hint can match
+    // incomplete (#1265), with the first blocking reason beside it
     const save = dialog.getByRole("button", { name: "Add model" });
     await expect(save).toBeDisabled();
     await expect(save).toHaveAccessibleDescription(/Enter the model id exactly/);
-    await userEvent.selectOptions(dialog.getByLabelText("Provider"), "");
-    await waitFor(() =>
-      expect(save).toHaveAccessibleDescription(/Pick the upstream provider/),
-    );
+    const provider = dialog.getByLabelText("Provider");
+    await expect(provider).not.toHaveAttribute("aria-invalid");
+    await userEvent.selectOptions(provider, "");
+    await waitFor(() => expect(provider).toHaveAttribute("aria-invalid", "true"));
+    await expect(provider).toHaveAccessibleDescription(/Pick the upstream provider/);
+    await expect(save).toHaveAccessibleDescription(/Pick the upstream provider/);
     // `getAll`: the sheet states each error under its field *and* repeats the
     // set in a summary above the footer
     await expect(dialog.getAllByText(/Pick the upstream provider/).length).toBeGreaterThan(1);
@@ -258,7 +264,10 @@ export const NameConflict: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.type(dialog.getByLabelText("Upstream model name"), "gpt-4o");
-    await expect(dialog.getAllByText(/already exists/).length).toBeGreaterThan(0);
+    // the conflict is the public name's, which the alias field owns
+    const alias = dialog.getByLabelText("Rolter alias");
+    await waitFor(() => expect(alias).toHaveAttribute("aria-invalid", "true"));
+    await expect(alias).toHaveAccessibleDescription(/already exists/);
     await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
   },
 };
@@ -269,8 +278,10 @@ export const InvalidBaseUrl: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Base URL override"), "vllm.internal:8000");
-    await expect(dialog.getAllByText(/must start with http/).length).toBeGreaterThan(0);
+    const baseUrl = dialog.getByLabelText("Base URL override");
+    await userEvent.type(baseUrl, "vllm.internal:8000");
+    await waitFor(() => expect(baseUrl).toHaveAttribute("aria-invalid", "true"));
+    await expect(baseUrl).toHaveAccessibleDescription(/must start with http/);
     await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
   },
 };

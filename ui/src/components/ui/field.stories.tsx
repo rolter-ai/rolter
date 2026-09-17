@@ -168,3 +168,24 @@ export const TwoChildrenKeepTheirDescription: Story = {
     await expect(control).toHaveAccessibleDescription(/already exists/);
   },
 };
+
+/**
+ * An explicit `htmlFor` over several children names the control but used to
+ * skip its description: the error was on screen and `aria-invalid` was never
+ * set, so the input sounded valid to a screen reader (#1527).
+ */
+export const ExplicitIdKeepsTheDescription: Story = {
+  args: { label: "API base", htmlFor: "field-api-base", error: "Must start with http:// or https://." },
+  render: (args) => (
+    <Field {...args}>
+      <Input id="field-api-base" defaultValue="api.example.com" />
+      <p className="text-xs text-muted-foreground">Resolves to api.example.com/v1/chat/completions</p>
+    </Field>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const control = canvas.getByLabelText("API base");
+    await expect(control).toHaveAttribute("aria-invalid", "true");
+    await expect(control).toHaveAccessibleDescription(/must start with http/i);
+  },
+};

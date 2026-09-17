@@ -537,9 +537,20 @@ function FieldLabel({
   );
 }
 
-function FieldError({ error }: { error?: string }) {
+// the error carries an id so its control can point at it: a screen reader then
+// hears the reason when it reaches the field, not only in the footer (#1527)
+function FieldError({ id, error }: { id: string; error?: string }) {
   if (!error) return null;
-  return <p className="text-xs leading-snug text-[color:var(--status-danger-text)]">{error}</p>;
+  return (
+    <p id={id} className="text-xs leading-snug text-[color:var(--status-danger-text)]">
+      {error}
+    </p>
+  );
+}
+
+// a control's description: the hint under it plus its error when it has one
+function describedBy(...ids: (string | false | undefined)[]): string | undefined {
+  return ids.filter(Boolean).join(" ") || undefined;
 }
 
 function Section({
@@ -984,14 +995,14 @@ export function ModelSheet({
     draft.baseUrl.trim() !== "" && !/^https?:\/\//i.test(draft.baseUrl.trim())
       ? t("modelSheet.errors.baseUrl")
       : "";
-  const errParam = draft.params.some(
-    (p) => p.custom && p.value.trim() !== "" && p.key.trim() === "",
-  )
+  const paramRowInvalid = (p: (typeof draft.params)[number]) =>
+    p.custom && p.value.trim() !== "" && p.key.trim() === "";
+  const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
+    h.value.trim() !== "" && h.key.trim() === "";
+  const errParam = draft.params.some(paramRowInvalid)
     ? t("modelSheet.errors.param")
     : "";
-  const errHeader = draft.headers.some(
-    (h) => h.value.trim() !== "" && h.key.trim() === "",
-  )
+  const errHeader = draft.headers.some(headerRowInvalid)
     ? t("modelSheet.errors.header")
     : "";
   const errors = [errProvider, errUpstream, errAlias, errBaseUrl, errParam, errHeader].filter(
@@ -1002,6 +1013,19 @@ export function ModelSheet({
   // still lists the rest
   const blockingError = readonly ? "" : (errors[0] ?? "");
   const blockingErrorId = React.useId();
+  // one prefix for the ids tying each field to its hint and error
+  const fid = React.useId();
+  const ids = {
+    providerErr: `${fid}-provider-err`,
+    upstreamHint: `${fid}-upstream-hint`,
+    upstreamErr: `${fid}-upstream-err`,
+    aliasHint: `${fid}-alias-hint`,
+    aliasErr: `${fid}-alias-err`,
+    baseUrlHint: `${fid}-base-url-hint`,
+    baseUrlErr: `${fid}-base-url-err`,
+    paramErr: `${fid}-param-err`,
+    headerErr: `${fid}-header-err`,
+  };
 
   // -- persistence ----------------------------------------------------------
   // route + first target, default params with the lock policy, the enabled
@@ -1283,6 +1307,8 @@ export function ModelSheet({
                 className="font-mono"
                 value={draft.providerId}
                 disabled={readonly}
+                aria-invalid={errProvider ? true : undefined}
+                aria-describedby={describedBy(errProvider && ids.providerErr)}
                 onChange={(e) => set({ providerId: e.target.value })}
               >
                 <option value="">
@@ -1296,7 +1322,7 @@ export function ModelSheet({
                   </option>
                 ))}
               </Select>
-              <FieldError error={errProvider} />
+              <FieldError id={ids.providerErr} error={errProvider} />
             </div>
             <div className="space-y-1.5">
               <FieldLabel
@@ -1332,14 +1358,16 @@ export function ModelSheet({
               value={draft.upstreamName}
               placeholder="gpt-4o"
               disabled={readonly || mode === "edit"}
+              aria-invalid={errUpstream ? true : undefined}
+              aria-describedby={describedBy(ids.upstreamHint, errUpstream && ids.upstreamErr)}
               onChange={(e) => set({ upstreamName: e.target.value })}
             />
-            <p className="text-xs text-muted-foreground">
+            <p id={ids.upstreamHint} className="text-xs text-muted-foreground">
               {mode === "edit"
                 ? t("modelSheet.fields.upstreamHintEdit")
                 : t("modelSheet.fields.upstreamHint")}
             </p>
-            <FieldError error={errUpstream} />
+            <FieldError id={ids.upstreamErr} error={errUpstream} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1353,12 +1381,14 @@ export function ModelSheet({
               value={draft.alias}
               placeholder={draft.upstreamName.trim() || t("modelSheet.fields.aliasPlaceholder")}
               disabled={readonly || mode === "edit"}
+              aria-invalid={errAlias ? true : undefined}
+              aria-describedby={describedBy(ids.aliasHint, errAlias && ids.aliasErr)}
               onChange={(e) => set({ alias: e.target.value })}
             />
-            <p className="text-xs text-muted-foreground">
+            <p id={ids.aliasHint} className="text-xs text-muted-foreground">
               {t("modelSheet.fields.aliasHint")}
             </p>
-            <FieldError error={errAlias} />
+            <FieldError id={ids.aliasErr} error={errAlias} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1372,12 +1402,14 @@ export function ModelSheet({
               value={draft.baseUrl}
               placeholder="https://api.provider.com/v1"
               disabled={readonly}
+              aria-invalid={errBaseUrl ? true : undefined}
+              aria-describedby={describedBy(ids.baseUrlHint, errBaseUrl && ids.baseUrlErr)}
               onChange={(e) => set({ baseUrl: e.target.value })}
             />
-            <p className="text-xs text-muted-foreground">
+            <p id={ids.baseUrlHint} className="text-xs text-muted-foreground">
               {t("modelSheet.fields.baseUrlHint")}
             </p>
-            <FieldError error={errBaseUrl} />
+            <FieldError id={ids.baseUrlErr} error={errBaseUrl} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1428,6 +1460,9 @@ export function ModelSheet({
                     value={p.key}
                     placeholder={t("modelSheet.params.namePlaceholder")}
                     disabled={readonly}
+                    // the row the param error is about: a value with no name
+                    aria-invalid={paramRowInvalid(p) || undefined}
+                    aria-describedby={describedBy(paramRowInvalid(p) && ids.paramErr)}
                     onChange={(e) => setParamAt(i, { key: e.target.value })}
                   />
                 ) : (
@@ -1507,7 +1542,7 @@ export function ModelSheet({
               </div>
             ))}
           </div>
-          <FieldError error={errParam} />
+          <FieldError id={ids.paramErr} error={errParam} />
           {!readonly && (
             <Button
               size="sm"
@@ -1744,6 +1779,8 @@ export function ModelSheet({
                     value={h.key}
                     placeholder={t("modelSheet.headers.namePlaceholder")}
                     disabled={readonly}
+                    aria-invalid={headerRowInvalid(h) || undefined}
+                    aria-describedby={describedBy(headerRowInvalid(h) && ids.headerErr)}
                     onChange={(e) => setHeaderAt(i, { key: e.target.value })}
                   />
                   <Input
@@ -1780,7 +1817,7 @@ export function ModelSheet({
               ))}
             </div>
           )}
-          <FieldError error={errHeader} />
+          <FieldError id={ids.headerErr} error={errHeader} />
           {!readonly && (
             <Button
               size="sm"
