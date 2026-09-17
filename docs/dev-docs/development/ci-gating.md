@@ -201,7 +201,9 @@ The convention, for a human or an agent opening a PR:
    `gh api -X PATCH repos/rolter-ai/rolter/pulls/<n> -f body=@body.md`), not
    another pass through the authoring tool. The footer is appended on the
    creation path only, so a direct `PATCH` does not re-trigger it and the edit
-   sticks.
+   sticks. **Wait for the `opened` run to finish before you strip** — stripping
+   immediately makes the `edited` run race the gate and costs a second edit; see
+   *Recovering a sha whose `opened` run saw a dirty body* below.
 3. For a commit message, the equivalent is an amend or rebase that drops the
    trailer before the push — `quality.yml` re-checks every commit in the range,
    so a `--no-verify` push does not get through.
@@ -318,13 +320,41 @@ by accident (#1522).
 
 `gate-ok` closes this. The `opened` run still ends `failure`, but it records a
 passing `gate-ok`, and that is what the fast path looks for. So the #1518
-workaround is now sufficient on its own:
+workaround is now sufficient on its own — **provided the strip lands after the
+opening gate has finished**:
 
 1. Read the PR body back after creating the PR.
-2. If a session URL is there, strip that line with a direct
-   `PATCH /repos/{owner}/{repo}/pulls/{n}`.
+2. If a session URL is there, **wait for the `opened` run to complete**, then
+   strip that line with a direct `PATCH /repos/{owner}/{repo}/pulls/{n}`.
 3. The `edited` run re-checks the live body, finds the `opened` run's passing
    `gate-ok`, and `ci-ok` goes green. No new commit, no dispatch.
+
+Step 2 says *wait* for a reason, and it is the step people get wrong. The
+obvious thing to do — and what the first version of this section told you to do
+— is to strip the footer the moment the PR exists. The `edited` run then starts
+while the gate is still running, `gate-ok` has not run yet, and `ci-ok` declines
+on the *unfinished gate* branch. The PR is red again and a **second** edit is
+needed once the gate finishes.
+
+This is not the guard misbehaving; it is the guard working exactly as #1511
+describes. But it costs a cycle every time, so the order matters. Seen on #1565,
+the first PR opened after `gate-ok` landed (#1566):
+
+| Run | Event | Started | Outcome |
+|---|---|---|---|
+| 35249017068 | `opened` | 16:50:04 | `session-urls` failed on the frozen body; **`gate-ok` succeeded** |
+| 35249064201 | `edited` | 16:50:35 | `ci-ok` red — *gate still running*, the strip was too early |
+| 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit |
+
+The third run is what the second would have been, had the strip waited.
+
+Which red you are looking at is written in the message, and the two mean
+opposite things:
+
+| `ci-ok` says | Means | Do |
+|---|---|---|
+| `gate still running on <sha>` | the strip was early, or the gate simply has not finished | wait for the gate, then edit the body once |
+| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran | fix the commit; no amount of editing helps |
 
 **Reading the live body in `session-urls` was considered and not done.** It
 would not help the case that matters: the `opened` run starts seconds after the
