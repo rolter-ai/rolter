@@ -66,20 +66,45 @@ jobs:
   # happened. this job runs on every pull_request action, `edited` included, so
   # editing the body always re-validates it. the commit-range half stays in
   # quality.yml, where it belongs: it only needs to run when commits change.
+  #
+  # it also runs on `workflow_dispatch`, and that is not symmetry for its own
+  # sake (#1523). a dispatched run skips every `github.event_name ==
+  # 'pull_request'` job while `quality` and `codeql` still run — their guard is
+  # on `action`, which is empty on a dispatch — so `ci-ok` used to go green off
+  # a run that never looked at the body. dispatching became the cheapest way to
+  # clear a red PR, which is how #1519 and #1521 went green. resolving the PR
+  # from the api instead means the dispatch path gets a real verdict rather
+  # than a tolerated skip, and the release PR (the reason the trigger exists at
+  # all, #1025) is checked like any other.
   session-urls:
     name: no agent session urls (pr body)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # a dispatched run carries no pr in its payload; it has to look one up
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: check pr body
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: bash scripts/check-agent-session-urls.sh --text "$PR_BODY"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
+          else
+            # dispatched: no pr in the payload, so the script resolves one by
+            # head ref. that lookup lives in the script rather than inline here
+            # so it can be exercised against a fixture instead of only in ci
+            bash scripts/check-agent-session-urls.sh --pr-for-ref "${REPO}" "${REF_NAME}"
+          fi
 
   pr-title:
     if: github.event_name == 'pull_request'
@@ -254,8 +279,7 @@ jobs:
           echo "session-urls: ${{ needs.session-urls.result }}"
           echo "action:       ${GITHUB_EVENT_ACTION}"
           # quality and codeql must succeed; pr-title may be skipped (push and
-          # workflow_dispatch builds)
-          # but must not have failed. on a title-only `edited` event the heavy
+          # workflow_dispatch builds) but must not have failed. on a title-only `edited` event the heavy
           # gate and codeql are intentionally skipped — the step above has
           # already proven they ran and passed on this exact head sha, so
           # skipped is acceptable here and only pr-title re-runs
@@ -279,15 +303,31 @@ jobs:
             echo "::error::pr-title check failed"
             exit 1
           fi
-          # unlike the heavy jobs this one is never skipped on `edited` — that
-          # is the whole point of it living here — so anything but success on a
-          # pull_request build is a failure. it is skipped on push and
-          # workflow_dispatch builds, where there is no pr body to check
-          if [ "${{ needs.session-urls.result }}" != "success" ] \
-             && [ "${{ needs.session-urls.result }}" != "skipped" ]; then
-            echo "::error::a coding-agent session url is present in the pr body"
-            exit 1
+          # this one is never skipped on `edited` — the whole point of it living
+          # here — and since #1523 it is not skipped on `workflow_dispatch`
+          # either: it resolves the pr from the api there and returns a real
+          # verdict. so `push` is the only build with no pr to check, and the
+          # only one where a skip is honest. tolerating it anywhere else is
+          # what let a dispatched run report green over an unchecked body
+          if [ "${{ needs.session-urls.result }}" != "success" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "push" ] \
+               && [ "${{ needs.session-urls.result }}" = "skipped" ]; then
+              echo "session-urls skipped: a push build has no pr body"
+            else
+              echo "::error::the pr body was not confirmed free of coding-agent session urls (session-urls: ${{ needs.session-urls.result }})"
+              exit 1
+            fi
+          fi
+          # pr-title still cannot run on a dispatch — the action it uses reads
+          # the title out of the event payload. that path exists for the
+          # release PR, whose title release-plz generates, so the gap is narrow
+          # and cosmetic rather than the history-leak session-urls guards. say
+          # so out loud rather than letting a silent skip imply it was checked
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+             && [ "${{ needs.pr-title.result }}" = "skipped" ]; then
+            echo "::warning::pr-title did not run on this dispatched build; the pr title is unvalidated (see #1523)"
           fi
           echo "all required checks green"
         env:
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}

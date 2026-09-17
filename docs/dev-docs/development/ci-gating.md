@@ -134,6 +134,56 @@ that it has no exceptions — a carve-out keyed on "the footer" is one an agent
 can talk its way into, and it would let a genuinely private session link ride
 into history inside a line that merely looks generated.
 
+### The `workflow_dispatch` path checks the body too
+
+`ci.yml` can be triggered manually, and that trigger is not decoration: the
+release PR is opened by release-plz with the repo `GITHUB_TOKEN`, GitHub
+suppresses downstream events for token-created refs, and so neither `push` nor
+`pull_request` ever fires for it (#1025). `release-plz.yml` dispatches `ci.yml`
+against the release branch to gate it.
+
+The trap is that a dispatched run skips every job guarded by
+`github.event_name == 'pull_request'` — `session-urls` and `pr-title` — while
+`quality` and `codeql` still run, because their guard is on `action`, which is
+empty on a dispatch. `ci-ok` used to accept both skips, so a dispatched run
+reported green having never looked at the PR body. That made dispatching the
+cheapest way to clear a red PR, and it is how #1519 and #1521 actually went
+green (#1523).
+
+So `session-urls` now runs on `workflow_dispatch` as well. With no pull request
+in the event payload it resolves one from the API by head ref:
+
+- **an open PR has this ref as its head** → its body is checked, exactly as on a
+  `pull_request` run. This includes the release PR, which is the whole reason
+  the trigger exists.
+- **no open PR has this ref** → nothing to check, and the job says so with a
+  `::notice::` and succeeds.
+- **the API listing fails** → the job fails. A flaking query must never resolve
+  to green; the same rule `ci-ok`'s own run listing follows.
+
+That resolution lives in `scripts/check-agent-session-urls.sh --pr-for-ref`
+rather than inline in the workflow, so it can be exercised without a CI run:
+point `ROLTER_PULLS_JSON` at a file shaped like the API response and no network
+call is made.
+
+```bash
+ROLTER_PULLS_JSON=pulls.json \
+  bash scripts/check-agent-session-urls.sh --pr-for-ref rolter-ai/rolter some/branch
+```
+
+Workflow-embedded shell is shell nobody can run, and this logic decides whether
+a gate reports green.
+
+`ci-ok` was tightened to match: a skipped `session-urls` is accepted **only** on
+a `push` build, the one case with no pull request to check. Anywhere else, a
+skip is a failure rather than a pass.
+
+`pr-title` still cannot run on a dispatch — the action it uses reads the title
+out of the event payload, and there is no supported way to hand it one. The
+remaining gap is therefore narrow: on the only PR that takes the dispatch path,
+release-plz generates the title. `ci-ok` emits a `::warning::` naming that the
+title went unvalidated rather than letting a silent skip imply otherwise.
+
 ## Why not a separate `pr-title` workflow
 
 The obvious alternative is to drop the `edited` trigger from `ci.yml` and give
