@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Plug, Trash2, Loader2 } from "lucide-react";
+import { Building2, Plug, Tag, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -8,6 +8,13 @@ import {
   type ProviderSheetMode,
 } from "@/components/ProviderSheet";
 import { GatedButton } from "@/components/GatedButton";
+import {
+  LABELS_QUERY_KEY,
+  LabelChips,
+  LabelSheet,
+  labelOptions,
+  labelText,
+} from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { UnservedConfigNotice } from "@/components/UnservedConfigNotice";
@@ -21,6 +28,7 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
@@ -33,7 +41,9 @@ import { CopyButton } from "@/components/CopyButton";
 import {
   deleteProvider,
   fetchConfigProblems,
+  fetchLabels,
   fetchProviders,
+  type LabelRow,
   type ProviderRow,
 } from "@/lib/api";
 import { useGate } from "@/lib/can";
@@ -89,6 +99,26 @@ export default function Providers() {
     null,
   );
   const [search, setSearch] = React.useState("");
+  // the label the list is narrowed to, as `key=value`; "" is no filter
+  const [labelFilter, setLabelFilter] = React.useState("");
+  const [labelling, setLabelling] = React.useState<ProviderRow | null>(null);
+
+  // every provider label in the org in one request, rather than one per row
+  const labels = useQuery({
+    queryKey: [...LABELS_QUERY_KEY, scope.orgId, "provider"],
+    queryFn: () => fetchLabels(scope.orgId as string, { subject_type: "provider" }),
+    enabled: !!scope.orgId,
+    // a viewer without label:read gets a 403 that will not improve on a retry,
+    // and the screen is about providers — it keeps working without them
+    retry: false,
+  });
+  const byProvider = React.useMemo(() => {
+    const map = new Map<string, LabelRow[]>();
+    for (const label of labels.data ?? []) {
+      map.set(label.subject_id, [...(map.get(label.subject_id) ?? []), label]);
+    }
+    return map;
+  }, [labels.data]);
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!providers.isLoading);
@@ -103,11 +133,14 @@ export default function Providers() {
   const q = search.trim().toLowerCase();
   const rows = (providers.data ?? []).filter(
     (p) =>
-      !q ||
-      p.name.toLowerCase().includes(q) ||
-      p.kind.toLowerCase().includes(q) ||
-      p.slug.toLowerCase().includes(q),
+      (!q ||
+        p.name.toLowerCase().includes(q) ||
+        p.kind.toLowerCase().includes(q) ||
+        p.slug.toLowerCase().includes(q)) &&
+      (!labelFilter ||
+        (byProvider.get(p.id) ?? []).some((l) => labelText(l) === labelFilter)),
   );
+  const filtering = !!q || !!labelFilter;
 
   const GRID = "1fr 1.1fr 2fr 1fr 1fr 108px";
 
@@ -120,6 +153,16 @@ export default function Providers() {
           placeholder={t("pages.providers.search")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+        />
+        <Combobox
+          size="sm"
+          clearable
+          className="w-56"
+          value={labelFilter}
+          onChange={setLabelFilter}
+          placeholder={t("pages.providers.labelFilter")}
+          aria-label={t("pages.providers.labelFilter")}
+          options={labelOptions(labels.data ?? []).map((l) => ({ value: l, label: l }))}
         />
         <GatedButton
           gate="provider:create"
@@ -164,7 +207,10 @@ export default function Providers() {
         {providers.isLoading && <ListSkeleton rows={4} className="p-3" />}
         {rows.map((provider) => (
           <ListRow key={provider.id} grid={GRID}>
-            <span className="truncate font-mono text-sm">{provider.name}</span>
+            <span className="flex min-w-0 flex-col gap-1">
+              <span className="truncate font-mono text-sm">{provider.name}</span>
+              <LabelChips labels={byProvider.get(provider.id) ?? []} />
+            </span>
             <span>
               <Badge tone="outline">{provider.kind}</Badge>
             </span>
@@ -195,6 +241,15 @@ export default function Providers() {
               >
                 {t("pages.providers.edit")}
               </GatedButton>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-[30px]"
+                aria-label={t("pages.providers.labelsOf", { name: provider.name })}
+                onClick={() => setLabelling(provider)}
+              >
+                <Tag className="h-3.5 w-3.5" />
+              </Button>
               <button
                 type="button"
                 title={deleteGate.reason ?? t("pages.providers.deleteTitle")}
@@ -214,11 +269,19 @@ export default function Providers() {
           <EmptyState
             uxTarget="providers"
             icon={<Plug />}
-            title={q ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
-            description={q ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")}
+            title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
+            description={
+              filtering ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")
+            }
             actions={
-              q ? (
-                <Button variant="outline" onClick={() => setSearch("")}>
+              filtering ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    setLabelFilter("");
+                  }}
+                >
                   {t("common.clearSearch")}
                 </Button>
               ) : (
@@ -234,6 +297,17 @@ export default function Providers() {
           />
         )}
       </ListTable>
+
+      {scope.orgId && labelling && (
+        <LabelSheet
+          open
+          onOpenChange={(open) => !open && setLabelling(null)}
+          orgId={scope.orgId}
+          subjectType="provider"
+          subjectId={labelling.id}
+          subjectName={labelling.name}
+        />
+      )}
 
       <ProviderSheet
         open={!!sheet}
