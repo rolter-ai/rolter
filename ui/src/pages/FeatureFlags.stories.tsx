@@ -1,10 +1,17 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import FeatureFlags from "./FeatureFlags";
-import { Toasted, expectSkeleton, expectToast, expectForbidden } from "./story-harness";
+import {
+  expectForbidden,
+  expectSkeleton,
+  expectToast,
+  Harness as ScreenHarness,
+  json,
+  Toasted,
+  type FetchStub,
+  type StoryRole,
+} from "./story-harness";
 import type { FeatureFlagsDto } from "@/lib/api";
 
 const BASE: FeatureFlagsDto = {
@@ -18,36 +25,21 @@ const BASE: FeatureFlagsDto = {
   unavailable: [],
 };
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
-// each story owns its query client so a cached result never leaks into the next.
-// the stub is installed during render, not in an effect: child effects run
-// before the parent's, so an effect would let the first real fetch through
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
-  );
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown", the `superadminOnly` wrapper
+ * never blocks, and a story can only reach the 403 by stubbing one — which
+ * tests the screen's own error path rather than the gate (#1606).
+ */
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
-    <QueryClientProvider client={client}>
-      <Toasted>
-        <FeatureFlags />
-      </Toasted>
-    </QueryClientProvider>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+    <Toasted>
+      <FeatureFlags />
+    </Toasted>
+    </ScreenHarness>
   );
 }
 
@@ -135,5 +127,27 @@ export const SavesChanges: Story = {
     await expect(complexity).toHaveAttribute("aria-checked", "true");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await expectToast(canvasElement, /feature flags updated/i);
+  },
+};
+
+// What a non-superadmin gets, which is the screen refused before it asks
+// (#1606).
+//
+// `the feature flags` is a deployment-scoped resource, so `superadminOnly` never mounts
+// the screen for an org role however high. The stub answers the screen's own
+// request with a perfectly good payload on purpose: if the wrapper is dropped
+// the screen renders that payload and this story fails, which the `Forbidden`
+// story below cannot do — it stubs the 403 itself, so it passes either way.
+export const RefusedToAnAdmin: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} role="admin" />,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} role="viewer" />,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
   },
 };

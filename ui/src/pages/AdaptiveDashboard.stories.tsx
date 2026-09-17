@@ -1,19 +1,16 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import * as React from "react";
 import { expect, userEvent, waitFor } from "storybook/test";
 
 import type { AdaptiveRoutingTelemetryDto } from "@/lib/api";
 import AdaptiveDashboard from "./AdaptiveDashboard";
-import { expectSkeleton } from "./story-harness";
-
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+import {
+  expectForbidden,
+  expectSkeleton,
+  Harness as ScreenHarness,
+  json,
+  type FetchStub,
+  type StoryRole,
+} from "./story-harness";
 
 const TELEMETRY: AdaptiveRoutingTelemetryDto = {
   generated_at: "2026-08-02T01:15:00Z",
@@ -123,25 +120,19 @@ const TELEMETRY: AdaptiveRoutingTelemetryDto = {
   ],
 };
 
-// Install the deterministic fetch stub before child effects run, matching the
-// other API-backed screen stories in this repository.
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
-  );
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown", the `superadminOnly` wrapper
+ * never blocks, and a story can only reach the 403 by stubbing one — which
+ * tests the screen's own error path rather than the gate (#1606).
+ */
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
-    <QueryClientProvider client={client}>
-      <AdaptiveDashboard />
-    </QueryClientProvider>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+    <AdaptiveDashboard />
+    </ScreenHarness>
   );
 }
 
@@ -224,5 +215,27 @@ export const RetryAfterFailure: Story = {
   play: async ({ canvas }) => {
     await userEvent.click(await canvas.findByRole("button", { name: "Try again" }));
     await waitFor(() => expect(canvas.getByText("BLEND ACTIVE")).toBeVisible());
+  },
+};
+
+// What a non-superadmin gets, which is the screen refused before it asks
+// (#1606).
+//
+// `the adaptive-routing telemetry a superadmin alone reads` is a deployment-scoped resource, so `superadminOnly` never mounts
+// the screen for an org role however high. The stub answers the screen's own
+// request with a perfectly good payload on purpose: if the wrapper is dropped
+// the screen renders that payload and this story fails, which the `Forbidden`
+// story below cannot do — it stubs the 403 itself, so it passes either way.
+export const RefusedToAnAdmin: Story = {
+  render: () => <Harness fetchStub={async () => json(TELEMETRY)} role="admin" />,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => <Harness fetchStub={async () => json(TELEMETRY)} role="viewer" />,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
   },
 };
