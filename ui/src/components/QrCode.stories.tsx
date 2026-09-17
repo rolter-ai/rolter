@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import qrcode from "qrcode-generator";
+import * as React from "react";
 import { expect, within } from "storybook/test";
 
 import { QrCode } from "./QrCode";
@@ -34,9 +36,90 @@ export const Default: Story = {
     // elements and laying out each one costs more than the enrolment sheet has
     await expect(svg.querySelectorAll("path")).toHaveLength(1);
     await expect(svg.querySelector("path")?.getAttribute("d") ?? "").not.toBe("");
-    // nothing was fetched to draw it: a second factor sent to a chart service
-    // is not a second factor, and the dashboard has to work air-gapped
-    await expect(svg.querySelectorAll("image")).toHaveLength(0);
+  },
+};
+
+/** every module the path paints, as `col,row` in grid coordinates (quiet zone removed) */
+const paintedModules = (svg: SVGSVGElement): Set<string> => {
+  const d = svg.querySelector("path")?.getAttribute("d") ?? "";
+  return new Set([...d.matchAll(/M(\d+) (\d+)h1v1h-1z/g)].map(([, col, row]) => `${Number(col) - 4},${Number(row) - 4}`));
+};
+
+/**
+ * The drawing is the encoder's matrix, module for module. Nothing else here
+ * would notice rows and columns swapped, a grid shifted by one or a dropped
+ * module — and each of those is a code that renders fine and does not scan,
+ * which a user finds out at the one moment they cannot go back.
+ */
+export const PaintsExactlyTheEncodedMatrix: Story = {
+  play: async ({ canvasElement }) => {
+    const qr = qrcode(0, "M");
+    qr.addData(OTPAUTH);
+    qr.make();
+    const expected = new Set<string>();
+    for (let row = 0; row < qr.getModuleCount(); row += 1) {
+      for (let col = 0; col < qr.getModuleCount(); col += 1) {
+        if (qr.isDark(row, col)) expected.add(`${col},${row}`);
+      }
+    }
+    const painted = paintedModules(svgOf(canvasElement));
+    await expect(painted.size).toBe(expected.size);
+    await expect([...painted].filter((m) => !expected.has(m))).toEqual([]);
+    // a QR is not symmetric, so a transposed drawing is a different set: say
+    // so, or the comparison above could not tell the two apart
+    const transposed = [...expected].map((m) => m.split(",").reverse().join(","));
+    await expect(transposed.some((m) => !expected.has(m))).toBe(true);
+  },
+};
+
+// every request the page makes while the code is on screen
+const requests: string[] = [];
+
+function Watched({ children }: { children: React.ReactNode }) {
+  const original = React.useRef<typeof globalThis.fetch | null>(null);
+  React.useState(() => {
+    requests.length = 0;
+    const real = globalThis.fetch;
+    original.current = real;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(String(input));
+      return real(input, init);
+    }) as typeof globalThis.fetch;
+    return null;
+  });
+  // hand the real one back, or every later story runs behind this recorder
+  React.useEffect(
+    () => () => {
+      if (original.current) globalThis.fetch = original.current;
+    },
+    [],
+  );
+  return <>{children}</>;
+}
+
+/**
+ * Nothing leaves the browser to draw it: a second factor sent to a chart
+ * service is not a second factor, and the dashboard has to work air-gapped.
+ * So no request, and nothing in the drawing that could make one later.
+ */
+export const DrawsWithoutTheNetwork: Story = {
+  render: (args) => (
+    <Watched>
+      <QrCode {...args} />
+    </Watched>
+  ),
+  play: async ({ canvasElement }) => {
+    const svg = svgOf(canvasElement);
+    await expect(requests).toEqual([]);
+    await expect(canvasElement.querySelectorAll("img, image, use, iframe, object")).toHaveLength(0);
+    for (const node of [svg, ...svg.querySelectorAll("*")]) {
+      for (const attr of node.getAttributeNames()) {
+        await expect(attr).not.toMatch(/^(src|href|xlink:href)$/);
+        await expect(node.getAttribute(attr) ?? "").not.toMatch(/https?:|\/\/|url\(/);
+      }
+    }
+    // and the secret itself is nowhere in the markup but the modules
+    await expect(canvasElement.innerHTML).not.toContain("JBSWY3DPEHPK3PXP");
   },
 };
 

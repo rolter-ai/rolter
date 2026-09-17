@@ -3,7 +3,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { useScope } from "@/lib/scope";
-import { Harness, type FetchStub, json } from "@/pages/story-harness";
+import { Harness, StaleSession, type FetchStub, json } from "@/pages/story-harness";
 
 // `useScope` resolves the org/team/project chain every scoped screen loads
 // under, and three of its rules are invisible from any single screen: a pick
@@ -168,6 +168,86 @@ export const SelfHealsAStaleStoredPick: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
+    await settled(canvasElement, "probe", ["org-1", "team-1", "project-1"]);
+  },
+};
+
+/**
+ * Only the half that went stale is healed: the org still exists, so it stays,
+ * and the deleted team falls back to the first team of *that* org — not to the
+ * first org's first team.
+ */
+export const HealsOnlyTheHalfThatWentStale: Story = {
+  render: () => (
+    <Harness fetchStub={chain}>
+      <Stored scope={{ orgId: "org-2", teamId: "team-gone", projectId: "project-gone" }}>
+        <ScopeProbe />
+      </Stored>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await settled(canvasElement, "probe", ["org-2", "team-9", "project-9"]);
+  },
+};
+
+/** `/auth/me` for an account that belongs to Globex, which the org list returns second */
+const memberOfGlobex: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/auth/me") {
+    return json({
+      user: {
+        id: "user-1",
+        email: "anya@acme.co",
+        is_superadmin: false,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      memberships: [
+        {
+          id: "membership-1",
+          user_id: "user-1",
+          org_id: "org-2",
+          role: "admin",
+          source: "direct",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+  }
+  return chain(input, init);
+};
+
+/**
+ * With nothing stored, the org the account is a member of beats whichever org
+ * the control plane happened to list first (#1196) — a fresh browser must not
+ * land an operator in somebody else's org and show them a wall of 403s.
+ */
+export const PrefersTheOrgTheAccountBelongsTo: Story = {
+  render: () => (
+    <Harness fetchStub={memberOfGlobex}>
+      <StaleSession>
+        <ScopeProbe />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await settled(canvasElement, "probe", ["org-2", "team-9", "project-9"]);
+  },
+};
+
+/** but an explicit pick still outranks the membership: the switcher has to stick */
+export const AStoredPickOutranksTheMembership: Story = {
+  render: () => (
+    <Harness fetchStub={memberOfGlobex}>
+      <Stored scope={{ orgId: "org-1" }}>
+        <StaleSession>
+          <ScopeProbe />
+        </StaleSession>
+      </Stored>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    // the membership has to have landed before "still org-1" means anything
+    await new Promise((resolve) => setTimeout(resolve, 150));
     await settled(canvasElement, "probe", ["org-1", "team-1", "project-1"]);
   },
 };
