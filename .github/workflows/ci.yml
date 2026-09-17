@@ -231,6 +231,34 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
 
+  # the `edited` fast path needs exactly one fact about a head sha: did the
+  # heavy gate run here, and did it pass. it used to ask that by looking at the
+  # *run's overall conclusion*, which conflates the gate with everything else in
+  # the run. so a run that passed `quality` and `codeql` but failed
+  # `session-urls` — on a pr body the authoring tooling dirtied before the
+  # `opened` webhook froze it (#1518) — counted as no gate at all, and that head
+  # sha could never reach green again however clean the live body became: the
+  # `opened` run is the only one that runs the gate, `edited` runs never re-run
+  # it, and nothing can retroactively make that run succeed (#1522).
+  #
+  # this job records the gate's verdict alone, under a stable name the guard can
+  # look for. it carries no `if: always()` on purpose: with the default
+  # condition it runs only when every job it needs succeeded, so a failed or
+  # skipped gate leaves it `skipped` rather than adding a second red check
+  # beside `ci-ok`. the `needs` results it reads are computed by Actions, which
+  # already accounts for the `continue-on-error` jobs inside `quality` — this
+  # job must never re-derive that itself.
+  gate-ok:
+    name: gate-ok
+    # a metadata-only run does not exercise the gate, so it has no verdict to
+    # record and must not leave one behind
+    if: github.event.action != 'edited'
+    needs: [quality, codeql]
+    runs-on: ubuntu-latest
+    steps:
+      - name: record that the heavy gate passed on this run
+        run: echo "quality and codeql both succeeded on this run"
+
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
   # required status check on master; it turns green only when the quality
   # workflow, pr-title and codeql all succeed (a skipped pr-title is fine on a
@@ -295,10 +323,31 @@ jobs:
           # name, since every run of this workflow shares the name
           unfinished="$(jq --arg self "${SELF_RUN_ID}" \
             '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status != "completed")] | length' "${runs}")"
-          # a cancelled run is `completed` with no verdict, so it counts as no run
-          # at all rather than as a pass — same treatment as a missing run
-          passed="$(jq --arg self "${SELF_RUN_ID}" \
-            '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status == "completed" and .conclusion == "success")] | length' "${runs}")"
+
+          # a run counts as a gate pass when its `gate-ok` job concluded
+          # success — not when the run as a whole did. the run's conclusion
+          # folds in `session-urls` and `pr-title`, neither of which says
+          # anything about whether the code was gated, and a `session-urls`
+          # failure on a frozen dirty body used to strand the sha forever
+          # (#1522). a cancelled run reaches this loop as `completed` with no
+          # `gate-ok` job, so it counts as no run at all rather than as a pass,
+          # exactly as before
+          passed=0
+          while IFS= read -r run_id; do
+            [ -n "${run_id}" ] || continue
+            jobs="${RUNNER_TEMP}/ci-jobs-${run_id}.json"
+            if ! gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" > "${jobs}"; then
+              # same rule as the listing above: no answer is not an answer
+              echo "::error::could not list jobs for ci run ${run_id}; refusing to report green without a gate result"
+              exit 1
+            fi
+            ok="$(jq '[.jobs[] | select(.name == "gate-ok") | select(.conclusion == "success")] | length' "${jobs}")"
+            echo "  run ${run_id}: gate-ok success jobs = ${ok}"
+            if [ "${ok}" -gt 0 ]; then
+              passed=$((passed + 1))
+            fi
+          done < <(jq -r --arg self "${SELF_RUN_ID}" \
+            '.workflow_runs[] | select((.id | tostring) != $self) | select(.status == "completed") | .id' "${runs}")
 
           # the two branches below both end this job red, because `failure` is
           # the only non-success conclusion a job can reach on its own (#1511).
@@ -310,7 +359,7 @@ jobs:
             exit 1
           fi
           if [ "${passed}" -eq 0 ]; then
-            echo "::error::no completed, successful ci run on ${HEAD_SHA} (a cancelled run counts as none); re-run the gate instead of editing the title to go green"
+            echo "::error::no completed ci run on ${HEAD_SHA} recorded a passing gate-ok job (a cancelled run counts as none); the heavy gate failed, was cancelled, or never ran here — push a fix or re-run the gate instead of editing the title to go green"
             exit 1
           fi
           echo "gate already passed for ${HEAD_SHA} in ${passed} completed run(s)"
