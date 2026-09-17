@@ -116,26 +116,26 @@ export default function Config() {
       </div>
 
       <div className="flex flex-col gap-3">
-        <h2 className="text-base font-medium">Related settings</h2>
+        <h2 className="text-base font-medium">{t("pages.config.related.title")}</h2>
         <RelatedLink
           to="/feature-flags"
-          title="Feature flags"
-          desc="Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+          title={t("pages.config.related.featureFlags.title")}
+          desc={t("pages.config.related.featureFlags.desc")}
         />
         <RelatedLink
           to="/client-settings"
-          title="Client settings"
-          desc="Base URL, forwarded and injected headers, request correlation."
+          title={t("pages.config.related.clientSettings.title")}
+          desc={t("pages.config.related.clientSettings.desc")}
         />
         <RelatedLink
           to="/model-settings"
-          title="Model settings"
-          desc="Deployment-wide defaults for sampling parameters and the model."
+          title={t("pages.config.related.modelSettings.title")}
+          desc={t("pages.config.related.modelSettings.desc")}
         />
         <RelatedLink
           to="/performance"
-          title="Performance tuning"
-          desc="Upstream retries, timeouts, and the bounded admission queue."
+          title={t("pages.config.related.performance.title")}
+          desc={t("pages.config.related.performance.desc")}
         />
       </div>
     </div>

@@ -488,3 +488,51 @@ describe("findLiterals reads template-literal error messages", () => {
     expect(texts("throw new Error(`Request failed: ${res.status}`);")).toEqual(["Request failed: {…}"]);
   });
 });
+
+// the prop list was closed at ten names, so `FeatureFlags.tsx` kept six English
+// descriptions under `desc:` that the gate never reported (#1545). every name
+// below is one a dashboard component renders as copy
+describe("findLiterals reads every copy-carrying prop name", () => {
+  const names: [string, string][] = [
+    ["desc", "RelatedLink, FeatureFlags and the settings rows"],
+    ["hint", "Field and SwitchRow"],
+    ["info", "the InfoHint behind Field and SwitchRow"],
+    ["text", "InfoHint"],
+    ["tooltip", "a hover explanation"],
+    ["detail", "the toast's second line"],
+    ["message", "an inline or toast message"],
+    ["body", "a dialog or notice body"],
+    ["note", "ScopeNote and the cost attribution notes"],
+    ["error", "Field's validation line"],
+    ["errorMessage", "the create dialogs' failure line"],
+    ["alt", "an image's accessible name"],
+  ];
+
+  for (const [name, where] of names) {
+    test(`${name} (${where})`, () => {
+      expect(texts(`<Row ${name}="Retries upstream calls" />`)).toEqual(["Retries upstream calls"]);
+      expect(texts(`<Row ${name}={ok ? "Healthy upstream" : "Degraded upstream"} />`)).toEqual([
+        "Healthy upstream",
+        "Degraded upstream",
+      ]);
+      expect(texts(`const ROWS = [{ key: "retries", ${name}: "Retries upstream calls" }];`)).toEqual([
+        "Retries upstream calls",
+      ]);
+      expect(texts(`function Row({ ${name} = "Retries upstream calls" }) { return null; }`)).toEqual([
+        "Retries upstream calls",
+      ]);
+    });
+  }
+
+  test("a longer name that only ends in one is not a copy prop", () => {
+    expect(texts('<Row onError="Retries upstream calls" helpText2="Retries upstream calls" />')).toEqual([]);
+  });
+
+  test("a wire value under one of the new keys is still not copy", () => {
+    const source = [
+      'const COLORS = { error: "var(--status-danger)", text: "text-[color:var(--text-subtle)]" };',
+      'const r = { error: "metadataInvalid", body: "{}", message: "ok" };',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});

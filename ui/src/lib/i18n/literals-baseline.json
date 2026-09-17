@@ -2,6 +2,9 @@
   "src/components/ProviderGroupSheet.tsx": [
     "{…}/model · {…}"
   ],
+  "src/components/ui/code-block.tsx": [
+    "Text"
+  ],
   "src/components/ui/nav-sidebar.tsx": [
     "absolute bottom-[calc(100%+6px)] z-40 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] py-1.5 shadow-lg",
     "left-0 w-[min(260px,calc(100vw_-_1.5rem))]"
@@ -12,17 +15,12 @@
   "src/pages/Config.tsx": [
     "API base",
     "Admin-only · read-only view. Config is applied from",
-    "Client settings",
     "Config hot-swaps with no restart — the gateway polls the control plane's snapshot endpoint.",
     "Effective config",
-    "Feature flags",
     "Kind",
     "Model",
-    "Model settings",
     "Name",
-    "Performance tuning",
     "Providers",
-    "Related settings",
     "Routes",
     "Strategy",
     "Targets",
