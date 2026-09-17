@@ -1,10 +1,18 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
-import { expectLoadError, expectSkeleton, openOptions, pickOption } from "./story-harness";
+import {
+  expectLoadError,
+  expectRefused,
+  expectSkeleton,
+  Harness as ScreenHarness,
+  json,
+  openOptions,
+  pickOption,
+  type FetchStub,
+  type StoryRole,
+} from "./story-harness";
 import type { ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
@@ -47,14 +55,6 @@ const MAPPINGS: ScimGroupMappingRow[] = [
   mapping(),
   mapping({ id: "map-2", group_name: "sre-oncall", role: "admin", team_id: "team-1" }),
 ];
-
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // two teams, and a project under each: the scope switcher only ever has one
 // team selected, so "payments/checkout" is the project outside it that the
@@ -106,25 +106,19 @@ function scoped(
   };
 }
 
-// the stub is installed during render, not in an effect: child effects run
-// before the parent's, so an effect would let the first real fetch through
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
-  );
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown", the `superadminOnly` wrapper
+ * never blocks, and a story can only reach the 403 by stubbing one — which
+ * tests the screen's own error path rather than the gate (#1606).
+ */
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
-    <QueryClientProvider client={client}>
-      <UserProvisioning />
-    </QueryClientProvider>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+    <UserProvisioning />
+    </ScreenHarness>
   );
 }
 
@@ -478,5 +472,42 @@ export const ScopePickerCannotListTeams: Story = {
     const canvas = within(canvasElement);
     await expectLoadError(canvasElement, /teams and projects/);
     await expect(canvas.getByLabelText("Where the role applies")).toBeVisible();
+  },
+};
+
+// A SCIM token is what an IdP presents to provision accounts, and a group
+// mapping is what turns a directory group into a role — both `admin` at every
+// action (#1606).
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json(MAPPINGS),
+      )}
+      role="viewer"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Issue token");
+    await expectRefused(canvasElement, "Revoke provisioning token Okta production");
+    await expectRefused(canvasElement, "Map group");
+    await expectRefused(canvasElement, "Remove the mapping for platform-engineering");
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json(MAPPINGS),
+      )}
+      role="member"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Issue token");
+    await expectRefused(canvasElement, "Map group");
   },
 };

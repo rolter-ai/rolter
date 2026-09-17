@@ -3,21 +3,21 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SingleSignOn from "./SingleSignOn";
 import {
-  Harness,
-  expectRefused,
-  ORG,
-  Toasted,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectRefused,
   expectToast,
+  Harness,
   json,
+  ORG,
   pending,
+  pickOption,
   recording,
   scoped,
   sheet,
+  Toasted,
   type FetchStub,
-  pickOption,
 } from "./story-harness";
 import type {
   OrgAuthPolicy,
@@ -702,5 +702,43 @@ export const AsMemberThePolicyIsReadOnly: Story = {
     await expect(await canvas.findByLabelText("Second factor")).toBeVisible();
     await pickOption(canvas.getByLabelText("Second factor"), "Optional");
     await expectRefused(canvasElement, "Save policy");
+  },
+};
+
+// Registering and editing an identity provider is `sso_provider`, and mapping
+// its groups to roles is `sso_group_mapping` — admin at every action (#1606).
+//
+// The screen's own read is `admin`-gated too, so a viewer sees the list fail;
+// what these stories pin is that the controls say what they would take rather
+// than offering a click the control plane is going to refuse.
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={api()} role="member">
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Add provider");
+    await expectRefused(canvasElement, "Delete provider Acme Okta");
+    await expectRefused(
+      canvasElement,
+      "Remove the stored client secret for Acme Okta",
+    );
+    await expectRefused(
+      canvasElement,
+      "Remove the mapping for platform-engineering",
+    );
+  },
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={api()} role="viewer">
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Add provider");
+    await expectRefused(canvasElement, "Delete provider Acme Okta");
   },
 };

@@ -3,16 +3,17 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Teams from "./Teams";
 import {
-  Harness,
-  ORG,
-  Toasted,
   clickWhenEnabled,
   expectEmptyState,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   expectToast,
+  Harness,
   json,
+  ORG,
   sheet,
+  Toasted,
   type FetchStub,
 } from "./story-harness";
 import type { TeamRow } from "@/lib/api";
@@ -141,5 +142,34 @@ export const CreateRejectedByTheServer: Story = {
       expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
     );
     await expect(within(form).getByLabelText("Team name")).toHaveValue("Platform");
+  },
+};
+
+// Creating a team is admin, and the control is the only one on the screen —
+// so the gate has exactly one story to lose it from (#1606).
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={orgThen(() => json(TEAMS))} role="viewer">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /new team/i);
+  },
+};
+
+// the empty state repeats the create control, but it cannot be asserted here:
+// the screen's team list *is* the scope's, so an org with no teams leaves
+// `useScope` loading, the effective-permissions query never runs, and every
+// control on the screen renders enabled. That is a gap in the gate rather than
+// in the story — see #1623.
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={orgThen(() => json(TEAMS))} role="member">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /new team/i);
   },
 };

@@ -4,7 +4,17 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { McpCatalog, McpLibrary, McpSettings, ToolGroups } from "./McpManagement";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, Harness as GatedHarness, recording } from "./story-harness";
+import {
+  cancelConfirmation,
+  confirmDestructive,
+  expectEmptyState,
+  expectLoadError,
+  expectRefused,
+  expectSkeleton,
+  Harness as GatedHarness,
+  NEEDS_ADMIN,
+  recording,
+} from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type { McpGatewaySettingsRow, McpLibraryItem, McpServerRow, McpToolGroupRow } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
@@ -627,3 +637,29 @@ export const ToolGroupConfirmsBeforeDeleting: Story = {
 
 export const SettingsLoaded: Story = { render: () => <Harness fetchStub={routed()}><McpSettings /></Harness> };
 export const SettingsSavesChanges: Story = { render: () => { let saved = SETTINGS; const stub = routed({ settings: async (_input, init) => { if (init?.method === "PUT") saved = { ...SETTINGS, ...JSON.parse(String(init.body)), updated_at: "2026-08-02T00:00:00Z" }; return json(saved); } }); return <Harness fetchStub={stub}><McpSettings /></Harness>; }, play: async ({ canvasElement }) => { const canvas = within(canvasElement); const retries = await canvas.findByLabelText("Maximum retries"); await userEvent.clear(retries); await userEvent.type(retries, "3"); await userEvent.click(canvas.getByRole("button", { name: "Save MCP settings" })); await waitFor(() => expect(retries).toHaveValue(3)); } };
+
+// The catalog's other two gates (#1606). `CatalogGatedForViewer` above covers
+// the create and the configure; the delete and the enable toggle are separate
+// controls with separate gates, and a `GatedSwitch` is not a `GatedButton`, so
+// neither is reached by that story.
+export const CatalogDeleteAndToggleGatedForViewer: Story = {
+  render: () => <GatedHarness role="viewer" fetchStub={routed()}><McpCatalog /></GatedHarness>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Delete server GitHub");
+    // the switch carries the same refusal, said through `aria-disabled`: a
+    // disabled Radix switch still has to be announced as a switch
+    const toggle = await canvas.findByRole("switch", { name: "Enable Sentry" });
+    await waitFor(() => expect(toggle).toBeDisabled());
+    await expect(toggle).toHaveAttribute("title", NEEDS_ADMIN);
+  },
+};
+
+// a tool group is its own resource, so the catalog's gates say nothing about it
+export const ToolGroupsGatedForMember: Story = {
+  render: () => <GatedHarness role="member" fetchStub={routed()}><ToolGroups /></GatedHarness>,
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Delete tool group Triage");
+    await expectRefused(canvasElement, "Configure tool group Triage");
+  },
+};
