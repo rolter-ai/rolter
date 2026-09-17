@@ -260,8 +260,13 @@ jobs:
           passed="$(jq --arg self "${SELF_RUN_ID}" \
             '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status == "completed" and .conclusion == "success")] | length' "${runs}")"
 
+          # the two branches below both end this job red, because `failure` is
+          # the only non-success conclusion a job can reach on its own (#1511).
+          # they mean very different things, though, so say which one it is
+          # rather than leaving one message to cover both
           if [ "${unfinished}" -gt 0 ]; then
-            echo "::error::${unfinished} ci run(s) on ${HEAD_SHA} are still queued or in progress; the title-edit fast path will not report green over an unfinished gate. that run writes its own ci-ok when it completes"
+            echo "::notice::nothing is wrong with ${HEAD_SHA}. ${unfinished} ci run(s) on it are still queued or in progress, so this metadata-only run has no gate result to report yet. the in-flight run writes its own, newer ci-ok when it finishes and that is the one branch protection reads -- no action is needed here"
+            echo "::error::gate still running on ${HEAD_SHA}: declining to report green over an unfinished gate (see the notice above; this is expected and self-healing)"
             exit 1
           fi
           if [ "${passed}" -eq 0 ]; then
