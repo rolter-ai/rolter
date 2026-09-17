@@ -48,7 +48,14 @@
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
-    "noResults": "No results"
+    "noResults": "No results",
+    "combobox": {
+      "placeholder": "Select…",
+      "clear": "Clear selection",
+      "noMatches": "No options match your filter",
+      "results_one": "{{count}} option available",
+      "results_other": "{{count}} options available"
+    }
   },
   "errors": {
     "load": {

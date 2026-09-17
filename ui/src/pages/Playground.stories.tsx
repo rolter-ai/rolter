@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Playground from "./Playground";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -96,18 +96,24 @@ export const GatewayModels: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const picker = await canvas.findByRole("combobox", { name: "Model" });
+    await userEvent.click(picker);
+    const listbox = canvas.getByRole("listbox");
     await waitFor(() =>
-      expect(canvasElement.querySelector('option[value="abc/minicpm5-1b"]')).toBeTruthy(),
+      expect(within(listbox).getByRole("option", { name: "abc/minicpm5-1b" })).toBeTruthy(),
     );
     // the group address is selectable — the whole point of the screen
-    await expect(canvasElement.querySelector('option[value="gpustack/minicpm5-1b"]')).toBeTruthy();
+    await expect(
+      within(listbox).getByRole("option", { name: "gpustack/minicpm5-1b" }),
+    ).toBeTruthy();
 
     // grouped by owner, so the three kinds of address are visually distinct
-    const groups = [...canvasElement.querySelectorAll("optgroup")].map((g) =>
-      g.getAttribute("label"),
-    );
+    const groups = within(listbox)
+      .getAllByRole("group")
+      .map((g) => g.getAttribute("aria-label"));
     await expect(groups).toContain("vllm-test");
     await expect(groups).toContain("abc");
+    await userEvent.keyboard("{Escape}");
 
     // nothing to explain when the list is the gateway's own
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
@@ -126,10 +132,15 @@ export const NoKeySaysWhatIsMissing: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/Showing configured routes/)).toBeVisible());
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    const listbox = canvas.getByRole("listbox");
     // the picker stays usable rather than emptying out
-    await expect(canvasElement.querySelector('option[value="fake-llm"]')).toBeTruthy();
+    await expect(within(listbox).getByRole("option", { name: "fake-llm" })).toBeTruthy();
     // and the gateway-only addresses are genuinely absent, as the notice says
-    await expect(canvasElement.querySelector('option[value="abc/minicpm5-1b"]')).toBeNull();
+    await expect(
+      within(listbox).queryByRole("option", { name: "abc/minicpm5-1b" }),
+    ).toBeNull();
+    await userEvent.keyboard("{Escape}");
   },
 };
 
@@ -161,7 +172,7 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvasElement.querySelector("select")).toBeTruthy());
+    await waitFor(() => expect(canvasElement.querySelector('[role="combobox"]')).toBeTruthy());
     void canvas;
     await expectNoHorizontalOverflow();
   },
