@@ -500,3 +500,126 @@ export const NoAnalyticsStore: Story = {
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
   },
 };
+
+// newest first, as the control plane sorts them, each with its own id so a
+// cursor names exactly one row
+const logPage = (count: number): InvocationRow[] =>
+  Array.from({ length: count }, (_, i) =>
+    row({
+      request_id: `req-p${String(i + 1).padStart(3, "0")}`,
+      ts: new Date(BASE_TS - i * 1000).toISOString(),
+    }),
+  );
+
+/**
+ * A stub that pages the way `GET /api/v1/analytics/invocations` does since
+ * #1410: `cursor` is the `ts|request_id` of the last row already served, the
+ * page resumes strictly after it, and `next_cursor` names the page's own last
+ * row. An `offset` is ignored, exactly as the server ignores it — a screen that
+ * still sent one would be handed page one again.
+ */
+const cursorPaged = (rows: InvocationRow[], failAfterFirst = false): FetchStub =>
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") {
+      const cursor = url.searchParams.get("cursor");
+      if (cursor && failAfterFirst)
+        return json({ error: { message: "clickhouse refused" } }, 500);
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const from = cursor
+        ? rows.findIndex((r) => `${r.ts}|${r.request_id}` === cursor) + 1
+        : 0;
+      const data = rows.slice(from, from + limit);
+      const last = data[data.length - 1];
+      return json({ data, next_cursor: last ? `${last.ts}|${last.request_id}` : null });
+    }
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models") return json([]);
+    return json([]);
+  });
+
+const SIXTY = logPage(60);
+const paged = recording(cursorPaged(SIXTY));
+
+/**
+ * #1411: "next page" hands the server the cursor it returned rather than a row
+ * offset, and "previous page" goes back to the cursor it came from. With an
+ * offset the second page was page one again, silently.
+ */
+export const PagesOnTheCursor: Story = {
+  render: () => (
+    <Harness fetchStub={paged.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(50);
+    await expect(canvas.getByRole("button", { name: "Previous page" })).toBeDisabled();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
+    // the second page starts at the 51st row and holds the ten that are left
+    await canvas.findByText(fmt.dateTimeMs(SIXTY[50].ts));
+    await waitFor(() =>
+      expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(10),
+    );
+    const sent = paged.calls.filter((c) => c.url.includes("/analytics/invocations"));
+    const cursor = `${SIXTY[49].ts}|${SIXTY[49].request_id}`;
+    await expect(
+      sent.some((c) => new URL(c.url, "http://localhost").searchParams.get("cursor") === cursor),
+    ).toBe(true);
+    await expect(sent.some((c) => c.url.includes("offset="))).toBe(false);
+    await expect(canvas.getByText("p2")).toBeInTheDocument();
+    // a short page is the last one, even though it carries a cursor
+    await expect(canvas.getByRole("button", { name: "Next page" })).toBeDisabled();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Previous page" }));
+    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await expect(canvas.getByText("p1")).toBeInTheDocument();
+    await expect(canvas.queryByText(fmt.dateTimeMs(SIXTY[50].ts))).toBeNull();
+  },
+};
+
+const FIFTY = logPage(50);
+
+/**
+ * A full page can be the last one, so the page after it comes back empty. That
+ * is the end of the log, not "nothing logged yet", and it offers the way back.
+ */
+export const AnEmptyLaterPageIsTheEnd: Story = {
+  render: () => (
+    <Harness fetchStub={cursorPaged(FIFTY)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(FIFTY[0].ts));
+    await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
+    await expectEmptyState(canvasElement, /reached the end/);
+    await expect(canvas.queryByText(/Nothing logged yet/)).toBeNull();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Back to newest" }));
+    await canvas.findByText(fmt.dateTimeMs(FIFTY[0].ts));
+    await expect(canvas.getByText("p1")).toBeInTheDocument();
+  },
+};
+
+/** A later page that fails reads as a load error with a retry, like the first. */
+export const ALaterPageFails: Story = {
+  render: () => (
+    <Harness fetchStub={cursorPaged(SIXTY, true)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
+    await expectLoadError(canvasElement, /failed to return request logs/i);
+    // the way back is still there
+    await expect(canvas.getByRole("button", { name: "Previous page" })).toBeEnabled();
+  },
+};

@@ -196,6 +196,8 @@ Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` o
   Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
+The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
+
 ## Built-in dashboard
 
 The Rolter control plane's dashboard queries ClickHouse directly to give you usage, spend, latency percentiles, and error rates — all sliced by model, project, and virtual key. No extra ETL or data pipeline is needed: the rows Rolter writes are the source of truth for the dashboard.

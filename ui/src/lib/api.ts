@@ -431,12 +431,31 @@ export interface InvocationsQuery extends AnalyticsWindow {
   customer?: string[];
   status?: "all" | "error" | "success";
   limit?: number;
-  offset?: number;
+  /**
+   * The previous page's `next_cursor`, handed back unchanged; omitted for the
+   * first page. A keyset position rather than a row offset, so requests the
+   * gateway logs while a reader pages cannot shift a row onto two pages or
+   * between them (#1410)
+   */
+  cursor?: string;
+}
+
+/** One page of the invocation log and the cursor that resumes after it. */
+export interface InvocationsPage {
+  data: InvocationRow[];
+  /** `null` only for an empty page; a short page still carries one */
+  next_cursor: string | null;
 }
 
 export function fetchInvocations(
   query: InvocationsQuery = {},
 ): Promise<InvocationRow[]> {
+  return fetchInvocationsPage(query).then((r) => r.data);
+}
+
+export function fetchInvocationsPage(
+  query: InvocationsQuery = {},
+): Promise<InvocationsPage> {
   const params = new URLSearchParams();
   if (query.since) params.set("since", query.since);
   if (query.until) params.set("until", query.until);
@@ -448,11 +467,11 @@ export function fetchInvocations(
   if (query.customer?.length) params.set("customer", query.customer.join(","));
   if (query.status) params.set("status", query.status);
   if (query.limit != null) params.set("limit", String(query.limit));
-  if (query.offset != null) params.set("offset", String(query.offset));
+  if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();
-  return getAnalytics<DataEnvelope<InvocationRow>>(
+  return getAnalytics<Partial<InvocationsPage>>(
     `/api/v1/analytics/invocations${qs ? `?${qs}` : ""}`,
-  ).then((r) => r.data);
+  ).then((r) => ({ data: r.data ?? [], next_cursor: r.next_cursor ?? null }));
 }
 
 export function fetchConfig(): Promise<GatewayConfigDto> {
