@@ -18,6 +18,19 @@ Your session is re-checked every time the dashboard loads. If it has expired, yo
 
 The language switcher sits at the bottom of the rail, and on the sign-in card, so you can pick English or Russian before you have an account.
 
+## Getting started
+
+A fresh deployment opens the Dashboard on a **Getting started** card: the four steps between an empty control plane and a client calling Rolter, plus the request that client would send.
+
+1. **Make a call with no credentials.** The gateway ships a built-in `fake-llm` model that answers without an upstream or a provider key, so the Playground works before anything is configured.
+2. **Connect a provider.** The key is sealed in the store and never shown again.
+3. **Add a route** — the model name your clients ask for, and where it lands.
+4. **Mint a virtual key.** Clients authenticate with it rather than with your provider key, which is what makes per-key budgets and logs possible.
+
+Each step is ticked from the deployment itself, not from a checklist kept in your browser: a step reads as done when the row exists, so work another administrator did shows up on reload. A step whose form your role may not open is shown as a disabled button naming the role it needs, rather than a link into a screen that would refuse you.
+
+**Dismiss** hides the card and leaves a **Getting started** button in its place, so it is never gone for good. It retires itself once the deployment has both a provider and traffic — traffic on its own can be a single Playground call, which is step one.
+
 ## The left rail
 
 Everything lives under one of these groups. Screens you cannot read with your role are hidden; superadmin-only screens are hidden for everyone else.

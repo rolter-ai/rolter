@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { PageBody } from "@/components/screen";
+import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { LoadError } from "@/components/LoadError";
 import {
@@ -96,6 +97,9 @@ export default function Dashboard() {
   if (unavailable) {
     return (
       <PageBody>
+        {/* a deployment with no analytics store still has a first run, and the
+            checklist below reads rows rather than traffic (#1585) */}
+        <GettingStarted />
         <LoadError error={unavailable} resource={t("errors.resources.analytics")} />
       </PageBody>
     );
@@ -162,6 +166,7 @@ export default function Dashboard() {
 
   return (
     <PageBody className="gap-[18px]">
+      <GettingStarted requests={summary.isSuccess ? requests : undefined} />
       {summary.isLoading ? (
         // `Skeleton` is `aria-hidden`, so the four bare ones this used to
         // render were a loading state no screen reader could hear (#1605)

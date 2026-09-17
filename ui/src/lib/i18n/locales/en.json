@@ -130,6 +130,7 @@
       "configExport": "the configuration export",
       "providers": "providers",
       "plugins": "plugins",
+      "gettingStarted": "the setup checklist",
       "analytics": "analytics",
       "requestLogs": "request logs",
       "routes": "routes",
@@ -393,6 +394,43 @@
     "feature-flags": "Feature Flags"
   },
   "pages": {
+    "gettingStarted": {
+      "title": "Getting started",
+      "subtitle": "The shortest path from an empty deployment to a client calling Rolter.",
+      "dismiss": "Dismiss",
+      "reopen": "Getting started",
+      "done": "Done",
+      "todo": "To do",
+      "noScopeTitle": "No project selected",
+      "noScopeBody": "Pick an organisation, team and project in the header. Each step below is done when the row exists in that project.",
+      "snippetLabel": "Request",
+      "steps": {
+        "call": {
+          "title": "Make a call with no credentials",
+          "body": "The built-in fake-llm model answers without an upstream or a provider key, so the first thing that happens is a working response.",
+          "action": "Open the Playground"
+        },
+        "provider": {
+          "title": "Connect a provider",
+          "body": "Point Rolter at OpenAI, Anthropic, vLLM or anything speaking their dialects. The key is sealed in the store, never shown again.",
+          "action": "Add a provider"
+        },
+        "route": {
+          "title": "Add a route",
+          "body": "A route is the model name your clients ask for, and where it lands. One provider or several, with a balancing strategy.",
+          "action": "Add a route"
+        },
+        "key": {
+          "title": "Mint a virtual key",
+          "body": "Clients authenticate with a virtual key rather than your provider key, which is what makes per-key budgets and logs possible.",
+          "action": "Create a virtual key"
+        },
+        "client": {
+          "title": "Point a client at Rolter",
+          "body": "The base URL and a virtual key are all any OpenAI-compatible client needs."
+        }
+      }
+    },
     "dashboard": {
       "statRequests": "Requests (24h)",
       "statSpend": "Spend (24h)",
