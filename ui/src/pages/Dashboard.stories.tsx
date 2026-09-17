@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter } from "react-router";
 import { expect, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
@@ -88,10 +89,14 @@ const loaded: FetchStub = routes([
   ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
 ]);
 
+// the first-run checklist the screen now opens with links to four screens, so
+// the dashboard's stories need a router around them (#1585)
 const render = (stub: FetchStub) => (
-  <Harness fetchStub={stub}>
-    <Dashboard />
-  </Harness>
+  <MemoryRouter>
+    <Harness fetchStub={stub}>
+      <Dashboard />
+    </Harness>
+  </MemoryRouter>
 );
 
 const meta = {

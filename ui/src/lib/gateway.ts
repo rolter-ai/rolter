@@ -199,3 +199,17 @@ export function realtimeUrl(model: string): string {
   if (key) params.set("api_key", key);
   return `${proto}//${location.host}${GW_BASE}/v1/realtime?${params.toString()}`;
 }
+
+/**
+ * The gateway's OpenAI-compatible base URL, as a client outside the browser
+ * would have to write it (#1585).
+ *
+ * The dashboard itself talks to `/gw` relative to its own origin, which is
+ * useless in a snippet somebody pastes into a terminal — so this resolves it
+ * against the current origin. A deployment that serves the gateway on its own
+ * host still has to say so; this is the address the dashboard can prove works,
+ * not a guess at the operator's ingress.
+ */
+export function gatewayBaseUrl(): string {
+  return new URL(GW_BASE, location.origin).toString().replace(/\/$/, "");
+}
