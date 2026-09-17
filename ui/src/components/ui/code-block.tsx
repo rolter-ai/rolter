@@ -48,15 +48,16 @@ export interface CodeBlockProps {
   className?: string;
 }
 
-/** display names for the accessible label — codes and proper nouns, not copy */
-const LANGUAGE_NAMES: Record<CodeLanguage, string> = {
-  text: "Text",
+/**
+ * display names for the accessible label — codes and proper nouns, not copy.
+ * `text` and `log` are ordinary words, so they come from the catalog instead
+ */
+const LANGUAGE_NAMES: Record<Exclude<CodeLanguage, "text" | "log">, string> = {
   json: "JSON",
   toml: "TOML",
   yaml: "YAML",
   bash: "Bash",
   csv: "CSV",
-  log: "Log",
   python: "Python",
   javascript: "JavaScript",
   typescript: "TypeScript",
@@ -108,9 +109,13 @@ export function CodeBlock({
     [lineNumbers, tree],
   );
 
+  const languageName =
+    language === "text" || language === "log"
+      ? t(`code.language.${language}`)
+      : LANGUAGE_NAMES[language];
   const name = label
-    ? t("code.regionNamed", { label, language: LANGUAGE_NAMES[language] })
-    : t("code.region", { language: LANGUAGE_NAMES[language] });
+    ? t("code.regionNamed", { label, language: languageName })
+    : t("code.region", { language: languageName });
 
   return (
     <div className={cn("relative", className)}>

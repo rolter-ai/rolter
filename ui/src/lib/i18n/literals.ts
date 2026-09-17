@@ -24,7 +24,7 @@
 // neighbours in `Playground.tsx` were invisible; which literals a file lost
 // depended on where the lines happened to break. Re-wrapping dense JSX moved
 // strings in and out of the detected set with nothing added or removed from the
-// source, which is exactly what `staleBaseline` exists to make impossible.
+// source, which is exactly what `staleAllowed` exists to make impossible.
 //
 // So the source goes through `maskSource` first: a small TS/JSX tokenizer that
 // knows strings, template literals, comments and regex literals apart, blanks
@@ -34,28 +34,33 @@
 // line breaks. `maskSource` also returns an offset map, so a finding still
 // reports the line it came from in the original file.
 //
-// ## Why a baseline
+// ## Why an allow-list, and no baseline
 //
-// The rule is repo-wide and the debt predates it: several hundred literals
-// already exist across `pages/` and `components/`. Failing on all of them would
-// mean either a several-hundred-string translation PR nobody asked for, or a
-// gate that is permanently red and therefore ignored. So the existing set is
-// recorded, and the gate fails on anything *new*. The baseline file is the debt,
-// written down and countable, and it only ever shrinks.
+// The rule is repo-wide and the debt predated it, so it shipped with a recorded
+// baseline of several hundred literals that the gate tolerated and that could
+// only shrink. That baseline read as clean on every run while the `ru` locale
+// was mostly English (#958), and it has now been paid off: every piece of copy
+// the scan finds is in the catalogs.
+//
+// What is left is notation the scan cannot tell from prose — `n=1`, `v{…}`, a
+// `{…} rpm` unit, a thrown invariant no operator can reach. Those live in
+// `literals-allowlist.ts`, one entry per string, and every entry states why it
+// is not copy. There is no command that records findings into it: an exception
+// is written by hand and reviewed, so it never grows by accident.
 
 /** One hardcoded user-facing string. */
 export interface Literal {
   /** repo-relative source path */
   file: string;
   line: number;
-  /** the offending text, normalized for stable baseline comparison */
+  /** the offending text, normalized for stable allow-list comparison */
   text: string;
   /** what matched, for the error message */
   kind: "dialog" | "prop" | "text" | "error";
 }
 
-/** file path -> the literal texts recorded as pre-existing */
-export type Baseline = Record<string, string[]>;
+/** file path -> literal text -> why it is not copy */
+export type AllowList = Record<string, Record<string, string>>;
 
 /**
  * Props whose value is read by a person. Deliberately a closed list: the
@@ -322,8 +327,10 @@ function isNotCopy(text: string): boolean {
   // and every token a utility. the character set alone is not enough —
   // `request failed: {…}` and `no events yet` fit it too, and were dropped
   // while their capitalised spellings were reported (#1546). one plain word
-  // among the tokens makes it prose
-  if (/^[a-z0-9:[\]()\-./%]+( [a-z0-9:[\]()\-./%]+)+$/.test(t) && t.split(" ").every(isUtilityToken)) {
+  // among the tokens makes it prose. `_`, `+` and `,` belong to arbitrary
+  // values (`grid-cols-[1fr_2fr]`, `bottom-[calc(100%+6px)]`) and to css
+  // functions (`color-mix(in srgb, …)`), which sat in the baseline as copy (#958)
+  if (/^[a-z0-9:[\]()\-./%_+,]+( [a-z0-9:[\]()\-./%_+,]+)+$/.test(t) && t.split(" ").every(isUtilityToken)) {
     return true;
   }
   return false;
@@ -334,10 +341,12 @@ function isNotCopy(text: string): boolean {
  * it carries a dash, a bracket, a slash, a percent or a digit (`px-3.5`,
  * `w-[9px]`, `w-1/2`, `1px`), a variant colon with something after it
  * (`sm:block`, where `failed:` ends a clause), or it is one of the utilities
- * and css keywords that are a bare word.
+ * and css keywords that are a bare word. The parentheses and commas of a css
+ * function's argument list are not part of the word: `srgb,` and
+ * `transparent)` are still the keyword.
  */
 function isUtilityToken(token: string): boolean {
-  return /[-[\]/%\d]|:./.test(token) || BARE_UTILITIES.has(token);
+  return /[-[\]/%\d_]|:./.test(token) || BARE_UTILITIES.has(token.replace(/^\(+|[),]+$/g, ""));
 }
 
 // utilities and css keywords spelled as a plain word. only a class list made
@@ -357,7 +366,7 @@ const BARE_UTILITIES = new Set([
   // css values
   "auto", "none", "solid", "dashed", "dotted", "transparent", "inherit",
   "currentcolor", "normal", "bold", "nowrap", "pointer", "center", "ease",
-  "linear", "infinite",
+  "linear", "infinite", "srgb",
 ]);
 
 // values that read as capitalised words but are wire codes the browser or the
@@ -370,7 +379,7 @@ const CODE_WORDS = new Set([
   "Authorization", "Bearer", "Content-Type", "Accept", "Retry-After",
 ]);
 
-/** Normalize for baseline comparison: collapse whitespace so a reflow of the
+/** Normalize for allow-list comparison: collapse whitespace so a reflow of the
  * same string is not a new violation. */
 function normalize(text: string): string {
   return text.trim().replace(/\s+/g, " ");
@@ -558,7 +567,7 @@ export function maskSource(source: string): Masked {
  * replaced by `{…}` — or `null` when the region holds no prose at all, which is
  * the common case (`{a} · {b}`, `{rows.map(…)}`, a lone `(`).
  *
- * Requiring a prose run with a letter in it is what keeps the baseline free of
+ * Requiring a prose run with a letter in it is what keeps the findings free of
  * separator noise; the usual `isNotCopy` thresholds still apply to the result.
  */
 export function mixedText(region: string): string | null {
@@ -724,35 +733,34 @@ export function findLiterals(source: string, file: string): Literal[] {
   return out;
 }
 
-/** Findings not present in the baseline — the ones that should fail the build. */
-export function newViolations(found: Literal[], baseline: Baseline): Literal[] {
-  return found.filter((l) => !(baseline[l.file] ?? []).includes(l.text));
+/** Findings not on the allow-list — the ones that fail the build. */
+export function newViolations(found: Literal[], allowed: AllowList): Literal[] {
+  return found.filter((l) => !Object.prototype.hasOwnProperty.call(allowed[l.file] ?? {}, l.text));
 }
 
 /**
- * Baseline entries no longer found in the source. These are debt that was paid
- * off; leaving them recorded would let the same literal come back unnoticed.
+ * Allow-list entries no longer found in the source. The string was translated,
+ * reworded or deleted; leaving the exception behind would let the same literal
+ * come back unnoticed.
  */
-export function staleBaseline(found: Literal[], baseline: Baseline): string[] {
+export function staleAllowed(found: Literal[], allowed: AllowList): string[] {
   const live = new Set(found.map((l) => `${l.file}\0${l.text}`));
   const stale: string[] = [];
-  for (const [file, texts] of Object.entries(baseline)) {
-    for (const text of texts) {
+  for (const [file, texts] of Object.entries(allowed)) {
+    for (const text of Object.keys(texts)) {
       if (!live.has(`${file}\0${text}`)) stale.push(`${file}: ${text}`);
     }
   }
   return stale;
 }
 
-/** Build a baseline from findings, in a stable order so the file diffs cleanly. */
-export function toBaseline(found: Literal[]): Baseline {
-  const out: Baseline = {};
-  for (const l of found) {
-    (out[l.file] ??= []).push(l.text);
+/** Allow-list entries that do not say why — an exception has to be argued. */
+export function unexplainedAllowed(allowed: AllowList): string[] {
+  const out: string[] = [];
+  for (const [file, texts] of Object.entries(allowed)) {
+    for (const [text, reason] of Object.entries(texts)) {
+      if (!reason.trim()) out.push(`${file}: ${text}`);
+    }
   }
-  const sorted: Baseline = {};
-  for (const file of Object.keys(out).sort()) {
-    sorted[file] = [...new Set(out[file])].sort();
-  }
-  return sorted;
+  return out;
 }

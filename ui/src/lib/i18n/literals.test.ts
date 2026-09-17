@@ -3,9 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   findLiterals,
   newViolations,
-  staleBaseline,
-  toBaseline,
-  type Baseline,
+  staleAllowed,
+  unexplainedAllowed,
+  type AllowList,
 } from "./literals";
 
 /** shorthand: the texts a scan found, in order */
@@ -89,37 +89,36 @@ describe("findLiterals", () => {
   });
 });
 
-describe("baseline", () => {
+describe("allow-list", () => {
   const found = [
-    { file: "a.tsx", line: 1, text: "Old one", kind: "prop" as const },
+    { file: "a.tsx", line: 1, text: "n=1", kind: "text" as const },
     { file: "a.tsx", line: 9, text: "Brand new", kind: "text" as const },
   ];
-  const baseline: Baseline = { "a.tsx": ["Old one"] };
+  const allowed: AllowList = { "a.tsx": { "n=1": "a request parameter" } };
 
-  test("only the unrecorded literal fails the build", () => {
-    expect(newViolations(found, baseline).map((l) => l.text)).toEqual(["Brand new"]);
+  test("only the literal that is not allowed fails the build", () => {
+    expect(newViolations(found, allowed).map((l) => l.text)).toEqual(["Brand new"]);
   });
 
-  test("a literal recorded under a different file still fails", () => {
-    expect(newViolations(found, { "b.tsx": ["Old one", "Brand new"] })).toHaveLength(2);
+  test("a literal allowed under a different file still fails", () => {
+    expect(newViolations(found, { "b.tsx": { "n=1": "x", "Brand new": "x" } })).toHaveLength(2);
   });
 
-  test("a paid-off baseline entry is reported so it cannot come back unnoticed", () => {
-    expect(staleBaseline(found, { "a.tsx": ["Old one", "Since translated"] })).toEqual([
+  test("an inherited object key is not an allowed literal", () => {
+    const proto = [{ file: "a.tsx", line: 1, text: "toString", kind: "text" as const }];
+    expect(newViolations(proto, allowed)).toHaveLength(1);
+  });
+
+  test("an entry whose literal left the source is reported so it cannot come back unnoticed", () => {
+    expect(staleAllowed(found, { "a.tsx": { "n=1": "x", "Since translated": "x" } })).toEqual([
       "a.tsx: Since translated",
     ]);
-    expect(staleBaseline(found, baseline)).toEqual([]);
+    expect(staleAllowed(found, allowed)).toEqual([]);
   });
 
-  test("a recorded baseline is deduplicated and stably ordered", () => {
-    const recorded = toBaseline([
-      { file: "b.tsx", line: 2, text: "Zeta", kind: "prop" as const },
-      { file: "a.tsx", line: 1, text: "Beta", kind: "prop" as const },
-      { file: "a.tsx", line: 5, text: "Alpha", kind: "prop" as const },
-      { file: "a.tsx", line: 7, text: "Alpha", kind: "text" as const },
-    ]);
-    expect(Object.keys(recorded)).toEqual(["a.tsx", "b.tsx"]);
-    expect(recorded["a.tsx"]).toEqual(["Alpha", "Beta"]);
+  test("an entry has to say why it is not copy", () => {
+    expect(unexplainedAllowed({ "a.tsx": { "n=1": "  ", "v{…}": "a version" } })).toEqual(["a.tsx: n=1"]);
+    expect(unexplainedAllowed(allowed)).toEqual([]);
   });
 });
 
@@ -567,5 +566,22 @@ describe("findLiterals tells lowercase prose from a class list", () => {
       '<div className={cn("absolute inset-0", open && "block italic")} />',
     ].join("\n");
     expect(texts(source)).toEqual([]);
+  });
+
+  // arbitrary values and css functions sat in the literal baseline as copy (#958)
+  test("ignores arbitrary values and css functions", () => {
+    const source = [
+      'const a = { title: "grid grid-cols-[1fr_1.1fr_2fr] items-center gap-3 px-3.5" };',
+      'const b = { title: "absolute bottom-[calc(100%+6px)] z-40 rounded-lg shadow-lg" };',
+      'const c = { title: "left-0 w-[min(260px,calc(100vw_-_1.5rem))]" };',
+      'const d = { title: "color-mix(in srgb, var(--status-success) 32%, transparent)" };',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("still reports prose that carries a comma or an underscore", () => {
+    expect(texts('<Field hint="retry later, or check request_id" />')).toEqual([
+      "retry later, or check request_id",
+    ]);
   });
 });

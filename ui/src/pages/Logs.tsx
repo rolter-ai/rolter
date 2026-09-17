@@ -378,7 +378,7 @@ export default function Logs() {
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-              <span className="font-mono text-xs text-muted-foreground">p{page + 1}</span>
+              <span className="font-mono text-xs text-muted-foreground">{t("pages.logs.pageShort", { page: page + 1 })}</span>
               <button
                 type="button"
                 title={t("pages.logs.nextPage")}
