@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LoadError } from "@/components/LoadError";
+import { LoadingRegion } from "@/components/LoadingState";
 import { Input } from "@/components/ui/input";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -357,13 +359,30 @@ export default function PromptRepository() {
   });
 
   if (scope.isLoading || templates.isLoading) return <LoadingState />;
-  if (scope.errorKey || templates.isError) {
+  // never hand-rolled: the bespoke "repository unavailable / Try again" panel
+  // offered the same retry for every cause, including the 403 a viewer gets
+  // here, where retrying cannot ever work. LoadError names the cause and only
+  // offers the action that fits it (#1605, the bug #1259 fixed on the
+  // guardrail screens)
+  if (templates.isError) {
+    return (
+      <div className="p-4 sm:p-5">
+        <LoadError
+          error={templates.error}
+          resource={t("errors.resources.promptTemplates")}
+          onRetry={() => void templates.refetch()}
+        />
+      </div>
+    );
+  }
+  // a scope that is not chosen yet is not a failed load: nothing was asked for
+  // and nothing went wrong, so this stays a placeholder with no retry
+  if (scope.errorKey) {
     return (
       <EmptyState uxTarget="prompt-list"
         icon={<GitBranch />}
         title={t("pages.promptRepo.unavailableTitle")}
-        description={scopeMessage ?? (templates.error as Error).message}
-        actions={<Button variant="outline" onClick={() => templates.refetch()}>{t("pages.promptRepo.tryAgain")}</Button>}
+        description={scopeMessage}
       />
     );
   }
@@ -459,13 +478,17 @@ export default function PromptRepository() {
   );
 }
 
+// the three-column workspace this screen loads into, which is layout-specific
+// enough that none of the named shapes in LoadingState.tsx fits. the region is
+// not optional though: bare `Skeleton`s are `aria-hidden`, so without it a
+// screen reader heard nothing at all while the templates were out (#1605)
 function LoadingState() {
   return (
-    <div className="grid gap-4 p-5 lg:grid-cols-[15rem_minmax(0,1fr)_17rem]">
+    <LoadingRegion className="grid gap-4 p-5 lg:grid-cols-[15rem_minmax(0,1fr)_17rem]">
       <Skeleton width="100%" height={460} radius={12} />
       <Skeleton width="100%" height={620} radius={12} />
       <Skeleton width="100%" height={460} radius={12} />
-    </div>
+    </LoadingRegion>
   );
 }
 

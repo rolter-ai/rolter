@@ -7,6 +7,7 @@ import {
   Harness,
   Toasted,
   expectRefused,
+  expectSkeleton,
   expectToast,
   json,
   pending,
@@ -94,6 +95,7 @@ export const Loaded: Story = {
 
 export const Loading: Story = {
   render: () => <Stage fetchStub={pending} />,
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
 };
 
 export const Forbidden: Story = {

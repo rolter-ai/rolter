@@ -1,22 +1,21 @@
 import type * as React from "react";
 import { ShieldCheck } from "lucide-react";
-import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
+import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Skeleton } from "@/components/ui/skeleton";
 
+/**
+ * The card grid both guardrail screens stand in while their query is in flight.
+ *
+ * It used to be a hand-rolled `role="status"` div of bare skeletons carrying a
+ * name of its own. The region was right, the name was not: every other screen
+ * announces the shared `common.loading`, so a reader moving between screens
+ * heard a different word for the same state, and the div carried no `aria-busy`
+ * (#1605). `CardGridSkeleton` is that region, once.
+ */
 export function GuardrailLoading() {
-  const { t } = useTranslation();
-  return (
-    // `aria-label` on a bare <div> is prohibited — role="status" is what a
-    // skeleton region actually is, and it supports a name (#1181)
-    <div role="status" className="grid gap-3 md:grid-cols-2" aria-label={t("pages.guardrailRules.loadingAria")}>
-      {[0, 1, 2].map((item) => (
-        <Skeleton key={item} width="100%" height={172} radius={10} />
-      ))}
-    </div>
-  );
+  return <CardGridSkeleton cards={3} height={172} min={320} />;
 }
 
 export function GuardrailEmpty({

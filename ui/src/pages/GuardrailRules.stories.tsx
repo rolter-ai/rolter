@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailRules from "./GuardrailRules";
-import { cancelConfirmation, confirmDestructive, pickOption, recording, expectEmptyState, expectLoadError } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, pickOption, recording } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
 
 const RULES: GuardrailRuleRow[] = [
@@ -59,7 +59,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Loaded: Story = { render: () => <Harness fetchStub={async () => json(RULES)} /> };
-export const Loading: Story = { render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} /> };
+export const Loading: Story = {
+  render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+};
 export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json([])} />,
   play: async ({ canvasElement }) => {

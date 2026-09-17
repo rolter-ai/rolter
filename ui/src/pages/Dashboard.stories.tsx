@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
-import { Harness, json, pending, routes, scoped, type FetchStub } from "./story-harness";
+import { Harness, expectSkeleton, json, pending, routes, scoped, type FetchStub } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -111,7 +111,10 @@ export const Loaded: Story = {
   },
 };
 
-export const Loading: Story = { render: () => render(pending) };
+export const Loading: Story = {
+  render: () => render(pending),
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+};
 
 // a deployment that has served nothing yet. the summary is an aggregate with no
 // `group by`, so the control plane always answers one row — of zeroes. this stub

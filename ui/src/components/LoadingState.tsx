@@ -17,7 +17,16 @@ import { cn } from "@/lib/utils";
 // label, so a screen reader hears one announcement instead of one per bar and
 // a story can assert the screen is busy without reaching for a class name.
 
-function LoadingRegion({
+/**
+ * The `role="status"` region every shape below wraps in, exported for the
+ * handful of screens whose loading shape is genuinely layout-specific — a
+ * three-column workspace, a chart panel — and so cannot be one of the shapes.
+ * Reach for a named shape first; this is the escape hatch, not the default.
+ * What it is never acceptable to do is render bare `Skeleton`s: `Skeleton` is
+ * `aria-hidden`, so without this region a screen reader hears nothing at all
+ * while the data is out (#1605).
+ */
+export function LoadingRegion({
   className,
   children,
 }: {
