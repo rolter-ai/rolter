@@ -143,7 +143,9 @@
       "rbacMatrix": "the permission matrix",
       "attributionSpend": "attribution spend",
       "customRoles": "custom roles",
-      "orgScope": "teams and projects"
+      "orgScope": "teams and projects",
+      "twoFactor": "two-factor authentication",
+      "twoFactorSecret": "the setup key"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2824,6 +2826,59 @@
         "title": "Rotate {{name}}?",
         "body": "A new secret is issued and the current one stops authenticating immediately, so anything still using the old key starts failing.",
         "confirm": "Rotate key"
+      }
+    },
+    "mfa": {
+      "title": "Two-factor authentication",
+      "subtitle": "A code from your authenticator app, asked for once at sign-in on top of your password.",
+      "off": {
+        "title": "No second factor on this account",
+        "body": "A dashboard session reaches every provider credential in this deployment. An authenticator app adds a code only your device can produce.",
+        "requiredBody": "Your organization requires a second factor. Set one up now — without it, your next sign-in is refused.",
+        "cta": "Set up two-factor authentication"
+      },
+      "on": {
+        "title": "An authenticator app protects this account",
+        "codes_one": "{{count}} recovery code left",
+        "codes_other": "{{count}} recovery codes left",
+        "noCodes": "No recovery codes left. Regenerate a batch now — without one, losing the device means asking an administrator for the break-glass reset.",
+        "requiredByOrg": "Your organization requires a second factor, so this one can't be removed here.",
+        "regenerate": "Regenerate recovery codes",
+        "remove": "Remove second factor",
+        "removeLocked": "Your organization requires a second factor on this account"
+      },
+      "enrol": {
+        "title": "Set up two-factor authentication",
+        "subtitle": "Scan the code, then type what your app shows to turn the factor on.",
+        "scan": "Scan this with your authenticator app",
+        "manual": "No camera? Enter this setup key instead:",
+        "secretLabel": "Setup key",
+        "codeLabel": "Code from the app",
+        "spent": "This code is spent once you use it here, so your next sign-in needs the following one — up to {{seconds}} seconds later.",
+        "confirm": "Turn on"
+      },
+      "codes": {
+        "title": "Save your recovery codes",
+        "body": "Each code signs you in once if the device is gone. This is the only time they are shown — store them somewhere you can reach without your phone.",
+        "label": "Recovery codes",
+        "filename": "rolter-recovery-codes.txt",
+        "download": "Download",
+        "acknowledge": "I have saved these codes",
+        "done": "Done"
+      },
+      "confirm": {
+        "regenerateTitle": "Regenerate the recovery codes for this account?",
+        "regenerateBody": "Every code from the current batch stops working immediately, and the new batch is shown once.",
+        "regenerateConfirm": "Regenerate",
+        "removeTitle": "Remove the second factor from this account?",
+        "removeBody": "Your password alone will sign in again. Enter a current code — or a recovery code — so a stolen session cannot strip the factor it could not get past.",
+        "removeCodeLabel": "Code from the app, or a recovery code",
+        "removeConfirm": "Remove"
+      },
+      "toast": {
+        "enabled": "Two-factor authentication is on",
+        "removed": "Two-factor authentication removed",
+        "regenerated": "New recovery codes issued"
       }
     }
   },

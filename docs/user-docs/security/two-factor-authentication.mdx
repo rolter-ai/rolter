@@ -26,7 +26,32 @@ Optionally, set `ROLTER_MFA_ISSUER` to the name authenticator apps show beside
 the account. It defaults to `rolter`; give each deployment its own so an
 operator running several can tell the entries apart.
 
-## Enrolling
+## Enrolling from the dashboard
+
+**Account → Two-factor authentication**, at the top of the screen above your
+virtual keys.
+
+1. **Set up two-factor authentication** shows a QR code and, beside it, the
+   same secret as text for a desktop authenticator or a phone whose camera is
+   not an option.
+2. Type the code the app shows and press **Turn on**.
+3. Save the ten recovery codes. They are shown exactly once — copy or download
+   them, then tick the acknowledgement. The dialog does not let you past it
+   until you do, because a batch dismissed by a stray click is unrecoverable.
+
+Once the factor is armed the panel offers **Regenerate recovery codes** and
+**Remove second factor**. Both confirm first, and removing one asks for a
+current code — so a stolen session cannot strip the factor it could not get
+past. Under a `required_*` org policy the removal is refused outright and says
+so.
+
+<Warning>
+The code you confirm with is spent. Signing in immediately afterwards needs
+the **next** code, up to 30 seconds later. The dialog says so before you type;
+it is the replay rule below working, not a fault.
+</Warning>
+
+## Enrolling over the API
 
 ```bash
 # 1. sign in as normal
@@ -51,12 +76,6 @@ curl -sS -X POST https://rolter.example.com/api/v1/me/mfa/confirm \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"code":"123456"}'
 ```
-
-<Warning>
-The code you confirm with is spent. Signing in immediately afterwards needs
-the **next** code, up to 30 seconds later — this is the replay rule below
-working, not a fault.
-</Warning>
 
 ## Signing in with a factor armed
 

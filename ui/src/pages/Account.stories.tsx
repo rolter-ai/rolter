@@ -17,7 +17,29 @@ import {
   withConfirm,
   type FetchStub,
 } from "./story-harness";
-import type { MintedKey, MyUsageRow, OwnedKeyRow, ProviderRow, RouteRow } from "@/lib/api";
+import type {
+  MfaStatus,
+  MintedKey,
+  MyUsageRow,
+  OwnedKeyRow,
+  ProviderRow,
+  RouteRow,
+} from "@/lib/api";
+
+/**
+ * No second factor and no policy asking for one — the default account.
+ *
+ * The panel's own states live in `Components/TwoFactorPanel`; what these
+ * stories need from it is that it does not error out above the keys, which is
+ * what an unanswered `/me/mfa` would look like (#1078).
+ */
+const MFA: MfaStatus = {
+  enabled: false,
+  enrolment_pending: false,
+  recovery_codes_remaining: 0,
+  policy: "off",
+  required: false,
+};
 
 const KEYS: OwnedKeyRow[] = [
   {
@@ -122,6 +144,8 @@ const account = (
     // the mint sheet's model allow-list ticks the project's routes off (#1345)
     if (url.includes("/routes")) return json(ROUTES);
     if (url.includes("/me/usage")) return usage();
+    // the second-factor panel sits above the keys on this screen
+    if (url.includes("/me/mfa")) return json(MFA);
     return keys(init);
   });
 
@@ -150,6 +174,9 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    // the second factor comes first: it protects the session that reaches
+    // every key below it
+    await expect(canvas.getByText("Two-factor authentication")).toBeInTheDocument();
     // a key with no usage row still renders, with the window spelled out —
     // "nothing recorded" and "analytics is down" must not look the same
     await expect(canvas.getByText(/no usage in the last 7 days/i)).toBeInTheDocument();
