@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { t } from "../i18n";
+
 // MCP Logs distinguishes "this deployment can't serve these logs" from "the
 // request failed" (#569/#663). Both look like a red herring to an operator if
 // the UI conflates them: the first is a deployment fact, the second is a fault.
@@ -7,6 +9,9 @@ import { expect, test, type Page } from "@playwright/test";
 // The states are driven by stubbing the API rather than by reshaping the stack —
 // a live control plane either has the endpoint or doesn't, so a real backend
 // can't produce a 404 and a 500 in the same run.
+//
+// every headline is read from the catalog rather than copied into the spec, so
+// rewording a state moves the assertion with it (#1504)
 
 const LOGS = "**/api/v1/mcp/logs?**";
 const SUMMARY = "**/api/v1/mcp/logs/summary**";
@@ -22,7 +27,30 @@ const ROW = {
   latency_ms: 12,
 };
 
-const SUMMARY_OK = { calls: 0, errors: 0, p50_ms: 0, p95_ms: 0 };
+const SUMMARY_OK = {
+  data: [{ calls: 0, failures: 0, avg_latency_ms: null, p95_latency_ms: null }],
+};
+
+const RESOURCE = t("errors.resources.mcpLogs");
+const UNAVAILABLE = t("errors.load.noAnalytics.title");
+const FAILED = t("errors.load.server.title", { resource: RESOURCE });
+const EMPTY = t("pages.mcpLogs.emptyTitle");
+
+/**
+ * MCP Logs is superadmin-only (#1183), and the seeded tenant user is an org
+ * admin, so the screen would render its refusal before any of the states under
+ * test. Answer the capability question as a superadmin: what the screen does
+ * with the logs endpoint is the subject here, not who may open it.
+ */
+test.beforeEach(async ({ page }) => {
+  // answered outright rather than by patching the live reply: a pass-through
+  // can still be in flight when a short test tears the page down
+  await page.route("**/api/v1/rbac/effective**", (route) =>
+    route.fulfill({
+      json: { superadmin: true, role: "admin", allowed: [], custom_roles: [], model_policy: null },
+    }),
+  );
+});
 
 /**
  * Stub the list + summary endpoints with one status.
@@ -47,37 +75,38 @@ test("an absent endpoint reads as unavailable, not as an error", async ({ page }
   await stubList(page, 404, { error: { message: "not found" } });
   await page.goto("/mcp-logs");
 
-  await expect(page.getByText("aren't available on this deployment")).toBeVisible();
+  const alert = page.getByRole("alert");
+  await expect(alert.getByText(UNAVAILABLE)).toBeVisible();
   // and names both causes, so the operator knows where to look
-  await expect(page.getByText("clickhouse_url")).toBeVisible();
-  await expect(page.getByText("/api/v1/mcp/logs")).toBeVisible();
-  await expect(page.getByText("Couldn't load MCP tool-call logs.")).toHaveCount(0);
+  await expect(alert.getByText(t("errors.load.noAnalytics.body", { resource: RESOURCE }))).toBeVisible();
+  await expect(alert).toContainText("CLICKHOUSE_URL");
+  await expect(page.getByText(FAILED)).toHaveCount(0);
 });
 
 test("a control plane without clickhouse reads as unavailable too", async ({ page }) => {
   await stubList(page, 503, { error: { message: "clickhouse not configured" } });
   await page.goto("/mcp-logs");
 
-  await expect(page.getByText("aren't available on this deployment")).toBeVisible();
+  await expect(page.getByText(UNAVAILABLE)).toBeVisible();
 });
 
 test("a real failure reads as an error, leading with plain language", async ({ page }) => {
   await stubList(page, 500, { error: { message: "clickhouse read timed out" } });
   await page.goto("/mcp-logs");
 
-  await expect(page.getByText("Couldn't load MCP tool-call logs.")).toBeVisible();
+  await expect(page.getByText(FAILED)).toBeVisible();
   // the raw message stays available to diagnose with, just not as the headline
   await expect(page.getByText(/clickhouse read timed out/)).toBeVisible();
-  await expect(page.getByText("aren't available on this deployment")).toHaveCount(0);
+  await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
 });
 
 test("a working endpoint with no calls reads as empty, not as broken", async ({ page }) => {
   await stubList(page, 200, { data: [], next_cursor: null });
   await page.goto("/mcp-logs");
 
-  await expect(page.getByText("No MCP tool calls in the last 24h.")).toBeVisible();
-  await expect(page.getByText("aren't available on this deployment")).toHaveCount(0);
-  await expect(page.getByText("Couldn't load MCP tool-call logs.")).toHaveCount(0);
+  await expect(page.getByText(EMPTY)).toBeVisible();
+  await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
+  await expect(page.getByText(FAILED)).toHaveCount(0);
 });
 
 test("a missing single event does not condemn the whole page", async ({ page }) => {
@@ -98,7 +127,9 @@ test("a missing single event does not condemn the whole page", async ({ page }) 
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ calls: 1, errors: 0, p50_ms: 12, p95_ms: 12 }),
+      body: JSON.stringify({
+        data: [{ calls: 1, failures: 0, avg_latency_ms: 12, p95_latency_ms: 12 }],
+      }),
     }),
   );
   await page.route(LOGS, (route) =>
@@ -115,6 +146,6 @@ test("a missing single event does not condemn the whole page", async ({ page }) 
   await page.getByText("read_file").click();
   // the drawer reports the failure; the table behind it is still there
   await expect(page.getByText(/event not found/)).toBeVisible();
-  await expect(page.getByText("aren't available on this deployment")).toHaveCount(0);
+  await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
   await expect(page.getByText("read_file")).toBeVisible();
 });
