@@ -214,6 +214,25 @@ export const Add: Story = {
 };
 
 /**
+ * The (i) buttons beside a field label, a section heading and a switch row are
+ * named through the catalog like the shared `Field`'s, so under `ru` none of
+ * them is announced as an English "About …" (#1543).
+ */
+export const InfoHintsFollowTheLocale: Story = {
+  globals: { locale: "ru" },
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await waitFor(() => expect(dialog.getByLabelText("Провайдер")).toHaveValue("prov-1"));
+    await expect(
+      dialog.getByRole("button", { name: "О поле «Имя модели на стороне провайдера»" }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "О поле «Возможности»" })).toBeVisible();
+    await expect(dialog.queryAllByRole("button", { name: /^About / })).toHaveLength(0);
+  },
+};
+
+/**
  * Edit waits for the route's target and the price table before it seeds the
  * draft — seeding early would show an empty provider on a model that has one.
  */
