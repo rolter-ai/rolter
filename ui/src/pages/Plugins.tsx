@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
+import { CardGridSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,7 +21,6 @@ import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -245,13 +245,17 @@ export default function Plugins() {
   );
 }
 
+// bare `Skeleton`s are `aria-hidden`, so this used to be a loading state no
+// screen reader could hear. `CardGridSkeleton` is the same three cards inside
+// the shared `role="status"` region (#1605)
 function PluginLoading() {
   return (
-    <div className="mx-auto grid w-full max-w-[1180px] gap-3 p-[22px] md:grid-cols-3">
-      {[0, 1, 2].map((item) => (
-        <Skeleton key={item} width="100%" height={220} radius={10} />
-      ))}
-    </div>
+    <CardGridSkeleton
+      cards={3}
+      height={220}
+      min={320}
+      className="mx-auto w-full max-w-[1180px] p-[22px]"
+    />
   );
 }
 

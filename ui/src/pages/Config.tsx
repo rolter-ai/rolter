@@ -6,8 +6,8 @@ import { Link } from "react-router";
 import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
+import { TableSkeleton } from "@/components/LoadingState";
 import { CodeBlock } from "@/components/ui/code-block";
-import { Skeleton } from "@/components/ui/skeleton";
 import { exportConfigToml, fetchConfig, type GatewayConfigDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -66,7 +66,7 @@ export default function Config() {
             onRetry={() => config.refetch()}
           />
         )}
-        {config.isLoading && <Skeleton height={280} radius={10} />}
+        {config.isLoading && <TableSkeleton rows={6} />}
 
         {cfg && (
           <div className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">

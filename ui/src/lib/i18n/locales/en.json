@@ -169,7 +169,9 @@
       "customRoles": "custom roles",
       "orgScope": "teams and projects",
       "twoFactor": "two-factor authentication",
-      "twoFactorSecret": "the setup key"
+      "twoFactorSecret": "the setup key",
+      "promptTemplates": "prompt templates",
+      "skills": "skills"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -707,7 +709,6 @@
       "problemEmptyDecorator": "Every decorator needs content.",
       "problemUndeclared": "Decorator references undeclared variable “{{name}}”.",
       "unavailableTitle": "Prompt repository unavailable",
-      "tryAgain": "Try again",
       "emptyTitle": "Start with a prompt template",
       "emptyDescription": "Create a named template, then add variables, ordered decorators, and its first deployment scope.",
       "createTemplate": "Create template",
@@ -1467,8 +1468,7 @@
       "toggleSystem": "Inspect system messages",
       "toggleSystemHint": "Off by default because operator-authored instructions are trusted.",
       "publishing": "Publishing…",
-      "publish": "Publish rule",
-      "loadingAria": "Loading guardrails"
+      "publish": "Publish rule"
     },
     "guardrailProviders": {
       "confirm": {

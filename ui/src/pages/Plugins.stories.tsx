@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Plugins from "./Plugins";
-import { cancelConfirmation, confirmDestructive, recording, expectEmptyState, expectForbidden } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, expectEmptyState, expectForbidden, expectSkeleton, recording } from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
 
 const PLUGINS: PluginInstanceRow[] = [
@@ -77,7 +77,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Loaded: Story = { render: () => <Harness fetchStub={withPlugins(PLUGINS)} /> };
-export const Loading: Story = { render: () => <Harness fetchStub={async (input) => scopeResponse(String(input)) ?? new Promise<Response>(() => {})} /> };
+export const Loading: Story = {
+  render: () => <Harness fetchStub={async (input) => scopeResponse(String(input)) ?? new Promise<Response>(() => {})} />,
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+};
 export const Empty: Story = {
   render: () => <Harness fetchStub={withPlugins([])} />,
   play: async ({ canvasElement }) => {

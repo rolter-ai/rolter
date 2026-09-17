@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
-import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole, expectEmptyState } from "./story-harness";
+import { Toasted, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 
@@ -128,13 +128,17 @@ export const Empty: Story = {
   },
 };
 
-export const Loading: Story = { render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} /> };
+export const Loading: Story = {
+  render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+};
 
 export const Error: Story = {
   render: () => {
     const stub = loadedStub();
     return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/skills`) ? json({ error: { message: "database is unavailable" } }, 503) : stub(input, init)} />;
   },
+  play: async ({ canvasElement }) => expectLoadError(canvasElement, /skills/i),
 };
 
 export const SavesImmutableVersion: Story = {

@@ -14,6 +14,11 @@ import {
 import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  ListSkeleton,
+  LoadingRegion,
+  StatGridSkeleton,
+} from "@/components/LoadingState";
 import { StatCard } from "@/components/ui/stat-card";
 import { Table } from "@/components/ui/table";
 import {
@@ -157,14 +162,13 @@ export default function Dashboard() {
 
   return (
     <PageBody className="gap-[18px]">
-      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
-        {summary.isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} height={104} radius={10} />
-          ))
-        ) : (
-          <>
-            <StatCard
+      {summary.isLoading ? (
+        // `Skeleton` is `aria-hidden`, so the four bare ones this used to
+        // render were a loading state no screen reader could hear (#1605)
+        <StatGridSkeleton cards={4} />
+      ) : (
+        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
               label={t("pages.dashboard.statRequests")}
               value={fmt.number(requests)}
             />
@@ -191,10 +195,9 @@ export default function Dashboard() {
                   ? t("pages.dashboard.errors", { count: errors })
                   : undefined
               }
-            />
-          </>
-        )}
-      </div>
+          />
+        </div>
+      )}
 
       <IncompleteSpendNotice
         requests={num(s?.unpriced_requests)}
@@ -214,7 +217,9 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {series.isLoading ? (
-              <Skeleton height={220} />
+              <LoadingRegion>
+                <Skeleton height={220} />
+              </LoadingRegion>
             ) : spendPoints.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">
                 {t("analytics.noRowsYet")}
@@ -255,7 +260,9 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {byModel.isLoading ? (
-              <Skeleton height={180} />
+              <LoadingRegion>
+                <Skeleton height={180} />
+              </LoadingRegion>
             ) : traffic.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">
                 {t("pages.dashboard.noTraffic")}
@@ -317,7 +324,7 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             {recent.isLoading ? (
-              <Skeleton height={160} />
+              <ListSkeleton rows={4} />
             ) : recentRows.length === 0 ? (
               <p className="py-10 text-center text-sm text-muted-foreground">
                 {t("pages.dashboard.nothingLogged")}
