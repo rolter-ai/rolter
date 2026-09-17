@@ -115,7 +115,7 @@ The **Business Units** and **Customers** screens read this over the last 24 hour
 Amounts are rendered in the deployment's settlement currency, not a hardcoded `$`.
 
 <Note>
-The rollup needs ClickHouse. A deployment with no `clickhouse_url` gets the same calm "analytics not configured" note the Dashboard shows, and the roster itself keeps working — it is backed by Postgres.
+The rollup needs ClickHouse. A deployment with no `clickhouse_url` shows the same "Analytics are not configured on this control plane" notice the Dashboard does in place of the spend figures, naming `CLICKHOUSE_URL` as the setting to add, and the roster itself keeps working — it is backed by Postgres.
 </Note>
 
 ---

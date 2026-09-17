@@ -68,6 +68,9 @@ own that error carried no status, so the status-less rule read it as
 while it was answering every request. Logs, McpLogs and Dashboard each used to
 hand-roll their own paragraph for it — two of them untranslated, one shaped as
 an empty state — which is three different answers to one deployment setting.
+CostAttribution's spend strip and Account's usage figures followed in #1270:
+the strip had the Dashboard's old empty state, and Account now states any usage
+failure once above the key cards instead of letting each card read "no usage".
 
 Two of these are easy to collapse and must not be. A plain 401 is fixed by
 signing in; `open_mode_no_session` is a control plane running with no admin

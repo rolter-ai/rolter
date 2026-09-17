@@ -98,6 +98,7 @@
       "virtualKeys": "virtual keys",
       "healthRollups": "health rollups",
       "yourKeys": "your keys",
+      "yourUsage": "your usage",
       "auditLog": "the audit log",
       "modelPrices": "model prices",
       "models": "models",
@@ -362,8 +363,6 @@
   },
   "pages": {
     "dashboard": {
-      "notConfiguredTitle": "Analytics not configured",
-      "notConfiguredBody": "Traffic, spend, and latency appear here once requests flow through the gateway. Set clickhouse_url on the control plane to enable logging.",
       "statRequests": "Requests (24h)",
       "statSpend": "Spend (24h)",
       "statAvgLatency": "Avg latency",
@@ -2600,7 +2599,7 @@
         "disabled": "disabled",
         "active": "active",
         "allModels": "all models",
-        "usageUnavailable": "usage: analytics not configured",
+        "usageUnavailable": "usage: unavailable",
         "usage": "{{requests}} req · {{cost}} (7d)",
         "noUsage": "no usage in the last 7 days",
         "rotate": "Rotate",
