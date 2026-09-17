@@ -142,9 +142,137 @@ const JSX_SPACE = /^\{\s*(["'])\s+\1\s*\}$/;
  * an error thrown with a literal message: LoadError prints `error.message`
  * under its heading, so this is copy the operator reads (#1200)
  */
-const THROWN = /new (?:Api)?Error\(\s*(["'`])([A-Za-z][^"'`]{2,})\1/g;
-/** a string literal inside an expression that reads as copy rather than code */
-const STRING_IN_EXPR = /(["'])((?:[A-Z][^"'\n]*|[A-Za-z][^"'\n]* [^"'\n]*))\1/g;
+const THROWN = /new (?:Api)?Error\(\s*(["'])([A-Za-z][^"'`]{2,})\1/g;
+/**
+ * the same, when the message is a template literal. `THROWN` used to take
+ * backticks too and read up to the first quote character, so `duplicate param
+ * "${key}"` ended its match on the embedded `"` and never matched at all
+ * (#1390). the template is read whole instead
+ */
+const THROWN_TEMPLATE = /new (?:Api)?Error\(\s*(?=`)/g;
+/**
+ * a string literal inside an expression that reads as copy rather than code:
+ * capitalised, or a lowercase phrase with a space in it. `stringsIn` cuts the
+ * literal out first — a regex over the whole expression read the quotes inside
+ * a template literal as string boundaries
+ */
+const READS_AS_COPY = /^(?:[A-Z].*|[A-Za-z].* .*)$/s;
+/**
+ * the template variant: once the values are taken out, a message such as
+ * `"${key}": not a valid number` starts on punctuation, so a letter anywhere
+ * plus a space is enough
+ */
+const TEMPLATE_READS_AS_COPY = /^(?:[A-Z].*|.*[A-Za-z].* .*|.* .*[A-Za-z].*)$/s;
+/**
+ * a user-facing key in an object literal: `{ label: `Other (${n})` }` (#1537).
+ * the `{` or `,` in front is what tells a key from a ternary's `: ` — `open ?
+ * label : fallback` names a variable, not a key — and from a type member, whose
+ * value is a type rather than a literal and so never yields a candidate anyway
+ */
+const OBJECT_KEY = new RegExp(
+  `[{,]\\s*(["']?)(?:${USER_FACING_PROPS.map((p) => p.replace("-", "\\-")).join("|")})\\1\\s*:\\s*`,
+  "g",
+);
+/** a bare identifier rendered where copy goes: `{cta}` as children, `title={title}` */
+const RENDERED_IDENT = /^\s*([A-Za-z_$][\w$]*)\s*$/;
+/** a local binding whose value might be copy held for later */
+const BINDING = /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*/g;
+
+/** a string, template or interpolation found by `stringsIn` */
+interface Candidate {
+  /** offset into the scanned text */
+  index: number;
+  text: string;
+}
+
+/** the index just past the `'…'` / `"…"` literal opening at `i` */
+function skipString(s: string, i: number): number {
+  const quote = s[i];
+  let j = i + 1;
+  while (j < s.length && s[j] !== quote) j += s[j] === "\\" ? 2 : 1;
+  return j + 1;
+}
+
+/**
+ * Read the template literal opening at `i`. Every `${…}` collapses to `{…}`, the
+ * same placeholder a mixed text node gets, so `Other (${rest.length})` and
+ * `Other ({rest.length})` in JSX record the same way. The interpolations are
+ * returned too: a `${n === 1 ? "key" : "keys"}` holds copy of its own.
+ */
+function readTemplate(s: string, i: number): { end: number; text: string; holes: [number, number][] } {
+  let text = "";
+  const holes: [number, number][] = [];
+  let j = i + 1;
+  while (j < s.length && s[j] !== "`") {
+    if (s[j] === "\\") {
+      text += s.slice(j, j + 2);
+      j += 2;
+    } else if (s[j] === "$" && s[j + 1] === "{") {
+      const start = j + 2;
+      j = skipExpression(s, start, "}");
+      holes.push([start, j]);
+      text += PLACEHOLDER;
+      j++;
+    } else {
+      text += s[j++];
+    }
+  }
+  return { end: j + 1, text, holes };
+}
+
+/**
+ * The index where the expression starting at `i` ends: the first of `stops` at
+ * bracket depth zero, or the bracket that closes the region it sits in. Strings
+ * and templates are stepped over whole, so a `,` or `}` inside one is text.
+ */
+function skipExpression(s: string, i: number, stops: string): number {
+  let depth = 0;
+  let j = i;
+  while (j < s.length) {
+    const ch = s[j];
+    if (ch === '"' || ch === "'") j = skipString(s, j);
+    else if (ch === "`") j = readTemplate(s, j).end;
+    else if ("([{".includes(ch)) depth++, j++;
+    else if (")]}".includes(ch)) {
+      if (depth === 0) return j;
+      depth--, j++;
+    } else if (depth === 0 && stops.includes(ch)) return j;
+    else j++;
+  }
+  return j;
+}
+
+/**
+ * Every string and template literal inside `expr` that reads as copy. `base`
+ * is where `expr` starts in the scanned text, so findings keep their line.
+ *
+ * A template counts only when its prose does: `${a}/${b}` and `/v1/${id}` are
+ * paths with no sentence in them, so the text is judged with the placeholders
+ * taken out — the placeholder itself carries no lowercase letter to trip the
+ * usual thresholds on.
+ */
+function stringsIn(expr: string, base: number): Candidate[] {
+  const out: Candidate[] = [];
+  let j = 0;
+  while (j < expr.length) {
+    const ch = expr[j];
+    if (ch === '"' || ch === "'") {
+      const end = skipString(expr, j);
+      const text = expr.slice(j + 1, end - 1);
+      if (READS_AS_COPY.test(text) && !text.includes("\n")) out.push({ index: base + j, text });
+      j = end;
+    } else if (ch === "`") {
+      const { end, text, holes } = readTemplate(expr, j);
+      const prose = normalize(text.split(PLACEHOLDER).join(" "));
+      if (TEMPLATE_READS_AS_COPY.test(prose) && !isNotCopy(prose)) out.push({ index: base + j, text });
+      for (const [from, to] of holes) out.push(...stringsIn(expr.slice(from, to), base + from));
+      j = end;
+    } else {
+      j++;
+    }
+  }
+  return out;
+}
 
 /**
  * Strings that look like prose to a regex but are not copy. Kept narrow — a
@@ -477,23 +605,61 @@ export function findLiterals(source: string, file: string): Literal[] {
     out.push({ file, line, text, kind });
   };
 
+  // identifiers rendered bare where copy goes, with the kind they render as.
+  // their bindings are read once every position is known (#1537)
+  const rendered = new Map<string, Literal["kind"]>();
+  /** the start of capture group `n`'s text inside match `m` */
+  const groupAt = (m: RegExpMatchArray, n: number) => (m.index ?? 0) + m[0].lastIndexOf(m[n]);
+  const readExpr = (m: RegExpMatchArray, n: number, kind: Literal["kind"]) => {
+    const ident = RENDERED_IDENT.exec(m[n]);
+    if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? kind);
+    for (const c of stringsIn(m[n], groupAt(m, n))) push(c.index, c.text, kind);
+  };
+
   for (const m of scanned.matchAll(DIALOG)) push(m.index, m[2], "dialog");
   for (const m of scanned.matchAll(THROWN)) push(m.index, m[2], "error");
+  for (const m of scanned.matchAll(THROWN_TEMPLATE)) {
+    const at = m.index + m[0].length;
+    const { end } = readTemplate(scanned, at);
+    for (const c of stringsIn(scanned.slice(at, end), at)) push(c.index, c.text, "error");
+  }
   for (const m of scanned.matchAll(PROP)) push(m.index, m[1], "prop");
-  for (const m of scanned.matchAll(PROP_EXPR)) {
-    for (const inner of m[1].matchAll(STRING_IN_EXPR)) push(m.index, inner[2], "prop");
+  for (const m of scanned.matchAll(PROP_EXPR)) readExpr(m, 1, "prop");
+  for (const m of scanned.matchAll(OBJECT_KEY)) {
+    const at = m.index + m[0].length;
+    const end = skipExpression(scanned, at, ",;");
+    for (const c of stringsIn(scanned.slice(at, end), at)) push(c.index, c.text, "prop");
   }
   for (const m of scanned.matchAll(TEXT)) {
     if (!tagEnds.has(m.index)) continue;
     push(m.index, m[1], "text");
   }
-  for (const m of scanned.matchAll(TEXT_EXPR)) {
-    for (const inner of m[1].matchAll(STRING_IN_EXPR)) push(m.index, inner[2], "text");
-  }
+  for (const m of scanned.matchAll(TEXT_EXPR)) readExpr(m, 1, "text");
   for (const m of scanned.matchAll(TEXT_MIXED)) {
     if (!tagEnds.has(m.index)) continue;
     const text = mixedText(m[1]);
     if (text !== null) push(m.index, text, "text");
+    // the expressions beside the prose hold copy of their own (#1371)
+    const base = groupAt(m, 1);
+    for (const e of m[1].matchAll(EXPR_IN_TEXT)) {
+      const ident = RENDERED_IDENT.exec(e[0].slice(1, -1));
+      if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? "text");
+      for (const c of stringsIn(e[0], base + e.index)) push(c.index, c.text, "text");
+    }
+  }
+  // English parked in a local and rendered later: `const cta = add ? "Create" :
+  // "Save"` then `<Button>{cta}</Button>` (#1537). only a binding whose name
+  // is rendered is read, so a string that only ever reaches code stays out. a
+  // function is not a held value — its body is the rest of a component
+  if (rendered.size) {
+    for (const m of scanned.matchAll(BINDING)) {
+      const kind = rendered.get(m[1]);
+      if (!kind) continue;
+      const at = m.index + m[0].length;
+      const value = scanned.slice(at, skipExpression(scanned, at, ",;"));
+      if (value.includes("=>") || /^\s*(?:async\s+)?function\b/.test(value)) continue;
+      for (const c of stringsIn(value, at)) push(c.index, c.text, kind);
+    }
   }
   out.sort((a, b) => a.line - b.line);
   return out;

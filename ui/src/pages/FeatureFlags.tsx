@@ -25,34 +25,6 @@ interface FlagCopy {
   desc: string;
 }
 
-// one entry per allowlisted flag; the order here is the order on screen
-const COPY: Record<FeatureFlagKey, FlagCopy> = {
-  response_cache: {
-    title: "Response Cache",
-    desc: "Serve repeated completions from the shared Redis cache instead of forwarding them upstream.",
-  },
-  cache_aware_routing: {
-    title: "Cache-Aware Routing",
-    desc: "Score targets by KV-cache affinity so a conversation keeps landing on the replica that already holds its prefix.",
-  },
-  circuit_breaker: {
-    title: "Circuit Breaker",
-    desc: "Trip a target out of the pool after repeated upstream failures and probe it before restoring traffic.",
-  },
-  active_health_checks: {
-    title: "Active Health Checks",
-    desc: "Poll targets in the background so an unhealthy one is parked before a live request discovers it.",
-  },
-  complexity_routing: {
-    title: "Complexity Routing",
-    desc: "Estimate prompt complexity and route cheap requests to smaller models.",
-  },
-  guardrails: {
-    title: "Guardrails",
-    desc: "Run the configured pre- and post-call guardrail rules on every request.",
-  },
-};
-
 const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
   Object.fromEntries(
     FEATURE_FLAG_KEYS.map((key) => [key, dto[key]]),
@@ -64,6 +36,33 @@ const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
 // than as a switch that silently does nothing (#535)
 function FeatureFlagsScreen() {
   const { t } = useTranslation();
+  // one entry per allowlisted flag; the order here is the order on screen
+  const copy: Record<FeatureFlagKey, FlagCopy> = {
+    response_cache: {
+      title: t("pages.featureFlags.flags.response_cache.title"),
+      desc: t("pages.featureFlags.flags.response_cache.desc"),
+    },
+    cache_aware_routing: {
+      title: t("pages.featureFlags.flags.cache_aware_routing.title"),
+      desc: t("pages.featureFlags.flags.cache_aware_routing.desc"),
+    },
+    circuit_breaker: {
+      title: t("pages.featureFlags.flags.circuit_breaker.title"),
+      desc: t("pages.featureFlags.flags.circuit_breaker.desc"),
+    },
+    active_health_checks: {
+      title: t("pages.featureFlags.flags.active_health_checks.title"),
+      desc: t("pages.featureFlags.flags.active_health_checks.desc"),
+    },
+    complexity_routing: {
+      title: t("pages.featureFlags.flags.complexity_routing.title"),
+      desc: t("pages.featureFlags.flags.complexity_routing.desc"),
+    },
+    guardrails: {
+      title: t("pages.featureFlags.flags.guardrails.title"),
+      desc: t("pages.featureFlags.flags.guardrails.desc"),
+    },
+  };
   const queryClient = useQueryClient();
   const toast = useToast();
   const flags = useQuery({
@@ -140,8 +139,8 @@ function FeatureFlagsScreen() {
       {FEATURE_FLAG_KEYS.map((key) => (
         <FlagCard
           key={key}
-          title={COPY[key].title}
-          desc={COPY[key].desc}
+          title={copy[key].title}
+          desc={copy[key].desc}
           checked={form[key]}
           unavailableReason={reasonFor(key)}
           onChange={(v) => set(key, v)}

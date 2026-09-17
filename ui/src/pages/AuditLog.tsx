@@ -26,10 +26,10 @@ const PAGE_SIZE = 25;
 const DEFAULT_RANGE = 3;
 
 const RANGES = [
-  { label: "Last 24h", hours: 24 },
-  { label: "Last 7d", hours: 24 * 7 },
-  { label: "Last 30d", hours: 24 * 30 },
-  { label: "All", hours: null },
+  { id: "last24h", hours: 24 },
+  { id: "last7d", hours: 24 * 7 },
+  { id: "last30d", hours: 24 * 30 },
+  { id: "all", hours: null },
 ] as const;
 
 // well-known audited actions for the filter dropdown; the API filters
@@ -90,6 +90,12 @@ const UUID_RE =
 // filters map to query params, pagination walks the keyset cursor
 export default function AuditLog() {
   const { t } = useTranslation();
+  const rangeLabels: Record<(typeof RANGES)[number]["id"], string> = {
+    last24h: t("pages.auditLog.ranges.last24h"),
+    last7d: t("pages.auditLog.ranges.last7d"),
+    last30d: t("pages.auditLog.ranges.last30d"),
+    all: t("pages.auditLog.ranges.all"),
+  };
   const fmt = useFormat();
   const scope = useScope();
   const [expanded, setExpanded] = React.useState<string | null>(null);
@@ -314,7 +320,7 @@ export default function AuditLog() {
             <div className="flex gap-1">
               {RANGES.map((r, i) => (
                 <button
-                  key={r.label}
+                  key={r.id}
                   type="button"
                   aria-pressed={i === rangeIdx}
                   onClick={() => setRangeIdx(i)}
@@ -324,7 +330,7 @@ export default function AuditLog() {
                       : "border-border text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {r.label}
+                  {rangeLabels[r.id]}
                 </button>
               ))}
             </div>
