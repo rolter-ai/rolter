@@ -16,6 +16,8 @@ import {
   recording,
   scoped,
   sheet,
+  Toasted,
+  expectToast,
   type FetchStub,
 } from "./story-harness";
 import type {
@@ -225,6 +227,44 @@ export const CreatesAProfileWithRolesAndPolicy: Story = {
       allowed_routes: [],
       denied_routes: [],
     });
+  },
+};
+
+/**
+ * The profile is refused (#1607).
+ *
+ * A composed profile carries roles and two model lists, so a sheet that closed
+ * on a rejected save would cost all of it — it stays, and the toast queue is
+ * where the refusal is reported.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "slug support is already taken" } }, 409)
+          : stub(async () => json([]))(input, init)
+      }
+    >
+      <Toasted>
+        <AccessProfiles />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "+ Add profile");
+
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "Support");
+    await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
+    await userEvent.click(form.getByRole("button", { name: "Create profile" }));
+
+    await expectToast(canvasElement, /already taken/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(form.getByLabelText("Name")).toHaveValue("Support");
+    await expect(form.getByRole("checkbox", { name: /Support engineer/ })).toBeChecked();
   },
 };
 

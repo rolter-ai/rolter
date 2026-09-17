@@ -276,6 +276,38 @@ export const CreatesAKey: Story = {
 };
 
 /**
+ * The server refuses the mint (#1607).
+ *
+ * Losing the draft here costs the operator everything they typed, so the story
+ * asserts the sheet is still open with the name intact — and that the refusal
+ * is on screen rather than swallowed, which is the half that can rot silently.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "the project has reached its virtual-key quota" } }, 409)
+          : (lookups(String(input)) ?? json(KEYS)),
+      )}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(within(form).getByText(/reached its virtual-key quota/)).toBeVisible(),
+    );
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(form).getByLabelText("Name")).toHaveValue("ci runner");
+  },
+};
+
+/**
  * The dirty guard #868 introduced. A blank draft is *not* dirty, so closing it
  * must not prompt — a confirm on an untouched form trains people to click
  * through the one that matters.

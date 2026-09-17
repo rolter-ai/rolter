@@ -1,13 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Users from "./Users";
 import {
   Harness,
+  Toasted,
   clickWhenEnabled,
   expectClosesWithoutPrompting,
   expectSheetClosed,
   expectSkeleton,
+  expectToast,
   json,
   pickOption,
   pending,
@@ -170,6 +172,41 @@ export const InvitesAUser: Story = {
     await expect(
       await within(document.body).findByText("https://rolter.local/invite/one-time"),
     ).toBeInTheDocument();
+  },
+};
+
+/**
+ * The invite is refused (#1607).
+ *
+ * The sheet has to survive the refusal — closing it would drop the address and
+ * the role the operator picked — and the refusal has to reach the toast queue,
+ * which is the only place this screen reports a rejected write.
+ */
+export const InviteRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") {
+          return json({ error: { message: "that address already has an invitation" } }, 409);
+        }
+        return String(input).includes("/memberships") ? json(MEMBERSHIPS) : json(USERS);
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /invite user/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Email"), "newcomer@example.com");
+    await userEvent.click(within(form).getByRole("button", { name: "Invite" }));
+    await expectToast(canvasElement, /already has an invitation/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(form).getByLabelText("Email")).toHaveValue("newcomer@example.com");
   },
 };
 
