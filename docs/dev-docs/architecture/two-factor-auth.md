@@ -2,7 +2,7 @@
 
 TOTP (RFC 6238) as a second factor on local-account login (#1078). The
 operator-facing guide is
-[`user-docs/security/two-factor-authentication.mdx`](../../user-docs/security/two-factor-authentication.mdx);
+[`docs/user-docs/security/two-factor-authentication.mdx`](../../user-docs/security/two-factor-authentication.mdx);
 this page is the design and the reasons behind it.
 
 ## Where the factor is checked

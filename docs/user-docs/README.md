@@ -6,7 +6,7 @@ running Rolter — distinct from the contributor/architecture docs under
 [`../dev-docs/`](../dev-docs/), which build to an mdBook on GitHub Pages.
 
 - `docs.json` — Mintlify site config (theme, nav, tabs). Root of the site is this
-  directory, so page hrefs are relative to `user-docs/` (e.g. `introduction`,
+  directory, so page hrefs are relative to `docs/user-docs/` (e.g. `introduction`,
   `concepts/load-balancing`).
 - `*.mdx` — page content in Mintlify MDX (supports `<Card>`, `<Steps>`,
   `<ParamField>`, `<CodeGroup>`, and other Mintlify components).
@@ -15,7 +15,7 @@ running Rolter — distinct from the contributor/architecture docs under
 
 ```bash
 npm i -g mint
-cd user-docs
+cd docs/user-docs
 mint dev
 ```
 
@@ -23,6 +23,6 @@ mint dev
 
 Mintlify builds and serves this directory to its own domain. Connect the
 [Mintlify GitHub app](https://mintlify.com/docs/settings/github) to
-`rolter-ai/rolter` with the content directory set to `user-docs/`; pushes to the
+`rolter-ai/rolter` with the content directory set to `docs/user-docs/`; pushes to the
 default branch then trigger a redeploy. The build is independent of the mdBook
 GitHub Pages workflow.

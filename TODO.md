@@ -1,6 +1,6 @@
 # rolter TODO
 
-Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent and [`docs/`](docs/README.md) for design.
+Granular, incremental checklist. See [`ROADMAP.md`](ROADMAP.md) for phase intent and [`docs/dev-docs/`](docs/dev-docs/README.md) for design.
 
 **An item is ticked in the pull request that ships it, never in a later sweep.**
 A box left unchecked after the work landed is worse than no checklist at all: it
