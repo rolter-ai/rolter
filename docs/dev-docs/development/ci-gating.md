@@ -53,15 +53,55 @@ for this commit* step):
   `in_progress`, `waiting` — fails the step. The commit is not gated yet, and
   the run that is still going will write its own, newer `ci-ok` when it
   finishes, so nothing is lost by refusing here.
-- **No completed, successful run on this sha** fails the step too. This closes
-  the same hole in its other shape: a retitle over a gate run that *failed* also
-  used to write a newer green `ci-ok`.
+- **No completed run on this sha whose `gate-ok` job succeeded** fails the step
+  too. This closes the same hole in its other shape: a retitle over a gate run
+  that *failed* also used to write a newer green `ci-ok`.
 - **A `cancelled` run does not count as a pass.** It is `completed`, so it does
   not block as in-flight, but it carries no verdict — it is treated exactly like
   a missing run, which is to say the fast path stays red until a real gate run
   succeeds.
-- **A failed API query is never green.** The listing is retried three times and
-  then fails the step. No answer is not an answer.
+- **A failed API query is never green.** Both the run listing and each run's job
+  listing fail the step when they cannot be read. No answer is not an answer.
+
+### `gate-ok`: what the guard actually asks
+
+The question the fast path needs answered is narrow — *did the heavy gate run on
+this sha, and did it pass* — and for a long time it was asked in a way that
+answered something broader: *is there a run on this sha whose **overall
+conclusion** is `success`*.
+
+Those differ whenever a run fails on something that is not the gate. A run can
+pass `quality` and `codeql` and still end `failure` because `session-urls`
+rejected the PR body. Under the old question that run counted as **no gate at
+all**, and since the `opened` run is the only one that runs the gate and
+`edited` runs never re-run it, nothing could ever make that sha green again —
+the failure was permanent and unfixable from the PR side (#1522).
+
+So `ci.yml` has a `gate-ok` job that records the gate's verdict by itself:
+
+```yaml
+gate-ok:
+  if: github.event.action != 'edited'
+  needs: [quality, codeql]
+  steps:
+    - run: echo "quality and codeql both succeeded on this run"
+```
+
+It is deliberately trivial, and two things about it are load-bearing:
+
+- **No `if: always()`.** With the default condition the job runs only when every
+  job it needs succeeded, so a failed gate leaves `gate-ok` `skipped` rather
+  than adding a second red check beside `ci-ok`. `skipped` is not `success`, so
+  the guard reads it correctly either way.
+- **It never re-derives `quality`'s verdict.** `needs.quality.result` is
+  computed by Actions, which already accounts for the `continue-on-error` jobs
+  inside `quality.yml` (`coverage`, `msrv`, `compose-smoke`, `cross-platform`,
+  `semver-checks`). Any hand-rolled scan of job conclusions would get those
+  wrong.
+
+The guard then walks the completed `ci.yml` runs on the sha and asks each one
+whether it has a `gate-ok` job that concluded `success`. A cancelled run has no
+such job, so it still counts as no run at all — `#1328` stays closed.
 
 Details that matter if you touch this code:
 
@@ -221,6 +261,37 @@ out of the event payload, and there is no supported way to hand it one. The
 remaining gap is therefore narrow: on the only PR that takes the dispatch path,
 release-plz generates the title. `ci-ok` emits a `::warning::` naming that the
 title went unvalidated rather than letting a silent skip imply otherwise.
+
+### Recovering a sha whose `opened` run saw a dirty body
+
+`session-urls` reads `${{ github.event.pull_request.body }}` — the snapshot the
+webhook froze, not the PR's live body. So if a session URL is present when the
+`opened` event fires, *that run's* `session-urls` fails permanently: no later
+`PATCH` can change what an already-delivered payload contained.
+
+That used to strand the head sha. The `opened` run is the only one that runs the
+heavy gate, and the `edited` fast path — which *does* re-read the live body, and
+passes once the footer is stripped — could not report green because it found no
+**successful run** to point at. The only ways out were a new commit or a
+manually dispatched run, neither of them documented, and the latter only working
+by accident (#1522).
+
+`gate-ok` closes this. The `opened` run still ends `failure`, but it records a
+passing `gate-ok`, and that is what the fast path looks for. So the #1518
+workaround is now sufficient on its own:
+
+1. Read the PR body back after creating the PR.
+2. If a session URL is there, strip that line with a direct
+   `PATCH /repos/{owner}/{repo}/pulls/{n}`.
+3. The `edited` run re-checks the live body, finds the `opened` run's passing
+   `gate-ok`, and `ci-ok` goes green. No new commit, no dispatch.
+
+**Reading the live body in `session-urls` was considered and not done.** It
+would not help the case that matters: the `opened` run starts seconds after the
+PR is created, so a live read would race the `PATCH` and usually still see the
+dirty body. It would also make every `pull_request` run depend on an API call
+that a fork's read-only token may not be able to make. The frozen snapshot is
+fine once a failed `session-urls` no longer condemns the sha.
 
 ## Why not a separate `pr-title` workflow
 
