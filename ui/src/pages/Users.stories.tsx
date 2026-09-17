@@ -7,17 +7,19 @@ import {
   Toasted,
   clickWhenEnabled,
   expectClosesWithoutPrompting,
+  expectEmptyState,
+  expectRefused,
   expectSheetClosed,
   expectSkeleton,
   expectToast,
   json,
-  pickOption,
+  NEEDS_SUPERADMIN,
   pending,
+  pickOption,
   routes,
   scoped,
   sheet,
   withConfirm,
-  expectEmptyState,
 } from "./story-harness";
 import type { MembershipRow, UserRow } from "@/lib/api";
 
@@ -258,5 +260,41 @@ export const ChoosingAPasswordRevealsTheField: Story = {
     await expect(within(form).queryByLabelText("Password (optional)")).not.toBeInTheDocument();
     await pickOption(within(form).getByLabelText("Method"), "Set a password now");
     await expect(within(form).getByLabelText("Password (optional)")).toBeInTheDocument();
+  },
+};
+
+// The two gates here take different authorities (#1606).
+//
+// Inviting someone is `invitation:create`, which is admin, but editing an
+// account — the name, the active flag — is `user:update`, which the table
+// marks superadmin-only because an account is deployment-wide and not the
+// org's to rewrite. So an admin is offered the invite and refused the edit.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Invite user");
+    await expectRefused(canvasElement, "Grant a role to ada@example.com");
+    await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Deactivate ada@example.com", NEEDS_SUPERADMIN);
+  },
+};
+
+export const EditRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
+    // the invitation half of the screen is still theirs
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Invite user" })).toBeEnabled(),
+    );
   },
 };

@@ -6,6 +6,7 @@ import {
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectRefused,
   Harness,
   json,
   pending,
@@ -522,5 +523,35 @@ export const CustomRolesForbidden: Story = {
         canvas.getAllByRole("alert").some((a) => /custom roles/.test(a.textContent ?? "")),
       ).toBe(true),
     );
+  },
+};
+
+// A custom role is an org's own grant table, so writing one is `custom_role`
+// — admin at every action (#1606). The built-in matrix above stays readable to
+// a viewer: it is the published rules, not this caller's answer.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles(CUSTOM_ROLES)} role="viewer">
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await expectRefused(canvasElement, /new role/i);
+    await expectRefused(canvasElement, "Edit Support engineer");
+    await expectRefused(canvasElement, "Delete Support engineer");
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles(CUSTOM_ROLES)} role="member">
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await expectRefused(canvasElement, /new role/i);
+    await expectRefused(canvasElement, "Delete Support engineer");
   },
 };
