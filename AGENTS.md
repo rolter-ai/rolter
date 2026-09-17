@@ -207,6 +207,16 @@ docs(architecture): document reload-free config propagation
 - Branch names follow `<type>/<issue-number>-<short-description>` with the same Conventional Commit types, e.g. `fix/94-models-auth`. Never use a person or agent name as the prefix.
 - Keep each PR one logical change; for dependent work use plain `git` branches (or `git worktree`) stacked on one another.
 - Keep PRs focused; update `docs/` and `TODO.md` when behavior changes.
+- Never let a coding-agent session url (`claude.ai/code/session…`, or an
+  agent's own `<Name>-Session:` trailer) reach a commit message or a PR body —
+  `scripts/check-agent-session-urls.sh` rejects it unconditionally. PR-authoring
+  tooling appends such a footer *after* the body you submitted, so read the body
+  back once the PR exists and, if one is there, strip that line with a direct
+  `PATCH /repos/{owner}/{repo}/pulls/{n}` rather than another pass through the
+  authoring tool — the footer is injected on create only, so a direct patch
+  sticks. This is a workaround for tooling this repo does not control; the check
+  itself never gets a carve-out for it. See
+  [`docs/development/ci-gating.md#agent-session-urls`](docs/development/ci-gating.md#agent-session-urls).
 - Include a co-author trailer identifying the agent that made the commit, using
   that agent's own name and email (for example,
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
