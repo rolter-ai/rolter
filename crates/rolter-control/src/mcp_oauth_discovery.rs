@@ -29,7 +29,7 @@
 //! or from a document an operator-registered MCP server served, so all of them
 //! go through the same three guards: `https` (or loopback), the deployment's
 //! egress policy, and a client that does not follow redirects. See
-//! `docs/architecture/mcp-oauth.md` for the SSRF reasoning.
+//! `docs/dev-docs/architecture/mcp-oauth.md` for the SSRF reasoning.
 
 use std::sync::OnceLock;
 use std::time::Duration;

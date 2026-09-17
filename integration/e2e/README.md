@@ -8,7 +8,7 @@ exactly what an operator and a tenant see.
 Foundation for the #613 epic. Scenario suites (RBAC matrix #615, balancing #616,
 key lifecycle #617, security #618) build on the fixtures and client here.
 
-See the decision record: [`docs/adr/2026-07-21-e2e-test-harness.md`](../../docs/adr/2026-07-21-e2e-test-harness.md).
+See the decision record: [`docs/dev-docs/adr/2026-07-21-e2e-test-harness.md`](../../docs/adr/2026-07-21-e2e-test-harness.md).
 
 ## Layout
 

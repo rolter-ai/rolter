@@ -28,8 +28,8 @@ rolter.toml
 mempalace.yaml
 entities.json
 
-# mdbook build output (contributor docs); source is docs/*.md
-docs/book/
+# mdbook build output (contributor docs); source is docs/dev-docs/*.md
+docs/dev-docs/book/
 ui/storybook-static/
 
 # Local output from the optional CPU inference-engine smoke/benchmark suite.

@@ -3,7 +3,7 @@
 Source for the polished, user-facing documentation served at the Rolter
 [Mintlify](https://mintlify.com) site. These are the **product docs** for people
 running Rolter — distinct from the contributor/architecture docs under
-[`../docs/`](../docs/), which build to an mdBook on GitHub Pages.
+[`../dev-docs/`](../dev-docs/), which build to an mdBook on GitHub Pages.
 
 - `docs.json` — Mintlify site config (theme, nav, tabs). Root of the site is this
   directory, so page hrefs are relative to `user-docs/` (e.g. `introduction`,

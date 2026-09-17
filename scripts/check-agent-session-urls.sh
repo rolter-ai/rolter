@@ -56,6 +56,6 @@ done
 
 if [ "$fail" -ne 0 ]; then
   echo "::error::remove the session/remote-connection url and rewrite the commit or pr body"
-  echo "::error::a pr-authoring tool may have appended this line after your own body; strip just that line with a direct PATCH to the pr, which does not re-trigger the injection - see docs/development/ci-gating.md#agent-session-urls"
+  echo "::error::a pr-authoring tool may have appended this line after your own body; strip just that line with a direct PATCH to the pr, which does not re-trigger the injection - see docs/dev-docs/development/ci-gating.md#agent-session-urls"
   exit 1
 fi

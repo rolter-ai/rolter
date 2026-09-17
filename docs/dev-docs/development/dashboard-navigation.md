@@ -2,7 +2,7 @@
 
 The operator-facing description of the shell — signing in, the groups, the
 scope switcher and the three breakpoints — lives in
-`user-docs/concepts/dashboard.mdx`. This page is the contributor's view of the
+`docs/user-docs/concepts/dashboard.mdx`. This page is the contributor's view of the
 same rail: the code, the invariants and the stories that pin them.
 
 The left rail (`ui/src/components/ui/nav-sidebar.tsx`) is the dashboard's

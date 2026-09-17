@@ -155,7 +155,7 @@ require "$rel" "the wheel smoke test must resolve only from dist/, never pypi" \
 if [[ "$fail" -ne 0 ]]; then
     cat >&2 <<'EOF'
 
-the release handoff is broken. see docs/development/packaging.md ("Release
+the release handoff is broken. see docs/dev-docs/development/packaging.md ("Release
 pipeline"); a release that loses this wiring publishes a github release and
 crates.io but never a pypi wheel, or leaves the release pr unable to reach a
 green ci-ok — and nothing goes red.

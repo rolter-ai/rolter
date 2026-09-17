@@ -389,7 +389,7 @@ fn kek_mismatch_finding(audit: &rolter_store::postgres::kek_audit::KekAudit) -> 
         return None;
     }
     let mut detail = format!(
-        "{KEK_ENV} does not open secrets already in this database. This is what a restore onto          the wrong KEK looks like: the dump carried the ciphertext, the KEK was not in the dump,          and nothing else fails until an upstream call does. Restore the KEK that sealed this          database — the ciphertext cannot be recovered without it. See          docs/deployment/backup-and-restore.md."
+        "{KEK_ENV} does not open secrets already in this database. This is what a restore onto          the wrong KEK looks like: the dump carried the ciphertext, the KEK was not in the dump,          and nothing else fails until an upstream call does. Restore the KEK that sealed this          database — the ciphertext cannot be recovered without it. See          docs/dev-docs/deployment/backup-and-restore.md."
     );
     for line in audit.damage_report() {
         detail.push_str("\n       - ");

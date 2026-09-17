@@ -11,7 +11,7 @@ p99 knee, and `--ramp` walks concurrency upward for a burst profile (#847).
 
 Deliberately stdlib-only: rolter must be operable air-gapped, and a benchmark
 you cannot run on the disconnected machine you are tuning is not much of a
-benchmark. See docs/architecture/performance.md for why this was extended
+benchmark. See docs/dev-docs/architecture/performance.md for why this was extended
 rather than replaced with GuideLLM or oha/k6.
 """
 

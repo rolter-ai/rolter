@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 //
 // three shapes by viewport (#959) — below `md` an off-canvas drawer over a
 // scrim, between `md` and `lg` an icon rail, at `lg` and up the full resizable
-// rail. see docs/development/dashboard-navigation.md.
+// rail. see docs/dev-docs/development/dashboard-navigation.md.
 export interface NavItem {
   key: string;
   label: string;

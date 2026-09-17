@@ -28,7 +28,7 @@
 //! removed in a minor release**. That exemption is the entire point: it is what
 //! lets the rest of the surface make a stability promise without being held to
 //! the least-finished corner of the product. See
-//! `docs/development/stability-markers.md` for the full statement, including
+//! `docs/dev-docs/development/stability-markers.md` for the full statement, including
 //! what the marker deliberately does *not* say.
 //!
 //! # Only the exceptions are listed
@@ -199,7 +199,7 @@ mod tests {
     /// the documentation table, so a marker cannot be added without the page
     /// that explains what it exempts the subsystem from
     fn doc() -> Option<String> {
-        workspace_file("docs/development/stability-markers.md")
+        workspace_file("docs/dev-docs/development/stability-markers.md")
     }
 
     /// the dashboard nav, so a `nav_keys` entry cannot rot into a key no screen
@@ -311,7 +311,7 @@ mod tests {
         let listed: Vec<&str> = SUBSYSTEMS.iter().map(|entry| entry.id).collect();
         assert_eq!(
             documented, listed,
-            "docs/development/stability-markers.md must list every experimental \
+            "docs/dev-docs/development/stability-markers.md must list every experimental \
              subsystem, in the same order, one per table row"
         );
     }

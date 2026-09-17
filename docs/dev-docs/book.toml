@@ -5,16 +5,18 @@ description = "contributor and architecture documentation for the rolter AI gate
 src = "."
 language = "en"
 
-# contributor docs are authored as plain markdown under docs/ and rendered to a
-# static site by mdbook; the polished user-facing docs live separately under
-# user-docs/ (mintlify). build output goes to docs/book/ (gitignored).
+# contributor docs are authored as plain markdown under docs/dev-docs/ and
+# rendered to a static site by mdbook; the polished user-facing docs are the
+# sibling tree docs/user-docs/ (mintlify). build output goes to
+# docs/dev-docs/book/ (gitignored).
 [output.html]
 git-repository-url = "https://github.com/rolter-ai/rolter"
-edit-url-template = "https://github.com/rolter-ai/rolter/edit/master/docs/{path}"
+edit-url-template = "https://github.com/rolter-ai/rolter/edit/master/docs/dev-docs/{path}"
 default-theme = "rust"
-# mermaid runtime + theme bootstrap, vendored under docs/ rather than pulled
-# from a cdn: the book has to build and render fully air-gapped. `mdbook-mermaid
-# install docs` regenerates both, but mermaid-init.js carries a local fix for
+# mermaid runtime + theme bootstrap, vendored under docs/dev-docs/ rather than
+# pulled from a cdn: the book has to build and render fully air-gapped.
+# `mdbook-mermaid install docs/dev-docs` regenerates both, but mermaid-init.js
+# carries a local fix for
 # mdbook 0.5 theme ids - re-apply it after any refresh (see the file header).
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 

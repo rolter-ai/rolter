@@ -63,7 +63,7 @@ if (violations.length) {
   console.error(
     "\nevery user-facing string goes through the i18n catalogs: add the key to\n" +
       "src/lib/i18n/locales/en.json, translate it in every sibling catalog, and use\n" +
-      't("...") here. See docs/development/i18n.md.',
+      't("...") here. See docs/dev-docs/development/i18n.md.',
   );
   process.exit(1);
 }

@@ -122,7 +122,7 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
         admin_token: args.admin_token.clone(),
         // easy-up co-hosts both planes in one process on loopback, so the
         // snapshot channel never crosses a network boundary and there is
-        // nothing to separate it from (see docs/architecture/security.md)
+        // nothing to separate it from (see docs/dev-docs/architecture/security.md)
         internal_token: None,
     }
 }

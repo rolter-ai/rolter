@@ -72,7 +72,7 @@ jobs:
             echo "\`GEMINI_API_KEY\` is not set in the \`live-providers\` environment,"
             echo "so nothing was verified against the real interactions endpoint."
             echo
-            echo "See \`docs/development/testing.md\` for what to configure."
+            echo "See \`docs/dev-docs/development/testing.md\` for what to configure."
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "${ALLOW_UNCONFIGURED}" = "true" ]; then
             echo "::warning::GEMINI_API_KEY is unset; dry run requested, reporting success"

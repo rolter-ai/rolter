@@ -13,7 +13,7 @@
   <a href="https://github.com/rolter-ai/rolter/actions/workflows/ci.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
   <a href="https://github.com/rolter-ai/rolter/actions/workflows/release.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/rolter-ai/rolter/actions/workflows/docs.yml"><img src="https://github.com/rolter-ai/rolter/actions/workflows/docs.yml/badge.svg?branch=master" alt="Documentation"></a>
-  <a href="docs/development/testing.md#coverage"><img src="https://img.shields.io/badge/coverage%20baseline-64%25-yellowgreen" alt="Coverage baseline: 64%"></a>
+  <a href="docs/dev-docs/development/testing.md#coverage"><img src="https://img.shields.io/badge/coverage%20baseline-64%25-yellowgreen" alt="Coverage baseline: 64%"></a>
 </p>
 
 <p align="center">
@@ -116,10 +116,10 @@ rolter stands on the shoulders of great open-source projects and research. See o
 
 ## Documentation
 
-- [Quickstart](user-docs/quickstart.mdx) and [Installation](user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
-- [Configuration](user-docs/configuration), [Deployment](user-docs/deployment), and [Observability](user-docs/observability) guides
-- [Air-gapped install & operation](user-docs/deployment/air-gapped.mdx) — running fully offline behind an internal mirror
-- [Architecture overview](docs/architecture/overview.md) — the full design and ADRs
+- [Quickstart](docs/user-docs/quickstart.mdx) and [Installation](docs/user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
+- [Configuration](docs/user-docs/configuration), [Deployment](docs/user-docs/deployment), and [Observability](docs/user-docs/observability) guides
+- [Air-gapped install & operation](docs/user-docs/deployment/air-gapped.mdx) — running fully offline behind an internal mirror
+- [Architecture overview](docs/dev-docs/architecture/overview.md) — the full design and ADRs
 
 ## Repository layout
 
@@ -132,7 +132,7 @@ rolter stands on the shoulders of great open-source projects and research. See o
 - `crates/rolter-control` — control-plane binary + static UI host
 - `crates/rolter` — unified `rolter` launcher (`gateway` / `control` / `easy-up`)
 - `ui/` — Vite + React + shadcn/ui dashboard
-- `docs/`, `user-docs/` — architecture/ADRs and the user documentation site
+- `docs/`, `docs/user-docs/` — architecture/ADRs and the user documentation site
 - `crates/rolter-store/migrations/`, `clickhouse/` — database schemas
 
 > **The library crates are internal.** `rolter-core`, `rolter-auth`,
@@ -143,15 +143,15 @@ rolter stands on the shoulders of great open-source projects and research. See o
 > the product's version number rather than carrying one of their own. Build
 > against rolter's HTTP surfaces — the gateway API, the control API, the config
 > file — which do carry a compatibility promise. See
-> [Versioning & compatibility](user-docs/community/versioning.mdx) and
-> [ADR-0032](docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+> [Versioning & compatibility](docs/user-docs/community/versioning.mdx) and
+> [ADR-0032](docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 ## Compatibility
 
 What a major version guarantees, per surface — the OpenAI/Anthropic gateway API,
 the control API, config files, the database schema and the crates — is written
-down in [Versioning & compatibility](user-docs/community/versioning.mdx), with
-the reasoning in [ADR-0032](docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+down in [Versioning & compatibility](docs/user-docs/community/versioning.mdx), with
+the reasoning in [ADR-0032](docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 Short version: `/api/v1/*` is additive and nothing is removed without two minor
 releases and 90 days of notice; `/v1/*` guarantees fidelity to the OpenAI and
 Anthropic dialects rather than a frozen schema; the Rust crates guarantee
@@ -166,7 +166,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Commits and PR titles follow [Conventional Commits](docs/development/commit-conventions.md). See [`AGENTS.md`](AGENTS.md) and [`docs/development/contributing.md`](docs/development/contributing.md).
+Commits and PR titles follow [Conventional Commits](docs/dev-docs/development/commit-conventions.md). See [`AGENTS.md`](AGENTS.md) and [`docs/dev-docs/development/contributing.md`](docs/dev-docs/development/contributing.md).
 
 ## License
 

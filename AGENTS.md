@@ -19,8 +19,8 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 | `crates/rolter-control` | control-plane binary, CRUD API, `/internal/snapshot`, UI host |
 | `crates/rolter` | unified launcher (`gateway` / `control` / `easy-up`) |
 | `ui/` | dashboard SPA (also a `publish = false` Cargo member so release-plz sees UI commits) |
-| `docs/` | architecture, ADRs, developer docs (mdBook; `SUMMARY.md` is the nav) |
-| `user-docs/` | end-user documentation site (Mintlify; `docs.json` is the nav) |
+| `docs/dev-docs/` | architecture, ADRs, developer docs (mdBook; `SUMMARY.md` is the nav) |
+| `docs/user-docs/` | end-user documentation site (Mintlify; `docs.json` is the nav) |
 | `integration/`, `charts/`, `docker/`, `infra/` | engine integration suite, Helm chart, compose, deployment |
 
 ## Commands
@@ -39,7 +39,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 
 ## Parallel agent worktrees
 
-- Use Worktrunk (`wt`) to create, inspect, and remove agent worktrees; see `docs/development/worktrees.md`.
+- Use Worktrunk (`wt`) to create, inspect, and remove agent worktrees; see `docs/dev-docs/development/worktrees.md`.
 - Create independent issue work from current `origin/master`: `git fetch origin master`, then `wt switch --create <type>/<issue-number>-<short-description> --base origin/master`.
 - Give every agent exactly one branch and worktree. This applies equally to Codex, Claude, Z.ai, Warp, and other agents; never encode an agent name in the branch.
 - For dependent work, create the child with `--base <parent-branch>` and target the child PR at that parent. Rebase in dependency order after the parent merges.
@@ -95,7 +95,7 @@ the repo: on first use of a machine, tell the session "this machine is
 - Use `parking_lot::Mutex`, never `std::sync::Mutex`, for shared state on the data plane. A std mutex poisons when a thread panics holding it, so one transient panic turns every later `.lock().unwrap()` into a panic — a permanent, restart-only outage. `crates/rolter-gateway/tests/lock_discipline.rs` enforces this.
 - Code comments start lowercase with no trailing punctuation; `///` doc comments use normal prose.
 - New balancing strategies implement `rolter_balancer::LoadBalancer` and are wired into `build()`.
-- A type that fixtures construct everywhere (`ProviderConfig` is the model) carries a `Default` so tests can write `..Default::default()`; production mapping code still writes the literal out in full. See `docs/development/merge-protection.md`.
+- A type that fixtures construct everywhere (`ProviderConfig` is the model) carries a `Default` so tests can write `..Default::default()`; production mapping code still writes the literal out in full. See `docs/dev-docs/development/merge-protection.md`.
 - New storage backends implement the `rolter_store` traits behind a cargo feature.
 - The gateway ships a built-in `fake-llm` model (deterministic lorem ipsum, no upstream or config needed) on `/v1/chat/completions` and `/v1/messages` (non-streaming and SSE) plus `/v1/embeddings` (deterministic vectors). Use it for smoke tests and local dev without secrets; a configured route named `fake-llm` shadows the builtin.
 
@@ -104,7 +104,7 @@ the repo: on first use of a machine, tell the session "this machine is
 - Migrations are embedded with `sqlx::migrate!("./migrations")` in `crates/rolter-store/src/postgres/mod.rs`. **Never edit an applied migration file** — sqlx records a checksum, and any byte change breaks every existing deployment (see #724, which had to restore one). Add a new `NNNN_*.sql` instead.
 - Migration numbers are append-only and never reused, even where the sequence has a gap. `scripts/check-migrations-immutable.sh` enforces this — it runs as the `migrations append-only` job in `quality.yml` and as a `prek` hook, and rejects any modified, deleted or renamed file under `migrations/`.
 - Any table the data plane consumes must bump `config_version` inside the write transaction, via a `bump_config_version()` statement trigger (`0003_config_version_trigger.sql`, `0029_*`, `0031_*` are the models to copy). Without it `/internal/snapshot` never propagates the change and the gateway silently serves stale config.
-- Postgres tests must run in an isolated schema (per-test `search_path`); the coverage job runs plain `cargo test` against a shared database and will race otherwise. Build the schema through `rolter_store::postgres::test_schema::TestSchema` and bind the guard for the whole test — it drops the schema when the test finishes, panic included, and a hand-rolled `create schema` leaks one per test until the local database dies (#1364). See `docs/development/testing.md`.
+- Postgres tests must run in an isolated schema (per-test `search_path`); the coverage job runs plain `cargo test` against a shared database and will race otherwise. Build the schema through `rolter_store::postgres::test_schema::TestSchema` and bind the guard for the whole test — it drops the schema when the test finishes, panic included, and a hand-rolled `create schema` leaks one per test until the local database dies (#1364). See `docs/dev-docs/development/testing.md`.
 - `rolter-control` CRUD tests only build under `--features postgres`. Check both feature sets before pushing.
 - `cargo hack check --each-feature --workspace` runs in CI under `RUSTFLAGS=-D warnings`: every feature must compile alone *and warning-free*, so never let a feature-gated item leak into a default-feature path, and gate a helper whose only caller is feature-gated with the same `#[cfg]` rather than leaving it dead under the other combinations (#1399). Reproduce with `RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets`; the default clippy run only covers default features and will not catch these.
 - A crate's `postgres` feature enables its dependencies', never the other way round, so `rolter-control/postgres` can be on while `rolter/postgres` is off. Never write an exhaustive struct literal of a dependency's type whose fields that dependency feature-gates — use `..Default::default()`, since your own `#[cfg]` cannot see the dependency's feature (#1295). The `cross-crate feature combination` step in `quality.yml` builds that combination.
@@ -115,25 +115,25 @@ When you change the thing on the left, the entries on the right must change with
 
 | You changed | You must also update |
 |---|---|
-| Added a balancing strategy | implement `rolter_balancer::LoadBalancer` in `crates/rolter-balancer/src/`; wire it into `build()` and `build_with_stats()` (`lib.rs:108`, `:115`); add the `BalancingStrategy` variant in `crates/rolter-core/src/config.rs`; add a migration allowing the new value (see `0019_cache_aware_strategies.sql`); surface it in `ui/src/pages/RoutingRules.tsx`; document it in `docs/architecture/load-balancing.md` |
-| Added a provider / adapter kind | add the `ProviderKind` variant in `crates/rolter-core/src/config.rs`; add dialect handling in `crates/rolter-proxy`; add a migration widening the stored enum (see `0027_provider_adapter_kinds.sql`); update `ui/src/components/ProviderSheet.tsx` and `ui/src/pages/Providers.tsx`; add a row to `rolter.example.toml`; document it under `user-docs/configuration/` |
-| Added a control-plane endpoint module | create `crates/rolter-control/src/<module>.rs` exposing `router()`; `.merge()` it into the router in `lib.rs` (~line 374); add the capability to `CAPABILITIES` in `rbac_matrix.rs` (the `the_matrix_lists_every_capability_exactly_once` test enforces coverage); add a row per `(path, method)` to `operations()` in `crates/rolter-control/src/openapi.rs` so it appears in the served `GET /openapi.json` (the `every_registered_route_is_documented` test enforces coverage and names what is missing); call it from `ui/src/lib/api.ts`; document it in `user-docs/api/` |
+| Added a balancing strategy | implement `rolter_balancer::LoadBalancer` in `crates/rolter-balancer/src/`; wire it into `build()` and `build_with_stats()` (`lib.rs:108`, `:115`); add the `BalancingStrategy` variant in `crates/rolter-core/src/config.rs`; add a migration allowing the new value (see `0019_cache_aware_strategies.sql`); surface it in `ui/src/pages/RoutingRules.tsx`; document it in `docs/dev-docs/architecture/load-balancing.md` |
+| Added a provider / adapter kind | add the `ProviderKind` variant in `crates/rolter-core/src/config.rs`; add dialect handling in `crates/rolter-proxy`; add a migration widening the stored enum (see `0027_provider_adapter_kinds.sql`); update `ui/src/components/ProviderSheet.tsx` and `ui/src/pages/Providers.tsx`; add a row to `rolter.example.toml`; document it under `docs/user-docs/configuration/` |
+| Added a control-plane endpoint module | create `crates/rolter-control/src/<module>.rs` exposing `router()`; `.merge()` it into the router in `lib.rs` (~line 374); add the capability to `CAPABILITIES` in `rbac_matrix.rs` (the `the_matrix_lists_every_capability_exactly_once` test enforces coverage); add a row per `(path, method)` to `operations()` in `crates/rolter-control/src/openapi.rs` so it appears in the served `GET /openapi.json` (the `every_registered_route_is_documented` test enforces coverage and names what is missing); call it from `ui/src/lib/api.ts`; document it in `docs/user-docs/api/` |
 | Added a dashboard screen | add `ui/src/pages/<Screen>.tsx`; register the route in `ui/src/App.tsx`; add the nav entry in `ui/src/lib/nav.tsx`; add `nav.<key>` and `screens.<key>.title`/`.subtitle` to **every** catalog in `ui/src/lib/i18n/locales/`; add a `.stories.tsx` and run `run-story-tests`; cover empty/loading/error states; add a mock in `ui/src/lib/mock.ts` |
-| Added a capability to `crates/rolter-control/src/rbac_matrix.rs` | regenerate the dashboard's copy with `bun run gen:rbac` in `ui/` and commit `ui/src/lib/rbac-capabilities.json` — the gating stories derive their roles from it, and `ui/scripts/rbac-matrix-source.test.ts` fails the build while the two disagree; gate the new control per `docs/development/rbac-gating.md` |
-| Added a dashboard loading, empty or error state | never hand-roll one: a skeleton from `ui/src/components/LoadingState.tsx`, `EmptyState` with an `actions` CTA wherever the screen can create the missing row, `LoadError` with an `errors.resources.*` noun; branch the empty copy on whether a filter is actually active; cover all three in the screen's story with `expectSkeleton` / `expectEmptyState` / `expectLoadError`; see `docs/development/loading-and-empty-states.md` and `docs/development/error-states.md` |
-| Added a dashboard surface showing JSON, YAML, TOML, CSV or logs | never a raw `<pre>`: render it with `CodeBlock` from `ui/src/components/ui/code-block.tsx`, which owns the focusable scroll region, the copy button and the palette; pass a `label` wherever more than one block shares a screen; a new language means a grammar in `ui/src/lib/code-highlight.ts` plus an entry in `CODE_LANGUAGES`, a story and a `--code-*` rule — see `docs/development/highlighting.md` |
-| Added or re-worded dashboard copy | put the string in `ui/src/lib/i18n/locales/en.json` and translate it in every sibling catalog in the same PR; `bun run check:i18n` and `bun run check:literals` are both merge gates. Never hardcode user-facing English in a component — `check:literals` now enforces it against a recorded baseline; see `docs/development/i18n.md` |
-| Added a destructive dashboard action | back it with `ui/src/components/ConfirmDialog.tsx` — never `window.confirm`; name the row in the title and state the consequence in the body; put both under `pages.<screen>.confirm.*` in **every** catalog; cover confirm → pending → done in the screen's story; see `docs/development/destructive-actions.md` |
-| Added a column sealed with the KEK | add the `(table, ciphertext, nonce)` entry to `SEALED_COLUMNS` in `crates/rolter-store/src/postgres/kek_audit.rs`, or `rolter kek verify` will report a restored store as healthy while that secret is unreadable; add the row to the table in `docs/deployment/backup-and-restore.md` and `user-docs/deployment/backup-and-restore.mdx` |
-| Added a table the data plane reads | a `NNNN_*.sql` migration **plus** a `bump_config_version()` trigger migration; extend the store traits in `crates/rolter-store/src/` and the postgres impl; extend the snapshot payload in `crates/rolter-control` and its consumer in `crates/rolter-gateway`; update `docs/architecture/data-model.md` |
+| Added a capability to `crates/rolter-control/src/rbac_matrix.rs` | regenerate the dashboard's copy with `bun run gen:rbac` in `ui/` and commit `ui/src/lib/rbac-capabilities.json` — the gating stories derive their roles from it, and `ui/scripts/rbac-matrix-source.test.ts` fails the build while the two disagree; gate the new control per `docs/dev-docs/development/rbac-gating.md` |
+| Added a dashboard loading, empty or error state | never hand-roll one: a skeleton from `ui/src/components/LoadingState.tsx`, `EmptyState` with an `actions` CTA wherever the screen can create the missing row, `LoadError` with an `errors.resources.*` noun; branch the empty copy on whether a filter is actually active; cover all three in the screen's story with `expectSkeleton` / `expectEmptyState` / `expectLoadError`; see `docs/dev-docs/development/loading-and-empty-states.md` and `docs/dev-docs/development/error-states.md` |
+| Added a dashboard surface showing JSON, YAML, TOML, CSV or logs | never a raw `<pre>`: render it with `CodeBlock` from `ui/src/components/ui/code-block.tsx`, which owns the focusable scroll region, the copy button and the palette; pass a `label` wherever more than one block shares a screen; a new language means a grammar in `ui/src/lib/code-highlight.ts` plus an entry in `CODE_LANGUAGES`, a story and a `--code-*` rule — see `docs/dev-docs/development/highlighting.md` |
+| Added or re-worded dashboard copy | put the string in `ui/src/lib/i18n/locales/en.json` and translate it in every sibling catalog in the same PR; `bun run check:i18n` and `bun run check:literals` are both merge gates. Never hardcode user-facing English in a component — `check:literals` now enforces it against a recorded baseline; see `docs/dev-docs/development/i18n.md` |
+| Added a destructive dashboard action | back it with `ui/src/components/ConfirmDialog.tsx` — never `window.confirm`; name the row in the title and state the consequence in the body; put both under `pages.<screen>.confirm.*` in **every** catalog; cover confirm → pending → done in the screen's story; see `docs/dev-docs/development/destructive-actions.md` |
+| Added a column sealed with the KEK | add the `(table, ciphertext, nonce)` entry to `SEALED_COLUMNS` in `crates/rolter-store/src/postgres/kek_audit.rs`, or `rolter kek verify` will report a restored store as healthy while that secret is unreadable; add the row to the table in `docs/dev-docs/deployment/backup-and-restore.md` and `docs/user-docs/deployment/backup-and-restore.mdx` |
+| Added a table the data plane reads | a `NNNN_*.sql` migration **plus** a `bump_config_version()` trigger migration; extend the store traits in `crates/rolter-store/src/` and the postgres impl; extend the snapshot payload in `crates/rolter-control` and its consumer in `crates/rolter-gateway`; update `docs/dev-docs/architecture/data-model.md` |
 | Added a storage backend | implement the `rolter_store` traits behind a new cargo feature; keep it compiling under `cargo hack check --each-feature`; add the feature to the clippy/test matrix in `.github/workflows/quality.yml` |
-| Changed the gateway HTTP surface | update `crates/rolter-gateway/tests/integration.rs`; keep the OpenAI and Anthropic dialects in sync; update `docs/api/openai-and-anthropic.md` and `user-docs/api/` |
-| Changed configuration keys | `crates/rolter-core/src/config.rs`, `rolter.example.toml`, `.env.example`, `charts/` values, `docker/docker-compose.yml`, `user-docs/configuration/` |
-| Marked a subsystem experimental, or graduated one | add, edit or remove the `SubsystemStability` row in `crates/rolter-core/src/stability.rs` (keep it sorted by `id`; an `id` is published and never renamed); update the table in `docs/development/stability-markers.md` — the `the_docs_page_lists_exactly_these_subsystems` test compares them row for row; put the note at the top of the subsystem's `user-docs/` page; `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx` and are checked against it. Graduating belongs in the PR that closes the gap the note names, never in a sweep |
-| Added a doc page | add it to `docs/SUMMARY.md` (mdBook nav) or to the matching `"pages"` group in `user-docs/docs.json` (Mintlify nav) — an unlisted page is invisible |
-| Added an ADR | `docs/adr/NNNN-*.md` plus its line in `docs/adr/README.md`; English only; commit as plain `docs:` since `adr` is not an allowed scope |
+| Changed the gateway HTTP surface | update `crates/rolter-gateway/tests/integration.rs`; keep the OpenAI and Anthropic dialects in sync; update `docs/dev-docs/api/openai-and-anthropic.md` and `docs/user-docs/api/` |
+| Changed configuration keys | `crates/rolter-core/src/config.rs`, `rolter.example.toml`, `.env.example`, `charts/` values, `docker/docker-compose.yml`, `docs/user-docs/configuration/` |
+| Marked a subsystem experimental, or graduated one | add, edit or remove the `SubsystemStability` row in `crates/rolter-core/src/stability.rs` (keep it sorted by `id`; an `id` is published and never renamed); update the table in `docs/dev-docs/development/stability-markers.md` — the `the_docs_page_lists_exactly_these_subsystems` test compares them row for row; put the note at the top of the subsystem's `docs/user-docs/` page; `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx` and are checked against it. Graduating belongs in the PR that closes the gap the note names, never in a sweep |
+| Added a doc page | add it to `docs/dev-docs/SUMMARY.md` (mdBook nav) or to the matching `"pages"` group in `docs/user-docs/docs.json` (Mintlify nav) — an unlisted page is invisible |
+| Added an ADR | `docs/dev-docs/adr/NNNN-*.md` plus its line in `docs/dev-docs/adr/README.md`; English only; commit as plain `docs:` since `adr` is not an allowed scope |
 | Added or changed a workflow | pin new actions to a full commit SHA; add a least-privilege `permissions:` block; keep `uvx zizmor` and `actionlint` clean; if it is a merge gate, add it to `ci-ok`'s `needs:` in `.github/workflows/ci.yml` |
-| Changed behaviour of any feature | ship the `docs/` (and `user-docs/` where user-facing) update in the *same* PR, plus the index/nav line; update `TODO.md` / `ROADMAP.md` when the roadmap moves |
+| Changed behaviour of any feature | ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the *same* PR, plus the index/nav line; update `TODO.md` / `ROADMAP.md` when the roadmap moves |
 
 ## Dashboard design
 
@@ -178,7 +178,7 @@ numbers, money and dates go through `useFormat()` rather than a bare
 `toLocaleString()`, which silently follows the browser locale instead of the
 dashboard's. `bun run check:i18n` fails on a key that is missing, orphaned,
 empty, short a plural form, or that dropped an interpolation placeholder. See
-`docs/development/i18n.md` for key naming and how to add a locale.
+`docs/dev-docs/development/i18n.md` for key naming and how to add a locale.
 
 ## Commit & PR conventions
 
@@ -206,7 +206,7 @@ docs(architecture): document reload-free config propagation
 - PR titles must be a single valid Conventional Commit line (CI checks this); append the issue number in brackets, e.g. `feat(gateway): built-in fake-llm default model [#98]`.
 - Branch names follow `<type>/<issue-number>-<short-description>` with the same Conventional Commit types, e.g. `fix/94-models-auth`. Never use a person or agent name as the prefix.
 - Keep each PR one logical change; for dependent work use plain `git` branches (or `git worktree`) stacked on one another.
-- Keep PRs focused; update `docs/` and `TODO.md` when behavior changes.
+- Keep PRs focused; update `docs/dev-docs/` (and `docs/user-docs/` where user-facing) and `TODO.md` when behavior changes.
 - Never let a coding-agent session url (`claude.ai/code/session…`, or an
   agent's own `<Name>-Session:` trailer) reach a commit message or a PR body —
   `scripts/check-agent-session-urls.sh` rejects it unconditionally. PR-authoring
@@ -216,7 +216,7 @@ docs(architecture): document reload-free config propagation
   authoring tool — the footer is injected on create only, so a direct patch
   sticks. This is a workaround for tooling this repo does not control; the check
   itself never gets a carve-out for it. See
-  [`docs/development/ci-gating.md#agent-session-urls`](docs/development/ci-gating.md#agent-session-urls).
+  [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).
 - Include a co-author trailer identifying the agent that made the commit, using
   that agent's own name and email (for example,
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
@@ -273,7 +273,7 @@ implementation suggests.
 - Fill in **every** board field, not just the title and body — an issue missing
   its fields is invisible to the milestone audit and to any roll-up by size.
   The board conventions, including what each Status and milestone means, are in
-  [`docs/development/issue-tracking.md`](docs/development/issue-tracking.md):
+  [`docs/dev-docs/development/issue-tracking.md`](docs/dev-docs/development/issue-tracking.md):
   - **Priority** — `Urgent` / `High` / `Medium` / `Low`. Set it explicitly;
     unprioritized is a decision, not a default.
   - **Effort** — `XS` (< 1h), `S` (a few hours), `M` (~1 day), `L` (2-3 days),
@@ -310,8 +310,8 @@ implementation suggests.
 ## CI
 
 - `ci-ok` is the single required status check; it aggregates `quality`, `pr-title` and `codeql`. The heavy gate lives in the reusable `.github/workflows/quality.yml`, so the release paths enforce exactly the same checks.
-- Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows, both blocking — a zizmor finding at `medium` or above fails `ci-ok` (#1456), so fix it rather than suppressing it; see [`docs/development/testing.md`](docs/development/testing.md). `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
-- PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs `pr-title` alone and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/development/ci-gating.md`](docs/development/ci-gating.md).
+- Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows, both blocking — a zizmor finding at `medium` or above fails `ci-ok` (#1456), so fix it rather than suppressing it; see [`docs/dev-docs/development/testing.md`](docs/dev-docs/development/testing.md). `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
+- PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs `pr-title` alone and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/dev-docs/development/ci-gating.md`](docs/dev-docs/development/ci-gating.md).
 
 ## Changelogs
 

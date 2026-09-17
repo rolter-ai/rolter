@@ -7,7 +7,7 @@
 //
 // refractor is Prism's grammars packaged as ESM with a hast return value —
 // vendored through `bun add`, tokenised in the browser, with no network of any
-// kind at runtime. See docs/development/highlighting.md for why Prism and not
+// kind at runtime. See docs/dev-docs/development/highlighting.md for why Prism and not
 // Shiki, and for how to add a language.
 import type { Element, RootContent } from "hast";
 import bash from "refractor/bash";

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // social preview renderer (#855). `assets/og.svg` is the source of truth; this
-// turns it into the two committed images — `user-docs/images/og.png` for the
+// turns it into the two committed images — `docs/user-docs/images/og.png` for the
 // Mintlify `seo.metatags` entry and `ui/public/og.png` for the dashboard's own
 // `og:image`, which has to be vendored because rolter must run air-gapped.
 //
@@ -20,7 +20,7 @@ const width = 1200;
 const height = 630;
 
 const outputs = [
-  join(root, "user-docs", "images", "og.png"),
+  join(root, "docs", "user-docs", "images", "og.png"),
   join(root, "ui", "public", "og.png"),
 ];
 

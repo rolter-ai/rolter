@@ -11,7 +11,7 @@
 //! resolve, and it offers no stable Rust API: any public item here may change
 //! or disappear in any release, including a patch release. Build against
 //! rolter's HTTP surfaces instead — see
-//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+//! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 mod adaptive_telemetry;
 mod admin_proxy;
@@ -153,7 +153,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // `clickhouse_url` short-circuits it entirely — an explicit decision in
     // this process's own config is never overridden by an inherited one.
     // `CLICKHOUSE_URL` is documented as overriding `[logging].clickhouse_url`
-    // (user-docs/configuration/environment-variables.mdx) and the control plane
+    // (docs/user-docs/configuration/environment-variables.mdx) and the control plane
     // has always read it, but the gateway never did — so the one variable a
     // compose file or a Helm chart sets on both processes reached only one of
     // them. It does now, below an explicit value in this gateway's own config.

@@ -23,7 +23,7 @@ const DESKTOP = { width: 1280, height: 800 };
 // band over all 695 stories and it came to six rules; the three small ones
 // are fixed, and the three below are excluded by name with a reason, so
 // neither half of the band can drift unnoticed. re-measure with
-// ROLTER_AXE_TALLY (see docs/development/testing.md)
+// ROLTER_AXE_TALLY (see docs/dev-docs/development/testing.md)
 const DISABLED_RULES: Record<string, { enabled: boolean }> = {
   // storybook's iframe, not ours: the dashboard's index.html sets both
   "document-title": { enabled: false },
@@ -89,7 +89,7 @@ const config: TestRunnerConfig = {
     }
     // ROLTER_AXE_TALLY=<path> re-measures the whole band (#1244): every
     // violation at every impact is appended as one JSON line per story so the
-    // per-rule table in docs/development/testing.md can be regenerated. it
+    // per-rule table in docs/dev-docs/development/testing.md can be regenerated. it
     // never fails a story — the gate below still does that
     if (process.env.ROLTER_AXE_TALLY) {
       const found = await getViolations(page, undefined, {

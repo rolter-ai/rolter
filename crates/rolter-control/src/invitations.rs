@@ -14,7 +14,7 @@
 //!
 //! Invitations are independent of single sign-on and co-exist with it. The
 //! membership an acceptance grants carries `source = 'manual'`, so an IdP login
-//! never reconciles it away; see [`crate::sso`] and `docs/architecture/sso.md`.
+//! never reconciles it away; see [`crate::sso`] and `docs/dev-docs/architecture/sso.md`.
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
