@@ -1,24 +1,22 @@
 #!/usr/bin/env bun
 // hardcoded-literal gate (#871). See src/lib/i18n/literals.ts for why this
-// exists and why it carries a baseline.
+// exists, and src/lib/i18n/literals-allowlist.ts for the notation it tolerates.
 //
-//   bun run check:literals              fail on any literal not in the baseline
-//   bun run check:literals --update     re-record the baseline (only to shrink it)
-import { readFileSync, writeFileSync } from "node:fs";
+//   bun run check:literals              fail on any literal not in the catalogs
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
 
+import { NOT_COPY } from "../src/lib/i18n/literals-allowlist";
 import {
   findLiterals,
   newViolations,
-  staleBaseline,
-  toBaseline,
-  type Baseline,
+  staleAllowed,
+  unexplainedAllowed,
   type Literal,
 } from "../src/lib/i18n/literals";
 
 const ROOT = join(import.meta.dir, "..");
-const BASELINE_PATH = join(ROOT, "src", "lib", "i18n", "literals-baseline.json");
 
 // stories and tests are not shipped copy: a story's job is to render a component
 // with concrete sample text, and routing that through the catalogs would make
@@ -43,41 +41,43 @@ for (const pattern of SCANNED) {
 }
 found.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 
-if (process.argv.includes("--update")) {
-  writeFileSync(BASELINE_PATH, `${JSON.stringify(toBaseline(found), null, 2)}\n`);
-  console.log(`recorded ${found.length} literal(s) to ${BASELINE_PATH}`);
-  process.exit(0);
-}
-
-const baseline: Baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
-const baselineSize = Object.values(baseline).reduce((n, v) => n + v.length, 0);
-const violations = newViolations(found, baseline);
-const stale = staleBaseline(found, baseline);
+const allowedSize = Object.values(NOT_COPY).reduce((n, v) => n + Object.keys(v).length, 0);
+const violations = newViolations(found, NOT_COPY);
+const stale = staleAllowed(found, NOT_COPY);
+const unexplained = unexplainedAllowed(NOT_COPY);
 
 console.log(`scanned ${SCANNED.join(", ")}`);
-console.log(`  ${found.length} hardcoded literal(s), ${baselineSize} recorded as pre-existing`);
+console.log(`  ${found.length} hardcoded literal(s), ${allowedSize} allowed as notation`);
 
 if (violations.length) {
-  console.error(`\n${violations.length} new hardcoded user-facing string(s):`);
+  console.error(`\n${violations.length} hardcoded user-facing string(s):`);
   for (const v of violations) {
     console.error(`  ${v.file}:${v.line}  [${v.kind}]  ${v.text}`);
   }
   console.error(
     "\nevery user-facing string goes through the i18n catalogs: add the key to\n" +
       "src/lib/i18n/locales/en.json, translate it in every sibling catalog, and use\n" +
-      't("...") here. See docs/dev-docs/development/i18n.md.',
+      't("...") here. only notation that is never translated goes in\n' +
+      "src/lib/i18n/literals-allowlist.ts, with its reason. See docs/dev-docs/development/i18n.md.",
   );
+  process.exit(1);
+}
+
+if (unexplained.length) {
+  console.error(`\n${unexplained.length} allow-list entry/entries with no reason:`);
+  for (const u of unexplained) console.error(`  ${u}`);
+  console.error("\nsay why each string is not copy, or translate it instead.");
   process.exit(1);
 }
 
 if (stale.length) {
-  console.error(`\n${stale.length} baseline entry/entries no longer in the source:`);
+  console.error(`\n${stale.length} allow-list entry/entries no longer in the source:`);
   for (const s of stale) console.error(`  ${s}`);
   console.error(
-    "\nthese were translated or deleted — good. run `bun run check:literals --update`\n" +
-      "to drop them, so the same literal cannot come back unnoticed.",
+    "\nthe string was translated, reworded or deleted. remove the entry from\n" +
+      "src/lib/i18n/literals-allowlist.ts so the same literal cannot come back unnoticed.",
   );
   process.exit(1);
 }
 
-console.log("\nno new hardcoded user-facing strings");
+console.log("\nno hardcoded user-facing strings");

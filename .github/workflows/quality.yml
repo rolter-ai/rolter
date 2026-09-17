@@ -414,7 +414,8 @@ jobs:
       # catalog parity cannot see a string that never reached a catalog at all,
       # which is how `window.confirm("Discard unsaved changes?")` shipped green
       # (#871). this scans the source for user-facing literals and fails on any
-      # not in the recorded baseline, so the debt can only shrink
+      # that is not in a catalog; the baseline is retired and only reasoned
+      # notation in ui/src/lib/i18n/literals-allowlist.ts is tolerated (#958)
       - name: no new hardcoded user-facing strings
         run: bun run check:literals
       - name: unit tests (bun test)

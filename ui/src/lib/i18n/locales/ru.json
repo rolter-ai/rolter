@@ -670,7 +670,8 @@
         "tts": "Текст → речь",
         "stt": "Речь → текст"
       },
-      "voiceOption": "голос: {{voice}}"
+      "voiceOption": "голос: {{voice}}",
+      "sampleLabel": "изображение {{n}}"
     },
     "promptRepo": {
       "renameTitle": "Переименовать шаблон промпта",
@@ -2003,7 +2004,8 @@
       "requests_one": "{{count}} запрос",
       "requests_few": "{{count}} запроса",
       "requests_many": "{{count}} запросов",
-      "requests_other": "{{count}} запроса"
+      "requests_other": "{{count}} запроса",
+      "pageShort": "стр. {{page}}"
     },
     "mcpLogs": {
       "emptyTitle": "Вызовов MCP-инструментов пока нет",
@@ -2237,7 +2239,20 @@
           "desc": "Повторы запросов к upstream, таймауты и ограниченная очередь допуска."
         }
       },
-      "readOnlyNotice": "Только для администраторов · режим просмотра. Конфигурация применяется из <0>rolter.toml</0> или из хранилища control plane и синхронизируется при перезагрузке."
+      "readOnlyNotice": "Только для администраторов · режим просмотра. Конфигурация применяется из <0>rolter.toml</0> или из хранилища control plane и синхронизируется при перезагрузке.",
+      "heading": "Действующая конфигурация",
+      "reloadFree": "без перезапуска",
+      "hotSwapNote": "Конфигурация применяется на лету, без перезапуска: шлюз опрашивает эндпойнт снапшотов control plane.",
+      "tables": {
+        "providers": "Провайдеры",
+        "routes": "Маршруты",
+        "name": "Имя",
+        "kind": "Тип",
+        "apiBase": "Базовый URL API",
+        "model": "Модель",
+        "strategy": "Стратегия",
+        "targets": "Цели"
+      }
     },
     "mcpSettings": {
       "defaultTransport": "Транспорт по умолчанию",
@@ -3021,10 +3036,14 @@
     "needsPermission": "Ваша роль не позволяет это действие"
   },
   "code": {
-    "region": "Код {{language}}",
-    "regionNamed": "{{label}} — код {{language}}",
+    "region": "Код: {{language}}",
+    "regionNamed": "{{label}} — код: {{language}}",
     "copy": "Скопировать код",
-    "copyNamed": "Скопировать: {{label}}"
+    "copyNamed": "Скопировать: {{label}}",
+    "language": {
+      "text": "текст",
+      "log": "журнал"
+    }
   },
   "markdown": {
     "codeBlock": "Блок кода",

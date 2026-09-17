@@ -646,7 +646,8 @@
         "tts": "Text → Speech",
         "stt": "Speech → Text"
       },
-      "voiceOption": "voice: {{voice}}"
+      "voiceOption": "voice: {{voice}}",
+      "sampleLabel": "sample {{n}}"
     },
     "promptRepo": {
       "renameTitle": "Rename prompt template",
@@ -1905,7 +1906,8 @@
       "streaming": "Streaming",
       "paused": "Paused",
       "requests_one": "{{count}} request",
-      "requests_other": "{{count}} requests"
+      "requests_other": "{{count}} requests",
+      "pageShort": "p{{page}}"
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2123,7 +2125,20 @@
           "desc": "Upstream retries, timeouts, and the bounded admission queue."
         }
       },
-      "readOnlyNotice": "Admin-only · read-only view. Config is applied from <0>rolter.toml</0> or the control-plane store and synced on reload."
+      "readOnlyNotice": "Admin-only · read-only view. Config is applied from <0>rolter.toml</0> or the control-plane store and synced on reload.",
+      "heading": "Effective config",
+      "reloadFree": "reload-free",
+      "hotSwapNote": "Config hot-swaps with no restart — the gateway polls the control plane's snapshot endpoint.",
+      "tables": {
+        "providers": "Providers",
+        "routes": "Routes",
+        "name": "Name",
+        "kind": "Kind",
+        "apiBase": "API base",
+        "model": "Model",
+        "strategy": "Strategy",
+        "targets": "Targets"
+      }
     },
     "mcpSettings": {
       "defaultTransport": "Default transport",
@@ -2890,7 +2905,11 @@
     "region": "{{language}} code",
     "regionNamed": "{{label}} — {{language}} code",
     "copy": "Copy code",
-    "copyNamed": "Copy {{label}}"
+    "copyNamed": "Copy {{label}}",
+    "language": {
+      "text": "Text",
+      "log": "Log"
+    }
   },
   "markdown": {
     "codeBlock": "Code block",

@@ -41,11 +41,11 @@ export default function Config() {
     <div className="grid items-start gap-4 p-[22px] xl:grid-cols-[1.5fr_1fr]">
       <div className="flex min-w-0 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="text-base font-medium">Effective config</h2>
+          <h2 className="text-base font-medium">{t("pages.config.heading")}</h2>
           <span className="font-mono text-xs text-[color:var(--text-subtle)]">{summary}</span>
           <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-[color:var(--status-success-text)]">
             <span className="h-[7px] w-[7px] rounded-full bg-[color:var(--status-success)]" />
-            reload-free
+            {t("pages.config.reloadFree")}
           </span>
           <ExportButton />
         </div>
@@ -70,11 +70,11 @@ export default function Config() {
 
         {cfg && (
           <div className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
-            <div className={SECTION_TH}>Providers</div>
+            <div className={SECTION_TH}>{t("pages.config.tables.providers")}</div>
             <div className="grid grid-cols-[1fr_1.1fr_2fr] gap-3 border-b border-[color:var(--border-subtle)] px-3.5 py-2 text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-              <span>Name</span>
-              <span>Kind</span>
-              <span>API base</span>
+              <span>{t("pages.config.tables.name")}</span>
+              <span>{t("pages.config.tables.kind")}</span>
+              <span>{t("pages.config.tables.apiBase")}</span>
             </div>
             {cfg.providers.map((p) => (
               <div
@@ -86,11 +86,11 @@ export default function Config() {
                 <span className="truncate text-muted-foreground">{p.api_base}</span>
               </div>
             ))}
-            <div className={SECTION_TH}>Routes</div>
+            <div className={SECTION_TH}>{t("pages.config.tables.routes")}</div>
             <div className="grid grid-cols-[1.2fr_1.1fr_2fr] gap-3 border-b border-[color:var(--border-subtle)] px-3.5 py-2 text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-              <span>Model</span>
-              <span>Strategy</span>
-              <span>Targets</span>
+              <span>{t("pages.config.tables.model")}</span>
+              <span>{t("pages.config.tables.strategy")}</span>
+              <span>{t("pages.config.tables.targets")}</span>
             </div>
             {cfg.routes.map((r) => (
               <div
@@ -101,7 +101,7 @@ export default function Config() {
                 <span className="text-[color:var(--text-secondary)]">{r.strategy}</span>
                 <span className="truncate text-muted-foreground">
                   {r.targets
-                    .map((t) => `${t.provider}${t.weight ? ` ${t.weight}` : ""}`)
+                    .map((target) => `${target.provider}${target.weight ? ` ${target.weight}` : ""}`)
                     .join(" · ") || "—"}
                 </span>
               </div>
@@ -111,8 +111,7 @@ export default function Config() {
 
         <p className="flex items-start gap-2 text-xs text-muted-foreground">
           <Check className="mt-0.5 h-3.5 w-3.5 flex-none text-[color:var(--status-success-text)]" />
-          Config hot-swaps with no restart — the gateway polls the control plane's snapshot
-          endpoint.
+          {t("pages.config.hotSwapNote")}
         </p>
 
         {cfg && <AllSections config={cfg} />}

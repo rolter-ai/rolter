@@ -758,12 +758,12 @@ function ImageMode({ models }: { models: ModelOption[] }) {
                 {img ? (
                   <img
                     src={img.url}
-                    alt={`sample ${i + 1}`}
+                    alt={t("pages.playground.sampleLabel", { n: i + 1 })}
                     className="h-full w-full object-cover"
                   />
                 ) : (
                   <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[color:var(--text-subtle)]">
-                    <ImageIcon className="h-4 w-4" /> sample {i + 1}
+                    <ImageIcon className="h-4 w-4" /> {t("pages.playground.sampleLabel", { n: i + 1 })}
                   </span>
                 )}
               </div>
