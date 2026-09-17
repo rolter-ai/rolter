@@ -184,10 +184,14 @@ files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$"
 pass_filenames = false
 stages = ["pre-push"]
 
+# both push gates below skip a push that touches no rust input (a ui- or
+# docs-only push) through scripts/prek-rust-gate.sh, which lists the inputs and
+# runs the command whenever the range is unknown. always_run stays on because a
+# `files =` filter would miss a push that only deletes a rust file
 [[repos.hooks]]
 id = "rust-tests"
 name = "workspace tests"
-entry = "bash scripts/prek-rust-tests.sh"
+entry = "bash scripts/prek-rust-gate.sh bash scripts/prek-rust-tests.sh"
 language = "system"
 always_run = true
 pass_filenames = false
@@ -196,7 +200,7 @@ stages = ["pre-push"]
 [[repos.hooks]]
 id = "cargo-deny"
 name = "cargo deny"
-entry = "cargo deny --all-features --config .config/deny.toml check"
+entry = "bash scripts/prek-rust-gate.sh cargo deny --all-features --config .config/deny.toml check"
 language = "system"
 always_run = true
 pass_filenames = false

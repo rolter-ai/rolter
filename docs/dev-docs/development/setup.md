@@ -106,3 +106,28 @@ cargo install cargo-nextest cargo-deny
 `cargo-nextest` is recommended but optional for the push hook; it falls back to
 `cargo test`. CI remains authoritative for database-backed tests that need
 `ROLTER_TEST_DATABASE_URL`.
+
+### When the push hooks skip Rust
+
+The `rust-tests` and `cargo-deny` push hooks run through
+`scripts/prek-rust-gate.sh`, which skips them when the pushed range touches no
+Rust input — so a dashboard- or docs-only push does not wait on a cold
+`--all-features` build of the whole workspace (#1486). A push counts as touching
+Rust when any changed, added, deleted or renamed path is one of:
+
+- anything under `crates/`, any `*.rs`, any `Cargo.toml` or `Cargo.lock`
+- `rust-toolchain(.toml)`, `.cargo/`, `.config/deny.toml`, `.config/nextest.toml`
+- `prek.toml` and the two `scripts/prek-rust-*.sh` scripts
+- the files a Rust test reads from outside its crate: `rolter.example.toml`,
+  `docs/dev-docs/development/stability-markers.md` and `ui/src/lib/nav.tsx`
+
+The range is the one prek hands the hook (`PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF`).
+Whenever there is no range to inspect — `prek run --all-files`, a push with no
+remote ancestor, a ref that does not resolve — the hooks run in full, and
+`ROLTER_PREK_RUST_ALWAYS=1` forces them. The gate is a script rather than a
+`files =` filter because prek drops deleted paths before matching, so a push
+that only removes a `.rs` file would otherwise skip the suite it can break.
+
+When a Rust test starts reading a new file from outside `crates/`, add the path
+to the list in `scripts/prek-rust-gate.sh` and here. The hook only saves local
+time: hosted `ci-ok` runs the full suite on every pull request regardless.
