@@ -566,7 +566,9 @@ whole page, and the two that do are listed above.
 
 A screen story renders the real page component against a stubbed `fetch`, so it
 exercises the same query wiring, empty/error branches and editor sheets that
-ship. `ui/src/pages/story-harness.tsx` holds the shared pieces — it is not a
+ship. There is no shared mock module: each screen's fixtures live in its own
+`.stories.tsx`, built from these stubs, and a browser test that needs real rows
+seeds a running control plane through `ui/e2e/seed.ts` instead. `ui/src/pages/story-harness.tsx` holds the shared pieces — it is not a
 `.stories.tsx` file, so Storybook never tries to render it as a screen:
 
 | Helper | What it is for |
@@ -575,6 +577,8 @@ ship. `ui/src/pages/story-harness.tsx` holds the shared pieces — it is not a
 | `scoped(handler)` | answers the org → team → project chain every scoped screen resolves first, then defers to `handler` |
 | `routes([...])` | fragment-matched routing table, matched in order so a longer path can precede the prefix it shares |
 | `pending` | a stub that never settles, for the loading state |
+| `json(body, status)` | a JSON `Response`, with no body for 204/205/304 so a success stub cannot throw |
+| `recording(handler)` | wraps a stub and keeps every call, so a story can assert the method, URL and body that actually left |
 | `clickWhenEnabled` | waits for a button to be *enabled*, not merely present |
 | `sheet()` / `expectSheetClosed()` | the editor sheet, which portals to `document.body` rather than into the canvas |
 | `withConfirm` / `expectClosesWithoutPrompting` | the discard guard from #868, asserted in both answers |
