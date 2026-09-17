@@ -1352,7 +1352,17 @@
       "drainAria": "Drain node {{node}}",
       "returnAria": "Return node {{node}} to service",
       "forgetAria": "Forget node {{node}}",
-      "stillPolling": "node is still polling; it would reappear on its next snapshot poll"
+      "stillPolling": "node is still polling; it would reappear on its next snapshot poll",
+      "columns": {
+        "node": "Node",
+        "role": "Role",
+        "build": "Build",
+        "config": "Config",
+        "state": "State",
+        "lastSeen": "Last seen"
+      },
+      "drain": "Drain",
+      "returnToService": "Return to service"
     },
     "costAttribution": {
       "confirm": {
@@ -1811,6 +1821,13 @@
         "last7d": "Last 7d",
         "last30d": "Last 30d",
         "all": "All"
+      },
+      "columns": {
+        "time": "Time",
+        "actor": "Actor",
+        "action": "Action",
+        "target": "Target",
+        "detail": "Detail"
       }
     },
     "complexityRouter": {

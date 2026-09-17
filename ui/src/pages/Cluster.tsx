@@ -108,28 +108,28 @@ function ClusterScreen() {
   };
 
   const columns: TableColumn<ClusterNodeRow & Record<string, unknown>>[] = [
-    { key: "id", header: "Node", mono: true },
+    { key: "id", header: t("pages.cluster.columns.node"), mono: true },
     {
       key: "role",
-      header: "Role",
+      header: t("pages.cluster.columns.role"),
       render: (_v, row) => <Badge tone="outline">{row.role}</Badge>,
     },
-    { key: "build_version", header: "Build", mono: true },
+    { key: "build_version", header: t("pages.cluster.columns.build"), mono: true },
     {
       key: "config_version",
-      header: "Config",
+      header: t("pages.cluster.columns.config"),
       align: "right",
       mono: true,
       render: (_v, row) => `v${row.config_version}`,
     },
     {
       key: "state",
-      header: "State",
+      header: t("pages.cluster.columns.state"),
       render: (_v, row) => <StateBadges node={row} />,
     },
     {
       key: "last_seen_at",
-      header: "Last seen",
+      header: t("pages.cluster.columns.lastSeen"),
       align: "right",
       render: (_v, row) => (
         <span title={fmt.dateTime(row.last_seen_at)}>
@@ -161,7 +161,7 @@ function ClusterScreen() {
               onClick={() => drain.mutate({ id: row.id, draining: !draining })}
             >
               {drain.isPending && drain.variables?.id === row.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {draining ? "Return to service" : "Drain"}
+              {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
             </GatedButton>
             {/* a node that is still running reappears on its next poll, so
                 forgetting is only meaningful once it has gone stale */}

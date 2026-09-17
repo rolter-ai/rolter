@@ -178,13 +178,13 @@ export default function AuditLog() {
   const columns: TableColumn<AuditLogEntry>[] = [
     {
       key: "at",
-      header: "Time",
+      header: t("pages.auditLog.columns.time"),
       mono: true,
       render: (v) => fmt.dateTime(v as string),
     },
     {
       key: "actor_user_id",
-      header: "Actor",
+      header: t("pages.auditLog.columns.actor"),
       mono: true,
       render: (v) =>
         v ? (
@@ -195,12 +195,12 @@ export default function AuditLog() {
     },
     {
       key: "action",
-      header: "Action",
+      header: t("pages.auditLog.columns.action"),
       render: (v) => <Badge tone="outline">{v as string}</Badge>,
     },
     {
       key: "target_type",
-      header: "Target",
+      header: t("pages.auditLog.columns.target"),
       render: (v, row) => {
         if (!v) return "—";
         const path = TARGET_PATH[v as string];
@@ -224,7 +224,7 @@ export default function AuditLog() {
     },
     {
       key: "detail",
-      header: "Detail",
+      header: t("pages.auditLog.columns.detail"),
       render: (v, row) =>
         v ? (
           <button
