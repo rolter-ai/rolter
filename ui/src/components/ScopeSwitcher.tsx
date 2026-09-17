@@ -4,6 +4,7 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog,
   DialogDescription,
@@ -13,7 +14,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import {
   createOrg,
   createProject,
@@ -191,20 +191,16 @@ function ScopeRow({
   const keys = ROW_KEYS[level];
   return (
     <div className="flex items-center gap-1">
-      <Select
+      <Combobox
         aria-label={t(keys.label)}
         value={value}
         disabled={disabled || options.length === 0}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-7 text-xs"
-      >
-        {options.length === 0 && <option value="">{t(keys.empty)}</option>}
-        {options.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.name}
-          </option>
-        ))}
-      </Select>
+        onChange={onChange}
+        size="sm"
+        className="min-w-0 flex-1"
+        placeholder={options.length === 0 ? t(keys.empty) : undefined}
+        options={options.map((o) => ({ value: o.id, label: o.name }))}
+      />
       {onAdd && (
         <button
           type="button"

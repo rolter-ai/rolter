@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
-import { Select } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import {
   fetchOrgProjects,
   fetchTeams,
@@ -199,36 +199,29 @@ export function OrgScopePicker({
 
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <Select
-        className={cn("h-8 w-[196px]", className)}
+      <Combobox
+        className={cn("w-[196px]", className)}
+        size="sm"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={onChange}
         aria-label={label}
         disabled={disabled}
-      >
-        <option value={ORG_TARGET}>{t("scope.picker.org")}</option>
-        {scope.teams.length > 0 && (
-          <optgroup label={t("scope.picker.teams")}>
-            {scope.teams.map((team) => (
-              <option key={team.id} value={teamTarget(team.id)}>
-                {team.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {withProjects.map((entry) => (
-          <optgroup
-            key={entry.team.id}
-            label={t("scope.picker.teamProjects", { team: entry.team.name })}
-          >
-            {entry.projects.map((project) => (
-              <option key={project.id} value={projectTarget(project.id)}>
-                {project.name}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </Select>
+        options={[
+          { value: ORG_TARGET, label: t("scope.picker.org") },
+          ...scope.teams.map((team) => ({
+            value: teamTarget(team.id),
+            label: team.name,
+            group: t("scope.picker.teams"),
+          })),
+          ...withProjects.flatMap((entry) =>
+            entry.projects.map((project) => ({
+              value: projectTarget(project.id),
+              label: project.name,
+              group: t("scope.picker.teamProjects", { team: entry.team.name }),
+            })),
+          ),
+        ]}
+      />
       {!scope.error && scope.teams.length === 0 && (
         <p className="text-xs text-muted-foreground">{t("scope.picker.empty")}</p>
       )}

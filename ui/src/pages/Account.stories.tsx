@@ -11,6 +11,7 @@ import {
   expectLoadError,
   json,
   pending,
+  pickOption,
   recording,
   scoped,
   sheet,
@@ -397,7 +398,7 @@ export const MintRequiresANameAndDefaultsToAFiniteLife: Story = {
     await expect(within(form).getByRole("button", { name: "Mint" })).toBeEnabled();
 
     // the default expiry is finite, and the reach panel says so in a date
-    await expect(within(form).getByLabelText("Expires")).toHaveValue("30");
+    await expect(within(form).getByLabelText("Expires")).toHaveValue("In 30 days");
     await expect(
       within(form).getByText(/every model this project can route to/i),
     ).toBeInTheDocument();
@@ -430,7 +431,7 @@ export const NeverExpiringIsADeliberateChoice: Story = {
     await clickWhenEnabled(canvasElement, /generate virtual key/i);
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "build box");
-    await userEvent.selectOptions(within(form).getByLabelText("Expires"), "never");
+    await pickOption(within(form).getByLabelText("Expires"), "Never expires");
     await expect(within(form).getByText(/until someone revokes it/i)).toBeInTheDocument();
     await expect(within(form).getByText(/forever, until revoked/i)).toBeInTheDocument();
     await userEvent.click(within(form).getByRole("button", { name: "Mint" }));

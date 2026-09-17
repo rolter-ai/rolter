@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
-import { expectLoadError, expectSkeleton } from "./story-harness";
+import { expectLoadError, expectSkeleton, openOptions, pickOption } from "./story-harness";
 import type { ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
@@ -326,10 +326,7 @@ export const MapGroupPostsTheScopedRole: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "sre-oncall");
-    await userEvent.selectOptions(
-      canvas.getByLabelText("Where the role applies"),
-      "team:team-1",
-    );
+    await pickOption(canvas.getByLabelText("Where the role applies"), "core");
     await userEvent.selectOptions(canvas.getByLabelText("Role to grant"), "admin");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
     await waitFor(() => expect(postedMappings).toHaveLength(1));
@@ -420,11 +417,14 @@ export const MapGroupToAProjectInAnotherTeam: Story = {
     const scope = await canvas.findByLabelText("Where the role applies");
     // grouped by team, so two teams may each have a "prod" without the reader
     // having to guess which one an option means
-    await waitFor(() =>
-      expect(within(scope).getByRole("group", { name: "Projects in payments" })).toBeInTheDocument(),
+    await waitFor(async () =>
+      expect(
+        within(await openOptions(scope)).getByRole("group", { name: "Projects in payments" }),
+      ).toBeInTheDocument(),
     );
+    await userEvent.keyboard("{Escape}");
     await userEvent.type(await canvas.findByLabelText("IdP group"), "checkout-oncall");
-    await userEvent.selectOptions(scope, "project:proj-2");
+    await pickOption(scope, "checkout");
     await userEvent.selectOptions(canvas.getByLabelText("Role to grant"), "member");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
     await waitFor(() => expect(postedMappings).toHaveLength(1));

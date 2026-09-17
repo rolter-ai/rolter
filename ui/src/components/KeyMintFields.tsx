@@ -6,11 +6,11 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { FilterCheckList } from "@/components/ui/filter-panel";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Tag } from "@/components/ui/tag";
 import { fetchRoutes } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
@@ -82,15 +82,15 @@ export function KeyExpiryField({
       label={t("keyMint.expiry")}
       hint={value === NEVER ? t("keyMint.expiryNeverWarning") : t("keyMint.expiryHint")}
     >
-      <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        {KEY_TTL_CHOICES.map((days) => (
-          <option key={days ?? NEVER} value={days === null ? NEVER : String(days)}>
-            {days === null
-              ? t("keyMint.expiryNever")
-              : t("keyMint.expiryDays", { count: days })}
-          </option>
-        ))}
-      </Select>
+      <Combobox
+        value={value}
+        onChange={onChange}
+        options={KEY_TTL_CHOICES.map((days) => ({
+          value: days === null ? NEVER : String(days),
+          label:
+            days === null ? t("keyMint.expiryNever") : t("keyMint.expiryDays", { count: days }),
+        }))}
+      />
     </Field>
   );
 }
@@ -288,15 +288,16 @@ export function KeyCacheField({
   const { t } = useTranslation();
   return (
     <Field label={t("keyMint.cache")} hint={t("keyMint.cacheHint")}>
-      <Select
+      <Combobox
         aria-label={t("keyMint.cache")}
         value={value}
-        onChange={(e) => onChange(e.target.value as CacheMode)}
-      >
-        <option value="inherit">{t("keyMint.cacheInherit")}</option>
-        <option value="off">{t("keyMint.cacheOff")}</option>
-        <option value="on">{t("keyMint.cacheOn")}</option>
-      </Select>
+        onChange={(mode) => onChange(mode as CacheMode)}
+        options={[
+          { value: "inherit", label: t("keyMint.cacheInherit") },
+          { value: "off", label: t("keyMint.cacheOff") },
+          { value: "on", label: t("keyMint.cacheOn") },
+        ]}
+      />
     </Field>
   );
 }
