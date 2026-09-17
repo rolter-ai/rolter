@@ -39,7 +39,10 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.localStorage = originalStorage;
+  // bun has no `location` of its own, so "restore" means take the stub away
+  // again — left behind, it is a fake origin every later test file inherits
   if (originalLocation) globalThis.location = originalLocation;
+  else delete (globalThis as { location?: Location }).location;
 });
 
 describe("the playground key", () => {
