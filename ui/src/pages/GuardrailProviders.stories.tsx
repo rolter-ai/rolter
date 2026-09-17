@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailProviders from "./GuardrailProviders";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, expectToast, recording, Toasted } from "./story-harness";
 import type { GuardrailProviderRow } from "@/lib/api";
 
 const PROVIDERS: GuardrailProviderRow[] = [
@@ -42,7 +42,10 @@ const PROVIDERS: GuardrailProviderRow[] = [
 
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
+// `toasted` is opt-in: the Toaster contributes its own role="status" and
+// role="alert" regions, and the stories that query those by role would stop
+// being able to
+function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boolean }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
@@ -50,7 +53,17 @@ function Harness({ fetchStub }: { fetchStub: FetchStub }) {
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub]);
   React.useEffect(() => () => { if (original.current) globalThis.fetch = original.current; }, []);
-  return <QueryClientProvider client={client}><GuardrailProviders /></QueryClientProvider>;
+  return (
+    <QueryClientProvider client={client}>
+      {toasted ? (
+        <Toasted>
+          <GuardrailProviders />
+        </Toasted>
+      ) : (
+        <GuardrailProviders />
+      )}
+    </QueryClientProvider>
+  );
 }
 
 const meta = { title: "Screens/GuardrailProviders", component: GuardrailProviders, parameters: { layout: "fullscreen" } } satisfies Meta<typeof GuardrailProviders>;
@@ -116,6 +129,40 @@ export const RegistersProvider: Story = {
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Provider name"), "Policy service");
     await expect(within(dialog).getByRole("button", { name: "Save provider" })).toBeEnabled();
+  },
+};
+
+
+/**
+ * The provider is refused (#1607).
+ *
+ * The register dialog closes on success, so a rejected save is the only case
+ * where it has to stay — and it has to, because the URL, the timeout and the
+ * failure mode were all chosen deliberately.
+ */
+export const RegisterRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      toasted
+      fetchStub={async (_input, init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "the evaluator did not answer its health probe" } }, 502)
+          : json(PROVIDERS)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /add provider/i }));
+    const dialog = within(document.body).getByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Provider name"), "Policy service");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save provider" }));
+
+    await expectToast(canvasElement, /health probe/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(dialog).getByLabelText("Provider name")).toHaveValue("Policy service");
   },
 };
 

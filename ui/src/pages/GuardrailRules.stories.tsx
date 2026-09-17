@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailRules from "./GuardrailRules";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, pickOption, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, expectToast, pickOption, recording, Toasted } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
 
 const RULES: GuardrailRuleRow[] = [
@@ -43,7 +43,10 @@ const RULES: GuardrailRuleRow[] = [
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
+// `toasted` is opt-in: the Toaster contributes its own role="status" and
+// role="alert" regions, and the stories that query those by role would stop
+// being able to
+function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boolean }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
@@ -51,7 +54,17 @@ function Harness({ fetchStub }: { fetchStub: FetchStub }) {
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub]);
   React.useEffect(() => () => { if (original.current) globalThis.fetch = original.current; }, []);
-  return <QueryClientProvider client={client}><GuardrailRules /></QueryClientProvider>;
+  return (
+    <QueryClientProvider client={client}>
+      {toasted ? (
+        <Toasted>
+          <GuardrailRules />
+        </Toasted>
+      ) : (
+        <GuardrailRules />
+      )}
+    </QueryClientProvider>
+  );
 }
 
 const meta = { title: "Screens/GuardrailRules", component: GuardrailRules, parameters: { layout: "fullscreen" } } satisfies Meta<typeof GuardrailRules>;
@@ -119,6 +132,45 @@ export const CreatesCustomRule: Story = {
     await pickOption(within(dialog).getByLabelText("Source"), "Custom regex");
     await userEvent.type(within(dialog).getByLabelText("Regular expression"), "ignore previous instructions");
     await expect(within(dialog).getByRole("button", { name: "Publish rule" })).toBeEnabled();
+  },
+};
+
+/**
+ * The rule is refused (#1607).
+ *
+ * The regex was written by hand, so a dialog that closed on a rejected publish
+ * would cost the pattern as well as the name.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      toasted
+      fetchStub={async (_input, init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "the pattern does not compile: unbalanced group" } }, 422)
+          : json(RULES)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /add rule/i }));
+    const dialog = within(document.body).getByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Rule name"), "Prompt injection policy");
+    await pickOption(within(dialog).getByLabelText("Source"), "Custom regex");
+    await userEvent.type(
+      within(dialog).getByLabelText("Regular expression"),
+      "ignore previous instructions",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Publish rule" }));
+
+    await expectToast(canvasElement, /does not compile/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(dialog).getByLabelText("Regular expression")).toHaveValue(
+      "ignore previous instructions",
+    );
   },
 };
 

@@ -183,6 +183,53 @@ export const RendersSamplesAndSavesDraft: Story = {
   },
 };
 
+/**
+ * The draft is refused (#1607).
+ *
+ * There is no sheet here — the workbench *is* the draft — so "the draft
+ * survives" means the edited decorator and the sample value are still on screen
+ * after the refusal rather than reset to the published version.
+ *
+ * The refusal is reported twice, in the toast queue and inline beside the save
+ * button, and both are asserted: either could stop reporting on its own.
+ */
+export const SaveDraftRejectedByTheServer: Story = {
+  render: () => {
+    const stub = loadedStub();
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/prompt-templates/${TEMPLATE}/versions`) &&
+          init?.method === "POST"
+            ? json({ error: { message: "tone is referenced but never declared" } }, 422)
+            : stub(input, init)
+        }
+      />
+    );
+  },
+  play: async ({ canvas, canvasElement }) => {
+    const sample = await canvas.findByRole("textbox", {
+      name: "Sample value for customer_name",
+    });
+    await userEvent.type(sample, "Aster Labs");
+    await userEvent.click(canvas.getByRole("button", { name: /Save as new draft/ }));
+
+    await expectToast(canvasElement, /referenced but never declared/, "error");
+    // the inline copy beside the save button, matched by excluding the toast's
+    // own live region since both carry the same words
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByText(/referenced but never declared/)
+          .some((node) => node.getAttribute("role") === "alert" && node.tagName === "SPAN"),
+      ).toBe(true),
+    );
+    await expect(sample).toHaveValue("Aster Labs");
+    // and the preview it feeds, which is the draft the operator was working on
+    await expect(canvas.getByText(/You support Aster Labs/)).toBeVisible();
+  },
+};
+
 export const ConfirmsRollback: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvas, canvasElement }) => {
