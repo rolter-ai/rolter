@@ -24,7 +24,7 @@ because of how it is distributed, and they do not have the same answer:
 Two things already exist and constrain the answer rather than being free
 choices:
 
-- [`docs/development/api-stability.md`](../development/api-stability.md) (#1217)
+- [`docs/dev-docs/development/api-stability.md`](../development/api-stability.md) (#1217)
   already scoped `cargo-semver-checks` to four crates against the previous
   release tag, and it ends by *planning* to make that job blocking at 1.0 and to
   revisit the guarded list. That plan is a promise made in advance of this

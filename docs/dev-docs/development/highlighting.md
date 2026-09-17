@@ -90,7 +90,7 @@ resolves to a token that already exists:
 
 Two consequences worth stating. A code block always sits on
 `--surface-subtle`, which is the surface those `-text` tokens were contrast-
-tuned against, so the numbers recorded in `docs/development/dashboard-theme.md`
+tuned against, so the numbers recorded in `docs/dev-docs/development/dashboard-theme.md`
 hold here unchanged. And a log line that says `ERROR` is the same red as the
 failing row in the table it was opened from, because both read
 `--status-danger-text` — the colours are one vocabulary, not two.

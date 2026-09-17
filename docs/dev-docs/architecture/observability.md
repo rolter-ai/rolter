@@ -537,7 +537,7 @@ the `debug` exporter with an internal OTLP-compatible destination for production
 
 ### Connector delivery: rendered collector config (#836)
 
-The `observability_connectors` table (#511, `docs/architecture/data-model.md`)
+The `observability_connectors` table (#511, `docs/dev-docs/architecture/data-model.md`)
 lists the sinks a deployment wants its telemetry shipped to in addition to
 ClickHouse, but the connector's `endpoint` is never called directly by rolter.
 Consistent with [ADR-0026](../adr/2026-08-06-tenant-telemetry-destinations.md)

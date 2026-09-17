@@ -91,7 +91,7 @@ that sits in front of the tenants' backends, not a fan-out inside rolter.
   tenants exist. Cardinality and buffer growth become the collector's problem,
   where they are a sizing question rather than a data-plane risk.
 - The cost is that per-tenant destinations require running a collector. That is
-  already the recommended topology (`docs/architecture/observability.md`), so it
+  already the recommended topology (`docs/dev-docs/architecture/observability.md`), so it
   is not a new dependency for anyone following it — but a deployment exporting
   straight to a vendor endpoint would have to add one.
 - Nothing here is blocked on #809, but when OTLP log export lands it inherits
