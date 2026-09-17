@@ -39,6 +39,12 @@ How it works:
   API (`e2e/seed.ts`) and writes an authenticated `storageState` plus a pinned
   `rolter.scope`, so specs start logged in and scoped to the seeded tenant.
   `login.spec.ts` exercises the real login form from a clean state.
+- Locate controls by role and label, and take their text from the catalog with
+  `t()` from `e2e/i18n.ts` (it reads `src/lib/i18n/locales/en.json`) rather
+  than copying English or a placeholder into the spec — hardcoded copy is what
+  left seven specs stale after rewordings (#1504). The seeded user is an org
+  admin, not a superadmin, so a spec for a superadmin-only screen stubs
+  `/api/v1/rbac/effective` the way `mcp-logs.spec.ts` does.
 
 CI: not part of the default PR gate — the `ui e2e (playwright)` workflow runs on
 demand (`workflow_dispatch`) and nightly, and uploads traces/screenshots on
