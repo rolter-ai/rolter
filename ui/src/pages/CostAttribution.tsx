@@ -10,10 +10,10 @@ import { TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
@@ -187,24 +187,20 @@ function Editor({
             label={t("pages.costAttribution.editor.businessUnit")}
             hint={t("pages.costAttribution.editor.businessUnitHint")}
           >
-            <Select
+            <Combobox
               aria-label={t("pages.costAttribution.editor.businessUnit")}
               value={form.businessUnitId}
-              onChange={(e) =>
-                setForm({ ...form, businessUnitId: e.target.value })
-              }
-            >
-              <option value={UNASSIGNED}>
-              {t("pages.costAttribution.editor.unassignedOption")}
-            </option>
-              {units
-                .filter((u) => !u.retired_at || u.id === form.businessUnitId)
-                .map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name}
-                  </option>
-                ))}
-            </Select>
+              onChange={(businessUnitId) => setForm({ ...form, businessUnitId })}
+              options={[
+                {
+                  value: UNASSIGNED,
+                  label: t("pages.costAttribution.editor.unassignedOption"),
+                },
+                ...units
+                  .filter((u) => !u.retired_at || u.id === form.businessUnitId)
+                  .map((u) => ({ value: u.id, label: u.name })),
+              ]}
+            />
           </Field>
         )}
         {error && <p className="text-xs text-[color:var(--status-danger-text)]">{error}</p>}

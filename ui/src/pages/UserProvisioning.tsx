@@ -26,10 +26,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, type TableColumn } from "@/components/ui/table";
@@ -242,18 +242,14 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
             onChange={setTarget}
             label={t("pages.userProvisioning.mappings.scopeLabel")}
           />
-          <Select
-            className="h-8 w-[132px]"
+          <Combobox
+            size="sm"
+            className="w-[132px]"
             value={role}
-            onChange={(e) => setRole(e.target.value)}
+            onChange={setRole}
             aria-label={t("pages.userProvisioning.mappings.roleLabel")}
-          >
-            {MAPPABLE_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {roleLabel(t, r)}
-              </option>
-            ))}
-          </Select>
+            options={MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
+          />
           <GatedButton
             gate="scim_group_mapping:create"
             size="sm"

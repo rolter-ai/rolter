@@ -327,7 +327,7 @@ export const MapGroupPostsTheScopedRole: Story = {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "sre-oncall");
     await pickOption(canvas.getByLabelText("Where the role applies"), "core");
-    await userEvent.selectOptions(canvas.getByLabelText("Role to grant"), "admin");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
     await waitFor(() => expect(postedMappings).toHaveLength(1));
     await expect(postedMappings[0]).toEqual({
@@ -425,7 +425,7 @@ export const MapGroupToAProjectInAnotherTeam: Story = {
     await userEvent.keyboard("{Escape}");
     await userEvent.type(await canvas.findByLabelText("IdP group"), "checkout-oncall");
     await pickOption(scope, "checkout");
-    await userEvent.selectOptions(canvas.getByLabelText("Role to grant"), "member");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Member");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
     await waitFor(() => expect(postedMappings).toHaveLength(1));
     await expect(postedMappings[0]).toEqual({

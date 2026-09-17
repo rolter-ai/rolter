@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Performance from "./Performance";
-import { Toasted, expectSkeleton, expectToast } from "./story-harness";
+import { Toasted, expectSkeleton, expectToast, pickOption } from "./story-harness";
 import type { RuntimePolicyDto } from "@/lib/api";
 
 const BASE: RuntimePolicyDto = {
@@ -104,7 +104,7 @@ export const BlockNeedsATimeout: Story = {
     const mode = await canvas.findByLabelText("When the queue is full");
     // the block timeout only applies to block mode, so it starts disabled
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
-    await userEvent.selectOptions(mode, "block");
+    await pickOption(mode, "block");
     await waitFor(() =>
       expect(
         canvas.getByText("Block backpressure needs a non-zero block timeout."),

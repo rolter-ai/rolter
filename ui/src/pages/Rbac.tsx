@@ -9,10 +9,10 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
 import {
@@ -793,16 +793,14 @@ function RoleSheet({
           label={t("pages.rbac.custom.fieldBaseRole")}
           hint={t("pages.rbac.custom.baseRoleHint")}
         >
-          <Select
+          <Combobox
             value={draft.base_role}
-            onChange={(e) => onChange({ ...draft, base_role: e.target.value as Role })}
-          >
-            {BASE_ROLES.map((role) => (
-              <option key={role} value={role}>
-                {t(`pages.rbac.baseRoles.${role}`)}
-              </option>
-            ))}
-          </Select>
+            onChange={(picked) => onChange({ ...draft, base_role: picked as Role })}
+            options={BASE_ROLES.map((role) => ({
+              value: role,
+              label: t(`pages.rbac.baseRoles.${role}`),
+            }))}
+          />
         </Field>
 
         <GrantGrid

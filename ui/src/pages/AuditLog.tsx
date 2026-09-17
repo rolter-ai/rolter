@@ -10,9 +10,9 @@ import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Table, type TableColumn } from "@/components/ui/table";
 import { fetchAuditLogPage, fetchUsers, type AuditLogEntry } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
@@ -269,19 +269,16 @@ export default function AuditLog() {
         <>
           <div className="flex flex-wrap items-center gap-2">
             {users.data && users.data.length > 0 ? (
-              <Select
+              <Combobox
                 className="w-[280px]"
                 aria-label={t("pages.auditLog.actorFilterAria")}
                 value={actor}
-                onChange={(e) => setActor(e.target.value)}
-              >
-                <option value="">{t("pages.auditLog.anyActor")}</option>
-                {users.data.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.email}
-                  </option>
-                ))}
-              </Select>
+                onChange={setActor}
+                options={[
+                  { value: "", label: t("pages.auditLog.anyActor") },
+                  ...users.data.map((u) => ({ value: u.id, label: u.email })),
+                ]}
+              />
             ) : (
               <Input
                 className="w-[280px] font-mono text-xs"
@@ -291,32 +288,26 @@ export default function AuditLog() {
                 onChange={(e) => setActor(e.target.value)}
               />
             )}
-            <Select
+            <Combobox
               className="w-52"
               aria-label={t("pages.auditLog.actionFilterAria")}
               value={action}
-              onChange={(e) => setAction(e.target.value)}
-            >
-              <option value="">{t("pages.auditLog.allActions")}</option>
-              {ACTIONS.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </Select>
-            <Select
+              onChange={setAction}
+              options={[
+                { value: "", label: t("pages.auditLog.allActions") },
+                ...ACTIONS.map((a) => ({ value: a, label: a })),
+              ]}
+            />
+            <Combobox
               className="w-44"
               aria-label={t("pages.auditLog.targetFilterAria")}
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
-            >
-              <option value="">{t("pages.auditLog.allTargets")}</option>
-              {TARGET_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
+              onChange={setTarget}
+              options={[
+                { value: "", label: t("pages.auditLog.allTargets") },
+                ...TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
+              ]}
+            />
             <div className="flex gap-1">
               {RANGES.map((r, i) => (
                 <button
