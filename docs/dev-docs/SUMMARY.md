@@ -71,6 +71,7 @@
 - [Stability markers](development/stability-markers.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
+- [Competitive study: an open-source gateway](development/experiential-comparison.md)
 
 # Deployment
 
