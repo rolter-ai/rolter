@@ -156,6 +156,38 @@ export const SavesChanges: Story = {
   },
 };
 
+/**
+ * The save is refused (#1607).
+ *
+ * `SavesChanges` covers the answer; this covers the other one. An injected
+ * header is a name/value pair typed by hand, so a form that reverted on a
+ * rejected save would lose both without saying so.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "x-partner-id is reserved by the gateway" } }, 422);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Add header" }));
+    await userEvent.type(canvas.getByLabelText("Injected header name 1"), "x-partner-id");
+    await userEvent.type(canvas.getByLabelText("Injected header value 1"), "acme");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+
+    await expectToast(canvasElement, /reserved by the gateway/, "error");
+    await waitFor(() =>
+      expect(canvas.getByLabelText("Injected header value 1")).toHaveValue("acme"),
+    );
+    await expect(canvas.getByLabelText("Injected header name 1")).toHaveValue("x-partner-id");
+  },
+};
+
 // What a non-superadmin gets, which is the screen refused before it asks
 // (#1606).
 //
