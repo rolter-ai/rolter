@@ -10,6 +10,7 @@ import {
   expectClosesWithoutPrompting,
   expectSheetClosed,
   json,
+  pickOption,
   recording,
   sheet,
   withConfirm,
@@ -151,7 +152,8 @@ function Stage({
 // the sheet seeds its draft in an effect, so every play function waits for the
 // seed before it types: an edit landing first would be overwritten by it
 async function seeded(dialog: ReturnType<typeof within>): Promise<void> {
-  await waitFor(() => expect(dialog.getByLabelText("Provider")).toHaveValue("prov-1"));
+  // the combobox shows the provider's name; `prov-1` is what goes on the wire
+  await waitFor(() => expect(dialog.getByLabelText("Provider")).toHaveValue("openai-prod"));
 }
 
 const meta = {
@@ -201,7 +203,7 @@ export const Add: Story = {
     await expect(save).toHaveAccessibleDescription(/Enter the model id exactly/);
     const provider = dialog.getByLabelText("Provider");
     await expect(provider).not.toHaveAttribute("aria-invalid");
-    await userEvent.selectOptions(provider, "");
+    await pickOption(provider, "select provider…");
     await waitFor(() => expect(provider).toHaveAttribute("aria-invalid", "true"));
     await expect(provider).toHaveAccessibleDescription(/Pick the upstream provider/);
     await expect(save).toHaveAccessibleDescription(/Pick the upstream provider/);
@@ -295,7 +297,7 @@ export const AddsAModel: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.selectOptions(dialog.getByLabelText("Provider"), "prov-2");
+    await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
     await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
     await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
     const route = (await calls.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)) as {

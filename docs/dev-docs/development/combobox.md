@@ -8,7 +8,9 @@ line. And a native select has no type-to-filter, only first-letter jumping,
 which makes a fleet of `provider/model` addresses unusable (#968).
 
 `ui/src/components/ui/combobox.tsx` is the replacement. New dropdowns use it.
-`Select` stays for now while the remaining call sites migrate screen by screen.
+`Select` stays for now while the remaining call sites migrate screen by screen —
+the Playground's model picker and the editor sheets (model, provider, provider
+group, params) are done.
 
 ## Using it
 
@@ -80,6 +82,31 @@ broken:
 
 Group headers are `listbox > group > option` with `aria-label` on the group —
 the only shape ARIA allows a header in.
+
+Two more choices exist so a combobox does not make the screen around it harder
+to query, for a test or for a screen reader:
+
+- **The result-count live region carries `aria-live` but not `role="status"`.**
+  The role would put a second status node on every screen that has a dropdown,
+  and the screens whose own notice is a `role="status"` look for it by role.
+- **The listbox is named `common.combobox.options`, not after the field.**
+  Naming it after the field would put two nodes with the same accessible name
+  on the page, and `getByLabelText("Provider")` would stop being unambiguous.
+  The combobox is announced immediately before the list, so the context is
+  already there.
+
+## Driving one from a story
+
+`userEvent.selectOptions` only works on a native `<select>`. Use `pickOption`
+from `ui/src/pages/story-harness.tsx`, which opens the popup and clicks the row
+by its accessible name:
+
+```tsx
+await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
+```
+
+Note that a combobox's `value` is the option's **label**, not the value that
+goes on the wire — `toHaveValue("openai-prod")`, not `toHaveValue("prov-1")`.
 
 ## Copy
 

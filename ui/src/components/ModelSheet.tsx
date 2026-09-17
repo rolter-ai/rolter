@@ -14,9 +14,9 @@ import { Trans, useTranslation } from "react-i18next";
 import { FormSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { Combobox } from "@/components/ui/combobox";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -1274,19 +1274,16 @@ export function ModelSheet({
               info={t("modelSheet.dupFrom.info")}
               htmlFor="ms-field-1"
             />
-            <Select
+            <Combobox
               id="ms-field-1"
               className="font-mono"
               value={dupFrom}
-              onChange={(e) => applyDupFrom(e.target.value)}
-            >
-              <option value="">{t("modelSheet.dupFrom.scratch")}</option>
-              {routes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.model}
-                </option>
-              ))}
-            </Select>
+              onChange={applyDupFrom}
+              options={[
+                { value: "", label: t("modelSheet.dupFrom.scratch") },
+                ...routes.map((r) => ({ value: r.id, label: r.model })),
+              ]}
+            />
           </div>
         )}
 
@@ -1305,26 +1302,27 @@ export function ModelSheet({
                 info={t("modelSheet.fields.providerInfo")}
                 htmlFor="ms-field-2"
               />
-              <Select
+              <Combobox
                 id="ms-field-2"
                 className="font-mono"
                 value={draft.providerId}
                 disabled={readonly}
                 aria-invalid={errProvider ? true : undefined}
                 aria-describedby={describedBy(errProvider && ids.providerErr)}
-                onChange={(e) => set({ providerId: e.target.value })}
-              >
-                <option value="">
-                  {readonly
-                    ? t("modelSheet.fields.providerConfig")
-                    : t("modelSheet.fields.providerSelect")}
-                </option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
+                onChange={(providerId) => set({ providerId })}
+                options={[
+                  // the "nothing picked" row stays a real option rather than a
+                  // placeholder: the field is required, and un-picking is how
+                  // the sheet's own validation is reached
+                  {
+                    value: "",
+                    label: readonly
+                      ? t("modelSheet.fields.providerConfig")
+                      : t("modelSheet.fields.providerSelect"),
+                  },
+                  ...providers.map((p) => ({ value: p.id, label: p.name })),
+                ]}
+              />
               <FieldError id={ids.providerErr} error={errProvider} />
             </div>
             <div className="space-y-1.5">
@@ -1333,19 +1331,14 @@ export function ModelSheet({
                 info={t("modelSheet.fields.modalityInfo")}
                 htmlFor="ms-field-3"
               />
-              <Select
+              <Combobox
                 id="ms-field-3"
                 className="font-mono"
                 value={draft.modality}
                 disabled={readonly}
-                onChange={(e) => setModality(e.target.value as Modality)}
-              >
-                {MODALITIES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </Select>
+                onChange={(m) => setModality(m as Modality)}
+                options={MODALITIES.map((m) => ({ value: m, label: m }))}
+              />
             </div>
           </div>
           <div className="space-y-1.5">
@@ -1474,19 +1467,18 @@ export function ModelSheet({
                   </span>
                 )}
                 {p.type === "enum" ? (
-                  <Select
+                  <Combobox
                     aria-label={t("modelSheet.params.value")}
-                    className="h-[34px] min-w-0 flex-1 font-mono text-xs"
+                    size="sm"
+                    className="min-w-0 flex-1 font-mono"
                     value={p.value}
                     disabled={readonly}
-                    onChange={(e) => setParamAt(i, { value: e.target.value })}
-                  >
-                    {(p.opts ?? ["", "low", "medium", "high"]).map((o) => (
-                      <option key={o} value={o}>
-                        {o === "" ? t("modelSheet.params.providerDefault") : o}
-                      </option>
-                    ))}
-                  </Select>
+                    onChange={(value) => setParamAt(i, { value })}
+                    options={(p.opts ?? ["", "low", "medium", "high"]).map((o) => ({
+                      value: o,
+                      label: o === "" ? t("modelSheet.params.providerDefault") : o,
+                    }))}
+                  />
                 ) : (
                   <Input
                     aria-label={t("modelSheet.params.value")}
@@ -1504,19 +1496,15 @@ export function ModelSheet({
                   />
                 )}
                 {p.custom && (
-                  <Select
+                  <Combobox
                     aria-label={t("modelSheet.params.type")}
-                    className="h-[34px] w-20 flex-none font-mono text-[11px]"
+                    size="sm"
+                    className="w-24 flex-none font-mono"
                     value={p.type}
                     disabled={readonly}
-                    onChange={(e) => setParamAt(i, { type: e.target.value as ParamType })}
-                  >
-                    {PARAM_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </Select>
+                    onChange={(type) => setParamAt(i, { type: type as ParamType })}
+                    options={PARAM_TYPES.map((k) => ({ value: k, label: k }))}
+                  />
                 )}
                 {paramManual && (
                   <LockButton
@@ -1670,19 +1658,14 @@ export function ModelSheet({
           <div className="flex items-end gap-3">
             <div className="w-36 space-y-1">
               <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
-              <Select
+              <Combobox
                 id="ms-field-9"
                 className="font-mono"
                 value={cur}
                 disabled={readonly}
-                onChange={(e) => setDeep("price", { currency: e.target.value })}
-              >
-                {currencyOptions.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </Select>
+                onChange={(currency) => setDeep("price", { currency })}
+                options={currencyOptions.map((c) => ({ value: c, label: c }))}
+              />
             </div>
             <a
               href={PRICING_DOCS_URL}
@@ -1854,19 +1837,14 @@ export function ModelSheet({
               info={t("modelSheet.rbac.minRoleInfo")}
               htmlFor="ms-field-10"
             />
-            <Select
+            <Combobox
               id="ms-field-10"
               className="font-mono"
               value={draft.rbac.minRole}
               disabled={readonly}
-              onChange={(e) => setDeep("rbac", { minRole: e.target.value })}
-            >
-              {ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </Select>
+              onChange={(minRole) => setDeep("rbac", { minRole })}
+              options={ROLES.map((r) => ({ value: r, label: r }))}
+            />
           </div>
           <div className="space-y-1.5">
             <FieldLabel

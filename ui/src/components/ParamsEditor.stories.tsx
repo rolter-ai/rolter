@@ -3,6 +3,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ParamsEditor, type ParamsEditorResult, type ParamsEditorValue } from "./ParamsEditor";
+import { pickOption } from "@/pages/story-harness";
 
 const PARAMS = { temperature: 0.7, max_tokens: 1024, stream: false };
 const ALLOW_ALL = { mode: "allow", allow: [], deny: [] };
@@ -120,7 +121,7 @@ export const AddsAParam: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /add param/i }));
     await userEvent.type(canvas.getByLabelText("Param name"), "top_p");
-    await userEvent.selectOptions(canvas.getByLabelText("Param type"), "number");
+    await pickOption(canvas.getByLabelText("Param type"), "number");
     await userEvent.type(canvas.getByLabelText("Param value"), "0.9");
     await userEvent.click(canvas.getByRole("button", { name: "Save params" }));
     await waitFor(() =>
