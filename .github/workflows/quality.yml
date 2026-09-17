@@ -339,9 +339,50 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: zizmor
-        run: uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/ .github/actions/
         env:
           GH_TOKEN: ${{ github.token }}
+        # three of the audits (impostor-commit, known-vulnerable-actions,
+        # stale-action-refs) call the github api, and one 401/5xx there aborts
+        # the *whole* run with `fatal: no audit was performed` — a red check on
+        # a PR that touched no workflow, indistinguishable from a real finding
+        # now that this job blocks (#1509). so retry, but only that failure.
+        #
+        # zizmor separates the two cases in its exit code: 0 is clean and 11-14
+        # are "audit completed, highest severity informational..high", while a
+        # run that never produced a verdict exits 1 (2 is bad arguments, 3 is an
+        # empty input set). a verdict is therefore final on the first attempt —
+        # a genuine finding can never be retried away, because it does not land
+        # in the retryable bucket at all. the grep narrows the remaining bucket
+        # further, so an internal zizmor bug still fails fast instead of costing
+        # three runs. same rule as ci-ok's run listing: exhausting the retries
+        # is a failure, never a silent pass
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/zizmor.txt"
+          attempt=1
+          while true; do
+            uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+              .github/workflows/ .github/actions/ 2>&1 | tee "${out}"
+            status="${PIPESTATUS[0]}"
+
+            if [ "${status}" -eq 0 ] || [ "${status}" -ge 11 ]; then
+              exit "${status}"
+            fi
+
+            if ! grep -qE "no audit was performed|request error while accessing GitHub API|couldn.t list tags" "${out}"; then
+              echo "::error::zizmor exited ${status} without completing an audit and the failure does not look like a github api hiccup; not retrying"
+              exit "${status}"
+            fi
+
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::zizmor could not reach the github api after ${attempt} attempts; refusing to report green without an audit result"
+              exit "${status}"
+            fi
+
+            echo "::warning::zizmor attempt ${attempt} could not reach the github api; retrying"
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
 
   # ── ui: typecheck + production build ────────────────────────────────────────
   ui:
