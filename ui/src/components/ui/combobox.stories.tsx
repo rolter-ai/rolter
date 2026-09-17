@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Combobox, type ComboboxOption } from "./combobox";
 import { Field } from "./field";
@@ -36,13 +36,19 @@ const GROUPED: ComboboxOption[] = [
   { value: "anthropic/claude-haiku", label: "anthropic/claude-haiku", group: "anthropic" },
 ];
 
-// a fleet-sized list — the case the native <select> made unusable (#968)
-const LONG: ComboboxOption[] = Array.from({ length: 240 }, (_, i) => ({
+// a fleet-sized list — the case the native <select> made unusable (#968), at a
+// size that used to put every row in the document (#1579). the descriptions are
+// uneven on purpose: a described row is taller, which is what makes the window
+// variable-height rather than a multiplication
+const LONG: ComboboxOption[] = Array.from({ length: 2400 }, (_, i) => ({
   value: `provider-${i % 12}/model-${i}`,
   label: `provider-${i % 12}/model-${i}`,
-  description: i % 3 === 0 ? "provider pin" : "route",
+  description: i % 3 === 0 ? "provider pin" : undefined,
   group: `provider-${i % 12}`,
 }));
+
+// an ungrouped list of the same size, for the window's own arithmetic
+const LONG_FLAT: ComboboxOption[] = LONG.map(({ group: _group, ...rest }) => rest);
 
 const WITH_DISABLED: ComboboxOption[] = [
   { value: "round_robin", label: "round_robin" },
@@ -89,6 +95,106 @@ export const Grouped: Story = {
 
 export const LongList: Story = {
   render: () => <Controlled options={LONG} initial="provider-0/model-0" label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    const listbox = canvas.getByRole("listbox");
+    // a window, not the list: 2400 options would be 2400 nodes, and the popup
+    // is 240px tall (#1579)
+    const rendered = within(listbox).getAllByRole("option");
+    await expect(rendered.length).toBeGreaterThan(0);
+    await expect(rendered.length).toBeLessThan(80);
+    // the scroll still spans every row, so the scrollbar tells the truth about
+    // how much list there is
+    await expect(listbox.scrollHeight).toBeGreaterThan(50_000);
+  },
+};
+
+// the rows the window places have to be exactly as tall as the arithmetic that
+// placed them, or the popup drifts further out of register the further it is
+// scrolled — and a described row is taller than a plain one
+export const WindowRowsMatchTheirMeasuredHeight: Story = {
+  render: () => <Controlled options={LONG_FLAT} initial="provider-0/model-0" label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    const listbox = canvas.getByRole("listbox");
+    const rendered = within(listbox).getAllByRole("option");
+    const described = rendered.find((o) => o.textContent?.includes("provider pin"));
+    const plain = rendered.find((o) => !o.textContent?.includes("provider pin"));
+    await expect(described?.getBoundingClientRect().height).toBe(48);
+    await expect(plain?.getBoundingClientRect().height).toBe(32);
+    // and the total is the sum of every row's height, not a row count times one
+    const described_count = LONG_FLAT.filter((o) => o.description).length;
+    await expect(listbox.scrollHeight).toBe(
+      described_count * 48 + (LONG_FLAT.length - described_count) * 32,
+    );
+  },
+};
+
+// the one thing a virtual list must not break: the active option is named by
+// aria-activedescendant, and a name pointing at an unmounted node announces
+// nothing at all (#968)
+export const TheActiveOptionStaysMounted: Story = {
+  render: () => <Controlled options={LONG} initial="provider-0/model-0" label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = canvas.getByRole("combobox", { name: "Model" });
+    await userEvent.click(combobox);
+    const named = () => {
+      const id = combobox.getAttribute("aria-activedescendant");
+      return id ? canvasElement.ownerDocument.getElementById(id) : null;
+    };
+    await expect(named()).not.toBeNull();
+    // End jumps past the window to the last option; the node it names has to
+    // exist there too
+    await userEvent.keyboard("{End}");
+    await expect(named()).not.toBeNull();
+    await expect(named()).toHaveTextContent("model-2399");
+    await userEvent.keyboard("{Home}");
+    await expect(named()).not.toBeNull();
+    await expect(named()).toHaveTextContent("model-0");
+    // and arrowing on from Home walks the list rather than restarting it
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await expect(named()).toHaveTextContent("model-2");
+  },
+};
+
+// filtering reaches rows the window never rendered: the filter runs over every
+// option, not over the ones currently in the document
+export const FilterReachesUnrenderedRows: Story = {
+  render: () => <Controlled options={LONG} initial="provider-0/model-0" label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = canvas.getByRole("combobox", { name: "Model" });
+    await userEvent.click(combobox);
+    await userEvent.keyboard("model-2399");
+    const options = within(canvas.getByRole("listbox")).getAllByRole("option");
+    await expect(options).toHaveLength(1);
+    await expect(options[0]).toHaveTextContent("provider-11/model-2399");
+    await userEvent.keyboard("{Enter}");
+    await expect(combobox).toHaveValue("provider-11/model-2399");
+  },
+};
+
+// a group whose heading has scrolled out of the window still names its rows
+export const ScrolledGroupsKeepTheirName: Story = {
+  render: () => <Controlled options={LONG} initial="provider-0/model-0" label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    const listbox = canvas.getByRole("listbox");
+    listbox.scrollTop = 4_000;
+    listbox.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await waitFor(async () => {
+      const groups = within(listbox).getAllByRole("group");
+      await expect(groups.length).toBeGreaterThan(0);
+      for (const group of groups) {
+        await expect(group.getAttribute("aria-label")).toMatch(/^provider-\d+$/);
+        await expect(within(group).getAllByRole("option").length).toBeGreaterThan(0);
+      }
+    });
+  },
 };
 
 export const Clearable: Story = {

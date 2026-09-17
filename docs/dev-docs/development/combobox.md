@@ -134,7 +134,27 @@ arrows plus Enter, Home/End, Escape reverting, a disabled option refusing both
 click and Enter, and clearing. Every one of them also runs the axe gate, which
 is the point of the issue this primitive closes.
 
-## Not done yet
+## Long lists
 
-- Very long lists are not virtualised — filtering narrows them fast enough that
-  it has not mattered, but a picker over thousands of rows will want it.
+Past 120 filtered options the popup renders a window of rows rather than all of
+them (#1579). Two things make that cheaper here than a virtual list usually is:
+
+- **The heights are known, not measured.** A row is tall exactly when its option
+  carries a `description`, so `measure()` computes every offset from the data in
+  one pass. The same numbers are applied to the rows as an inline `height`, so
+  the arithmetic and the layout cannot drift — a row is what the table says it
+  is, rather than the table being a guess at what the classes produce. Changing
+  a row's padding or type scale means changing `ROW` with it, and
+  `WindowRowsMatchTheirMeasuredHeight` fails when they disagree.
+- **The window never drops the active option.** Whatever the scroll says, the
+  row named by `aria-activedescendant` is rendered, because a name pointing at
+  an unmounted node announces nothing at all — the one regression #968 must not
+  have. `TheActiveOptionStaysMounted` walks End, Home and an arrow to prove it.
+
+The rows above and below the window are one `role="none"` box each, so the
+listbox still owns nothing but options and groups. A group whose header has
+scrolled out keeps its wrapper and its `aria-label`, so a run of rows is still
+announced under the right name.
+
+Below the threshold nothing windows: filtering narrows a list to a handful in
+two keystrokes, and the plain path is the one every other story exercises.
