@@ -439,6 +439,72 @@ fn validate_header_name(name: &str) -> ApiResult<()> {
 /// because it is the only part of a server that takes a secret, and keeping it
 /// on its own route means the general edit path never has a credential in its
 /// body to leak into a log or an audit entry.
+/// What a `set_auth` request implies, once its shape has been checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SetAuthPlan {
+    /// the request seals a new credential, so the control plane needs the KEK
+    needs_kek: bool,
+}
+
+/// Validate a `set_auth` request against the stored state and say what it
+/// implies. Pure on purpose: both bugs it closes are decisions about the
+/// request, and deciding them here means they can be tested exhaustively
+/// without a database or a process-wide `ROLTER_KEK` (see the note on env
+/// mutation in `docs/dev-docs/development/testing.md`).
+fn plan_set_auth(
+    auth_kind: &str,
+    auth_header_name: Option<&str>,
+    credential: Option<&str>,
+    has_credential: bool,
+) -> ApiResult<SetAuthPlan> {
+    let carries_credential = matches!(auth_kind, "bearer" | "header");
+    match (auth_kind, auth_header_name) {
+        ("header", None) => {
+            return Err(invalid(
+                "auth_kind 'header' requires auth_header_name, e.g. X-Api-Key",
+            ))
+        }
+        ("header", Some(name)) => validate_header_name(name)?,
+        (_, Some(_)) => {
+            return Err(invalid(
+                "auth_header_name is only meaningful for auth_kind 'header'",
+            ))
+        }
+        (_, None) => {}
+    }
+    if !carries_credential && credential.is_some_and(|c| !c.is_empty()) {
+        return Err(invalid(format!(
+            "auth_kind '{auth_kind}' carries no credential"
+        )));
+    }
+    if carries_credential {
+        match credential {
+            // an explicit empty string means "clear", and the store honours it
+            // literally. on a kind the `mcp_servers_auth_kind_shape` constraint
+            // requires a credential for, that update is rejected by postgres and
+            // surfaces as a 500 — whether or not one is already stored. refuse it
+            // here, and name the move that actually removes a credential (#1553)
+            Some("") => {
+                return Err(invalid(format!(
+                    "auth_kind '{auth_kind}' requires a credential; send auth_kind 'none' to                      remove the stored credential instead of an empty one"
+                )))
+            }
+            // nothing supplied and nothing stored leaves the row violating the
+            // same constraint, so it is the same 400 rather than a 500
+            None if !has_credential => {
+                return Err(invalid(format!(
+                    "auth_kind '{auth_kind}' requires a credential"
+                )))
+            }
+            // nothing supplied but one already stored keeps it: this is how a
+            // header rename works, and it seals nothing
+            None => {}
+            Some(_) => return Ok(SetAuthPlan { needs_kek: true }),
+        }
+    }
+    Ok(SetAuthPlan { needs_kek: false })
+}
+
 async fn set_auth(
     principal: Principal,
     State(state): State<ControlState>,
@@ -460,41 +526,21 @@ async fn set_auth(
     ) {
         return Err(invalid("auth_kind must be none, bearer, header or oauth"));
     }
-    let carries_credential = matches!(body.auth_kind.as_str(), "bearer" | "header");
-    match (body.auth_kind.as_str(), body.auth_header_name.as_deref()) {
-        ("header", None) => {
-            return Err(invalid(
-                "auth_kind 'header' requires auth_header_name, e.g. X-Api-Key",
-            ))
-        }
-        ("header", Some(name)) => validate_header_name(name)?,
-        (_, Some(_)) => {
-            return Err(invalid(
-                "auth_header_name is only meaningful for auth_kind 'header'",
-            ))
-        }
-        (_, None) => {}
-    }
-    if !carries_credential && body.credential.as_deref().is_some_and(|c| !c.is_empty()) {
-        return Err(invalid(format!(
-            "auth_kind '{}' carries no credential",
-            body.auth_kind
-        )));
-    }
-    // a kind that needs one and has none stored would be refused by the check
-    // constraint as a 500; say so as a 400 instead
-    if carries_credential
-        && !current.has_credential
-        && body.credential.as_deref().unwrap_or("").is_empty()
-    {
-        return Err(invalid(format!(
-            "auth_kind '{}' requires a credential",
-            body.auth_kind
-        )));
-    }
+    let plan = plan_set_auth(
+        &body.auth_kind,
+        body.auth_header_name.as_deref(),
+        body.credential.as_deref(),
+        current.has_credential,
+    )?;
+    // only a request that actually seals something needs the key. clearing,
+    // renaming a header, or moving to a kind that carries no credential must
+    // stay possible on a deployment with no `ROLTER_KEK` — otherwise an
+    // operator who lost theirs can never move a server off `bearer`, and the
+    // gateway keeps failing it with `mcp_credential_unavailable` (#1554)
+    let sealing_key = if plan.needs_kek { Some(kek()?) } else { None };
     let server = repo
         .set_auth(
-            &kek()?,
+            sealing_key.as_ref(),
             id,
             McpAuthConfig {
                 auth_kind: &body.auth_kind,
@@ -1202,6 +1248,103 @@ async fn revoke_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `plan_set_auth` decides both bugs #1553 and #1554 close, so it is
+    /// exercised across every shape rather than only the happy path.
+    ///
+    /// Deliberately pure: asserting the `ROLTER_KEK` half through the HTTP
+    /// route would mean unsetting a process-wide environment variable, which
+    /// races every other test in the binary (#1429, #1418).
+    mod set_auth_plan {
+        use super::*;
+
+        fn plan(
+            kind: &str,
+            header: Option<&str>,
+            credential: Option<&str>,
+            has_credential: bool,
+        ) -> ApiResult<SetAuthPlan> {
+            plan_set_auth(kind, header, credential, has_credential)
+        }
+
+        /// #1553: an empty credential on a kind the shape constraint requires
+        /// one for used to pass every check here and then be rejected by
+        /// postgres as a 500 — and only when a credential was already stored,
+        /// which is the case the old guard skipped.
+        #[test]
+        fn an_empty_credential_is_refused_whether_or_not_one_is_stored() {
+            for has_credential in [true, false] {
+                for kind in ["bearer", "header"] {
+                    let header = (kind == "header").then_some("X-Api-Key");
+                    let err = plan(kind, header, Some(""), has_credential)
+                        .expect_err("an empty credential must never reach the constraint");
+                    let message = format!("{err:?}");
+                    assert!(
+                        message.contains("requires a credential"),
+                        "{kind}/{has_credential}: {message}"
+                    );
+                }
+            }
+        }
+
+        /// The refusal has to name the move that actually removes a credential,
+        /// because the user doc used to tell people to send `""` for that.
+        #[test]
+        fn the_empty_credential_refusal_points_at_auth_kind_none() {
+            let err = plan("bearer", None, Some(""), true).expect_err("must be refused");
+            assert!(format!("{err:?}").contains("'none'"), "{err:?}");
+        }
+
+        /// The pre-existing behaviour: nothing supplied and nothing stored is
+        /// still a 400 rather than a constraint violation.
+        #[test]
+        fn a_missing_credential_with_none_stored_is_refused() {
+            let err = plan("bearer", None, None, false).expect_err("must be refused");
+            assert!(
+                format!("{err:?}").contains("requires a credential"),
+                "{err:?}"
+            );
+        }
+
+        /// #1554: keeping the stored credential seals nothing, so it must not
+        /// demand a KEK. This is how a header rename works.
+        #[test]
+        fn keeping_a_stored_credential_needs_no_kek() {
+            let plan = plan("header", Some("X-Renamed"), None, true).expect("must be allowed");
+            assert!(!plan.needs_kek);
+        }
+
+        /// #1554: moving off a credential-carrying kind only clears, so it must
+        /// work without a KEK — the case an operator who lost theirs is stuck on.
+        #[test]
+        fn moving_to_a_kind_without_a_credential_needs_no_kek() {
+            for kind in ["none", "oauth"] {
+                let plan = plan(kind, None, None, true).expect("must be allowed");
+                assert!(!plan.needs_kek, "{kind}");
+                // an empty string is accepted here: for these kinds the store
+                // clears regardless, so it is not the #1553 shape
+                let plan = plan_set_auth(kind, None, Some(""), true).expect("must be allowed");
+                assert!(!plan.needs_kek, "{kind} with an explicit empty credential");
+            }
+        }
+
+        /// The only shape that actually seals.
+        #[test]
+        fn supplying_a_credential_needs_the_kek() {
+            for (kind, header) in [("bearer", None), ("header", Some("X-Api-Key"))] {
+                let plan = plan(kind, header, Some("s3cret"), false).expect("must be allowed");
+                assert!(plan.needs_kek, "{kind}");
+            }
+        }
+
+        /// Shape checks that predate this change must keep firing.
+        #[test]
+        fn the_header_name_rules_are_unchanged() {
+            assert!(plan("header", None, Some("s"), false).is_err());
+            assert!(plan("bearer", Some("X-Api-Key"), Some("s"), false).is_err());
+            assert!(plan("none", None, Some("s"), false).is_err());
+        }
+    }
 
     #[test]
     fn transports_match_the_schema() {
