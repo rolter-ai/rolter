@@ -1,5 +1,9 @@
 // proportional share (provider traffic, cost by model) via SVG arcs.
 // ported from the Rolter Design System components/charts/Donut.jsx
+import { useTranslation } from "react-i18next";
+
+import { useFormat } from "@/lib/i18n/format";
+
 export interface DonutSegment {
   label: string;
   value: number;
@@ -41,6 +45,8 @@ export function Donut({
   className,
   ...props
 }: DonutProps) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
   // roll everything past the top (maxSegments-1) into a single "Other" slice
   // so a donut of 12+ providers stays legible.
   let segs = segments;
@@ -49,7 +55,13 @@ export function Donut({
     const head = sorted.slice(0, maxSegments - 1);
     const rest = sorted.slice(maxSegments - 1);
     const restTotal = rest.reduce((a, s) => a + s.value, 0);
-    segs = [...head, { label: `Other (${rest.length})`, value: restTotal, color: OTHER }];
+    // the legend row is the only thing naming this slice, so it is copy: a
+    // catalog key, pluralised on the tail length, not an english literal (#1482)
+    const label = t("charts.donut.other", {
+      count: rest.length,
+      value: fmt.number(rest.length),
+    });
+    segs = [...head, { label, value: restTotal, color: OTHER }];
   }
   const total = segs.reduce((a, s) => a + s.value, 0) || 1;
   const r = (size - thickness) / 2;
