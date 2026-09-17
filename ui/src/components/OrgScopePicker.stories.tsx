@@ -3,7 +3,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { OrgScopePicker, type ScopeTarget } from "./OrgScopePicker";
-import { Harness, ORG, json, type FetchStub } from "@/pages/story-harness";
+import { Harness, ORG, json, openOptions, type FetchStub } from "@/pages/story-harness";
 
 const NOW = "2026-01-01T00:00:00Z";
 
@@ -83,18 +83,15 @@ export const EveryScopeInTheOrg: Story = {
   args: { fetchStub: chain() },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const select = await canvas.findByLabelText("Where the role applies");
+    const picker = await canvas.findByLabelText("Where the role applies");
+    const options = within(await openOptions(picker));
     await waitFor(() =>
-      expect(within(select).getByRole("group", { name: "Teams" })).toBeInTheDocument(),
+      expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument(),
     );
     // the two "prod" projects are told apart by the team they hang under
-    await expect(
-      within(select).getByRole("group", { name: "Projects in Platform" }),
-    ).toBeInTheDocument();
-    await expect(
-      within(select).getByRole("group", { name: "Projects in Payments" }),
-    ).toBeInTheDocument();
-    await expect(within(select).getAllByRole("option", { name: "prod" })).toHaveLength(2);
+    await expect(options.getByRole("group", { name: "Projects in Platform" })).toBeInTheDocument();
+    await expect(options.getByRole("group", { name: "Projects in Payments" })).toBeInTheDocument();
+    await expect(options.getAllByRole("option", { name: "prod" })).toHaveLength(2);
   },
 };
 
@@ -103,11 +100,14 @@ export const PicksAProjectInAnotherTeam: Story = {
   args: { fetchStub: chain() },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const select = await canvas.findByLabelText("Where the role applies");
-    await waitFor(() =>
-      expect(within(select).getByRole("group", { name: "Projects in Payments" })).toBeInTheDocument(),
+    const picker = await canvas.findByLabelText("Where the role applies");
+    const options = within(await openOptions(picker));
+    const payments = await waitFor(() =>
+      options.getByRole("group", { name: "Projects in Payments" }),
     );
-    await userEvent.selectOptions(select, "project:project-3");
+    // both teams have a "prod"; this is the one under the team that is *not*
+    // the selected one, which is what the story is about
+    await userEvent.click(within(payments).getByRole("option", { name: "prod" }));
     await expect(canvas.getByTestId("picked")).toHaveTextContent("project:project-3");
   },
 };
@@ -155,10 +155,7 @@ export const ProjectsFailed: Story = {
       expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/),
     );
     // the teams still loaded, so the picker keeps offering them
-    await expect(
-      within(canvas.getByLabelText("Where the role applies")).getByRole("group", {
-        name: "Teams",
-      }),
-    ).toBeInTheDocument();
+    const options = within(await openOptions(canvas.getByLabelText("Where the role applies")));
+    await expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument();
   },
 };

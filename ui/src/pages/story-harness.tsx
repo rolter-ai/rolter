@@ -495,9 +495,20 @@ export async function pickOption(
   combobox: HTMLElement,
   option: string | RegExp,
 ): Promise<void> {
+  const listbox = await openOptions(combobox);
+  await userEvent.click(within(listbox).getByRole("option", { name: option }));
+}
+
+/**
+ * Open a `Combobox` and hand back its listbox, for a story that asserts what is
+ * *offered* rather than picking one. The options are not inside the control —
+ * the listbox is a separate element the combobox points at with `aria-controls`
+ * — so `within(combobox).getAllByRole("option")` finds nothing.
+ */
+export async function openOptions(combobox: HTMLElement): Promise<HTMLElement> {
   await userEvent.click(combobox);
   const listId = combobox.getAttribute("aria-controls");
   const listbox = listId ? document.getElementById(listId) : null;
-  if (!listbox) throw new Error("pickOption: the control is not a combobox with a listbox");
-  await userEvent.click(within(listbox).getByRole("option", { name: option }));
+  if (!listbox) throw new Error("openOptions: the control is not a combobox with a listbox");
+  return listbox;
 }

@@ -2,9 +2,9 @@ import { Building2, WalletCards } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
+import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FilterCheckList } from "@/components/ui/filter-panel";
-import { Select } from "@/components/ui/select";
 import type { BusinessUnitRow, CustomerRow, ProviderRow } from "@/lib/api";
 
 // where a key's spend is charged, and how far it can reach (#1193).
@@ -74,34 +74,28 @@ export function KeyAttributionFields({
   return (
     <>
       <Field label={t("keyMint.businessUnit")} hint={t("keyMint.businessUnitHint")}>
-        <Select
+        <Combobox
           aria-label={t("keyMint.businessUnit")}
           value={businessUnitId}
-          onChange={(e) => pickUnit(e.target.value)}
-        >
-          <option value={UNATTRIBUTED}>{t("keyMint.unattributed")}</option>
-          {units
-            .filter((u) => !u.retired_at || u.id === businessUnitId)
-            .map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-        </Select>
+          onChange={pickUnit}
+          options={[
+            { value: UNATTRIBUTED, label: t("keyMint.unattributed") },
+            ...units
+              .filter((u) => !u.retired_at || u.id === businessUnitId)
+              .map((u) => ({ value: u.id, label: u.name })),
+          ]}
+        />
       </Field>
       <Field label={t("keyMint.customer")} hint={t("keyMint.customerHint")}>
-        <Select
+        <Combobox
           aria-label={t("keyMint.customer")}
           value={customerId}
-          onChange={(e) => onChange(businessUnitId, e.target.value)}
-        >
-          <option value={UNATTRIBUTED}>{t("keyMint.unattributed")}</option>
-          {offered.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </Select>
+          onChange={(customer) => onChange(businessUnitId, customer)}
+          options={[
+            { value: UNATTRIBUTED, label: t("keyMint.unattributed") },
+            ...offered.map((c) => ({ value: c.id, label: c.name })),
+          ]}
+        />
       </Field>
     </>
   );

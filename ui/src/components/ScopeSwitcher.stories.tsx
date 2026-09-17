@@ -59,10 +59,11 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // each level is a named select, not three anonymous dropdowns
-    await waitFor(() => expect(canvas.getByLabelText("Org")).toHaveValue(ORG.id));
-    await expect(canvas.getByLabelText("Team")).toHaveValue(TEAM.id);
-    await expect(canvas.getByLabelText("Project")).toHaveValue(PROJECT.id);
+    // each level is a named picker, not three anonymous dropdowns. a combobox
+    // reads as the row's label; the id behind it is what goes on the wire
+    await waitFor(() => expect(canvas.getByLabelText("Org")).toHaveValue(ORG.name));
+    await expect(canvas.getByLabelText("Team")).toHaveValue(TEAM.name);
+    await expect(canvas.getByLabelText("Project")).toHaveValue(PROJECT.name);
   },
 };
 

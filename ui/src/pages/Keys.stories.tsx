@@ -9,7 +9,9 @@ import {
   expectSheetClosed,
   expectSkeleton,
   json,
+  openOptions,
   pending,
+  pickOption,
   recording,
   scoped,
   sheet,
@@ -328,7 +330,7 @@ export const AdminCreateAlsoRequiresANameAndAnExpiry: Story = {
     await userEvent.type(within(form).getByLabelText("Name"), "backend service");
     await expect(within(form).getByRole("button", { name: "Create" })).toBeEnabled();
     // the finite default is the same one the self-service sheet offers
-    await expect(within(form).getByLabelText("Expires")).toHaveValue("30");
+    await expect(within(form).getByLabelText("Expires")).toHaveValue("In 30 days");
     await expect(within(form).getByText(/^Until /)).toBeInTheDocument();
   },
 };
@@ -435,8 +437,8 @@ export const EditingAKeySendsTheAttributionPut: Story = {
     // save stays disabled until something actually moves — re-saving an
     // untouched sheet must not write or audit anything
     await expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
-    await userEvent.selectOptions(within(form).getByLabelText("Business unit"), UNIT_ID);
-    await userEvent.selectOptions(within(form).getByLabelText("Customer"), CUSTOMER_ID);
+    await pickOption(within(form).getByLabelText("Business unit"), "Platform Engineering");
+    await pickOption(within(form).getByLabelText("Customer"), "Acme Corp");
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
 
     await expect(await sent.expectSentBody("PUT", "/attribution")).toEqual({
@@ -467,11 +469,11 @@ export const ClearingAnAttributionSendsNull: Story = {
     );
     const form = sheet();
     // seeded from the row, so the editor opens on the truth rather than blank
-    await expect(within(form).getByLabelText("Business unit")).toHaveValue(UNIT_ID);
-    await userEvent.selectOptions(
-      within(form).getByLabelText("Business unit"),
-      "__unattributed__",
+    // a combobox reads as the option's label; the id is what goes on the wire
+    await expect(within(form).getByLabelText("Business unit")).toHaveValue(
+      "Platform Engineering",
     );
+    await pickOption(within(form).getByLabelText("Business unit"), "Unattributed");
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
 
     await expect(await sent.expectSentBody("PUT", "/attribution")).toEqual({
@@ -521,7 +523,7 @@ export const CreatingWithAnAttributionFollowsUpWithThePut: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
     await userEvent.click(within(form).getByRole("checkbox", { name: "OpenAI" }));
-    await userEvent.selectOptions(within(form).getByLabelText("Business unit"), UNIT_ID);
+    await pickOption(within(form).getByLabelText("Business unit"), "Platform Engineering");
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
 
     const posted = (await sent.expectSentBody("POST", "/virtual-keys")) as {
@@ -555,11 +557,15 @@ export const OnlyCustomersThatFitTheChosenUnitAreOffered: Story = {
     const form = sheet();
     const customer = within(form).getByLabelText("Customer");
     // with no unit chosen, every customer is reachable
-    await expect(within(customer).getByText("Acme Corp")).toBeInTheDocument();
-    await userEvent.selectOptions(within(form).getByLabelText("Business unit"), UNIT_ID);
+    await expect(
+      within(await openOptions(customer)).getByRole("option", { name: "Acme Corp" }),
+    ).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await pickOption(within(form).getByLabelText("Business unit"), "Platform Engineering");
     // Acme belongs to that unit and Globex to none, so both still fit
-    await expect(within(customer).getByText("Acme Corp")).toBeInTheDocument();
-    await expect(within(customer).getByText("Globex")).toBeInTheDocument();
+    const offered = within(await openOptions(customer));
+    await expect(offered.getByRole("option", { name: "Acme Corp" })).toBeInTheDocument();
+    await expect(offered.getByRole("option", { name: "Globex" })).toBeInTheDocument();
   },
 };
 

@@ -9,8 +9,9 @@ which makes a fleet of `provider/model` addresses unusable (#968).
 
 `ui/src/components/ui/combobox.tsx` is the replacement. New dropdowns use it.
 `Select` stays for now while the remaining call sites migrate screen by screen —
-the Playground's model picker and the editor sheets (model, provider, provider
-group, params) are done.
+the Playground's model picker, the editor sheets (model, provider, provider
+group, params) and the shared pickers (key expiry and cache, key attribution,
+the scope rail, the org scope picker) are done.
 
 ## Using it
 
@@ -103,6 +104,15 @@ by its accessible name:
 
 ```tsx
 await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
+```
+
+To assert what is *offered* rather than pick one, `openOptions` opens the popup
+and hands back the listbox — the options are not inside the control, so
+`within(combobox).getAllByRole("option")` finds nothing:
+
+```tsx
+const offered = within(await openOptions(canvas.getByLabelText("Customer")));
+await expect(offered.getByRole("option", { name: "Acme" })).toBeInTheDocument();
 ```
 
 Note that a combobox's `value` is the option's **label**, not the value that

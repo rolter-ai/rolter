@@ -13,6 +13,7 @@ import {
   NEVER,
   type CacheMode,
 } from "./KeyMintFields";
+import { openOptions, pickOption } from "@/pages/story-harness";
 import { ApiError } from "@/lib/api";
 
 /**
@@ -76,10 +77,12 @@ export const Default: Story = {
   render: () => <MintForm />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // a combobox reads as the option's label; `30` and `inherit` are what the
+    // form sends
     await expect(canvas.getByLabelText("Expires")).toHaveValue(
-      String(DEFAULT_KEY_TTL_DAYS),
+      `In ${DEFAULT_KEY_TTL_DAYS} days`,
     );
-    await expect(canvas.getByLabelText("Response cache")).toHaveValue("inherit");
+    await expect(canvas.getByLabelText("Response cache")).toHaveValue("Inherit route setting");
   },
 };
 
@@ -149,10 +152,11 @@ export const CacheIsThreeState: Story = {
   render: () => <MintForm />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const select = canvas.getByLabelText("Response cache");
-    await expect(within(select).getAllByRole("option")).toHaveLength(3);
-    await userEvent.selectOptions(select, "off");
-    await expect(select).toHaveValue("off");
+    const cache = canvas.getByLabelText("Response cache");
+    await expect(within(await openOptions(cache)).getAllByRole("option")).toHaveLength(3);
+    await userEvent.keyboard("{Escape}");
+    await pickOption(cache, "Off");
+    await expect(cache).toHaveValue("Off");
   },
 };
 

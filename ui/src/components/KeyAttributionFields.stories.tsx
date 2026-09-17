@@ -9,6 +9,7 @@ import {
   UNATTRIBUTED,
 } from "./KeyAttributionFields";
 import type { BusinessUnitRow, CustomerRow, ProviderRow } from "@/lib/api";
+import { openOptions, pickOption } from "@/pages/story-harness";
 
 const unit = (id: string, name: string, retired = false): BusinessUnitRow => ({
   id,
@@ -114,8 +115,9 @@ export const Unattributed: Story = {
   render: () => <Attribution />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText("Business unit")).toHaveValue(UNATTRIBUTED);
-    await expect(canvas.getByLabelText("Customer")).toHaveValue(UNATTRIBUTED);
+    // a combobox reads as the option's label; UNATTRIBUTED is the value behind it
+    await expect(canvas.getByLabelText("Business unit")).toHaveValue("Unattributed");
+    await expect(canvas.getByLabelText("Customer")).toHaveValue("Unattributed");
   },
 };
 
@@ -123,7 +125,7 @@ export const Attributed: Story = {
   render: () => <Attribution unitId="bu-1" customerId="cu-1" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText("Customer")).toHaveValue("cu-1");
+    await expect(canvas.getByLabelText("Customer")).toHaveValue("Acme");
   },
 };
 
@@ -136,15 +138,11 @@ export const OnlyCustomersThatFitTheUnit: Story = {
   render: () => <Attribution unitId="bu-1" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const customers = canvas.getByLabelText("Customer");
-    await expect(within(customers).getByRole("option", { name: "Acme" })).toBeInTheDocument();
+    const customers = within(await openOptions(canvas.getByLabelText("Customer")));
+    await expect(customers.getByRole("option", { name: "Acme" })).toBeInTheDocument();
     // owned by Research, and an unowned customer any unit may claim
-    await expect(
-      within(customers).queryByRole("option", { name: "Globex" }),
-    ).not.toBeInTheDocument();
-    await expect(
-      within(customers).getByRole("option", { name: "Unowned" }),
-    ).toBeInTheDocument();
+    await expect(customers.queryByRole("option", { name: "Globex" })).not.toBeInTheDocument();
+    await expect(customers.getByRole("option", { name: "Unowned" })).toBeInTheDocument();
   },
 };
 
@@ -157,8 +155,8 @@ export const MovingTheUnitDropsAStrandedCustomer: Story = {
   render: () => <Attribution unitId="bu-1" customerId="cu-1" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.selectOptions(canvas.getByLabelText("Business unit"), "bu-2");
-    await expect(canvas.getByLabelText("Customer")).toHaveValue(UNATTRIBUTED);
+    await pickOption(canvas.getByLabelText("Business unit"), "Research");
+    await expect(canvas.getByLabelText("Customer")).toHaveValue("Unattributed");
   },
 };
 
@@ -171,13 +169,11 @@ export const RetiredAreNotOffered: Story = {
   render: () => <Attribution />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const units = canvas.getByLabelText("Business unit");
-    await expect(
-      within(units).queryByRole("option", { name: "Archived" }),
-    ).not.toBeInTheDocument();
-    await expect(
-      within(canvas.getByLabelText("Customer")).queryByRole("option", { name: "Lapsed" }),
-    ).not.toBeInTheDocument();
+    const units = within(await openOptions(canvas.getByLabelText("Business unit")));
+    await expect(units.queryByRole("option", { name: "Archived" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    const customers = within(await openOptions(canvas.getByLabelText("Customer")));
+    await expect(customers.queryByRole("option", { name: "Lapsed" })).not.toBeInTheDocument();
   },
 };
 
@@ -185,9 +181,10 @@ export const RetiredStaysWhenItIsTheSelection: Story = {
   render: () => <Attribution unitId="bu-3" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText("Business unit")).toHaveValue("bu-3");
+    const units = canvas.getByLabelText("Business unit");
+    await expect(units).toHaveValue("Archived");
     await expect(
-      within(canvas.getByLabelText("Business unit")).getByRole("option", { name: "Archived" }),
+      within(await openOptions(units)).getByRole("option", { name: "Archived" }),
     ).toBeInTheDocument();
   },
 };
