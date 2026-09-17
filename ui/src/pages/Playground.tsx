@@ -26,6 +26,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { ScatterPlot, type ScatterPoint } from "@/components/ui/scatter-plot";
 import { Select } from "@/components/ui/select";
@@ -127,32 +128,27 @@ function ModelSelect({
   const { t } = useTranslation();
   const routesLabel = t("pages.playground.groupRoutes");
   // routes, provider pins and groups look identical as bare strings, so they
-  // are grouped by owner — `owned_by` already carries what is needed (#946)
-  const groups = new Map<string, ModelOption[]>();
+  // are grouped by owner — `owned_by` already carries what is needed (#946).
+  // the combobox lays groups out in first-seen order, so the options are
+  // sorted into their buckets first (#968)
+  const groups = new Map<string, ComboboxOption[]>();
   for (const option of models) {
     const label = groupLabel(option, routesLabel);
+    const row: ComboboxOption = { value: option.id, label: option.id, group: label };
     const bucket = groups.get(label);
-    if (bucket) bucket.push(option);
-    else groups.set(label, [option]);
+    if (bucket) bucket.push(row);
+    else groups.set(label, [row]);
   }
 
   return (
-    <Select
+    <Combobox
+      options={[...groups.values()].flat()}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={onChange}
       aria-label={t("pages.playground.modelAria")}
-      className={className ?? "h-8 text-xs"}
-    >
-      {[...groups].map(([label, options]) => (
-        <optgroup key={label} label={label}>
-          {options.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.id}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </Select>
+      size="sm"
+      className={className}
+    />
   );
 }
 
@@ -616,7 +612,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           models={models}
           value={model}
           onChange={setModel}
-          className="mb-2.5 h-8 text-xs"
+          className="mb-2.5"
         />
         <div className="flex max-h-[280px] flex-col gap-1.5 overflow-y-auto pr-1">
           {texts.map((row, i) => (
