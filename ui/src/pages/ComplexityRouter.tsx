@@ -9,9 +9,9 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import {
   fetchRouteComplexity,
   fetchRoutes,
@@ -294,18 +294,14 @@ function PolicyDialog({
                 })
               }
             />
-            <Select
-              className="min-w-0 flex-1 font-mono text-xs"
+            <Combobox
+              size="sm"
+              className="min-w-0 flex-1 font-mono"
               aria-label={translate("pages.complexityRouter.tierRouteAria")}
               value={t.route}
-              onChange={(e) => set(i, { route: e.target.value })}
-            >
-              {allRoutes.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </Select>
+              onChange={(route) => set(i, { route })}
+              options={allRoutes.map((m) => ({ value: m, label: m }))}
+            />
             <button
               type="button"
               title={translate("pages.complexityRouter.removeTierAria", {

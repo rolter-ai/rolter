@@ -12,10 +12,10 @@ import { LoadError } from "@/components/LoadError";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -242,16 +242,14 @@ function SignInPolicyCard({
           label={t("pages.sso.policy.mfaLabel")}
           hint={t(`pages.sso.policy.mfaHints.${MFA_KEY[mfa]}`)}
         >
-          <Select
+          <Combobox
             value={mfa}
-            onChange={(e) => setMfa(e.target.value as MfaPolicy)}
-          >
-            {MFA_POLICIES.map((value) => (
-              <option key={value} value={value}>
-                {t(`pages.sso.policy.mfaOptions.${MFA_KEY[value]}`)}
-              </option>
-            ))}
-          </Select>
+            onChange={(picked) => setMfa(picked as MfaPolicy)}
+            options={MFA_POLICIES.map((value) => ({
+              value,
+              label: t(`pages.sso.policy.mfaOptions.${MFA_KEY[value]}`),
+            }))}
+          />
         </Field>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t border-[color:var(--border-subtle)] px-4 py-3">
@@ -437,18 +435,14 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
           aria-label={t("pages.sso.mappings.groupLabel")}
           placeholder={t("pages.sso.mappings.groupPlaceholder")}
         />
-        <Select
-          className="h-8 w-[132px]"
+        <Combobox
+          size="sm"
+          className="w-[132px]"
           value={role}
-          onChange={(e) => setRole(e.target.value)}
+          onChange={setRole}
           aria-label={t("pages.sso.mappings.roleLabel")}
-        >
-          {MAPPABLE_ROLES.map((r) => (
-            <option key={r} value={r}>
-              {roleLabel(t, r)}
-            </option>
-          ))}
-        </Select>
+          options={MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
+        />
         <Button
           size="sm"
           variant="outline"
@@ -884,17 +878,14 @@ function ProviderSheet({
         label={t("pages.sso.create.defaultRole")}
         hint={t("pages.sso.create.defaultRoleHint")}
       >
-        <Select
+        <Combobox
           value={draft.defaultRole}
-          onChange={(e) => set({ defaultRole: e.target.value })}
-        >
-          <option value="">{t("pages.sso.create.defaultRoleNone")}</option>
-          {MAPPABLE_ROLES.map((r) => (
-            <option key={r} value={r}>
-              {roleLabel(t, r)}
-            </option>
-          ))}
-        </Select>
+          onChange={(defaultRole) => set({ defaultRole })}
+          options={[
+            { value: "", label: t("pages.sso.create.defaultRoleNone") },
+            ...MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) })),
+          ]}
+        />
       </Field>
     </EditorSheet>
   );

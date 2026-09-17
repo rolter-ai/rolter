@@ -346,7 +346,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
           {/* the empty-result message is a sibling of the listbox, not a child
               of it: a listbox may only own options and groups, and a bare
               paragraph inside one is an axe `aria-required-children` failure */}
-          {count === 0 && (
+          {open && count === 0 && (
             <p className="px-2 py-3 text-center text-xs text-muted-foreground">
               {t("common.combobox.noMatches")}
             </p>
@@ -365,7 +365,13 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
             // are what scrolls it. as a listbox it is a widget axe understands
             className="max-h-60 overflow-y-auto"
           >
-            {sections.map((section) => {
+            {/* the rows exist only while the popup is open. a closed combobox
+                that kept them left every option's text in the document, so a
+                screen with a dropdown of audit actions had two nodes reading
+                `provider.create` and `getByText` stopped being unambiguous —
+                and a long list paid its DOM cost on every render */}
+            {open &&
+              sections.map((section) => {
               const options = section.items.map(({ option, index }) => (
                 <div
                   key={option.value}
@@ -418,8 +424,8 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
                   </p>
                   {options}
                 </div>
-              );
-            })}
+                );
+              })}
           </div>
         </div>
       </div>

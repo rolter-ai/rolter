@@ -9,10 +9,10 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import {
   createRoute,
   createRouteTarget,
@@ -350,28 +350,23 @@ function AddRouteDialog({
         </Field>
         {/* the select plus its caveat, so the label is bound by hand (#1264) */}
         <Field label={t("pages.routing.form.strategy")} htmlFor="route-strategy">
-          <Select
+          <Combobox
             id="route-strategy"
             value={strategy}
-            onChange={(e) => setStrategy(e.target.value)}
-          >
-            {strategyOptions(strategy).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
+            onChange={setStrategy}
+            options={strategyOptions(strategy).map((s) => ({ value: s, label: s }))}
+          />
           <StrategyHint strategy={strategy} />
         </Field>
         <Field label={t("pages.routing.form.firstTarget")}>
-          <Select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
-            <option value="">{t("pages.routing.form.noTarget")}</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={providerId}
+            onChange={setProviderId}
+            options={[
+              { value: "", label: t("pages.routing.form.noTarget") },
+              ...providers.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+          />
         </Field>
         {providerId && (
           <Field label={t("pages.routing.form.weight")}>

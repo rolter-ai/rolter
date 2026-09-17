@@ -9,8 +9,8 @@ import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
 import { ListHeader, ListRow, ListTable, PageBody, Pill } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
@@ -133,38 +133,32 @@ function McpLogsScreen() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
-        <Select
+        <Combobox
           className="w-[160px]"
           aria-label={t("pages.mcpLogs.statusFilterAria")}
           value={status}
-          onChange={(e) => {
-            setStatus(e.target.value);
+          onChange={(picked) => {
+            setStatus(picked);
             resetPaging();
           }}
-        >
-          <option value="">{t("pages.mcpLogs.allStatuses")}</option>
-          {MCP_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </Select>
-        <Select
+          options={[
+            { value: "", label: t("pages.mcpLogs.allStatuses") },
+            ...MCP_STATUSES.map((s) => ({ value: s, label: s })),
+          ]}
+        />
+        <Combobox
           className="w-[180px]"
           aria-label={t("pages.mcpLogs.transportFilterAria")}
           value={transport}
-          onChange={(e) => {
-            setTransport(e.target.value);
+          onChange={(picked) => {
+            setTransport(picked);
             resetPaging();
           }}
-        >
-          <option value="">{t("pages.mcpLogs.allTransports")}</option>
-          {MCP_TRANSPORTS.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </Select>
+          options={[
+            { value: "", label: t("pages.mcpLogs.allTransports") },
+            ...MCP_TRANSPORTS.map((kind) => ({ value: kind, label: kind })),
+          ]}
+        />
         <div className="ml-auto flex items-center gap-2">
           <Button
             size="sm"

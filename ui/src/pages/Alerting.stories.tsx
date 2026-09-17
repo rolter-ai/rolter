@@ -19,6 +19,7 @@ import {
   scoped,
   sheet,
   withConfirm,
+  pickOption,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -342,7 +343,7 @@ export const CreatesARule: Story = {
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "spend spike");
-    await userEvent.selectOptions(within(form).getByLabelText("Signal"), "spend_velocity");
+    await pickOption(within(form).getByLabelText("Signal"), "spend_velocity");
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
     await expectSheetClosed();
   },

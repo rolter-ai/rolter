@@ -17,6 +17,7 @@ import {
   scoped,
   sheet,
   type FetchStub,
+  pickOption,
 } from "./story-harness";
 import type {
   OrgAuthPolicy,
@@ -615,7 +616,7 @@ export const RequiringASecondFactorWarnsAboutTheLockout: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const select = await canvas.findByLabelText("Second factor");
-    await userEvent.selectOptions(select, "required_all");
+    await pickOption(select, "Required for everyone");
     // the hint under the control changes with the value: the two `required_*`
     // options differ in who they bind, which is the whole decision
     await expect(canvas.getByText(/Superadmins included/)).toBeVisible();
@@ -663,8 +664,9 @@ export const RelaxingThePolicySavesWithoutAConfirmation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const select = await canvas.findByLabelText("Second factor");
-    await waitFor(() => expect(select).toHaveValue("required_all"));
-    await userEvent.selectOptions(select, "optional");
+    // a combobox reads as the option's label; `required_all` is the stored value
+    await waitFor(() => expect(select).toHaveValue("Required for everyone"));
+    await pickOption(select, "Optional");
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     await expect(
       await mfaRelax.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
@@ -698,7 +700,7 @@ export const AsMemberThePolicyIsReadOnly: Story = {
     // allowed to have, and hiding it would leave them guessing why sign-in
     // asks for a code
     await expect(await canvas.findByLabelText("Second factor")).toBeVisible();
-    await userEvent.selectOptions(canvas.getByLabelText("Second factor"), "optional");
+    await pickOption(canvas.getByLabelText("Second factor"), "Optional");
     await expectRefused(canvasElement, "Save policy");
   },
 };

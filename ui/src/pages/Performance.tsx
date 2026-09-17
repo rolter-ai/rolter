@@ -6,8 +6,8 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchRuntimePolicy,
@@ -253,21 +253,16 @@ function PerformanceScreen() {
             <label htmlFor="perf-queue-backpressure" className="text-xs font-medium text-[color:var(--text-secondary)]">
               {t("pages.performance.queue.whenFull")}
             </label>
-            <Select
+            <Combobox
               id="perf-queue-backpressure"
               value={form.queueBackpressure}
               disabled={!queue}
               aria-label={t("pages.performance.queue.whenFull")}
-              onChange={(e) =>
-                set({ queueBackpressure: e.target.value as BackpressurePolicy })
+              onChange={(picked) =>
+                set({ queueBackpressure: picked as BackpressurePolicy })
               }
-            >
-              {BACKPRESSURE_POLICIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </Select>
+              options={BACKPRESSURE_POLICIES.map((p) => ({ value: p, label: p }))}
+            />
             <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
               {t(BACKPRESSURE_COPY[form.queueBackpressure])}
             </span>

@@ -11,10 +11,10 @@ import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
 import { ListHeader, ListRow, ListTable, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import {
   ALERT_SIGNALS,
   createAlertChannel,
@@ -609,13 +609,11 @@ function AddRuleDialog({
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pages.alerting.rules.namePlaceholder")} />
         </Field>
         <Field label={t("pages.alerting.rules.fieldSignal")}>
-          <Select value={signal} onChange={(e) => setSignal(e.target.value)}>
-            {ALERT_SIGNALS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={signal}
+            onChange={setSignal}
+            options={ALERT_SIGNALS.map((s) => ({ value: s, label: s }))}
+          />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("pages.alerting.rules.fieldThreshold")}>
@@ -636,14 +634,14 @@ function AddRuleDialog({
           </Field>
         </div>
         <Field label={t("pages.alerting.rules.fieldChannel")}>
-          <Select value={channelId} onChange={(e) => setChannelId(e.target.value)}>
-            <option value="">{t("pages.alerting.rules.channelNone")}</option>
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={channelId}
+            onChange={setChannelId}
+            options={[
+              { value: "", label: t("pages.alerting.rules.channelNone") },
+              ...channels.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+          />
         </Field>
       </div>
     </EditorSheet>

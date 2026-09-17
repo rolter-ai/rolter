@@ -1,19 +1,15 @@
 # Dashboard dropdowns: the Combobox primitive
 
-Every dropdown in the dashboard used to be a native `<select>`, wrapped by
-`ui/src/components/ui/select.tsx`. The wrapper styles the *closed* control; the
-open list is drawn by the operating system, so it ignores the design tokens
-entirely — wrong font, wrong colours, no dark mode, no grouping, no secondary
-line. And a native select has no type-to-filter, only first-letter jumping,
-which makes a fleet of `provider/model` addresses unusable (#968).
+Every dropdown in the dashboard used to be a native `<select>`, wrapped by a
+`Select` primitive. That wrapper styled the *closed* control only; the open list
+was drawn by the operating system, so it ignored the design tokens entirely —
+wrong font, wrong colours, no dark mode, no grouping, no secondary line. And a
+native select has no type-to-filter, only first-letter jumping, which makes a
+fleet of `provider/model` addresses unusable (#968).
 
-`ui/src/components/ui/combobox.tsx` is the replacement. New dropdowns use it.
-`Select` stays for now while the remaining call sites migrate screen by screen.
-Done so far: the Playground, the editor sheets (model, provider, provider group,
-params), the shared pickers (key expiry and cache, key attribution, the scope
-rail, the org scope picker), and the screens whose dropdowns list fixed choices
-— Limits, Users, Guardrail rules, Guardrail providers, Keys, Plugins, MCP
-management, Prompt repository and Skills repository.
+`ui/src/components/ui/combobox.tsx` is the one dropdown the dashboard has now.
+The `Select` wrapper is gone, and with it the risk of a screen growing a second
+kind of dropdown: there is nothing left to reach for.
 
 ## Using it
 
@@ -140,6 +136,5 @@ is the point of the issue this primitive closes.
 
 ## Not done yet
 
-- The remaining `Select` call sites migrate screen by screen; see #968.
 - Very long lists are not virtualised — filtering narrows them fast enough that
   it has not mattered, but a picker over thousands of rows will want it.

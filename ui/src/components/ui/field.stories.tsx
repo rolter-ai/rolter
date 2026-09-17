@@ -3,7 +3,7 @@ import { expect, userEvent, within } from "storybook/test";
 
 import { Field } from "./field";
 import { Input } from "./input";
-import { Select } from "./select";
+import { Combobox } from "./combobox";
 
 const meta = {
   title: "Primitives/Field",
@@ -109,20 +109,22 @@ export const InfoHintOpensOnHover: Story = {
   },
 };
 
+const STRATEGIES = [
+  { value: "round_robin", label: "Round robin" },
+  { value: "least_latency", label: "Least latency" },
+];
+
 /** A field wraps whatever control it is handed, not just an `Input`. */
-export const AroundASelect: Story = {
+export const AroundACombobox: Story = {
   args: { label: "Strategy", hint: "How requests are balanced across targets." },
   render: (args) => (
     <Field {...args}>
-      <Select defaultValue="round_robin">
-        <option value="round_robin">Round robin</option>
-        <option value="least_latency">Least latency</option>
-      </Select>
+      <Combobox value="round_robin" onChange={() => {}} options={STRATEGIES} />
     </Field>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText("Strategy")).toHaveValue("round_robin");
+    await expect(canvas.getByLabelText("Strategy")).toHaveValue("Round robin");
   },
 };
 
@@ -137,10 +139,7 @@ export const LabelsTheFirstOfTwoChildren: Story = {
   args: { label: "Strategy" },
   render: (args) => (
     <Field {...args}>
-      <Select defaultValue="round_robin">
-        <option value="round_robin">Round robin</option>
-        <option value="least_latency">Least latency</option>
-      </Select>
+      <Combobox value="round_robin" onChange={() => {}} options={STRATEGIES} />
       <p className="text-xs text-muted-foreground">
         Least latency needs health data before it can rank anything.
       </p>
@@ -148,7 +147,7 @@ export const LabelsTheFirstOfTwoChildren: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByLabelText("Strategy")).toHaveValue("round_robin");
+    await expect(canvas.getByLabelText("Strategy")).toHaveValue("Round robin");
   },
 };
 
