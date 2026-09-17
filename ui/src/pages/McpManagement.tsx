@@ -78,6 +78,7 @@ import {
   oauthTouched,
   oauthValid,
   toOAuthInput,
+  urlResetsDiscovery,
   type OAuthDraft,
 } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
@@ -144,7 +145,7 @@ function DiscoveredEndpoints({ server, resets }: { server: McpServerRow | null; 
 
 const endpointError = (t: TFunction, value: string) => value.trim() && !oauthEndpoint(value.trim()) ? t("pages.mcpCatalog.oauth.endpointError") : undefined;
 
-function OAuthClientSection({ server, draft, onChange }: { server: McpServerRow | null; draft: OAuthDraft; onChange: (patch: Partial<OAuthDraft>) => void }) {
+function OAuthClientSection({ server, url, draft, onChange }: { server: McpServerRow | null; url: string; draft: OAuthDraft; onChange: (patch: Partial<OAuthDraft>) => void }) {
   const { t } = useTranslation();
   // read only for the redirect uri, which is deployment-derived and so cannot
   // be worked out from the browser's own origin. best-effort: the section still
@@ -158,7 +159,7 @@ function OAuthClientSection({ server, draft, onChange }: { server: McpServerRow 
     <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.oauth.lead")}</p>
     <div className="mt-4 grid gap-3">
       <DiscoveryPicker value={draft.discovery} onChange={(discovery) => onChange({ discovery })} />
-      {!manual && <DiscoveredEndpoints server={server} resets={oauthResetsDiscovery(draft, server)} />}
+      {!manual && <DiscoveredEndpoints server={server} resets={oauthResetsDiscovery(draft, server, url)} />}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t("pages.mcpCatalog.oauth.clientId")} htmlFor="mcp-client-id"><Input id="mcp-client-id" value={draft.clientId} onChange={(event) => onChange({ clientId: event.target.value })} /></Field>
         <Field label={t("pages.mcpCatalog.oauth.clientSecret")} htmlFor="mcp-client-secret" hint={draft.clearSecret ? t("pages.mcpCatalog.oauth.clearingSecret") : t("pages.mcpCatalog.oauth.secretHint")}><Input id="mcp-client-secret" type="password" autoComplete="new-password" disabled={draft.clearSecret} placeholder={stored ? t("pages.mcpCatalog.oauth.secretPlaceholder") : undefined} value={draft.secret} onChange={(event) => onChange({ secret: event.target.value })} /></Field>
@@ -373,11 +374,15 @@ function ServerDialog({ initial, pending, error, onClose, onSave }: { initial: M
   });
   const submit = () => dropsCredential(auth, row) ? setConfirming("save") : onSave(draft());
   const name = form.name.trim() || initial?.name || "";
+  // said beside the url itself, whatever the auth kind: the store drops the
+  // discovery cache on any url move (#1416), and the panel that also warns is
+  // only on screen for an oauth server under auto discovery
+  const urlResets = urlResetsDiscovery(form.url, initial);
 
   return <>
     <BaseDialog open={!confirming} onOpenChange={(open) => !open && onClose()}><DialogHeader><DialogTitle>{initial ? t("pages.mcpCatalog.dialog.titleEdit") : t("pages.mcpCatalog.dialog.titleAdd")}</DialogTitle><DialogDescription>{t("pages.mcpCatalog.dialog.lead")}</DialogDescription></DialogHeader><div className="grid max-h-[70vh] gap-4 overflow-y-auto py-4 pr-1">
       <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.name")} htmlFor="mcp-name"><Input id="mcp-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={t("pages.mcpCatalog.fields.slug")} htmlFor="mcp-slug" hint={t("pages.mcpCatalog.fields.slugHint")}><Input id="mcp-slug" disabled={!!initial} value={initial?.slug ?? form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} /></Field></div>
-      <Field label={t("pages.mcpCatalog.fields.url")} htmlFor="mcp-url"><Input id="mcp-url" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} /></Field>
+      <Field label={t("pages.mcpCatalog.fields.url")} htmlFor="mcp-url"><Input id="mcp-url" aria-describedby={urlResets ? "mcp-url-resets-discovery" : undefined} value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} />{urlResets && <p id="mcp-url-resets-discovery" className="text-xs leading-relaxed text-[color:var(--status-warning-text)]">{t("pages.mcpCatalog.fields.urlResetsDiscovery")}</p>}</Field>
       <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.transport")} htmlFor="mcp-transport"><Select id="mcp-transport" value={form.transport} onChange={(event) => setForm({ ...form, transport: event.target.value })}>{TRANSPORTS.map((transport) => <option key={transport}>{transport}</option>)}</Select></Field><div className="flex items-end"><label className="flex min-h-9 w-full items-center justify-between rounded-md border border-[color:var(--border-default)] px-3 text-sm"><span id="mcp-server-enabled-label">{t("pages.mcpCatalog.fields.enabledInGateway")}</span><Switch checked={form.enabled} aria-labelledby="mcp-server-enabled-label" onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></label></div></div>
       <Field label={t("pages.mcpCatalog.fields.description")} htmlFor="mcp-description"><Textarea id="mcp-description" rows={2} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></Field>
       <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.tools")} htmlFor="mcp-tools" hint={t("pages.mcpCatalog.fields.toolsHint")}><Textarea id="mcp-tools" rows={5} value={tools} onChange={(event) => setTools(event.target.value)} /></Field><Field label={t("pages.mcpCatalog.fields.scopes")} htmlFor="mcp-scopes" hint={t("pages.mcpCatalog.fields.scopesHint")}><Textarea id="mcp-scopes" rows={5} value={scopes} onChange={(event) => setScopes(event.target.value)} /></Field></div>
@@ -385,7 +390,7 @@ function ServerDialog({ initial, pending, error, onClose, onSave }: { initial: M
         <div><div className="flex items-center gap-2"><KeyRound className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden /><h3 className="text-sm font-semibold">{t("pages.mcpCatalog.auth.title")}</h3></div><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.auth.lead")}</p></div>
         <AuthKindPicker value={auth.kind} onChange={(kind) => setAuth((current) => ({ ...current, kind }))} />
         {carriesCredential(auth.kind) && <CredentialSection server={row} draft={auth} onChange={(patch) => setAuth((current) => ({ ...current, ...patch }))} onClear={() => { clear.reset(); setConfirming("clear"); }} />}
-        {auth.kind === "oauth" && <OAuthClientSection server={initial} draft={oauth} onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))} />}
+        {auth.kind === "oauth" && <OAuthClientSection server={initial} url={form.url} draft={oauth} onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))} />}
         {dropsCredential(auth, row) && <p className="text-xs leading-relaxed text-[color:var(--status-warning-text)]">{t("pages.mcpCatalog.auth.dropsOnSave")}</p>}
       </section>
       <OverridesSection draft={overrides} onChange={(patch) => setOverrides((current) => ({ ...current, ...patch }))} />

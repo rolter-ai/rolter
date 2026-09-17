@@ -101,10 +101,20 @@ export function toOAuthInput(draft: OAuthDraft): McpOAuthClientInput {
   return input;
 }
 
+/**
+ * Whether saving this URL makes the control plane drop what discovery found.
+ *
+ * The store compares the stored url with the one sent using `is distinct from`
+ * (#1416), and the dialog sends the field untrimmed, so this compares exactly:
+ * a trailing space the operator typed is a new url to the backend too.
+ */
+export const urlResetsDiscovery = (url: string, server: McpServerRow | null) =>
+  !!server?.oauth_discovered_at && url !== server.url;
+
 /** Whether saving this draft makes the control plane drop what discovery found. */
-export const oauthResetsDiscovery = (draft: OAuthDraft, server: McpServerRow | null) =>
+export const oauthResetsDiscovery = (draft: OAuthDraft, server: McpServerRow | null, url: string) =>
   !!server?.oauth_discovered_at &&
-  (draft.discovery !== discoveryOf(server) || draft.issuer.trim() !== (server.oauth_issuer ?? ""));
+  (urlResetsDiscovery(url, server) || draft.discovery !== discoveryOf(server) || draft.issuer.trim() !== (server.oauth_issuer ?? ""));
 
 /**
  * Whether Connect has anywhere to send the browser: a client id, and either a

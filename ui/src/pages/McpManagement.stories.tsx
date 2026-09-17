@@ -509,6 +509,47 @@ export const OAuthIssuerChangeResetsDiscovery: Story = {
   },
 };
 
+// the store drops the discovery cache when the url moves too (#1416), so the
+// url field itself says so, and the discovered panel warns the same way it
+// does for an issuer or mode change (#1572). moving the url back clears both
+const moved = discoverySaves();
+export const OAuthUrlChangeResetsDiscovery: Story = {
+  render: () => <Harness fetchStub={moved.stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Notion");
+    const url = dialog.getByLabelText("Endpoint URL");
+    await expect(dialog.queryByText(/clears these results/)).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/clears the OAuth endpoints discovered/)).not.toBeInTheDocument();
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://mcp.notion.so/mcp");
+    await expect(url).toHaveAccessibleDescription(/Saving a new URL clears the OAuth endpoints discovered for this server/);
+    const found = within(dialog.getByRole("group", { name: "Discovered endpoints" }));
+    await expect(found.getByText(/Saving a new server URL, issuer or discovery mode clears these results/)).toBeVisible();
+    await userEvent.clear(url);
+    await userEvent.type(url, DISCOVERED.url);
+    await expect(dialog.queryByText(/clears these results/)).not.toBeInTheDocument();
+    await expect(url).not.toHaveAccessibleDescription(/clears the OAuth endpoints/);
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://mcp.notion.so/mcp");
+    await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
+    await expect(await moved.sent("PATCH", "/mcp-servers/server-notion")).toMatchObject({ url: "https://mcp.notion.so/mcp" });
+  },
+};
+
+// a server nothing was ever discovered for loses nothing, so a new url is not
+// worth a warning there
+export const OAuthUrlChangeWithoutDiscoveryStaysQuiet: Story = {
+  render: () => <Harness fetchStub={discoverySaves().stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Figma");
+    const url = dialog.getByLabelText("Endpoint URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://mcp.figma.com/v2/mcp");
+    await expect(dialog.queryByText(/clears these results/)).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/clears the OAuth endpoints discovered/)).not.toBeInTheDocument();
+  },
+};
+
 // the client read is best-effort: refused, the section still edits off the
 // server row and only the redirect uri, which nothing else can supply, is gone
 export const OAuthClientReadRefused: Story = {
