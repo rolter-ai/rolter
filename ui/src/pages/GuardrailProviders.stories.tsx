@@ -1,10 +1,22 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailProviders from "./GuardrailProviders";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectLoadError, expectSkeleton, expectToast, recording, Toasted } from "./story-harness";
+import {
+  cancelConfirmation,
+  confirmDestructive,
+  expectEmptyState,
+  expectForbidden,
+  expectLoadError,
+  expectSkeleton,
+  expectToast,
+  Harness as ScreenHarness,
+  json,
+  recording,
+  Toasted,
+  type FetchStub,
+  type StoryRole,
+} from "./story-harness";
 import type { GuardrailProviderRow } from "@/lib/api";
 
 const PROVIDERS: GuardrailProviderRow[] = [
@@ -40,21 +52,29 @@ const PROVIDERS: GuardrailProviderRow[] = [
   },
 ];
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-// `toasted` is opt-in: the Toaster contributes its own role="status" and
-// role="alert" regions, and the stories that query those by role would stop
-// being able to
-function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boolean }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(() => () => { if (original.current) globalThis.fetch = original.current; }, []);
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown", the `superadminOnly` wrapper
+ * never blocks, and a story can only reach the 403 by stubbing one — which
+ * tests the screen's own error path rather than the gate (#1606).
+ *
+ * `toasted` is opt-in: the Toaster contributes its own role="status" and
+ * role="alert" regions, and the stories that query those by role would stop
+ * being able to.
+ */
+function Harness({
+  fetchStub,
+  role,
+  toasted,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  toasted?: boolean;
+}) {
   return (
-    <QueryClientProvider client={client}>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
       {toasted ? (
         <Toasted>
           <GuardrailProviders />
@@ -62,7 +82,7 @@ function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boole
       ) : (
         <GuardrailProviders />
       )}
-    </QueryClientProvider>
+    </ScreenHarness>
   );
 }
 
@@ -199,4 +219,21 @@ export const ExplainsFailOpen: Story = {
     );
     await waitFor(() => expect(within(document.body).getByText(/fail-open favors availability/i)).toBeVisible());
   },
+};
+
+// What a non-superadmin gets: the screen refused before it asks (#1606).
+//
+// Guardrails are deployment-wide — `guardrail_provider` is superadmin at every
+// action — so `superadminOnly` never mounts the screen for an org role however
+// high. The stub answers with a good payload on purpose: if the wrapper is
+// dropped the screen renders that payload and this story fails, which the
+// `Forbidden` story cannot do, since it stubs the 403 itself.
+export const RefusedToAnAdmin: Story = {
+  render: () => <Harness fetchStub={async () => json(PROVIDERS)} role="admin" />,
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => <Harness fetchStub={async () => json(PROVIDERS)} role="viewer" />,
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
 };

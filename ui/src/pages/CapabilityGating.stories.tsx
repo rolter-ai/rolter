@@ -8,9 +8,11 @@ import Pricing from "./Pricing";
 import Providers from "./Providers";
 import Security from "./Security";
 import {
-  Harness,
   expectForbidden,
+  Harness,
   json,
+  NEEDS_ADMIN,
+  NEEDS_SUPERADMIN,
   routes,
   scoped,
   type StoryRole,
@@ -62,7 +64,7 @@ async function expectGatedOut(canvasElement: HTMLElement, name: RegExp) {
   await waitFor(() => expect(button).toBeDisabled());
   // "disabled" alone is the same non-answer the 403 was: the control has to
   // name the role that would make it work
-  await expect(button).toHaveAttribute("title", "Requires the Admin role");
+  await expect(button).toHaveAttribute("title", NEEDS_ADMIN);
 }
 
 /** Assert the create control is offered. */
@@ -132,9 +134,6 @@ const onePrice = routes([
   ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: { USD: 1 } })],
   ["/model-prices", () => [PRICE]],
 ]);
-
-const NEEDS_ADMIN = "Requires the Admin role";
-const NEEDS_SUPERADMIN = "Requires a superadmin";
 
 /**
  * Assert a per-row control is refused, and says what it would take (#1258).

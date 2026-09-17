@@ -1,4 +1,3 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
@@ -8,11 +7,14 @@ import {
   cancelConfirmation,
   confirmDestructive,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   expectToast,
+  Harness as ScreenHarness,
   recording,
   sheet,
   Toasted,
+  type StoryRole,
 } from "./story-harness";
 import type {
   AttributionSpendRow,
@@ -137,28 +139,27 @@ function router(
   };
 }
 
-// the stub is installed during render, not in an effect: child effects run
-// before the parent's, so an effect would let the first real fetch through
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown" and every gated control renders
+ * enabled, so a story without one can never see a control refused (#1606).
+ */
 function Harness({
   fetchStub,
+  role,
   children,
 }: {
   fetchStub: FetchStub;
+  role?: StoryRole;
   children: React.ReactNode;
 }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
+  return (
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+      {children}
+    </ScreenHarness>
   );
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
 const meta = {
@@ -562,5 +563,36 @@ export const SpendFailed: Story = {
         canvas.getAllByRole("alert").some((a) => /attribution spend/.test(a.textContent ?? "")),
       ).toBe(true),
     );
+  },
+};
+
+// One screen, two resources (#1606). A business unit is `business_unit` and a
+// customer is `customer`, both admin at every action, and the screen picks the
+// capability from the `kind` it was rendered with — so each half has to be
+// asserted separately or a swapped pair passes.
+export const BusinessUnitsRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={router({})} role="viewer">
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /new business unit/i);
+    await expectRefused(canvasElement, "Edit Platform Engineering");
+    await expectRefused(canvasElement, "Retire Platform Engineering");
+    await expectRefused(canvasElement, "Delete Platform Engineering");
+  },
+};
+
+export const CustomersRefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={router({})} role="member">
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /new customer/i);
+    await expectRefused(canvasElement, "Edit Acme Corp");
+    await expectRefused(canvasElement, "Delete Acme Corp");
   },
 };

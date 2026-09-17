@@ -3,23 +3,24 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AlertChannels, AlertHistory, AlertRules } from "./Alerting";
 import {
-  Harness,
-  Toasted,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectClosesWithoutPrompting,
+  expectForbidden,
   expectSheetClosed,
   expectSkeleton,
   expectToast,
+  Harness,
   json,
   pending,
+  pickOption,
   recording,
   routes,
   scoped,
   sheet,
+  Toasted,
   withConfirm,
-  pickOption,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -481,4 +482,48 @@ export const RulesMobile: Story = {
     await canvas.findByText("high error rate");
     await expectNoHorizontalOverflow();
   },
+};
+
+// The rules and the history refused before they ask (#1606).
+//
+// Every alerting resource is superadmin-only, so all three screens carry a
+// `superadminOnly` wrapper. The channels' wrapper is covered in
+// `CapabilityGating.stories.tsx`; these two are not, and their `Forbidden`
+// stories stub the 403 themselves — the old path — so they pass whether the
+// wrapper is there or not. These stubs answer with a good payload instead, so
+// the screen renders it and the story fails the moment the wrapper is dropped.
+export const RulesRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="admin">
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+export const RulesRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+export const HistoryRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="admin">
+      <AlertHistory />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+export const HistoryRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <AlertHistory />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
 };

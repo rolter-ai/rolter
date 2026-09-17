@@ -1,14 +1,18 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AuthSessions, OAuthGrants } from "./McpOAuth";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectRefused,
   expectSkeleton,
+  Harness as ScreenHarness,
+  json,
+  NEEDS_MEMBER,
   recording,
+  type FetchStub,
+  type StoryRole,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type {
@@ -149,14 +153,6 @@ const SESSIONS: McpOAuthSessionRow[] = [
   }),
 ];
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
 // these screens read the active org through useScope, so a stub has to answer
 // the scope queries as well as the two listings under test
 function routed(
@@ -185,28 +181,27 @@ function routed(
   };
 }
 
-// the stub is installed during render, not in an effect: child effects run
-// before the parent's, so an effect would let the first real fetch through
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown" and every gated control renders
+ * enabled, so a story without one can never see a control refused (#1606).
+ */
 function Harness({
   fetchStub,
+  role,
   children,
 }: {
   fetchStub: FetchStub;
+  role?: StoryRole;
   children: React.ReactNode;
 }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
+  return (
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+      {children}
+    </ScreenHarness>
   );
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
 const meta = {
@@ -499,5 +494,24 @@ export const SessionsForbidden: Story = {
     await waitFor(() =>
       expect(canvas.getByText(/You do not have access to auth sessions/)).toBeVisible(),
     );
+  },
+};
+
+// The one control on this screen a role can be refused (#1606).
+//
+// Everything else here is deliberately open: a viewer may revoke their own
+// consent and their own session, because a caller who cannot withdraw access
+// they granted is worse off than one who never granted it. Renewing a session
+// is `mcp_oauth_session:update`, which takes a member — so a viewer is the only
+// caller who sees a refusal, and this is the only story that can catch the gate
+// being dropped.
+export const SessionRenewRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ sessions: () => json([session()]) })} role="viewer">
+      <AuthSessions />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /^Renew the session/, NEEDS_MEMBER);
   },
 };

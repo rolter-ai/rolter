@@ -1,15 +1,18 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Connectors from "./Connectors";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectForbidden,
   expectLoadError,
   expectSkeleton,
+  Harness as ScreenHarness,
+  json,
   recording,
+  type FetchStub,
+  type StoryRole,
 } from "./story-harness";
 import type { ConnectorRow } from "@/lib/api";
 
@@ -53,14 +56,6 @@ const CONNECTORS: ConnectorRow[] = [
   }),
 ];
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
 // the collector config comes back as a yaml *document*, not json — the shape
 // `render_yaml` in crates/rolter-control/src/collector_config.rs produces
 const COLLECTOR_CONFIG = `# rendered by rolter (GET /api/v1/connectors/collector-config); do not edit by hand
@@ -93,25 +88,19 @@ function withConfig(
     String(input).includes("collector-config") ? config() : json(connectors);
 }
 
-// the stub is installed during render, not in an effect: child effects run
-// before the parent's, so an effect would let the first real fetch through
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-    },
-    [],
-  );
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown", the `superadminOnly` wrapper
+ * never blocks, and a story can only reach the 403 by stubbing one — which
+ * tests the screen's own error path rather than the gate (#1606).
+ */
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
-    <QueryClientProvider client={client}>
-      <Connectors />
-    </QueryClientProvider>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
+    <Connectors />
+    </ScreenHarness>
   );
 }
 
@@ -304,4 +293,21 @@ export const CollectorConfigError: Story = {
     );
     await expectLoadError(document.body, /collector config/i);
   },
+};
+
+// What a non-superadmin gets: the screen refused before it asks (#1606).
+//
+// A connector ships the deployment's own telemetry, so `connector` is
+// superadmin at every action and `superadminOnly` never mounts the screen for
+// an org role. The stub answers with a good payload on purpose: if the wrapper
+// is dropped the screen renders that payload and this story fails, which the
+// `Forbidden` story cannot do, since it stubs the 403 itself.
+export const RefusedToAnAdmin: Story = {
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} role="admin" />,
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} role="viewer" />,
+  play: async ({ canvasElement }) => expectForbidden(canvasElement),
 };

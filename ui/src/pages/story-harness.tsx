@@ -247,6 +247,9 @@ export const NEEDS_ADMIN = en.rbac.needsRole.replace("{{role}}", en.shell.roles.
  */
 export const NEEDS_SUPERADMIN = en.rbac.needsSuperadmin;
 
+/** The same sentence for a capability the table opens at `member`. */
+export const NEEDS_MEMBER = en.rbac.needsRole.replace("{{role}}", en.shell.roles.member);
+
 /**
  * Assert a gated control is refused, and that it names what would allow it.
  *
