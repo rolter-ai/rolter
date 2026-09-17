@@ -22,6 +22,7 @@ import { LoadError } from "@/components/LoadError";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
+import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -122,6 +123,9 @@ export default function Account() {
 
   return (
     <PageBody>
+      {/* the second factor comes first: it protects the session that reaches
+          every key below it, and an org policy can make it mandatory (#1078) */}
+      <TwoFactorPanel />
       {/* the screen sits under "Account" in a product that also has provider
           keys and an admin token; say which credential this one is (#943) */}
       <p className="text-sm text-muted-foreground">

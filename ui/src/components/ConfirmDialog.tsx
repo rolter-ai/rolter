@@ -38,6 +38,23 @@ export interface ConfirmDialogProps {
   /** the mutation's thrown value, rendered verbatim when the confirm failed */
   error?: unknown;
   onConfirm: () => void;
+  /**
+   * What the caller must supply before the action can run — a `Field`, a
+   * checkbox, a code input (#1078).
+   *
+   * It sits below the description rather than inside it, because the
+   * description is a `<p>` and a control nested in one is invalid markup that
+   * screen readers flatten. Most confirmations want nothing here: an action
+   * that needs a form is a form, and only an action the *server* gates on a
+   * second credential belongs in a confirmation at all.
+   */
+  children?: React.ReactNode;
+  /**
+   * Refuse the action until `children` is filled in — a confirmation that
+   * carries an input can be incomplete, and spending a round trip to be told
+   * so is worse than a button that waits.
+   */
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -50,6 +67,8 @@ export function ConfirmDialog({
   pending = false,
   error,
   onConfirm,
+  children,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
 
@@ -59,6 +78,7 @@ export function ConfirmDialog({
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
+      {children}
       {/* the control plane's own message, never a gloss on it — see
           docs/dev-docs/development/error-states.md */}
       {error !== undefined && error !== null && (
@@ -74,7 +94,7 @@ export function ConfirmDialog({
         </Button>
         <Button
           variant={tone === "danger" ? "destructive" : "default"}
-          disabled={pending}
+          disabled={pending || confirmDisabled}
           onClick={onConfirm}
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
