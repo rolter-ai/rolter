@@ -67,6 +67,7 @@
     "noResults": "No results",
     "combobox": {
       "placeholder": "Select…",
+      "options": "Options",
       "clear": "Clear selection",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",

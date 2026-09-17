@@ -5,9 +5,9 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { CopyButton } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -130,17 +130,12 @@ function MemberEditor({
           className="grid items-center gap-2"
           style={{ gridTemplateColumns: "1.4fr 1.4fr 64px 28px" }}
         >
-          <Select
+          <Combobox
             value={m.provider_id}
             aria-label={t("common.provider")}
-            onChange={(e) => update(i, { provider_id: e.target.value })}
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
+            onChange={(provider_id) => update(i, { provider_id })}
+            options={providers.map((p) => ({ value: p.id, label: p.name }))}
+          />
           <Input
             aria-label={t("providerGroupSheet.members.upstreamModel")}
             value={m.upstream_model}
@@ -363,17 +358,12 @@ export function ProviderGroupSheet({
           // hint below the select is the other one
           htmlFor="provider-group-strategy"
         >
-          <Select
+          <Combobox
             id="provider-group-strategy"
             value={draft.strategy}
-            onChange={(e) => set({ strategy: e.target.value })}
-          >
-            {strategyOptions(draft.strategy).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
+            onChange={(strategy) => set({ strategy })}
+            options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
+          />
           <StrategyHint strategy={draft.strategy} />
         </Field>
 

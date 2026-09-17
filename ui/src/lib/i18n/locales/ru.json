@@ -71,6 +71,7 @@
     "noResults": "Ничего не найдено",
     "combobox": {
       "placeholder": "Выберите…",
+      "options": "Варианты",
       "clear": "Очистить выбор",
       "noMatches": "Нет вариантов по фильтру",
       "results_one": "Доступен {{count}} вариант",

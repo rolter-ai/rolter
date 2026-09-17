@@ -482,3 +482,22 @@ export async function expectToast(
   });
   await waitFor(() => expect(within(region).getByText(says)).toBeVisible());
 }
+
+/**
+ * Pick an option in a `Combobox`, the way a person does.
+ *
+ * `userEvent.selectOptions` only drives a native `<select>`; the styled
+ * combobox that replaced it (#968) is an input plus a listbox, so a story
+ * opens it and clicks the row. `option` is matched on the row's accessible
+ * name, which is its label plus any secondary line.
+ */
+export async function pickOption(
+  combobox: HTMLElement,
+  option: string | RegExp,
+): Promise<void> {
+  await userEvent.click(combobox);
+  const listId = combobox.getAttribute("aria-controls");
+  const listbox = listId ? document.getElementById(listId) : null;
+  if (!listbox) throw new Error("pickOption: the control is not a combobox with a listbox");
+  await userEvent.click(within(listbox).getByRole("option", { name: option }));
+}

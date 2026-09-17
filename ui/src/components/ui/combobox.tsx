@@ -319,8 +319,14 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
           )}
         />
         {/* the count is what a screen reader hears after each keystroke; it is
-            polite so it never interrupts the character echo */}
-        <p id={statusId} role="status" aria-live="polite" className="sr-only">
+            polite so it never interrupts the character echo.
+
+            `aria-live` without `role="status"` on purpose: the role would put a
+            second status node on every screen that has a dropdown, and the
+            screens whose own notice is a `role="status"` query for it by role —
+            one combobox on the page and `getByRole("status")` stops being
+            unambiguous. Live regions are announced from `aria-live` alone */}
+        <p id={statusId} aria-live="polite" aria-atomic className="sr-only">
           {open ? t("common.combobox.results", { count }) : ""}
         </p>
         <div
@@ -344,7 +350,11 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
           <div
             id={listId}
             role="listbox"
-            aria-label={ariaLabel ?? placeholder ?? t("common.combobox.placeholder")}
+            // a generic name on purpose: naming the listbox after the field
+            // would put a second node with that accessible name on the page,
+            // and `getByLabelText("Provider")` would stop being unambiguous —
+            // the combobox it belongs to is announced immediately before it
+            aria-label={t("common.combobox.options")}
             // the scroll lives on the listbox rather than on the popup around
             // it: a scrollable plain <div> is an axe `scrollable-region-focusable`
             // failure, since axe cannot see that the arrow keys on the combobox

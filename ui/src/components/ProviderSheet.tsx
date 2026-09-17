@@ -6,9 +6,9 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
@@ -328,13 +328,11 @@ export function ProviderSheet({
         )}
 
         <Field label={t("providerSheet.fields.kind")}>
-          <Select value={draft.kind} onChange={(e) => set({ kind: e.target.value })}>
-            {kindOptions.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={draft.kind}
+            onChange={(kind) => set({ kind })}
+            options={kindOptions.map((k) => ({ value: k, label: k }))}
+          />
         </Field>
 
         {/* two children — the input and the resolved url — so the id is

@@ -3,9 +3,9 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 
 // known optional sampling/inference params across OpenAI and Anthropic; used
 // only for a soft warning since keys are provider-agnostic and callers may
@@ -42,6 +42,20 @@ const KNOWN_PARAMS = new Set([
 ]);
 
 type ParamType = "string" | "number" | "boolean" | "json";
+
+// the type and boolean pickers list notation, not copy: `string`, `json` and
+// `true` are what goes on the wire, so they are not translated
+const PARAM_TYPE_OPTIONS: ComboboxOption[] = [
+  { value: "string", label: "string" },
+  { value: "number", label: "number" },
+  { value: "boolean", label: "bool" },
+  { value: "json", label: "json" },
+];
+
+const BOOLEAN_OPTIONS: ComboboxOption[] = [
+  { value: "true", label: "true" },
+  { value: "false", label: "false" },
+];
 
 interface ParamRow {
   id: number;
@@ -334,33 +348,29 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                   />
                 )}
               </div>
-              <Select
+              <Combobox
                 aria-label={t("paramsEditor.paramType")}
-                className="h-8 w-24 text-xs"
+                size="sm"
+                className="w-24"
                 value={row.type}
-                onChange={(e) => {
-                  const type = e.target.value as ParamType;
+                onChange={(picked) => {
+                  const type = picked as ParamType;
                   // reset the value to a sane default for the new type
                   const value =
                     type === "boolean" ? "false" : type === "json" ? "null" : "";
                   updateRow(row.id, { type, value });
                 }}
-              >
-                <option value="string">string</option>
-                <option value="number">number</option>
-                <option value="boolean">bool</option>
-                <option value="json">json</option>
-              </Select>
+                options={PARAM_TYPE_OPTIONS}
+              />
               {row.type === "boolean" ? (
-                <Select
+                <Combobox
                   aria-label={t("paramsEditor.paramValue")}
-                  className="h-8 flex-1 text-xs"
+                  size="sm"
+                  className="flex-1"
                   value={row.value}
-                  onChange={(e) => updateRow(row.id, { value: e.target.value })}
-                >
-                  <option value="true">true</option>
-                  <option value="false">false</option>
-                </Select>
+                  onChange={(value) => updateRow(row.id, { value })}
+                  options={BOOLEAN_OPTIONS}
+                />
               ) : (
                 <Input
                   aria-label={t("paramsEditor.paramValue")}
