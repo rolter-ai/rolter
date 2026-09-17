@@ -6,6 +6,7 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
   pending,
@@ -123,5 +124,33 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to provider groups/);
+  },
+};
+
+// `provider_group` is admin at every action (#1606). The delete is a bare
+// button that reads `deleteGate` itself, so it is the one most able to drift
+// away from the `GatedButton` above it.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add group/i);
+    await expectRefused(canvasElement, "Edit provider group frontier");
+    await expectRefused(canvasElement, "Delete provider group frontier");
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="member">
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add group/i);
+    await expectRefused(canvasElement, "Delete provider group frontier");
   },
 };

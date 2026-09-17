@@ -6,8 +6,10 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
+  NEEDS_SUPERADMIN,
   pending,
   routes,
   scoped,
@@ -157,5 +159,51 @@ export const MultiProviderRoute: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await waitFor(() => expect(canvas.getByTitle("sim-a, sim-b")).toBeVisible());
     await expect(canvas.getByTitle("sim-a, sim-b")).toHaveTextContent("sim-a +1 more");
+  },
+};
+
+// a catalog with one db-backed row that has a route behind it, so the edit
+// control is enabled for anyone the gate allows
+const oneRoutedModel = routes([
+  ["/model-prices", () => []],
+  ["/currency", () => ({ base: "USD", rates: {} })],
+  ["/targets", () => FANOUT_TARGETS],
+  ["/models", () => [MODELS[0]]],
+  ["/providers", () => FANOUT_PROVIDERS],
+  ["/routes", () => [FANOUT_ROUTE]],
+]);
+
+// The two gates on this screen take different authorities (#1606).
+//
+// Adding a model creates a *route*, which is admin, while deleting one is the
+// deployment-wide `model:delete` a superadmin alone holds — so an admin is
+// refused the delete and offered the create, and a story that asserted one
+// sentence for both would pass against either gate keyed to the other.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={oneRoutedModel} role="viewer">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add model/i);
+    await expectRefused(canvasElement, "Edit gpt-4o");
+    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+  },
+};
+
+export const DeleteRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={oneRoutedModel} role="admin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+    // the route half of the screen is still theirs
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Edit gpt-4o" })).toBeEnabled(),
+    );
   },
 };

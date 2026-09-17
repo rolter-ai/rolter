@@ -238,6 +238,16 @@ export const LOADING_LABEL = en.common.loading;
 export const NEEDS_ADMIN = en.rbac.needsRole.replace("{{role}}", en.shell.roles.admin);
 
 /**
+ * What a refused deployment-wide control says it would take.
+ *
+ * A capability the table marks `superadmin_only` names no role at all — there
+ * is no grant at an org scope that reaches it — so its refusal reads
+ * differently, and a story that asserted the admin sentence there would pass
+ * against a gate keyed to the wrong capability.
+ */
+export const NEEDS_SUPERADMIN = en.rbac.needsSuperadmin;
+
+/**
  * Assert a gated control is refused, and that it names what would allow it.
  *
  * Both halves matter: `disabled` on its own is the same non-answer the 403

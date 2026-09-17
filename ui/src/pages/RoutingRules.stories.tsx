@@ -7,6 +7,7 @@ import {
   Toasted,
   cancelConfirmation,
   confirmDestructive,
+  expectRefused,
   expectSkeleton,
   expectToast,
   json,
@@ -240,5 +241,32 @@ export const DeleteFails: Story = {
         /referenced by 2 virtual keys/,
       ),
     );
+  },
+};
+
+// `route` is admin at create and delete (#1606). The delete is a bare button
+// reading `deleteGate`, so it is gated by hand and can lose the gate while the
+// toolbar keeps it.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)} role="viewer">
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add route/i);
+    await expectRefused(canvasElement, "Delete route gpt-4o");
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)} role="member">
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add route/i);
+    await expectRefused(canvasElement, "Delete route claude-sonnet");
   },
 };
