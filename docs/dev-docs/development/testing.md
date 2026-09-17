@@ -8,7 +8,7 @@ separate doc-test pass since nextest does not run doc tests:
 ```bash
 cargo nextest run --workspace   # unit + integration tests
 cargo test --doc --workspace    # doc tests
-cd ui && bun run lint           # ui typecheck
+cd ui && bun run lint           # ui typecheck: src, scripts, .storybook, e2e
 ```
 
 Install the runner once with `cargo install cargo-nextest` (or see the
