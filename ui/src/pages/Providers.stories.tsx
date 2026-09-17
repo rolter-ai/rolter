@@ -14,7 +14,7 @@ import {
   Toasted,
   expectToast,
 } from "./story-harness";
-import type { ProviderRow } from "@/lib/api";
+import type { LabelRow, ProviderRow } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const PROVIDERS: ProviderRow[] = [
@@ -199,5 +199,175 @@ export const DeleteRejectedByTheServer: Story = {
     await expectToast(canvasElement, /target of 4 live routes/, "error");
     await waitFor(() => expect(dialog.getByText(/target of 4 live routes/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+// ---------------------------------------------------------------- labels (#1329)
+
+const label = (over: Partial<LabelRow> & { id: string; key: string }): LabelRow => ({
+  subject_type: "provider",
+  subject_id: "p-1",
+  source: "custom",
+  value: null,
+  created_at: "2026-01-02T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  ...over,
+});
+
+// the same key on the same provider from both sources, which the API allows on
+// purpose and which a screen that renders them alike shows as a duplicate
+const LABELS: LabelRow[] = [
+  label({ id: "l-1", key: "tier", value: "gold" }),
+  label({
+    id: "l-2",
+    key: "tier",
+    value: "observed-gold",
+    source: "auto",
+    observed_at: "2026-03-01T09:00:00Z",
+    observation: "priced from the last 24h of traffic",
+  }),
+  label({ id: "l-3", subject_id: "p-2", key: "region", value: "eu" }),
+];
+
+// the label endpoint narrows on `subject_id`, and the sheet depends on it: a
+// stub that answers every request with the whole org would show one provider
+// the labels of another
+const withLabels = scoped(async (input) => {
+  const url = new URL(String(input), "http://localhost");
+  if (url.pathname.endsWith("/labels")) {
+    const subject = url.searchParams.get("subject_id");
+    return json(subject ? LABELS.filter((l) => l.subject_id === subject) : LABELS);
+  }
+  if (url.pathname.endsWith("/providers")) return json(PROVIDERS);
+  return json([]);
+});
+
+/**
+ * Both sources on one provider, under one key. They differ by tone, by the icon
+ * in front of them and by the word in the accessible name, so neither a
+ * colour-blind reader nor a screen reader has to take the colour's word for it.
+ */
+export const Labelled: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("tier=gold")).toBeVisible());
+    await expect(canvas.getAllByTestId("label-custom")).toHaveLength(2);
+    await expect(canvas.getAllByTestId("label-auto")).toHaveLength(1);
+    // the two on `openai-prod` are told apart by name, not by colour
+    await expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible();
+    await expect(
+      canvas.getByLabelText("tier=observed-gold, automatic label"),
+    ).toBeVisible();
+  },
+};
+
+/** the list narrows to the subjects carrying the chosen label */
+export const FilteredByLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("anthropic-eu").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
+    await waitFor(() => expect(canvas.queryByText("openai-prod")).toBeNull());
+    await expect(canvas.getAllByText("anthropic-eu").length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * A label filter that matches nothing is a filter, not an empty organisation:
+ * the copy blames the narrowing and offers to clear it rather than offering to
+ * add the first provider to an org that already has two.
+ */
+export const NoLabelMatch: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("tier=gold")).toBeVisible());
+    await userEvent.type(canvas.getByLabelText("Search providers"), "cohere");
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
+    await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
+    // clearing puts both back, so the button really cleared both narrowings
+    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+  },
+};
+
+/** an auto label carries what was observed and when, and offers no way to edit it */
+export const AutoLabelsAreReadOnly: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on openai-prod" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await expect(await panel.findByText(/priced from the last 24h/)).toBeVisible();
+    // the custom one can go; the observation cannot
+    await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
+    // and only this provider's labels: `region=eu` belongs to the other row
+    await expect(panel.queryByRole("button", { name: "Remove region=eu" })).toBeNull();
+    await expect(
+      panel.queryByRole("button", { name: "Remove tier=observed-gold" }),
+    ).toBeNull();
+  },
+};
+
+/** the API's 409 is named before it is sent: that key is already set here */
+export const DuplicateKeyIsRefusedBeforeSending: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on openai-prod" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(await panel.findByLabelText("Key"), "tier");
+    await waitFor(() => expect(panel.getByText(/already set here/)).toBeVisible());
+    await expect(panel.getByRole("button", { name: "Add label" })).toBeDisabled();
+  },
+};
+
+/**
+ * Labels are an addition to this screen, not its subject: a caller who may not
+ * read them still gets the providers, with no error panel over the list.
+ */
+export const LabelsUnavailable: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/labels")) return json({ error: { message: "forbidden" } }, 403);
+        if (url.includes("/providers")) return json(PROVIDERS);
+        return json([]);
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };

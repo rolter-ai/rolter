@@ -24,6 +24,29 @@ model. Rolter stores two kinds, and the difference matters when you act on one.
 
 ---
 
+## In the dashboard
+
+The Providers screen shows every label a provider carries under its name, and
+the tag button on each row opens a panel that reads, adds, changes and removes
+them.
+
+Automatic labels are told apart from your own three ways at once — a different
+tone, a different icon, and the word *automatic* in what a screen reader says —
+because the two may carry the same key on the same provider deliberately, and a
+screen that showed them alike would read as a duplicate. An automatic label is
+shown with what was observed and when, and offers no edit or delete control:
+the API refuses both, and the only thing that changes one is the subsystem
+observing again.
+
+The **Filter by label** control at the top of the list narrows it to the
+providers carrying one `key=value`, alongside the search box.
+
+Reading labels takes the `viewer` role and writing them takes `admin`, so a
+caller who may not read them simply sees the screen without them rather than an
+error.
+
+---
+
 ## Custom labels
 
 A custom label means whatever you need it to mean. Rolter stores and displays

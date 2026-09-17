@@ -132,6 +132,7 @@
       "providers": "providers",
       "plugins": "plugins",
       "gettingStarted": "the setup checklist",
+      "labels": "labels",
       "analytics": "analytics",
       "requestLogs": "request logs",
       "routes": "routes",
@@ -524,6 +525,8 @@
       "emptyBody": "A provider is an upstream the gateway can route to. Add one with its API base and credential to start serving traffic.",
       "noMatchBody": "Nothing matched your search. Clear it to see every provider in this organization.",
       "noOrgTitle": "Choose an organization",
+      "labelFilter": "Filter by label",
+      "labelsOf": "Labels on {{name}}",
       "editOne": "Edit provider {{name}}"
     },
     "plugins": {
@@ -2568,6 +2571,35 @@
     "cta": {
       "create": "Create provider",
       "save": "Save provider"
+    }
+  },
+  "labels": {
+    "sheetTitle": "Labels",
+    "customHeading": "Your labels",
+    "autoHeading": "Automatic labels",
+    "autoExplainer": "Rolter recorded these itself. They are observations about a moment, not promises about now, and only the subsystem that made one can change it.",
+    "autoTitle": "Recorded automatically by Rolter.",
+    "observedAt": "{{what}} · observed {{when}}",
+    "observationUnknown": "Recorded automatically.",
+    "autoChipAria": "{{label}}, automatic label",
+    "customChipAria": "{{label}}, your label",
+    "emptyTitle": "No labels here",
+    "emptyBody": "A label is a key and an optional value you can filter and group by, such as tier=gold or region=eu.",
+    "keyLabel": "Key",
+    "valueLabel": "Value",
+    "keyPlaceholder": "tier",
+    "valuePlaceholder": "gold",
+    "valueOf": "Value of {{key}}",
+    "add": "Add label",
+    "duplicateKey": "{{key}} is already set here. Change that label's value instead.",
+    "removeOne": "Remove {{label}}",
+    "removed": "Removed {{label}}.",
+    "addFailed": "The label could not be added.",
+    "saveFailed": "The label could not be saved.",
+    "removeFailed": "The label could not be removed.",
+    "confirm": {
+      "title": "Remove {{label}}?",
+      "body": "It stops applying to {{subject}} right away. Anything filtering on it stops matching."
     }
   },
   "scope": {
