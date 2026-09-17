@@ -34,6 +34,16 @@ Exporting something the importer ignores is worse than not exporting it: the
 file then looks like a complete description of the deployment while a re-import
 quietly drops part of it.
 
+## The stamp and the shape move together
+
+The export writes `schema_version = <CURRENT_SCHEMA_VERSION>` and ADR-0022's tiered `[[providers.readonly]]` / `[[providers.default]]` spelling. Neither may be changed without the other, and the reason is not stylistic (#1513).
+
+The migration chain selects steps with `MIGRATIONS.iter().filter(|m| m.from >= from)`. A file stamped `2` that still contained the deprecated flat `[[providers]]` arrays would therefore skip the v1 -> v2 step **forever**. It would load correctly today, because `split_section` accepts both spellings, and then misbehave under the first v2 -> v3 migration written against the tiered shape — a failure that arrives one release after the mistake, in a step whose author did nothing wrong.
+
+`an_exported_config_has_no_pending_migrations` and `the_export_uses_the_tiered_provider_spelling` pin the two halves. Source the stamp from `rolter_core::config_migrate::CURRENT_SCHEMA_VERSION`, never as a literal.
+
+Emitting both tiers is also what keeps the export lossless. The flat array *is* the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
+
 ## Why some tables are out
 
 - **Budgets and rate limits** are keyed by the database id of the org, team,

@@ -27,8 +27,8 @@ The export deliberately carries only the sections the importer consumes, so noth
 
 | Section | Notes |
 | --- | --- |
-| `[[providers]]` | name, slug, kind, `api_base`, `api_key_env`, egress proxies |
-| `[[provider_groups]]` and `[[provider_groups.members]]` | group strategy and its weighted members |
+| `[[providers.readonly]]` and `[[providers.default]]` | name, slug, kind, `api_base`, `api_key_env`, egress proxies, in both tiers |
+| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members |
 | `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]` | strategy, admin parameter defaults, the override policy, and the weighted upstream targets |
 | `[[model_prices]]` | input, output and cached-input rates with their currency |
 | `[prompt_templates]` | published templates with their variables, decorators and route bindings |
@@ -49,7 +49,7 @@ An export that carried rows the importer ignores would promise more than a re-im
 A provider key is exported only as the **name** of the environment variable it is read from:
 
 ```toml
-[[providers]]
+[[providers.readonly]]
 name = "openai-primary"
 kind = "openai"
 api_base = "https://api.openai.com"
@@ -59,7 +59,7 @@ api_key_env = "OPENAI_API_KEY"
 A key that was sealed through the dashboard has no environment variable to name, so nothing is written where the credential would be, and a comment says so:
 
 ```toml
-[[providers]]
+[[providers.readonly]]
 name = "vllm-1"
 kind = "openai_compatible"
 api_base = "http://vllm-1:8000"
@@ -71,6 +71,20 @@ On the receiving deployment, set that provider's key through the dashboard or po
 <Warning>
   `rolter-seed --import` never overwrites a credential sealed through the dashboard, so re-importing an export into the deployment it came from cannot clear a key that is already there.
 </Warning>
+
+### The file is already current
+
+The export opens with a `schema_version` stamp and uses the tiered provider spelling, so `rolter check --migrations` reports the file it writes as up to date rather than as something to migrate:
+
+```toml
+schema_version = 2
+
+[[providers.readonly]]
+name = "openai-primary"
+# ...
+```
+
+The two tiers mean what they mean everywhere else in a `rolter.toml`: `readonly` entries are owned by the file and immutable in the dashboard, `default` entries are seeded once and editable afterwards. Both are exported, so promoting a deployment does not quietly flatten one into the other.
 
 ### Stable output
 

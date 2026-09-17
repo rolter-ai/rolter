@@ -13,7 +13,7 @@
 //! is deliberately not written, and the header comment says so in the file
 //! instead of leaving the operator to find out on a promotion.
 //!
-//! Three properties the tests pin down:
+//! Four properties the tests pin down:
 //!
 //! - **No secret leaves.** A provider credential is emitted as an `api_key_env`
 //!   variable *name* and never as a value. `ConfigStore::load` hands back a
@@ -27,6 +27,14 @@
 //! - **Determinism.** Every collection is sorted (by slug, then model) and every
 //!   map is emitted in sorted key order, so a diff between two exports shows
 //!   only real changes.
+//! - **The file is current, not merely loadable.** It carries a
+//!   `schema_version` stamp and ADR-0022's tiered `[[providers.readonly]]` /
+//!   `[[providers.default]]` spelling, so `rolter check --migrations` reports it
+//!   as up to date (#1513). The stamp and the shape are pinned together on
+//!   purpose: the migration chain filters on `m.from >= from`, so a file stamped
+//!   `2` that still carried the deprecated flat arrays would skip the v1 -> v2
+//!   step forever. Emitting both tiers is also what stops the export losing
+//!   `providers.default` entries, which the flat array cannot express at all.
 
 use rolter_core::{
     BalancingStrategy, GatewayConfig, ModelPriceConfig, ModelRoute, OverrideMode, ProviderConfig,
@@ -92,6 +100,15 @@ const HEADER: &str = "\
 /// entire configuration over one unrepresentable default helps nobody.
 pub fn render(config: &GatewayConfig) -> String {
     let mut out = String::from(HEADER);
+    // the stamp goes before any table header, and is sourced from the constant
+    // rather than written as a literal so it cannot drift from the chain. it is
+    // only honest alongside the tiered provider sections below: a file stamped
+    // `2` that still carried `[[providers]]` arrays would skip the v1 -> v2 step
+    // forever, because the chain filters on `m.from >= from` (#1513)
+    out.push_str(&format!(
+        "\nschema_version = {}\n",
+        rolter_core::config_migrate::CURRENT_SCHEMA_VERSION
+    ));
     render_providers(&mut out, config);
     render_provider_groups(&mut out, config);
     render_routes(&mut out, config);
@@ -118,10 +135,24 @@ fn group_slug(group: &ProviderGroupConfig) -> String {
 }
 
 fn render_providers(out: &mut String, config: &GatewayConfig) {
-    let mut providers: Vec<&ProviderConfig> = config.providers.iter().collect();
+    // ADR-0022's tiered spelling, not the deprecated flat `[[providers]]` array.
+    // `[[providers.readonly]]` is the array-of-tables form of the same document
+    // `split_section` reads as `{ readonly = [...], default = [...] }`, so it
+    // keeps one key per line — an inline-table array could not carry the
+    // "credential not exported" comment at all.
+    //
+    // the two tiers are emitted in full, readonly first: the flat array can only
+    // express the readonly tier, so exporting it lost every `providers.default`
+    // entry outright rather than merely spelling them the old way (#1513)
+    render_provider_tier(out, "readonly", &config.providers);
+    render_provider_tier(out, "default", &config.provider_defaults);
+}
+
+fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]) {
+    let mut providers: Vec<&ProviderConfig> = entries.iter().collect();
     providers.sort_by_key(|p| provider_slug(p));
     for provider in providers {
-        out.push_str("\n[[providers]]\n");
+        out.push_str(&format!("\n[[providers.{tier}]]\n"));
         key(out, "name", &provider.name);
         key(out, "slug", &provider_slug(provider));
         key(out, "kind", &provider.kind);
@@ -146,15 +177,22 @@ fn render_providers(out: &mut String, config: &GatewayConfig) {
 }
 
 fn render_provider_groups(out: &mut String, config: &GatewayConfig) {
-    let mut groups: Vec<&ProviderGroupConfig> = config.provider_groups.iter().collect();
+    render_provider_group_tier(out, "readonly", &config.provider_groups);
+    render_provider_group_tier(out, "default", &config.provider_group_defaults);
+}
+
+fn render_provider_group_tier(out: &mut String, tier: &str, entries: &[ProviderGroupConfig]) {
+    let mut groups: Vec<&ProviderGroupConfig> = entries.iter().collect();
     groups.sort_by_key(|g| group_slug(g));
     for group in groups {
-        out.push_str("\n[[provider_groups]]\n");
+        out.push_str(&format!("\n[[provider_groups.{tier}]]\n"));
         key(out, "name", &group.name);
         key(out, "slug", &group_slug(group));
         key(out, "strategy", strategy_name(group.strategy));
+        // members attach to the most recent `[[provider_groups.<tier>]]`, so
+        // this must stay inside the loop and after the group's own scalar keys
         for member in &group.members {
-            out.push_str("\n[[provider_groups.members]]\n");
+            out.push_str(&format!("\n[[provider_groups.{tier}.members]]\n"));
             key(out, "provider", &member.provider);
             if let Some(model) = &member.model {
                 key(out, "model", model);
@@ -644,6 +682,93 @@ models = ["gpt-4o"]
         );
     }
 
+    /// The property the whole issue is about: `rolter config export` must write
+    /// a file its own pre-flight reports as current.
+    ///
+    /// Before #1513 it emitted the deprecated `[[providers]]` arrays and no
+    /// stamp, so every exported file was schema version 1 with a pending
+    /// migration — the tool that generates configs generating ones rolter tells
+    /// you to migrate.
+    #[test]
+    fn an_exported_config_has_no_pending_migrations() {
+        let rendered = render(&representative_config());
+        let doc: toml::Table = rendered.parse().expect("the export must be toml");
+        assert_eq!(
+            rolter_core::config_migrate::schema_version_of(&doc),
+            rolter_core::config_migrate::CURRENT_SCHEMA_VERSION,
+        );
+        let mut doc = doc;
+        let report = rolter_core::config_migrate::migrate(&mut doc);
+        assert!(
+            report.is_empty(),
+            "rolter config export wrote a file with pending migrations: {:?}\n{rendered}",
+            report.changes().collect::<Vec<_>>()
+        );
+        assert!(
+            !report.ahead,
+            "the export must not stamp a version this build cannot read"
+        );
+    }
+
+    /// The stamp is only honest because the shape moved with it.
+    ///
+    /// The chain filters on `m.from >= from`, so a file stamped `2` that still
+    /// carried `[[providers]]` arrays would skip the v1 -> v2 step forever. It
+    /// would load correctly today — `split_section` accepts both spellings — and
+    /// then misbehave under the first v2 -> v3 migration written against the
+    /// tiered shape. Pin the two together so neither can move alone.
+    #[test]
+    fn the_export_uses_the_tiered_provider_spelling() {
+        let rendered = render(&representative_config());
+        assert!(rendered.contains("[[providers.readonly]]"), "{rendered}");
+        assert!(
+            !rendered.contains("\n[[providers]]"),
+            "the deprecated flat array must not be emitted: {rendered}"
+        );
+        assert!(
+            !rendered.contains("\n[[provider_groups]]"),
+            "the deprecated flat array must not be emitted: {rendered}"
+        );
+    }
+
+    /// The `default` tier survives an export/import round trip.
+    ///
+    /// The flat array could not express it at all — it is the readonly tier by
+    /// definition — so exporting a deployment that had `providers.default`
+    /// entries silently dropped them. That is a data loss on promotion, not a
+    /// spelling preference, and it is the other half of why the shape had to
+    /// move.
+    #[test]
+    fn the_default_tier_round_trips() {
+        let mut config = representative_config();
+        config.provider_defaults = vec![provider("seeded-openai", Some("SEEDED_KEY"))];
+        config.provider_group_defaults = vec![ProviderGroupConfig {
+            name: "seeded-pool".to_string(),
+            slug: Some("seeded-pool".to_string()),
+            ..config
+                .provider_groups
+                .first()
+                .cloned()
+                .expect("the fixture has a group")
+        }];
+
+        let rendered = render(&config);
+        let parsed = GatewayConfig::from_toml_str(&rendered).expect("the export must re-parse");
+
+        assert_eq!(parsed.provider_defaults.len(), 1);
+        assert_eq!(parsed.provider_defaults[0].name, "seeded-openai");
+        assert_eq!(parsed.provider_group_defaults.len(), 1);
+        assert_eq!(parsed.provider_group_defaults[0].name, "seeded-pool");
+        // and the readonly tier is not disturbed by the default tier beside it
+        assert_eq!(parsed.providers.len(), config.providers.len());
+        assert_eq!(parsed.provider_groups.len(), config.provider_groups.len());
+        // members hang off the right tier's most recent entry
+        assert_eq!(
+            parsed.provider_group_defaults[0].members.len(),
+            config.provider_group_defaults[0].members.len()
+        );
+    }
+
     /// The same guarantee for the other end of the range: a deployment with
     /// nothing configured still exports `[logging.payload_capture]` and the
     /// header, and neither may carry a key the loader ignores.
@@ -733,9 +858,10 @@ models = ["gpt-4o"]
 
             // everything the header promises round-trips is actually in there
             for expected in [
-                "[[providers]]",
-                "[[provider_groups]]",
-                "[[provider_groups.members]]",
+                "schema_version = ",
+                "[[providers.readonly]]",
+                "[[provider_groups.readonly]]",
+                "[[provider_groups.readonly.members]]",
                 "[[routes]]",
                 "[[routes.targets]]",
                 "[routes.params]",
