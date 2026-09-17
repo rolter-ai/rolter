@@ -7,6 +7,7 @@ import { BusinessUnits, Customers } from "./CostAttribution";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectLoadError,
   expectSkeleton,
   recording,
 } from "./story-harness";
@@ -462,7 +463,8 @@ export const SpendLoading: Story = {
 
 /**
  * Analytics is optional; governance is not. A deployment with no ClickHouse
- * gets the Dashboard's calm note where the spend strip would be, and keeps the
+ * gets the `noAnalytics` load error where the spend strip would be — the
+ * setting it lacks, and no retry that cannot help (#1270) — and keeps the
  * postgres-backed roster it can still serve.
  */
 export const SpendUnavailableKeepsTheRoster: Story = {
@@ -477,9 +479,8 @@ export const SpendUnavailableKeepsTheRoster: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Analytics not configured")).toBeVisible(),
-    );
+    await expectLoadError(canvasElement, /Analytics are not configured[\s\S]*attribution spend/);
+    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
     await expect(canvas.getByText("Platform Engineering")).toBeVisible();
   },
 };

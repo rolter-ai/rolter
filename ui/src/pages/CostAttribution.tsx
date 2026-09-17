@@ -17,7 +17,6 @@ import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
-  AnalyticsUnavailableError,
   createBusinessUnit,
   createCustomer,
   deleteBusinessUnit,
@@ -250,20 +249,9 @@ function SpendStrip({
   const fmt = useFormat();
   const currency = useCurrencyCode();
 
-  // the calm not-configured note the Dashboard shows, in the one strip that
-  // needs ClickHouse — the governance list itself is postgres-backed and keeps
-  // working without it
-  if (error instanceof AnalyticsUnavailableError) {
-    return (
-      <div className="rounded-[10px] border border-[color:var(--border-default)]">
-        <EmptyState
-          uxTarget="cost-attribution-spend"
-          title={t("pages.dashboard.notConfiguredTitle")}
-          description={t("pages.dashboard.notConfiguredBody")}
-        />
-      </div>
-    );
-  }
+  // no ClickHouse reaches here too and classifies as `noAnalytics`, which names
+  // the missing setting and withholds the retry — the governance list itself is
+  // postgres-backed and keeps working beside it (#1270)
   if (error) {
     return (
       <LoadError

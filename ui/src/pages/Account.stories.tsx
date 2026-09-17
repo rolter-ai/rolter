@@ -8,6 +8,7 @@ import {
   clickWhenEnabled,
   confirmDestructive,
   expectClosesWithoutPrompting,
+  expectLoadError,
   json,
   pending,
   recording,
@@ -192,7 +193,8 @@ export const Forbidden: Story = {
  * ClickHouse is optional, so `/me/usage` answering 503 is a supported
  * deployment rather than a fault. The keys must still render: losing the whole
  * self-service panel because the analytics store is absent would strand every
- * user who needs to rotate a key.
+ * user who needs to rotate a key. The reason is said once, as the `noAnalytics`
+ * kind with no retry to offer, and no card claims its key spent nothing (#1270).
  */
 export const AnalyticsUnavailable: Story = {
   render: () => (
@@ -208,7 +210,34 @@ export const AnalyticsUnavailable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
-    await expect(canvas.getAllByText(/analytics not configured/i)).toHaveLength(KEYS.length);
+    await expectLoadError(canvasElement, /Analytics are not configured/);
+    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    await expect(canvas.getAllByText("usage: unavailable")).toHaveLength(KEYS.length);
+    await expect(canvas.queryByText(/no usage in the last 7 days/i)).toBeNull();
+  },
+};
+
+/**
+ * A usage query that fails for any other reason used to fall through to "no
+ * usage in the last 7 days" on every card — a failure dressed as a quiet week.
+ */
+export const UsageFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ error: { message: "analytics query failed" } }, 500),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    await expectLoadError(canvasElement, /your usage/);
+    await expect(canvas.getByRole("button", { name: /try again/i })).toBeVisible();
+    await expect(canvas.queryByText(/no usage in the last 7 days/i)).toBeNull();
   },
 };
 

@@ -40,7 +40,6 @@ import {
 } from "@/components/ui/dialog";
 import { Tag } from "@/components/ui/tag";
 import {
-  AnalyticsUnavailableError,
   deleteMyKey,
   fetchMyKeys,
   fetchProviders,
@@ -105,7 +104,10 @@ export default function Account() {
     return map;
   }, [usage.data]);
 
-  const usageUnavailable = usage.error instanceof AnalyticsUnavailableError;
+  // any usage failure, analytics-less deployment included, blanks every card's
+  // figure: "no usage" beside a failed query would read as a key that spent
+  // nothing. the reason is said once above the grid rather than per card (#1270)
+  const usageUnavailable = !!usage.error;
   const selfServiceUnavailable = isOpenModeNoSession(keys.error);
 
   // the provider allow-list needs the org's providers, which a plain member may
@@ -164,6 +166,14 @@ export default function Account() {
         <p className="text-sm text-muted-foreground">
           {t("account.keys.empty")}
         </p>
+      )}
+
+      {usage.error && !!keys.data?.length && (
+        <LoadError
+          error={usage.error}
+          resource={t("errors.resources.yourUsage")}
+          onRetry={() => usage.refetch()}
+        />
       )}
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">

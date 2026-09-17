@@ -100,6 +100,7 @@
       "virtualKeys": "виртуальные ключи",
       "healthRollups": "сводки состояния",
       "yourKeys": "ваши ключи",
+      "yourUsage": "ваше потребление",
       "auditLog": "журнал аудита",
       "modelPrices": "цены моделей",
       "models": "модели",
@@ -364,8 +365,6 @@
   },
   "pages": {
     "dashboard": {
-      "notConfiguredTitle": "Аналитика не настроена",
-      "notConfiguredBody": "Трафик, расходы и задержки появятся здесь, как только через шлюз пойдут запросы. Укажите clickhouse_url в control plane, чтобы включить логирование.",
       "statRequests": "Запросы (24 ч)",
       "statSpend": "Расходы (24 ч)",
       "statAvgLatency": "Средняя задержка",
@@ -2718,7 +2717,7 @@
         "disabled": "отключён",
         "active": "активен",
         "allModels": "все модели",
-        "usageUnavailable": "потребление: аналитика не настроена",
+        "usageUnavailable": "потребление: недоступно",
         "usage": "{{requests}} запр. · {{cost}} (7 дн.)",
         "noUsage": "нет обращений за последние 7 дней",
         "rotate": "Ротировать",
