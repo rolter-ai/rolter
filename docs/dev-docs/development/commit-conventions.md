@@ -76,7 +76,7 @@ be, and then it is not breaking.
 - Install all configured hook stages with `prek install --prepare-hooks`. The configuration installs `pre-commit`, `commit-msg`, and `pre-push` shims.
 - Run commit-time checks manually with `prek run --all-files`.
 - Run the push gate manually with `prek run --all-files --hook-stage pre-push`.
-- The Rust test and `cargo-deny` push hooks skip a push that touches no Rust input; see [When the push hooks skip Rust](setup.md#when-the-push-hooks-skip-rust).
+- The Rust fmt, clippy, test and `cargo-deny` hooks skip a commit or push that touches no Rust input; see [When the hooks skip Rust](setup.md#when-the-hooks-skip-rust).
 
 The commit stage uses prek's built-in checks plus pinned Gitleaks and
 Conventional Commit hooks. Project-specific checks require `actionlint`,

@@ -108,17 +108,17 @@ repo = "local"
 [[repos.hooks]]
 id = "cargo-fmt"
 name = "cargo fmt"
-entry = "cargo fmt --all -- --check"
+entry = "bash scripts/prek-rust-gate.sh --staged cargo fmt --all -- --check"
 language = "system"
-types = ["rust"]
+always_run = true
 pass_filenames = false
 
 [[repos.hooks]]
 id = "cargo-clippy"
 name = "cargo clippy"
-entry = "cargo clippy --workspace --all-targets -- -D warnings"
+entry = "bash scripts/prek-rust-gate.sh --staged cargo clippy --workspace --all-targets -- -D warnings"
 language = "system"
-files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$"
+always_run = true
 pass_filenames = false
 
 [[repos.hooks]]
@@ -178,9 +178,9 @@ pass_filenames = false
 [[repos.hooks]]
 id = "cargo-clippy-postgres"
 name = "cargo clippy (postgres)"
-entry = "cargo clippy -p rolter-store --all-targets --features postgres -- -D warnings"
+entry = "bash scripts/prek-rust-gate.sh cargo clippy -p rolter-store --all-targets --features postgres -- -D warnings"
 language = "system"
-files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$"
+always_run = true
 pass_filenames = false
 stages = ["pre-push"]
 
