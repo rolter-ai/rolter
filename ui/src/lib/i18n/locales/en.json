@@ -112,6 +112,7 @@
       }
     },
     "resources": {
+      "skillVersions": "the skill's versions",
       "users": "users",
       "provisioningTokens": "provisioning tokens",
       "ssoProviders": "identity providers",
@@ -818,11 +819,9 @@
       "refScheme": "Use an https, git+https, oci, or s3 reference.",
       "refCredentials": "References cannot contain embedded credentials.",
       "unavailableTitle": "Skills repository unavailable",
-      "tryAgain": "Try again",
       "emptyTitle": "Share your first skill",
       "emptyDescription": "Create an org skill, define who can resolve it, then save inline content or a credential-free artifact reference.",
       "createSkill": "Create skill",
-      "versionsUnavailable": "Skill versions unavailable",
       "orgSkills": "Org skills",
       "visibleCount_one": "{{count}} visible to you",
       "visibleCount_other": "{{count}} visible to you",

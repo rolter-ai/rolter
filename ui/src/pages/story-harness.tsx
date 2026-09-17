@@ -282,6 +282,25 @@ export async function expectSkeleton(canvasElement: HTMLElement): Promise<void> 
 }
 
 /**
+ * Assert the skeletons marked with `testId` sit inside a `role="status"`
+ * region.
+ *
+ * `expectSkeleton` only asks whether *something* on the screen is announced as
+ * loading, which a second panel elsewhere can satisfy on its own — so it cannot
+ * tell a hand-rolled sub-panel of bare `Skeleton`s from a `LoadingRegion`, and
+ * `Skeleton` is `aria-hidden` (#1618). This names the panel.
+ */
+export async function expectInStatusRegion(
+  canvasElement: HTMLElement,
+  testId: string,
+): Promise<void> {
+  await waitFor(() => {
+    const node = within(canvasElement).getByTestId(testId);
+    expect(node.closest('[role="status"]')).not.toBeNull();
+  });
+}
+
+/**
  * Assert a `LoadError` is on screen and says `says`.
  *
  * `getAllByRole` rather than `getByRole`: a screen can carry a second alert —

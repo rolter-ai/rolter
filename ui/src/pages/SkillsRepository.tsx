@@ -363,21 +363,22 @@ export default function SkillsRepository() {
             />
           </main>
         ) : versions.isLoading ? (
-          <main className="min-h-[32rem] rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-5">
-            <Skeleton width="45%" height={24} radius={6} />
+          <LoadingRegion className="min-h-[32rem] rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-5">
+            <Skeleton width="45%" height={24} radius={6} data-testid="skill-workbench-loading" />
             <div className="mt-5 space-y-3">
               <Skeleton width="100%" height={74} radius={8} />
               <Skeleton width="100%" height={360} radius={8} />
               <Skeleton width="100%" height={160} radius={8} />
             </div>
-          </main>
+          </LoadingRegion>
         ) : versions.isError ? (
+          /* a 403 on the versions endpoint is not retryable, and the hand-rolled
+             panel offered a "Try again" that could only fail again (#1259, #1618) */
           <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
-            <EmptyState uxTarget="skill-files"
-              icon={<FileCode2 />}
-              title={t("pages.skillsRepo.versionsUnavailable")}
-              description={(versions.error as Error).message}
-              actions={<Button variant="outline" onClick={() => versions.refetch()}>{t("pages.skillsRepo.tryAgain")}</Button>}
+            <LoadError
+              error={versions.error as Error}
+              resource={t("errors.resources.skillVersions")}
+              onRetry={() => versions.refetch()}
             />
           </main>
         ) : (
@@ -545,7 +546,7 @@ function VersionRail({ className, skill, versions, selectedVersion, loading, onS
   return (
     <aside aria-label={t("pages.skillsRepo.versionHistory")} className={cn("overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]", className)}>
       <div className="border-b border-[color:var(--border-subtle)] px-4 py-3"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">{t("pages.skillsRepo.versionHistory")}</p><p className="mt-1 text-xs text-muted-foreground">{t("pages.skillsRepo.versionHistoryHint")}</p></div>
-      <div className="max-h-[30rem] space-y-1 overflow-y-auto p-2 xl:max-h-[calc(100vh-14rem)]">{loading ? <Skeleton width="100%" height={180} radius={8} /> : versions.length === 0 ? <p className="px-2 py-5 text-center text-xs text-muted-foreground">{t("pages.skillsRepo.noSavedVersions")}</p> : versions.map((version) => { const published = skill.published_version === version.version; return <div key={version.version} className={cn("rounded-lg border p-2.5", selectedVersion === version.version ? "border-[color:var(--red-folk)] bg-[color:var(--surface-selected)]" : "border-transparent hover:bg-[color:var(--surface-hover)]")}><button type="button" className="w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md" aria-pressed={selectedVersion === version.version} onClick={() => onSelect(version.version)}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold tabular-nums">v{version.version}</span><Badge tone={published ? "success" : "neutral"}>{published ? t("pages.skillsRepo.published") : t("pages.skillsRepo.immutable")}</Badge></div><p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground"><Clock3 className="h-3 w-3" />{format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}</p><p className="mt-1 flex items-center gap-1 text-[0.6875rem] text-[color:var(--text-subtle)]">{version.content_ref ? <><ExternalLink className="h-3 w-3" />{t("pages.skillsRepo.artifactReferenceMeta")}</> : <><FileCode2 className="h-3 w-3" />{t("pages.skillsRepo.inlineContentMeta")}</>}</p></button>{!published && skill.published_version && !skill.retired_at && <GatedButton gate="skill:update" variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.skillsRepo.rollbackTo", { version: version.version })}</GatedButton>}</div>; })}</div>
+      <div className="max-h-[30rem] space-y-1 overflow-y-auto p-2 xl:max-h-[calc(100vh-14rem)]">{loading ? <LoadingRegion><Skeleton width="100%" height={180} radius={8} data-testid="skill-versions-loading" /></LoadingRegion> : versions.length === 0 ? <p className="px-2 py-5 text-center text-xs text-muted-foreground">{t("pages.skillsRepo.noSavedVersions")}</p> : versions.map((version) => { const published = skill.published_version === version.version; return <div key={version.version} className={cn("rounded-lg border p-2.5", selectedVersion === version.version ? "border-[color:var(--red-folk)] bg-[color:var(--surface-selected)]" : "border-transparent hover:bg-[color:var(--surface-hover)]")}><button type="button" className="w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md" aria-pressed={selectedVersion === version.version} onClick={() => onSelect(version.version)}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold tabular-nums">v{version.version}</span><Badge tone={published ? "success" : "neutral"}>{published ? t("pages.skillsRepo.published") : t("pages.skillsRepo.immutable")}</Badge></div><p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground"><Clock3 className="h-3 w-3" />{format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}</p><p className="mt-1 flex items-center gap-1 text-[0.6875rem] text-[color:var(--text-subtle)]">{version.content_ref ? <><ExternalLink className="h-3 w-3" />{t("pages.skillsRepo.artifactReferenceMeta")}</> : <><FileCode2 className="h-3 w-3" />{t("pages.skillsRepo.inlineContentMeta")}</>}</p></button>{!published && skill.published_version && !skill.retired_at && <GatedButton gate="skill:update" variant="ghost" onClick={() => onRollback(version.version)}><RotateCcw className="h-3.5 w-3.5" /> {t("pages.skillsRepo.rollbackTo", { version: version.version })}</GatedButton>}</div>; })}</div>
     </aside>
   );
 }

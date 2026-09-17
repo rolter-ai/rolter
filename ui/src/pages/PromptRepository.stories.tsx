@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import PromptRepository from "./PromptRepository";
-import { Toasted, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import { Toasted, expectEmptyState, expectInStatusRegion, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
 import type {
   PromptTemplateRow,
   PromptTemplateScopeRow,
@@ -170,6 +170,30 @@ export const Error: Story = {
     return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/prompt-templates`) ? json({ error: { message: "database is unavailable" } }, 503) : stub(input, init)} />;
   },
   play: async ({ canvasElement }) => expectLoadError(canvasElement, /prompt templates/i),
+};
+
+// the template list loads and the version history is the request still in
+// flight. it rendered a bare `Skeleton`, which is aria-hidden, so the panel was
+// silent to a screen reader while it filled (#1618)
+export const VersionHistoryLoading: Story = {
+  render: () => {
+    const stub = loadedStub();
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/prompt-templates/${TEMPLATE}/versions`) && init?.method !== "POST"
+            ? new Promise<Response>(() => {})
+            : stub(input, init)
+        }
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    // a loading label anywhere on the screen would pass with the bare
+    // aria-hidden Skeleton this story exists for, so name the panel
+    await expectInStatusRegion(canvasElement, "prompt-versions-loading");
+  },
 };
 
 export const RendersSamplesAndSavesDraft: Story = {
