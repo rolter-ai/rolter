@@ -102,6 +102,12 @@ const USER_FACING_PROPS = [
   "errorMessage",
   // an image's accessible name
   "alt",
+  // a table column's heading, which is data and never a JSX text node
+  "header",
+  // the header a ComboboxOption sits under; the migration off `<select>` (#968)
+  // moved a dropdown's whole vocabulary — label, description, group — out of
+  // JSX text and into properties, so the keys are where that copy is read
+  "group",
 ];
 
 const DIALOG = /window\.(?:confirm|alert|prompt)\(\s*(["'`])([^"'`]{2,})\1/g;
@@ -592,7 +598,7 @@ export function mixedText(region: string): string | null {
 }
 
 /**
- * Every offset in `masked` that holds the `>` closing a JSX tag.
+ * Every JSX tag in `masked`, as the offset of its `<` mapped to its `>`.
  *
  * A `>` is otherwise ambiguous, and both misreads cost findings: a generic
  * (`Promise<Response>`) makes the type name read as a text node, and a
@@ -609,8 +615,8 @@ export function mixedText(region: string): string | null {
  * so the `=>` of an `onClick={() => …}` handler stays an arrow instead of
  * ending the tag it sits in.
  */
-function jsxTagEnds(masked: string): Set<number> {
-  const ends = new Set<number>();
+function jsxTags(masked: string): Map<number, number> {
+  const tags = new Map<number, number>();
   for (let i = 0; i < masked.length; i++) {
     if (masked[i] !== "<") continue;
     const after = masked[i + 1] ?? "";
@@ -633,12 +639,55 @@ function jsxTagEnds(masked: string): Set<number> {
       // a second `<` before this one closed: not a tag after all
       else if (ch === "<") break;
       else if (ch === ">") {
-        ends.add(j);
+        tags.set(i, j);
         break;
       }
     }
   }
-  return ends;
+  return tags;
+}
+
+/**
+ * The same text with every tag blanked, so only the expressions and text
+ * between them are left. A child expression is read whole (`childExpressions`),
+ * and a tag nested inside one carries `className` and the other props the scan
+ * deliberately ignores — reading those as children reported ten class lists as
+ * copy. The props inside are `PROP`'s job either way.
+ */
+function blankTags(masked: string, tags: Map<number, number>): string {
+  const out = masked.split("");
+  for (const [start, end] of tags) {
+    for (let i = start; i <= end; i++) out[i] = " ";
+  }
+  return out.join("");
+}
+
+/**
+ * Every `{…}` sitting in children position, as `[start, end)` into `masked`.
+ *
+ * `TEXT_EXPR` reads the shape `>{…}<`: one expression alone between two tags.
+ * An element that renders a spinner beside its label writes two in a row —
+ * `>{pending && <Loader2/>}{draining ? "Return to service" : "Drain"}<` — and
+ * the second one is preceded by `}`, so the pattern never reaches it, while
+ * `TEXT_MIXED` gives up on the tag inside the first (#1594). Walking forward
+ * from each tag end instead reads the whole run, and the braces carry the
+ * nested elements with them — their tags are blanked before the strings inside
+ * are read, since a prop is not children.
+ */
+function childExpressions(masked: string, tagEnds: Set<number>): [number, number][] {
+  const out: [number, number][] = [];
+  for (const end of tagEnds) {
+    let i = end + 1;
+    while (i < masked.length) {
+      while (i < masked.length && WHITESPACE.test(masked[i])) i++;
+      if (masked[i] !== "{") break;
+      const close = skipExpression(masked, i + 1, "");
+      if (masked[close] !== "}") break;
+      out.push([i + 1, close]);
+      i = close + 1;
+    }
+  }
+  return out;
 }
 
 function lineOf(source: string, index: number): number {
@@ -661,7 +710,8 @@ export function findLiterals(source: string, file: string): Literal[] {
   const seen = new Set<string>();
   const masked = maskSource(source);
   const scanned = masked.text.replace(T_CALL, blank);
-  const tagEnds = jsxTagEnds(scanned);
+  const tags = jsxTags(scanned);
+  const tagEnds = new Set(tags.values());
 
   const push = (index: number, raw: string, kind: Literal["kind"]) => {
     const text = normalize(raw);
@@ -714,6 +764,13 @@ export function findLiterals(source: string, file: string): Literal[] {
       if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? "text");
       for (const c of stringsIn(e[0], base + e.index)) push(c.index, c.text, "text");
     }
+  }
+  const children = blankTags(scanned, tags);
+  for (const [from, to] of childExpressions(scanned, tagEnds)) {
+    const expr = children.slice(from, to);
+    const ident = RENDERED_IDENT.exec(expr);
+    if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? "text");
+    for (const c of stringsIn(expr, from)) push(c.index, c.text, "text");
   }
   // English parked in a local and rendered later: `const cta = add ? "Create" :
   // "Save"` then `<Button>{cta}</Button>` (#1537). only a binding whose name

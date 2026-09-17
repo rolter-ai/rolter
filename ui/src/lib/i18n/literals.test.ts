@@ -585,3 +585,75 @@ describe("findLiterals tells lowercase prose from a class list", () => {
     ]);
   });
 });
+
+// copy that is never JSX text: a dropdown's options were `<option>Off</option>`
+// until the combobox migration (#968) moved them into `label:`/`group:`
+// properties, and a table's column headers were always data (#1594)
+describe("findLiterals reads copy that only ever sits in data", () => {
+  test("reads an option's label and description", () => {
+    const source = [
+      "<Combobox",
+      "  options={[",
+      '    { value: "off", label: "Off", description: "Send the whole answer at once" },',
+      '    { value: "on", label: "Streaming on" },',
+      "  ]}",
+      "/>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Off", "Send the whole answer at once", "Streaming on"]);
+  });
+
+  test("reads the group header an option sits under", () => {
+    expect(
+      texts('const OPTIONS = [{ value: "gpt-4o", label: t("models.gpt4o"), group: "Chat models" }];'),
+    ).toEqual(["Chat models"]);
+  });
+
+  test("reads a table column's header", () => {
+    const source = [
+      "const columns: TableColumn<Row>[] = [",
+      '  { key: "at", header: "Time", mono: true },',
+      '  { key: "action", header: "Action", render: (v) => <Badge>{v}</Badge> },',
+      "];",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Time", "Action"]);
+  });
+
+  test("still ignores a wire value or a class list under the new keys", () => {
+    const source = [
+      'const a = { header: "x-request-id", group: "chat" };',
+      'const b = { header: "flex items-center gap-2" };',
+      'const c = { headers: { Authorization: "Bearer abc" }, headerGroup: "Chat models" };',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("reads every expression child, not only an element's single one", () => {
+    const source = [
+      "<GatedButton onClick={() => drain.mutate(row.id)}>",
+      '  {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}',
+      '  {draining ? "Return to service" : "Drain"}',
+      "</GatedButton>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Return to service", "Drain"]);
+  });
+
+  test("does not read a nested element's props as children", () => {
+    const source = [
+      "<div>",
+      "  {icon && (",
+      '    <span className="inline-flex h-11 w-11 items-center [&>svg]:h-5">{icon}</span>',
+      "  )}",
+      '  {rows.map((r) => <circle key={r.id} transform={`rotate(-90 ${r.x} ${r.y})`} />)}',
+      "</div>",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("does not read a prop's object value as a child", () => {
+    const source = [
+      '<div style={{ color: "red" }} aria-hidden="true" />',
+      "<Chart data={rows} options={{ legend: false }} />",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});
