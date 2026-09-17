@@ -61,6 +61,11 @@ export type Baseline = Record<string, string[]>;
  * Props whose value is read by a person. Deliberately a closed list: the
  * alternative is flagging every string-valued prop, which would drown the real
  * findings in `className`, `type`, `id` and `data-*`.
+ *
+ * Closed does not mean frozen: the list has to name what the dashboard's own
+ * components render as copy. It once stopped at `saveLabel`, and six English
+ * `desc:` strings in `FeatureFlags.tsx` sat beside the `title:` it did report
+ * (#1545). A component that takes copy under a new name adds the name here.
  */
 const USER_FACING_PROPS = [
   "title",
@@ -73,6 +78,25 @@ const USER_FACING_PROPS = [
   "confirmLabel",
   "cancelLabel",
   "saveLabel",
+  // RelatedLink, FeatureFlags and the settings screens' rows
+  "desc",
+  // Field and SwitchRow: the line under the control, and the InfoHint beside it
+  "hint",
+  "info",
+  // InfoHint's own prop, and the hover explanation other rows spell out
+  "text",
+  "tooltip",
+  // a toast's second line, and a notice's message or body
+  "detail",
+  "message",
+  "body",
+  // ScopeNote and the cost attribution notes
+  "note",
+  // Field's validation line and the create dialogs' failure line
+  "error",
+  "errorMessage",
+  // an image's accessible name
+  "alt",
 ];
 
 const DIALOG = /window\.(?:confirm|alert|prompt)\(\s*(["'`])([^"'`]{2,})\1/g;

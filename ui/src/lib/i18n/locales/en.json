@@ -2007,6 +2007,25 @@
         "routes_other": "{{count}} routes",
         "keys_one": "{{count}} virtual key",
         "keys_other": "{{count}} virtual keys"
+      },
+      "related": {
+        "title": "Related settings",
+        "featureFlags": {
+          "title": "Feature flags",
+          "desc": "Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+        },
+        "clientSettings": {
+          "title": "Client settings",
+          "desc": "Base URL, forwarded and injected headers, request correlation."
+        },
+        "modelSettings": {
+          "title": "Model settings",
+          "desc": "Deployment-wide defaults for sampling parameters and the model."
+        },
+        "performance": {
+          "title": "Performance tuning",
+          "desc": "Upstream retries, timeouts, and the bounded admission queue."
+        }
       }
     },
     "mcpSettings": {
