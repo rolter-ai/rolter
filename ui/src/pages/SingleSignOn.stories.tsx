@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import SingleSignOn from "./SingleSignOn";
 import {
   Harness,
+  expectRefused,
   ORG,
   Toasted,
   cancelConfirmation,
@@ -76,6 +77,7 @@ const POLICY: OrgAuthPolicy = {
   org_id: ORG.id,
   allow_password_login: true,
   allow_sso: true,
+  mfa_policy: "off",
   updated_at: NOW,
 };
 
@@ -559,6 +561,11 @@ export const SavesPolicy: Story = {
     ).toEqual({
       allow_password_login: false,
       allow_sso: true,
+      // the second-factor policy travels with the two flags even when it is
+      // the one thing that did not change: omitting it would be read as "keep
+      // the current value", which is right, but sending it is what makes this
+      // assertion prove the field is wired at all (#1078)
+      mfa_policy: "off",
     });
     await expectToast(canvasElement, /the sign-in policy updated/i);
   },
@@ -585,5 +592,113 @@ export const RefusesToDisableEverySignIn: Story = {
       expect(canvas.getByText(/At least one sign-in method/)).toBeVisible(),
     );
     await expect(save).toBeDisabled();
+  },
+};
+
+// --- the second-factor policy (#1078) -------------------------------------
+
+const mfaSave = recording(api({ providers: () => [provider()] }));
+
+/**
+ * Tightening `mfa_policy` is the one setting on this card that can lock people
+ * out without being wrong, so it confirms first — and the confirmation names
+ * the way back in rather than only the consequence.
+ */
+export const RequiringASecondFactorWarnsAboutTheLockout: Story = {
+  render: () => (
+    <Harness fetchStub={mfaSave.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = await canvas.findByLabelText("Second factor");
+    await userEvent.selectOptions(select, "required_all");
+    // the hint under the control changes with the value: the two `required_*`
+    // options differ in who they bind, which is the whole decision
+    await expect(canvas.getByText(/Superadmins included/)).toBeVisible();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    await expect(
+      within(dialog).getByText(/cannot set one up without signing in first/i),
+    ).toBeVisible();
+    await expect(within(dialog).getByText(/rolter mfa reset/)).toBeVisible();
+
+    // backing out sends nothing: the policy is unchanged until it is confirmed
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    mfaSave.expectNotSent("PUT", "/auth-policy");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await confirmDestructive(/cannot set one up/, "Require it");
+    await expect(
+      await mfaSave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
+    ).toEqual({
+      allow_password_login: true,
+      allow_sso: true,
+      mfa_policy: "required_all",
+    });
+  },
+};
+
+const mfaRelax = recording(
+  api({ providers: () => [provider()], policy: () => ({ ...POLICY, mfa_policy: "required_all" }) }),
+);
+
+/**
+ * Relaxing it does not confirm. A dialog in front of a change that locks
+ * nobody out is the click-through that teaches people to dismiss the one that
+ * matters.
+ */
+export const RelaxingThePolicySavesWithoutAConfirmation: Story = {
+  render: () => (
+    <Harness fetchStub={mfaRelax.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = await canvas.findByLabelText("Second factor");
+    await waitFor(() => expect(select).toHaveValue("required_all"));
+    await userEvent.selectOptions(select, "optional");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await expect(
+      await mfaRelax.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
+    ).toEqual({
+      allow_password_login: true,
+      allow_sso: true,
+      mfa_policy: "optional",
+    });
+    await expectToast(canvasElement, /the sign-in policy updated/i);
+  },
+};
+
+/**
+ * A member may read the sign-in policy and change none of it.
+ *
+ * `Save policy` was an ungated `Button` until this PR gated it on
+ * `org_auth_policy:update` — the same capability the control plane checks —
+ * so a member used to be able to press it and collect a 403. The refusal now
+ * names the role that would allow it, because "disabled" alone is the same
+ * non-answer the 403 was.
+ */
+export const AsMemberThePolicyIsReadOnly: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })} role="member">
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the control is there and readable: the value is information a member is
+    // allowed to have, and hiding it would leave them guessing why sign-in
+    // asks for a code
+    await expect(await canvas.findByLabelText("Second factor")).toBeVisible();
+    await userEvent.selectOptions(canvas.getByLabelText("Second factor"), "optional");
+    await expectRefused(canvasElement, "Save policy");
   },
 };

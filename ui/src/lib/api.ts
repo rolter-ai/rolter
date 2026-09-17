@@ -4187,11 +4187,18 @@ export function ssoStartPath(slug: string): string {
 
 // --- org sign-in policy (crates/rolter-control/src/auth_policy.rs, #240) ---
 
-/** `OrgAuthPolicy`; the pair decides what the login screen offers this org */
+/** `OrgAuthPolicy`; decides what the login screen offers this org, and what it demands */
 export interface OrgAuthPolicy {
   org_id: string;
   allow_password_login: boolean;
   allow_sso: boolean;
+  /**
+   * How hard this org insists on a second factor (#1078).
+   *
+   * A user in several orgs gets the strictest value across all of them — a
+   * relaxed membership never softens a hardened one.
+   */
+  mfa_policy: MfaPolicy;
   updated_at: string;
 }
 
@@ -4207,7 +4214,16 @@ export function fetchAuthPolicy(orgId: string): Promise<OrgAuthPolicy> {
  */
 export function updateAuthPolicy(
   orgId: string,
-  input: { allow_password_login: boolean; allow_sso: boolean },
+  input: {
+    allow_password_login: boolean;
+    allow_sso: boolean;
+    /**
+     * Omitted keeps the org's current setting rather than resetting it to
+     * `off` — the control plane reads the field as optional so a client
+     * written before second factors existed cannot silently disarm one.
+     */
+    mfa_policy?: MfaPolicy;
+  },
 ): Promise<OrgAuthPolicy> {
   return sendJson<OrgAuthPolicy>(
     "PUT",

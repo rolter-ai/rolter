@@ -25,11 +25,14 @@ import {
   deleteSsoGroupMapping,
   deleteSsoProvider,
   fetchAuthPolicy,
+  fetchMemberships,
   fetchSsoGroupMappings,
   fetchSsoProviders,
   ROLES,
   ssoStartPath,
   updateAuthPolicy,
+  MFA_POLICIES,
+  type MfaPolicy,
   type OrgAuthPolicy,
   type SsoGroupMappingRow,
   type SsoProviderRow,
@@ -78,13 +81,50 @@ function Detail({
 }
 
 /**
- * Which ways into the dashboard this org allows.
+ * The two `mfa_policy` values that can refuse a session to an existing member.
  *
- * Both flags are sent together because the control plane refuses the
+ * `optional` cannot: it changes who *may* enrol, not who may sign in.
+ */
+const MFA_LOCKS_OUT: MfaPolicy[] = ["required_superadmin", "required_all"];
+
+/**
+ * Catalog key per policy value.
+ *
+ * Not the wire value itself: i18next reads a trailing `_all` or `_one` as a
+ * plural suffix, so `mfaOptions.required_all` would be a key the catalogs and
+ * the parity gate disagree about.
+ */
+const MFA_KEY: Record<MfaPolicy, string> = {
+  off: "off",
+  optional: "optional",
+  required_superadmin: "requiredSuperadmin",
+  required_all: "requiredAll",
+};
+
+/**
+ * The break-glass procedure, for the confirmation that warns about a lockout.
+ *
+ * A link to our own docs on the forge rather than to a docs site this
+ * deployment may not be able to reach — and the command itself is in the copy,
+ * so an operator with no network still knows what to run.
+ */
+const MFA_DOCS_URL =
+  "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/security/two-factor-authentication.mdx#break-glass-a-lost-device";
+
+/**
+ * Which ways into the dashboard this org allows, and what it demands on the
+ * way in.
+ *
+ * The two flags are sent together because the control plane refuses the
  * *combination*, not the field: both off is an outage, and passwords off before
  * an enabled provider exists locks every non-superadmin out. Each is a 409 with
  * its own message, so the local guard below only covers the case an operator
  * can see for themselves.
+ *
+ * `mfa_policy` travels with them (#1078). It is the one setting here that can
+ * lock people out *without* being wrong — a `required_*` value refuses a
+ * session to any member who has not armed a factor yet — so it is the one
+ * that confirms first, and the confirmation names the way back in.
  */
 function SignInPolicyCard({
   orgId,
@@ -98,21 +138,36 @@ function SignInPolicyCard({
   const toast = useToast();
   const [password, setPassword] = React.useState(policy.allow_password_login);
   const [sso, setSso] = React.useState(policy.allow_sso);
+  const [mfa, setMfa] = React.useState<MfaPolicy>(policy.mfa_policy);
+  const [confirming, setConfirming] = React.useState(false);
 
   // re-seed when the server's copy moves under us — another admin, or our own
   // save coming back
   React.useEffect(() => {
     setPassword(policy.allow_password_login);
     setSso(policy.allow_sso);
-  }, [policy.allow_password_login, policy.allow_sso]);
+    setMfa(policy.mfa_policy);
+  }, [policy.allow_password_login, policy.allow_sso, policy.mfa_policy]);
+
+  // how many accounts the tightening would bind. Best-effort: a caller who may
+  // not read the org's memberships still gets the warning, just without a
+  // number in it — refusing to warn at all would be the worse trade
+  const members = useQuery({
+    queryKey: ["memberships", orgId],
+    queryFn: () => fetchMemberships(orgId),
+    enabled: MFA_LOCKS_OUT.includes(mfa) && mfa !== policy.mfa_policy,
+    retry: false,
+  });
 
   const save = useMutation({
     mutationFn: () =>
       updateAuthPolicy(orgId, {
         allow_password_login: password,
         allow_sso: sso,
+        mfa_policy: mfa,
       }),
     onSuccess: (next) => {
+      setConfirming(false);
       queryClient.setQueryData([POLICY_KEY, orgId], next);
       void queryClient.invalidateQueries({ queryKey: [POLICY_KEY, orgId] });
       toast.push({
@@ -131,8 +186,14 @@ function SignInPolicyCard({
   });
 
   const dirty =
-    password !== policy.allow_password_login || sso !== policy.allow_sso;
+    password !== policy.allow_password_login ||
+    sso !== policy.allow_sso ||
+    mfa !== policy.mfa_policy;
   const bothOff = !password && !sso;
+  // only a *tightening* is worth a confirmation: relaxing the policy locks
+  // nobody out, and a dialog in front of it would be the click-through that
+  // teaches people to dismiss the one that matters
+  const locksOut = MFA_LOCKS_OUT.includes(mfa) && mfa !== policy.mfa_policy;
 
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
@@ -175,6 +236,23 @@ function SignInPolicyCard({
             aria-label={t("pages.sso.policy.ssoLabel")}
           />
         </div>
+        {/* not a switch: four values, and the two `required_*` ones differ in
+            who they bind rather than in how much they do */}
+        <Field
+          label={t("pages.sso.policy.mfaLabel")}
+          hint={t(`pages.sso.policy.mfaHints.${MFA_KEY[mfa]}`)}
+        >
+          <Select
+            value={mfa}
+            onChange={(e) => setMfa(e.target.value as MfaPolicy)}
+          >
+            {MFA_POLICIES.map((value) => (
+              <option key={value} value={value}>
+                {t(`pages.sso.policy.mfaOptions.${MFA_KEY[value]}`)}
+              </option>
+            ))}
+          </Select>
+        </Field>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t border-[color:var(--border-subtle)] px-4 py-3">
         {bothOff && (
@@ -188,16 +266,51 @@ function SignInPolicyCard({
             {(save.error as Error).message}
           </p>
         )}
-        <Button
+        <GatedButton
+          gate="org_auth_policy:update"
           className="ml-auto"
           size="sm"
           disabled={!dirty || bothOff || save.isPending}
-          onClick={() => save.mutate()}
+          onClick={() => {
+            save.reset();
+            if (locksOut) setConfirming(true);
+            else save.mutate();
+          }}
         >
           {save.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {t("pages.sso.policy.save")}
-        </Button>
+        </GatedButton>
       </footer>
+
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={(open) => !open && setConfirming(false)}
+        title={t("pages.sso.policy.mfaConfirm.title")}
+        description={
+          members.data
+            ? t("pages.sso.policy.mfaConfirm.bodyWithCount", {
+                count: members.data.length,
+              })
+            : t("pages.sso.policy.mfaConfirm.body")
+        }
+        confirmLabel={t("pages.sso.policy.mfaConfirm.confirm")}
+        pending={save.isPending}
+        error={save.error}
+        onConfirm={() => save.mutate()}
+      >
+        {/* the way back in, named before the lockout rather than after it */}
+        <p className="text-xs text-muted-foreground">
+          {t("pages.sso.policy.mfaConfirm.breakGlass")}{" "}
+          <a
+            href={MFA_DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-4 hover:text-foreground"
+          >
+            {t("pages.sso.policy.mfaConfirm.breakGlassLink")}
+          </a>
+        </p>
+      </ConfirmDialog>
     </section>
   );
 }
