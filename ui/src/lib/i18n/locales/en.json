@@ -1126,7 +1126,7 @@
           "issSupported": "Sends iss in callbacks",
           "issUnsupported": "Does not advertise iss",
           "none": "Nothing discovered yet. Discovery runs the first time someone connects, and what it finds is shown here.",
-          "resets": "Saving a new issuer or discovery mode clears these results. The next Connect discovers again."
+          "resets": "Saving a new server URL, issuer or discovery mode clears these results. The next Connect discovers again."
         },
         "endpoints": {
           "fallbackTitle": "Fallback endpoints",
@@ -1190,6 +1190,7 @@
         "slug": "Slug",
         "slugHint": "Used in /mcp/{server}; immutable after registration.",
         "url": "Endpoint URL",
+        "urlResetsDiscovery": "Saving a new URL clears the OAuth endpoints discovered for this server. The next Connect discovers them again.",
         "transport": "Transport",
         "enabledInGateway": "Enabled in gateway",
         "description": "Description",

@@ -10,6 +10,7 @@ import {
   oauthTouched,
   oauthValid,
   toOAuthInput,
+  urlResetsDiscovery,
 } from "@/lib/mcp-oauth-client";
 
 const server = (over: Partial<McpServerRow> = {}): McpServerRow => ({
@@ -131,10 +132,30 @@ describe("oauthResetsDiscovery", () => {
   const found = server({ client_id: "rolter", oauth_discovered_at: "2026-09-01T10:00:00Z", oauth_discovered_issuer: "https://auth.example.com" });
 
   it("warns only when there is a cache and the issuer or mode moves", () => {
-    expect(oauthResetsDiscovery(oauthDraft(found), found)).toBe(false);
-    expect(oauthResetsDiscovery({ ...oauthDraft(found), issuer: "https://other.example.com" }, found)).toBe(true);
-    expect(oauthResetsDiscovery({ ...oauthDraft(found), clientId: "renamed" }, found)).toBe(false);
-    expect(oauthResetsDiscovery({ ...oauthDraft(null), issuer: "https://x.example.com" }, server())).toBe(false);
+    expect(oauthResetsDiscovery(oauthDraft(found), found, found.url)).toBe(false);
+    expect(oauthResetsDiscovery({ ...oauthDraft(found), issuer: "https://other.example.com" }, found, found.url)).toBe(true);
+    expect(oauthResetsDiscovery({ ...oauthDraft(found), clientId: "renamed" }, found, found.url)).toBe(false);
+    expect(oauthResetsDiscovery({ ...oauthDraft(null), issuer: "https://x.example.com" }, server(), found.url)).toBe(false);
+  });
+
+  it("warns when the url moves, as the store clears the cache for that too", () => {
+    expect(oauthResetsDiscovery(oauthDraft(found), found, "https://mcp.example.com/mcp")).toBe(true);
+    expect(oauthResetsDiscovery(oauthDraft(server()), server(), "https://mcp.example.com/mcp")).toBe(false);
+  });
+});
+
+describe("urlResetsDiscovery", () => {
+  const found = server({ client_id: "rolter", oauth_discovered_at: "2026-09-01T10:00:00Z" });
+
+  it("warns only for a server with a cache whose url moved", () => {
+    expect(urlResetsDiscovery(found.url, found)).toBe(false);
+    expect(urlResetsDiscovery("https://mcp.example.com/mcp", found)).toBe(true);
+    expect(urlResetsDiscovery("https://mcp.example.com/mcp", server())).toBe(false);
+    expect(urlResetsDiscovery("https://mcp.example.com/mcp", null)).toBe(false);
+  });
+
+  it("compares exactly, since the store does and the dialog does not trim", () => {
+    expect(urlResetsDiscovery(`${found.url} `, found)).toBe(true);
   });
 });
 
