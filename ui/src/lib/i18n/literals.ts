@@ -208,6 +208,66 @@ const OBJECT_KEY = new RegExp(
   `[{,]\\s*(["']?)(?:${USER_FACING_PROPS.map((p) => p.replace("-", "\\-")).join("|")})\\1\\s*:\\s*`,
   "g",
 );
+/**
+ * an object literal with nothing nested inside it — the shape a lookup table
+ * takes. matched innermost-first, so `{ verbs: { retry: "Try again" } }` yields
+ * the inner table rather than nothing (#1599)
+ */
+const FLAT_OBJECT = /\{[^{}]*\}/g;
+/** one `code: "label"` member of such a table, quoted key or not */
+const MAP_ENTRY = /(["']?)([A-Za-z_$][\w$-]*)\1\s*:\s*(["'])((?:[^"'\\]|\\.)*)\3/g;
+/**
+ * A value that reads as a label rather than as another code: it is a phrase, or
+ * a word the author capitalised, and either way it carries a run of letters
+ * long enough to be a word — `r .1s`, a css transition, is a phrase otherwise.
+ * Stricter than `isNotCopy` on purpose: a table of wire values is the normal
+ * case here, and `cache-first`, `provider_name` and `/api/v1/keys` all pass
+ * `isNotCopy` while being nobody's copy.
+ */
+const READS_AS_LABEL = /^(?=.*[A-Za-z]{2})(?:.*\s|[A-Z])/s;
+/**
+ * Keys that name a *prop* rather than a wire value. One of them anywhere in the
+ * object says this is a bag of settings being passed somewhere, not a lookup
+ * table, and its strings are whatever that prop means — `id`, `className` and
+ * `kind` all carry capitalised values that are nobody's copy. The copy-carrying
+ * props are read by name through `OBJECT_KEY` instead, which is the precise
+ * rule; this one only has to know when to stand down.
+ */
+const NOT_A_TABLE_KEY = new Set([
+  "id", "key", "name", "kind", "type", "value", "className", "class", "style",
+  "href", "src", "url", "path", "to", "role", "variant", "size", "color",
+  "icon", "testId", "method", "slug", "field", "column",
+]);
+
+/**
+ * The labels in a map from wire codes to copy, or `null` when the object is not
+ * such a map.
+ *
+ * `USER_FACING_PROPS` is a list of *names*, so it only ever reaches a string
+ * whose key is one of them. A lookup table inverts that — the key is the wire
+ * value and the copy is on the right — and no name on that list can catch it
+ * (#1599). Every member has to be a `code: "string"` pair, and there has to be
+ * more than one: a single pair is as often an options bag as a table.
+ */
+function codeMapLabels(inner: string, base: number): Candidate[] | null {
+  let at = 0;
+  let members = 0;
+  const out: Candidate[] = [];
+  MAP_ENTRY.lastIndex = 0;
+  for (const m of inner.matchAll(MAP_ENTRY)) {
+    members += 1;
+    if (NOT_A_TABLE_KEY.has(m[2])) return null;
+    // anything but whitespace and the separating comma between two members
+    // means this is not a table of pairs
+    if (!/^[\s,]*$/.test(inner.slice(at, m.index))) return null;
+    at = m.index + m[0].length;
+    const text = normalize(m[4]);
+    if (READS_AS_LABEL.test(text)) out.push({ index: base + m.index + m[0].lastIndexOf(m[4]), text });
+  }
+  if (!/^[\s,]*$/.test(inner.slice(at))) return null;
+  return members > 1 ? out : null;
+}
+
 /** a bare identifier rendered where copy goes: `{cta}` as children, `title={title}` */
 const RENDERED_IDENT = /^\s*([A-Za-z_$][\w$]*)\s*$/;
 /** a local binding whose value might be copy held for later */
@@ -329,6 +389,9 @@ function isNotCopy(text: string): boolean {
   if (/^https?:\/\//.test(t) || t.includes("://")) return true;
   // a numeric placeholder like "0.00" or "1024"
   if (/^[\d.,\s%-]+$/.test(t)) return true;
+  // svg path data: a move command and then nothing but commands and numbers.
+  // `M12 19V5M5 12l7-7 7 7` is an arrow, not a sentence (#1599)
+  if (/^[Mm][\d\s.,-]/.test(t) && /^[A-Za-z\d\s.,-]+$/.test(t) && !/[A-Za-z]{2}/.test(t)) return true;
   // a tailwind class list or a css value: lowercase, no sentence punctuation,
   // and every token a utility. the character set alone is not enough —
   // `request failed: {…}` and `no events yet` fit it too, and were dropped
@@ -747,6 +810,10 @@ export function findLiterals(source: string, file: string): Literal[] {
     const at = m.index + m[0].length;
     const end = skipExpression(scanned, at, ",;");
     for (const c of stringsIn(scanned.slice(at, end), at)) push(c.index, c.text, "prop");
+  }
+  // a lookup table's labels, which no prop name can reach (#1599)
+  for (const m of scanned.matchAll(FLAT_OBJECT)) {
+    for (const c of codeMapLabels(m[0].slice(1, -1), m.index + 1) ?? []) push(c.index, c.text, "prop");
   }
   for (const m of scanned.matchAll(TEXT)) {
     if (!tagEnds.has(m.index)) continue;

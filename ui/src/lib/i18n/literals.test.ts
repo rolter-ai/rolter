@@ -657,3 +657,44 @@ describe("findLiterals reads copy that only ever sits in data", () => {
     expect(texts(source)).toEqual([]);
   });
 });
+
+// #1599: a map from wire codes to labels inverts the prop rule — the key is the
+// value and the copy is on the right — so no name on the prop list can reach it.
+// this is the shape a dropdown takes whenever its options are derived rather
+// than written out
+describe("findLiterals reads a code-to-copy map", () => {
+  test("catches copy held as the values of a code-to-label map", () => {
+    const source = [
+      'const MODES = { off: "Off", on: "Streaming on" };',
+      "const options = Object.entries(MODES).map(([value, label]) => ({ value, label }));",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Off", "Streaming on"]);
+  });
+
+  test("catches a quoted or kebab key, and a map held on an object", () => {
+    const source = [
+      'const STATUS = { "in-progress": "Rolling out", done: "Finished" };',
+      'const COPY = { verbs: { retry: "Try again", cancel: "Never mind" } };',
+    ].join("\n");
+    expect(texts(source)).toEqual(["Rolling out", "Finished", "Try again", "Never mind"]);
+  });
+
+  test("leaves the maps that hold class lists, css values, keys and wire codes", () => {
+    const source = [
+      'const TONE = { success: "bg-green-500", danger: "bg-destructive text-white" };',
+      'const SCOPE_KEY = { org: "scope.org", team: "scope.team", project: "scope.project" };',
+      'const METHOD = { create: "POST", update: "PATCH", remove: "DELETE" };',
+      'const ENDPOINT = { keys: "/api/v1/keys", orgs: "/api/v1/orgs" };',
+      'const FIELD = { name: "provider_name", base: "api_base_url" };',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("leaves a map whose values are not all strings, so a config object is not copy", () => {
+    const source = [
+      'const CHART = { height: 240, label: false, unit: "ms" };',
+      'const QUERY = { queryKey: ["models"], staleTime: 30_000, mode: "cache-first" };',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});

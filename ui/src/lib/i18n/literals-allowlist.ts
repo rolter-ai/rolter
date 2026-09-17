@@ -9,6 +9,17 @@
 import type { AllowList } from "./literals";
 
 export const NOT_COPY: AllowList = {
+  "src/components/CodeSnippetDialog.tsx": {
+    Python: "the language's own name, spelled the same in every locale",
+    JavaScript: "the language's own name, spelled the same in every locale",
+  },
+  "src/components/ui/code-block.tsx": {
+    Bash: "the shell's own name, spelled the same in every locale",
+    Python: "the language's own name, spelled the same in every locale",
+    JavaScript: "the language's own name, spelled the same in every locale",
+    TypeScript: "the language's own name, spelled the same in every locale",
+    Markdown: "the format's own name, spelled the same in every locale",
+  },
   "src/components/ProviderGroupSheet.tsx": {
     "{…}/model · {…}":
       "the group's address pattern (`slug/model`) and its strategy id, both typed verbatim into client config",
