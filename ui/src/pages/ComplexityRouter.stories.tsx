@@ -6,6 +6,7 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
   pending,
@@ -110,5 +111,37 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to routes/);
+  },
+};
+
+// a route with no policy at all, so the "add a policy" entry point renders
+const unconfigured = routes([
+  ["/complexity", () => ({ tiers: [] })],
+  ["/routes", () => ROUTES],
+]);
+
+// A complexity policy is stored on its route, so both entry points are
+// `route:update` — admin (#1606).
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <ComplexityRouter />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Edit the complexity policy for gpt-4o");
+  },
+};
+
+// the second entry point is a bare button rather than a `GatedButton`, so it
+// carries the gate by hand and can lose it without the first one noticing
+export const RefusedToAMemberWithNoPolicyYet: Story = {
+  render: () => (
+    <Harness fetchStub={unconfigured} role="member">
+      <ComplexityRouter />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Add a complexity policy for gpt-4o");
   },
 };

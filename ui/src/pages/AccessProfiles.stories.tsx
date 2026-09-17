@@ -8,6 +8,7 @@ import {
   confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   Harness,
   json,
@@ -345,5 +346,56 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to access profiles/);
+  },
+};
+
+// What a viewer is offered, which is nothing (#1606).
+//
+// `access_profile` is admin at every action, so a viewer must find the create
+// refused and the per-card edit and delete refused with it. Without a role
+// these stories would render under no `CapabilityProvider` at all, `can()`
+// would answer "unknown", and every one of those controls would come up
+// enabled — which is why a screen with no role story cannot catch a dropped
+// gate.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={stub(async () => json(PROFILES))} role="viewer">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add profile/i);
+    await expectRefused(canvasElement, "Edit Support engineers");
+    await expectRefused(canvasElement, "Delete Support engineers");
+  },
+};
+
+// a member outranks a viewer and is still short of admin, so the answer is
+// the same sentence rather than a softer one
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={stub(async () => json(PROFILES))} role="member">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /add profile/i);
+    await expectRefused(canvasElement, "Delete Support engineers");
+  },
+};
+
+// the empty state repeats the create control, so it needs the gate too — an
+// operator who may not create should not be invited to
+export const RefusedToAViewerWhenEmpty: Story = {
+  render: () => (
+    <Harness fetchStub={stub(async () => json([]))} role="viewer">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    // the exact name, not a fragment: the toolbar carries `+ Add profile` and
+    // the placeholder `Add profile`, and a loose regex would match both and
+    // fail on the ambiguity rather than on the gate
+    await expectRefused(canvasElement, "Add profile");
   },
 };

@@ -6,6 +6,7 @@ import {
   Harness,
   clickWhenEnabled,
   expectClosesWithoutPrompting,
+  expectRefused,
   expectSheetClosed,
   expectSkeleton,
   json,
@@ -295,5 +296,34 @@ export const Mobile: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole("button", { name: /add budget/i });
     await expectNoHorizontalOverflow();
+  },
+};
+
+// Budgets and rate limits are separate resources with separate capabilities,
+// and both are admin (#1606). Each list carries its own create control and its
+// own hand-gated delete, so this screen has four gates that can drift apart.
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Add budget");
+    await expectRefused(canvasElement, "Add rate limit");
+    await expectRefused(canvasElement, /Delete the 30d budget/);
+    await expectRefused(canvasElement, /Delete the 600 rpm · 150000 tpm rate limit/);
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="member">
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Add budget");
+    await expectRefused(canvasElement, "Add rate limit");
   },
 };
