@@ -18,6 +18,7 @@ import {
   type FetchStub,
   type Recorder,
   withConfirm,
+  expectEmptyState,
 } from "./story-harness";
 import type {
   BusinessUnitRow,
@@ -226,6 +227,9 @@ export const Empty: Story = {
       <Keys />
     </Harness>
   ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No virtual keys yet/, /Add virtual key/);
+  },
 };
 
 export const Forbidden: Story = {

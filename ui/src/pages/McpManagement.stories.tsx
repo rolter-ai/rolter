@@ -596,7 +596,12 @@ export const LibraryHidesAnEmptyToolList: Story = {
 export const LibraryInstallsServer: Story = { render: () => { let installed = false; const stub = routed({ library: async () => json(LIBRARY.filter((item) => item.slug !== "notion").map((item) => item.slug === "linear" ? { ...item, installed } : item)), servers: async (_input, init) => { if (init?.method === "POST") { installed = true; return json({ ...SERVERS[0], id: "server-linear", name: "Linear", slug: "linear" }); } return json(SERVERS); } }); return <Harness fetchStub={stub}><McpLibrary /></Harness>; }, play: async ({ canvasElement }) => { const canvas = within(canvasElement); await userEvent.click(await canvas.findByRole("button", { name: "Install" })); await waitFor(() => expect(canvas.getAllByRole("button", { name: "Installed" })).toHaveLength(2)); } };
 
 export const ToolGroupsLoaded: Story = { render: () => <Harness fetchStub={routed()}><ToolGroups /></Harness>, play: async ({ canvasElement }) => { const canvas = within(canvasElement); await waitFor(() => expect(canvas.getByText("Triage")).toBeVisible()); await expect(canvas.getByText("GitHub/search_code")).toBeVisible(); } };
-export const ToolGroupsEmpty: Story = { render: () => <Harness fetchStub={routed({ groups: async () => json([]) })}><ToolGroups /></Harness> };
+export const ToolGroupsEmpty: Story = {
+  render: () => <Harness fetchStub={routed({ groups: async () => json([]) })}><ToolGroups /></Harness>,
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No tool groups/, /Create group/);
+  },
+};
 export const ToolGroupSelectsTools: Story = { render: () => <Harness fetchStub={routed({ groups: async () => json([]) })}><ToolGroups /></Harness>, play: async ({ canvasElement }) => { const canvas = within(canvasElement); const create = await canvas.findByRole("button", { name: "Create group" }); await waitFor(() => expect(create).toBeEnabled()); await userEvent.click(create); const body = within(document.body); await userEvent.type(body.getByLabelText("Name"), "Builders"); await userEvent.click(body.getByRole("button", { name: "create_issue" })); await expect(body.getByRole("button", { name: "create_issue" })).toHaveAttribute("aria-pressed", "true"); await expect(body.getByRole("button", { name: "Save group" })).toBeEnabled(); } };
 
 // the group delete was the last window.confirm on this screen, and it could not

@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Performance from "./Performance";
-import { Toasted, expectSkeleton, expectToast, pickOption } from "./story-harness";
+import { Toasted, expectSkeleton, expectToast, pickOption, expectForbidden } from "./story-harness";
 import type { RuntimePolicyDto } from "@/lib/api";
 
 const BASE: RuntimePolicyDto = {
@@ -78,6 +78,9 @@ export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // queue off: the queue-scoped fields disable, since they only shape a queue

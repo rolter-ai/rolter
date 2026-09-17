@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import PromptRepository from "./PromptRepository";
-import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole, expectEmptyState } from "./story-harness";
 import type {
   PromptTemplateRow,
   PromptTemplateScopeRow,
@@ -153,6 +153,9 @@ export const Empty: Story = {
   render: () => {
     const stub = loadedStub();
     return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/prompt-templates`) ? json([]) : stub(input, init)} />;
+  },
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No templates yet/, /Create template/);
   },
 };
 

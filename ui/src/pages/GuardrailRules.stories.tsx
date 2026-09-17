@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailRules from "./GuardrailRules";
-import { cancelConfirmation, confirmDestructive, pickOption, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, pickOption, recording, expectEmptyState, expectLoadError } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
 
 const RULES: GuardrailRuleRow[] = [
@@ -60,8 +60,18 @@ type Story = StoryObj<typeof meta>;
 
 export const Loaded: Story = { render: () => <Harness fetchStub={async () => json(RULES)} /> };
 export const Loading: Story = { render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} /> };
-export const Empty: Story = { render: () => <Harness fetchStub={async () => json([])} /> };
-export const Error: Story = { render: () => <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} /> };
+export const Empty: Story = {
+  render: () => <Harness fetchStub={async () => json([])} />,
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No inspection rules/, /Add first rule/);
+  },
+};
+export const Error: Story = {
+  render: () => <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />,
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return guardrail rules/);
+  },
+};
 
 // the two failures the bespoke panel got wrong (#1259). a deployment-scoped
 // screen is refused to every non-superadmin, and a "try again" on a permission

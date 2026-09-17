@@ -11,6 +11,7 @@ import {
   expectSkeleton,
   expectToast,
   recording,
+  expectForbidden,
 } from "./story-harness";
 import type { ClusterNodeRow } from "@/lib/api";
 
@@ -116,6 +117,9 @@ export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // draining the only live gateway would take the data plane offline; the server

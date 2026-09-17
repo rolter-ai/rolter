@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Plugins from "./Plugins";
-import { cancelConfirmation, confirmDestructive, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, recording, expectEmptyState, expectForbidden } from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
 
 const PLUGINS: PluginInstanceRow[] = [
@@ -78,8 +78,18 @@ type Story = StoryObj<typeof meta>;
 
 export const Loaded: Story = { render: () => <Harness fetchStub={withPlugins(PLUGINS)} /> };
 export const Loading: Story = { render: () => <Harness fetchStub={async (input) => scopeResponse(String(input)) ?? new Promise<Response>(() => {})} /> };
-export const Empty: Story = { render: () => <Harness fetchStub={withPlugins([])} /> };
-export const Forbidden: Story = { render: () => <Harness fetchStub={withPlugins([], 403)} /> };
+export const Empty: Story = {
+  render: () => <Harness fetchStub={withPlugins([])} />,
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No plugins installed/, /Install first plugin/);
+  },
+};
+export const Forbidden: Story = {
+  render: () => <Harness fetchStub={withPlugins([], 403)} />,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
+};
 
 export const InstallsWebhookConfiguration: Story = {
   render: () => <Harness fetchStub={async (input, init) => {
