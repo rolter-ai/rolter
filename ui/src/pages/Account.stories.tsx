@@ -17,6 +17,8 @@ import {
   sheet,
   withConfirm,
   type FetchStub,
+  expectEmptyState,
+  expectInStatusRegion,
   expectSkeleton,
 } from "./story-harness";
 import type {
@@ -186,6 +188,9 @@ export const Loaded: Story = {
   },
 };
 
+// two panels load here, and the second-factor one had a skeleton first — so
+// this asserts the *keys* placeholder specifically, in the `role="status"`
+// region that makes it audible, rather than anything skeleton-shaped (#1589)
 export const Loading: Story = {
   render: () => (
     <Harness fetchStub={pending}>
@@ -194,6 +199,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectInStatusRegion(canvasElement, "own-keys-loading");
   },
 };
 
@@ -204,8 +210,15 @@ export const Empty: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText(/haven't minted a virtual key yet/i)).toBeInTheDocument();
+    // the screen can mint a key, so the placeholder that says there are none
+    // offers to — a grey sentence was the half #1180 was filed over
+    await expectEmptyState(canvasElement, /No virtual keys yet/);
+    // the CTA has to be *in* the placeholder: the toolbar above carries a
+    // button with the same words, so a canvas-wide match proves nothing
+    await waitFor(() => {
+      const placeholder = within(within(canvasElement).getByTestId("own-keys-empty"));
+      expect(placeholder.getByRole("button", { name: "Generate virtual key" })).toBeEnabled();
+    });
   },
 };
 

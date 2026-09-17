@@ -28,14 +28,26 @@ import { cn } from "@/lib/utils";
  */
 export function LoadingRegion({
   className,
+  testId,
   children,
 }: {
   className?: string;
+  /**
+   * Names this placeholder, for a screen with more than one in flight: a story
+   * asserting "the screen is busy" cannot otherwise tell which half is (#1589).
+   */
+  testId?: string;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
   return (
-    <div role="status" aria-busy="true" aria-label={t("common.loading")} className={className}>
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label={t("common.loading")}
+      className={className}
+      data-testid={testId}
+    >
       {children}
     </div>
   );
@@ -58,6 +70,7 @@ export function CardGridSkeleton({
   height = 148,
   min = 360,
   className,
+  testId,
 }: {
   cards?: number;
   /** card height, matched to the real card so the grid does not reflow */
@@ -65,9 +78,10 @@ export function CardGridSkeleton({
   /** the `minmax()` floor of the grid this stands in for */
   min?: number;
   className?: string;
+  testId?: string;
 }) {
   return (
-    <LoadingRegion className={cn("grid gap-3.5", className)}>
+    <LoadingRegion className={cn("grid gap-3.5", className)} testId={testId}>
       {/* inline template rather than a class: the floor differs per screen and
           tailwind cannot generate an arbitrary value from a runtime number */}
       <div
