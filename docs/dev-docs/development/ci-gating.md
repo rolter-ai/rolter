@@ -83,15 +83,53 @@ is needed for any of this.
 
 ### What you see when it fires
 
-`ci-ok` goes red on the `edited` run with `N ci run(s) on <sha> are still queued
-or in progress`. This is expected and self-healing: when the gate run finishes
-it writes its own `ci-ok` on the same sha, which is newer and wins.
+`ci-ok` goes red on the `edited` run with `gate still running on <sha>`,
+preceded by a `::notice::` spelling out that nothing is wrong with the commit.
+This is expected and self-healing: when the gate run finishes it writes its own
+`ci-ok` on the same sha, which is newer and wins.
+
+Editing a PR body during a long gate run is an ordinary two-step — write the
+body, then add the follow-up issue numbers once those issues exist — so this
+red is common. The two branches of the guard are worded to be told apart at a
+glance, because they mean opposite things:
+
+| Message | Means | Action |
+|---|---|---|
+| `gate still running on <sha>` | the gate is fine and unfinished | none; the in-flight run supersedes this |
+| `no completed, successful ci run on <sha>` | the gate failed, was cancelled, or never ran | push a fix or re-run the gate |
 
 The one case that needs a human is the narrow race where the gate run completes
 between the listing and the assertion — then the red `edited` `ci-ok` is the
 newest one on a fully gated commit. Re-run the `ci-ok` job (or edit the title
 again) and it goes green. Do not merge with an admin bypass instead; the point
 of the check is that the newest `ci-ok` is trustworthy.
+
+### Why the unfinished case is red rather than grey (#1511)
+
+"The gate has not finished" is not a failure, and GitHub has a conclusion for
+it — `neutral`, which renders grey and does **not** satisfy a required status
+check. Reporting it that way was proposed and rejected. The reasons are
+recorded here so it is not re-litigated:
+
+- **A GitHub Actions job cannot conclude `neutral`.** A job ends `success`,
+  `failure`, `cancelled` or `skipped`; nothing a step does changes that.
+  `neutral` is reachable only for a check-run posted through the Checks API,
+  which `ci-ok` is not — it is a job, and its check-run is written by Actions.
+- **Posting a second `ci-ok` check-run through the API would be worse.** The
+  job's own check-run is still written, so the two race, and branch protection
+  reads whichever lands last. The guard exists precisely because the newest
+  `ci-ok` on a sha must be trustworthy (#1328).
+- **Self-cancelling the run to reach `cancelled` (grey) costs more than it
+  buys.** It needs `actions: write` on `ci-ok` — the one required status check
+  — purely for a colour, and `ci-ok` runs `if: always()`, so a run where
+  `session-urls` genuinely failed would go grey and hide a real finding unless
+  the cancel were conditioned on every sibling's result first.
+
+So the colour stays. What changed instead is the message: the unfinished case
+now names itself and says no action is needed, rather than reading like the
+commit is broken. If this becomes painful again, the fix worth considering is
+not the conclusion but the ordering — the red is only a problem while it is the
+newest `ci-ok` on the sha.
 
 ## Agent session urls
 
