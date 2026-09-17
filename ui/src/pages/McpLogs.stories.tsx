@@ -102,6 +102,43 @@ export const Empty: Story = {
   },
 };
 
+/**
+ * The summary envelope comes back empty while the log list itself loads fine.
+ *
+ * `fetchMcpSummary` resolved that to `undefined`, and react-query v5 rejects a
+ * query function that resolves to `undefined` — so the one query this screen
+ * waits on failed, and a deployment that had simply proxied no tool call in the
+ * window read as an unreachable control plane (#1611, the same shape as #1608).
+ *
+ * The `Empty` story above cannot catch it: there the *rows* are empty too, and
+ * the empty state it asserts renders either way.
+ */
+export const EmptySummaryEnvelope: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [] })],
+        [
+          "/mcp/logs",
+          () => ({ data: [call(), call({ event_id: "evt-2" })], next_cursor: null }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the rows the list did return are on screen, not an error panel over them
+    await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    // a window with no calls in it is a count of zero, not an unknown one: the
+    // dash here meant the query had failed, which is exactly the bug
+    await waitFor(async () => expect(await canvas.findAllByText("0")).toHaveLength(2));
+    await expect(canvasElement.textContent ?? "").not.toMatch(/NaN|undefined/);
+  },
+};
+
 export const Error_: Story = {
   name: "Error",
   render: () => (
