@@ -2043,12 +2043,55 @@ export interface LoginResponse {
   };
 }
 
-// authenticate a local account; returns a session token. rejects (throws) on
-// bad credentials or when local accounts aren't configured.
-export function login(email: string, password: string): Promise<LoginResponse> {
-  return sendJson<LoginResponse>("POST", "/api/v1/auth/login", {
+/**
+ * The other half of `LoginOutcome`: the password was right, and the account
+ * still owes a second factor (#1078).
+ *
+ * The control plane serialises the enum untagged, so the two branches are told
+ * apart by a field rather than by a discriminator — `mfa_required` exists for
+ * exactly that and is always `true` when it is present at all.
+ */
+export interface MfaChallenge {
+  mfa_required: true;
+  /** present this to `verifyMfaChallenge`; authenticates nothing on its own */
+  mfa_token: string;
+  expires_at: string;
+}
+
+/** what `POST /auth/login` answers: a session, or the challenge that mints one */
+export type LoginOutcome = LoginResponse | MfaChallenge;
+
+export function isMfaChallenge(outcome: LoginOutcome): outcome is MfaChallenge {
+  return (outcome as MfaChallenge).mfa_required === true;
+}
+
+// authenticate a local account. Answers a session token, or a challenge when
+// the account has an armed factor. Rejects (throws) on bad credentials, when
+// local accounts aren't configured, and — as `mfa_enrolment_required` — when
+// an org policy demands a factor this account has not armed.
+export function login(email: string, password: string): Promise<LoginOutcome> {
+  return sendJson<LoginOutcome>("POST", "/api/v1/auth/login", {
     email,
     password,
+  });
+}
+
+/**
+ * Redeem a challenge for a real session with a TOTP code or a recovery code.
+ *
+ * Unauthenticated by necessity: the caller has no session yet, which is the
+ * whole point of the exchange. Every rejection is the same
+ * `invalid_credentials` — a wrong code, an expired challenge and an exhausted
+ * one are deliberately indistinguishable, so a guesser cannot tell "keep
+ * going" from "start over".
+ */
+export function verifyMfaChallenge(
+  mfaToken: string,
+  code: string,
+): Promise<LoginResponse> {
+  return sendJson<LoginResponse>("POST", "/api/v1/auth/mfa/verify", {
+    mfa_token: mfaToken,
+    code,
   });
 }
 

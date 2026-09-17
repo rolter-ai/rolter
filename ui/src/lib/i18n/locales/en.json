@@ -20,6 +20,22 @@
       "tooManyAttempts_wait_other": "Too many failed attempts. Try again in {{count}} seconds.",
       "unavailable": "The control plane could not be reached. Check that it is running and try again.",
       "unexpected": "Sign-in failed: {{message}}"
+    },
+    "mfa": {
+      "title": "Two-factor authentication",
+      "subtitle": "Your password was accepted. Finish signing in with a code.",
+      "codeLabel": "Authentication code",
+      "codeHint": "The code from your authenticator app, or one of your recovery codes.",
+      "attemptsLeft_one": "That code was not accepted — check the clock on your device. {{count}} attempt left before this sign-in starts over.",
+      "attemptsLeft_other": "That code was not accepted — check the clock on your device. {{count}} attempts left before this sign-in starts over.",
+      "verify": "Verify",
+      "verifying": "Verifying…",
+      "back": "Sign in as someone else",
+      "errors": {
+        "spent": "Too many wrong codes. Sign in with your password again to get a new prompt.",
+        "expired": "That prompt expired. Sign in with your password again.",
+        "enrolmentRequired": "Your organization requires a second factor, and this account has none set up. An administrator has to relax the policy or clear the account before you can sign in."
+      }
     }
   },
   "common": {
