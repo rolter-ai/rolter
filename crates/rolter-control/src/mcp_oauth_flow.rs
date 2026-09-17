@@ -213,6 +213,18 @@ impl OAuthClientView {
     }
 }
 
+/// Whether a `set_oauth_client` request stores a client secret, and therefore
+/// needs the KEK.
+///
+/// The store recognises three shapes and only one of them encrypts: `None`
+/// leaves the stored secret alone, `Some("")` clears it, and `Some(secret)`
+/// seals it. Pure so the decision can be tested without mutating the
+/// process-wide `ROLTER_KEK`, which races every other test in the binary
+/// (#1418, #1429).
+fn seals_client_secret(client_secret: Option<&str>) -> bool {
+    client_secret.is_some_and(|secret| !secret.is_empty())
+}
+
 async fn set_oauth_client(
     principal: Principal,
     State(state): State<ControlState>,
@@ -274,9 +286,19 @@ async fn set_oauth_client(
         require_https(issuer, "issuer")?;
     }
     let scopes = body.default_scopes.unwrap_or_default();
+    // only a request that actually seals a secret needs the key. correcting a
+    // `token_url`, rotating the issuer, changing the scopes or clearing the
+    // secret must all stay possible on a deployment with no `ROLTER_KEK` —
+    // otherwise an operator who lost theirs cannot fix a misconfigured client
+    // at all (#1564, the same shape as #1554 for `set_auth`)
+    let sealing_key = if seals_client_secret(body.client_secret.as_deref()) {
+        Some(kek()?)
+    } else {
+        None
+    };
     let updated = repo
         .set_oauth_client(
-            &kek()?,
+            sealing_key.as_ref(),
             id,
             McpOAuthClient {
                 authorize_url: endpoints.map(|(authorize_url, _)| authorize_url),
@@ -1372,6 +1394,20 @@ async fn log_audit_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1564: the KEK is only needed by the one shape that encrypts. Demanding
+    /// it for the others left an operator who lost theirs unable to correct a
+    /// misconfigured OAuth client at all.
+    #[test]
+    fn only_a_stored_client_secret_needs_the_kek() {
+        // leaves the stored secret alone: correcting a token_url, rotating the
+        // issuer, changing scopes
+        assert!(!seals_client_secret(None));
+        // clears the stored secret
+        assert!(!seals_client_secret(Some("")));
+        // the only shape that seals
+        assert!(seals_client_secret(Some("s3cret")));
+    }
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

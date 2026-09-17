@@ -354,9 +354,14 @@ impl McpServerRepo<'_> {
     /// rather than following it because `mcp_servers` carries a
     /// statement-level `bump_config_version()` trigger; see
     /// `CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE` above for the whole argument.
+    /// `kek` is optional for the same reason it is on [`Self::set_auth`]: two of
+    /// the three shapes below seal nothing. Leaving the secret alone (to correct
+    /// a `token_url`, rotate the issuer or change the scopes) and clearing it
+    /// both need no key, and demanding one made those impossible on a deployment
+    /// without `ROLTER_KEK` (#1564).
     pub async fn set_oauth_client(
         &self,
-        kek: &super::super::crypto::Kek,
+        kek: Option<&super::super::crypto::Kek>,
         id: Uuid,
         client: McpOAuthClient<'_>,
     ) -> Result<McpServer> {
@@ -365,6 +370,13 @@ impl McpServerRepo<'_> {
             None => None,
             Some("") => Some((None, None)),
             Some(secret) => {
+                let kek = kek.ok_or_else(|| {
+                    Error::Config(
+                        "sealing an MCP OAuth client secret needs a key encryption key; this is a \
+                         caller bug, since only a request that stores a secret should reach here"
+                            .to_string(),
+                    )
+                })?;
                 let (c, n) = kek.encrypt(secret)?;
                 Some((Some(c), Some(n)))
             }

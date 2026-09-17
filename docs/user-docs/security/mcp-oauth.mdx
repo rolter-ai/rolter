@@ -134,8 +134,14 @@ altogether, which is worth doing for a server you know publishes nothing.
 
 This endpoint is admin-only in both directions — even reading it, because the
 row names a third party the organization has chosen to trust. The secret is
-sealed with the deployment key on write and is never readable back; sending an
-empty secret downgrades the client to a public one.
+sealed with the deployment key on write and is never readable back; omitting
+`client_secret` keeps the stored one, and sending an empty secret downgrades the
+client to a public one.
+
+Only a request that actually **stores** a secret needs `ROLTER_KEK`. Correcting a
+`token_url`, rotating the issuer, changing `default_scopes` or clearing the
+secret all work on a deployment without it, so losing the key never leaves a
+misconfigured client uncorrectable.
 
 ## Discovery, audience binding and issuer checks
 
