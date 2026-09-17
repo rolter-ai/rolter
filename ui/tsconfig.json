@@ -19,5 +19,5 @@
     "paths": { "@/*": ["./src/*"] },
     "types": ["vite/client", "bun"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "scripts", ".storybook/*.ts", "e2e", "vite.config.ts", "playwright.config.ts"]
 }

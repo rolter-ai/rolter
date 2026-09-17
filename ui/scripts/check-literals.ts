@@ -35,7 +35,7 @@ const found: Literal[] = [];
 for (const pattern of SCANNED) {
   for (const path of new Glob(pattern).scanSync(ROOT)) {
     if (SKIP.test(path)) continue;
-    const rel = path.replaceAll("\\", "/");
+    const rel = path.replace(/\\/g, "/");
     found.push(...findLiterals(readFileSync(join(ROOT, path), "utf8"), rel));
   }
 }

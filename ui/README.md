@@ -8,7 +8,7 @@ Dashboard for rolter — Vite + React + TypeScript + Tailwind + [shadcn/ui](http
 bun install          # install dependencies
 bun run dev          # dev server on http://localhost:3000 (proxies /api -> :4001)
 bun run build        # production build into dist/ (served by rolter-control)
-bun run lint         # typecheck
+bun run lint         # typecheck src, scripts, .storybook and e2e
 bun run storybook    # component workbench on http://localhost:6006
 bun run build-storybook # static Storybook build into storybook-static/
 bun run test-storybook  # run the interaction (play) tests headless

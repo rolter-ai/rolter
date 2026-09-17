@@ -8,7 +8,7 @@ const config: StorybookConfig = {
   // backgrounds, toolbars) into core; docs is the one still-separate addon.
   addons: ["@storybook/addon-docs", "@storybook/addon-mcp"],
   features: {
-    experimentalComponentsManifest: true,
+    componentsManifest: true,
   },
   framework: {
     name: "@storybook/react-vite",

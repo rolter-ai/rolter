@@ -223,7 +223,7 @@ export function readFixtures(root = ROOT): Fixture[] {
   const fixtures: Fixture[] = [];
   for (const path of new Glob(FIXTURE_MODULES).scanSync(root)) {
     if (path.endsWith(".test.ts")) continue;
-    const rel = path.replaceAll("\\", "/");
+    const rel = path.replace(/\\/g, "/");
     fixtures.push(...collectFixtures(readFileSync(join(root, path), "utf8"), rel));
   }
   return fixtures.sort((a, b) => a.name.localeCompare(b.name));
@@ -233,7 +233,7 @@ export function checkAllStories(root = ROOT): Violation[] {
   const fixtures = readFixtures(root);
   const violations: Violation[] = [];
   for (const path of new Glob(STORIES).scanSync(root)) {
-    const rel = path.replaceAll("\\", "/");
+    const rel = path.replace(/\\/g, "/");
     violations.push(...checkStorySource(readFileSync(join(root, path), "utf8"), rel, fixtures));
   }
   return violations;
