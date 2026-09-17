@@ -21,6 +21,33 @@ export const Default: Story = {
       { label: "Ollama", value: 10 },
     ],
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("62%")).toBeInTheDocument();
+  },
+};
+
+// the share goes through the locale's percent format, so russian puts a
+// no-break space before the sign rather than gluing it to the number (#1538)
+export const DefaultRussian: Story = {
+  globals: { locale: "ru" },
+  args: {
+    size: 160,
+    segments: [
+      { label: "OpenAI", value: 62 },
+      { label: "Anthropic", value: 28 },
+      { label: "Ollama", value: 10 },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the query normalises whitespace, so the no-break space is pinned on the
+    // raw text rather than in the matcher
+    const share = await waitFor(() => canvas.getByText(/^62\s%$/));
+    await expect(share.textContent).toBe("62\u00a0%");
+    await expect(canvas.getByText(/^28\s%$/).textContent).toBe("28\u00a0%");
+    await expect(canvas.queryByText("62%")).not.toBeInTheDocument();
+  },
 };
 
 export const Single: Story = {

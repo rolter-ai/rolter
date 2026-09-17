@@ -156,7 +156,8 @@ export function Donut({
               />
               <span style={{ minWidth: 90 }}>{s.label}</span>
               <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
-                {Math.round((s.value / total) * 100)}%
+                {/* the locale owns the sign and its spacing: ru writes "62 %" (#1538) */}
+                {fmt.percent(s.value / total, 0)}
               </span>
             </span>
           ))}
