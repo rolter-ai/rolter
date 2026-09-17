@@ -160,6 +160,14 @@ files = "^crates/rolter-store/migrations/"
 pass_filenames = false
 
 [[repos.hooks]]
+id = "llms-txt"
+name = "llms.txt tracks the docs nav"
+entry = "bun scripts/gen-llms-txt.ts --check"
+language = "system"
+files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
+pass_filenames = false
+
+[[repos.hooks]]
 id = "release-handoff"
 name = "release handoff is wired"
 entry = "bash scripts/check-release-handoff.sh"
