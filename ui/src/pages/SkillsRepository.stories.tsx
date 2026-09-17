@@ -196,6 +196,50 @@ export const SavesImmutableVersion: Story = {
   },
 };
 
+/**
+ * The version is refused (#1607).
+ *
+ * `ValidatesArtifactReference` is the client-side guard; this is the server's
+ * answer, which is a different path. A skill version is the whole SKILL.md, so
+ * the editor keeping what was typed is the assertion that matters.
+ *
+ * The refusal is reported twice, in the toast queue and inline in the editor's
+ * meta row, and both are asserted: either could stop reporting on its own.
+ */
+export const SaveVersionRejectedByTheServer: Story = {
+  render: () => {
+    const stub = loadedStub();
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/skills/${SKILL}/versions`) && init?.method === "POST"
+            ? json({ error: { message: "SKILL.md is larger than the 64 KiB limit" } }, 413)
+            : stub(input, init)
+        }
+      />
+    );
+  },
+  play: async ({ canvas, canvasElement }) => {
+    const content = await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.type(content, "\n4. Schedule the follow-up.");
+    await userEvent.click(canvas.getByRole("button", { name: /Save new version/ }));
+
+    await expectToast(canvasElement, /larger than the 64 KiB limit/, "error");
+    // the inline copy in the meta row, matched by excluding the toast's own
+    // live region since both carry the same words
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByText(/larger than the 64 KiB limit/)
+          .some((node) => node.getAttribute("role") === "alert" && node.tagName === "SPAN"),
+      ).toBe(true),
+    );
+    await expect((content as HTMLTextAreaElement).value).toContain(
+      "4. Schedule the follow-up.",
+    );
+  },
+};
+
 export const ValidatesArtifactReference: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvas }) => {
