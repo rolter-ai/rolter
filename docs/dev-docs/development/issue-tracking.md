@@ -130,6 +130,18 @@ later read returned `Todo` / `Medium`. A backlog proposal had become scheduled
 work and a high-priority defect had been demoted, with nothing red anywhere.
 The same sequence ran across #1462–#1468.
 
+### An unreadable item is a hard failure
+
+The check reads the item's current values before deciding. If that read comes
+back unusable — a GraphQL error arrives as HTTP 200 with a null `node`, which
+`gh` does not always treat as a failure — every field would look empty and the
+seed would write its defaults over whatever was already there. That is the
+original bug, reintroduced through the back door.
+
+So the step proves the item came back before trusting the absence of a value,
+and fails loudly otherwise. "Could not read it" never degrades to "assume
+nothing is set".
+
 ### The race is narrowed, not closed — do not let anyone claim otherwise
 
 `updateProjectV2ItemFieldValue` takes no expected-value or version input: the
