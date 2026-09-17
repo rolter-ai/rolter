@@ -99,29 +99,12 @@ jobs:
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
-            exit 0
+          else
+            # dispatched: no pr in the payload, so the script resolves one by
+            # head ref. that lookup lives in the script rather than inline here
+            # so it can be exercised against a fixture instead of only in ci
+            bash scripts/check-agent-session-urls.sh --pr-for-ref "${REPO}" "${REF_NAME}"
           fi
-
-          # dispatched: find the open pr whose head is this ref. no pipeline
-          # here on purpose — under `pipefail` a short-circuiting reader fails
-          # the step for the wrong reason (#1291, #1306), so the response goes
-          # to a file and jq reads it back
-          pulls="${RUNNER_TEMP}/pulls.json"
-          if ! gh api "repos/${REPO}/pulls?state=open&per_page=100" > "${pulls}"; then
-            echo "::error::could not list open pull requests; refusing to report this body as checked"
-            exit 1
-          fi
-
-          matched="$(jq --arg ref "${REF_NAME}" '[.[] | select(.head.ref == $ref)] | length' "${pulls}")"
-          if [ "${matched}" -eq 0 ]; then
-            echo "::notice::no open pull request has ${REF_NAME} as its head; there is no body to check"
-            exit 0
-          fi
-
-          body="${RUNNER_TEMP}/pr-body.txt"
-          jq -r --arg ref "${REF_NAME}" \
-            '[.[] | select(.head.ref == $ref)] | .[0].body // ""' "${pulls}" > "${body}"
-          bash scripts/check-agent-session-urls.sh --text "$(cat "${body}")"
 
   pr-title:
     if: github.event_name == 'pull_request'

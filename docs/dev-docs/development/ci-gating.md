@@ -161,6 +161,19 @@ in the event payload it resolves one from the API by head ref:
 - **the API listing fails** → the job fails. A flaking query must never resolve
   to green; the same rule `ci-ok`'s own run listing follows.
 
+That resolution lives in `scripts/check-agent-session-urls.sh --pr-for-ref`
+rather than inline in the workflow, so it can be exercised without a CI run:
+point `ROLTER_PULLS_JSON` at a file shaped like the API response and no network
+call is made.
+
+```bash
+ROLTER_PULLS_JSON=pulls.json \
+  bash scripts/check-agent-session-urls.sh --pr-for-ref rolter-ai/rolter some/branch
+```
+
+Workflow-embedded shell is shell nobody can run, and this logic decides whether
+a gate reports green.
+
 `ci-ok` was tightened to match: a skipped `session-urls` is accepted **only** on
 a `push` build, the one case with no pull request to check. Anywhere else, a
 skip is a failure rather than a pass.

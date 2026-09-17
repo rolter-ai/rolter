@@ -47,6 +47,33 @@ while [ "$#" -gt 0 ]; do
       done < <(git rev-list "$2")
       shift 2
       ;;
+    # check the body of the open pr whose head is REF. used by the dispatched
+    # ci run, which carries no pr in its event payload and has to look one up
+    # (#1523). the resolution lives here rather than inline in the workflow so
+    # it can be exercised against a fixture: set ROLTER_PULLS_JSON to a file of
+    # the same shape the api returns and no network call is made.
+    --pr-for-ref)
+      repo="$2"
+      ref="$3"
+      pulls="${ROLTER_PULLS_JSON:-}"
+      if [ -z "$pulls" ]; then
+        pulls="$(mktemp)"
+        # no pipeline: under `pipefail` a short-circuiting reader would fail
+        # this for the wrong reason (#1291, #1306)
+        if ! gh api "repos/${repo}/pulls?state=open&per_page=100" > "$pulls"; then
+          echo "::error::could not list open pull requests for ${repo}; refusing to report this body as checked" >&2
+          exit 1
+        fi
+      fi
+      matched="$(jq --arg ref "$ref" '[.[] | select(.head.ref == $ref)] | length' "$pulls")"
+      if [ "$matched" -eq 0 ]; then
+        echo "::notice::no open pull request has ${ref} as its head; there is no body to check"
+      else
+        body="$(jq -r --arg ref "$ref" '[.[] | select(.head.ref == $ref)] | .[0].body // ""' "$pulls")"
+        check_text "pr body for ${ref}" "$body"
+      fi
+      shift 3
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
