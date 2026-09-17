@@ -214,8 +214,10 @@ docs(architecture): document reload-free config propagation
   back once the PR exists and, if one is there, strip that line with a direct
   `PATCH /repos/{owner}/{repo}/pulls/{n}` rather than another pass through the
   authoring tool — the footer is injected on create only, so a direct patch
-  sticks. This is a workaround for tooling this repo does not control; the check
-  itself never gets a carve-out for it. See
+  sticks. Wait for the PR's opening CI run to finish before stripping: an edit
+  made while the gate is still running leaves `ci-ok` red on the *unfinished
+  gate* branch and costs a second edit. This is a workaround for tooling this
+  repo does not control; the check itself never gets a carve-out for it. See
   [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).
 - Include a co-author trailer identifying the agent that made the commit, using
   that agent's own name and email (for example,
