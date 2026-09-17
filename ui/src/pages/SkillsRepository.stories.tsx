@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
-import { Toasted, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import { Toasted, expectInStatusRegion, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 
@@ -139,6 +139,51 @@ export const Error: Story = {
     return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/skills`) ? json({ error: { message: "database is unavailable" } }, 503) : stub(input, init)} />;
   },
   play: async ({ canvasElement }) => expectLoadError(canvasElement, /skills/i),
+};
+
+// the skill list loads and the *versions* request is the one in flight: the
+// workbench is a second load state one level down, and bare `Skeleton`s are
+// aria-hidden, so before #1618 a screen reader heard nothing here at all
+export const VersionsLoading: Story = {
+  render: () => {
+    const stub = loadedStub();
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/skills/${SKILL}/versions`) && init?.method !== "POST"
+            ? new Promise<Response>(() => {})
+            : stub(input, init)
+        }
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    // and specifically *here*: the workbench skeletons sit inside a status
+    // region. asserting a loading label anywhere on the screen would pass with
+    // the bare aria-hidden Skeletons this story exists for
+    await expectInStatusRegion(canvasElement, "skill-workbench-loading");
+    await expectInStatusRegion(canvasElement, "skill-versions-loading");
+  },
+};
+
+// and a versions request that is refused: the hand-rolled panel offered a
+// "Try again" that a 403 can only fail again, which is the bug #1259 fixed one
+// level up (#1618)
+export const VersionsError: Story = {
+  render: () => {
+    const stub = loadedStub();
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/skills/${SKILL}/versions`) && init?.method !== "POST"
+            ? json({ error: { message: "forbidden" } }, 403)
+            : stub(input, init)
+        }
+      />
+    );
+  },
+  play: async ({ canvasElement }) => expectLoadError(canvasElement, /skill/i),
 };
 
 export const SavesImmutableVersion: Story = {
