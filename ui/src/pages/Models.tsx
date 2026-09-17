@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Lock, Trash2, Loader2 } from "lucide-react";
+import { Boxes, Lock, Tag, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -22,6 +22,7 @@ import {
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
   Dialog,
   DialogDescription,
@@ -127,6 +128,11 @@ export default function Models() {
   });
 
   const [search, setSearch] = React.useState("");
+  const [labelFilter, setLabelFilter] = React.useState("");
+  const [labelling, setLabelling] = React.useState<string | null>(null);
+  // a model label is keyed by the model's name, not by a row id: the catalog is
+  // deployment-wide and has no row of its own to point at
+  const labels = useSubjectLabels(undefined, "model");
   const [origin, setOrigin] = React.useState<Origin>("all");
   const [unpricedOnly, setUnpricedOnly] = React.useState(false);
   const { sort, cycle, apply } = useSort<"name" | "provider" | "origin" | "weight">();
@@ -198,6 +204,7 @@ export default function Models() {
     (r) =>
       (origin === "all" || r.origin === origin) &&
       (!unpricedOnly || r.priced === false) &&
+      labels.matches(r.name, labelFilter) &&
       (!q ||
         r.name.toLowerCase().includes(q) ||
         r.providerNames.some((n) => n.toLowerCase().includes(q))),
@@ -233,11 +240,12 @@ export default function Models() {
   // is deployment-wide — two different capabilities on one row (#1258)
   const routeUpdateGate = useGate("route:update");
   const deleteGate = useGate("model:delete");
-  const filtersActive = !!q || origin !== "all" || unpricedOnly;
+  const filtersActive = !!q || origin !== "all" || unpricedOnly || !!labelFilter;
   const clearFilters = () => {
     setSearch("");
     setOrigin("all");
     setUnpricedOnly(false);
+    setLabelFilter("");
   };
 
   return (
@@ -247,6 +255,11 @@ export default function Models() {
           placeholder={t("pages.models.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+        />
+        <LabelFilterSelect
+          value={labelFilter}
+          onChange={setLabelFilter}
+          options={labels.options}
         />
         <span className="text-sm text-muted-foreground">
           {t("pages.models.modelTally", { count: rows.length })} ·{" "}
@@ -376,7 +389,10 @@ export default function Models() {
               <StatusDot
                 color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"}
               />
-              <span className="truncate font-mono text-sm">{r.name}</span>
+              <span className="flex min-w-0 flex-col gap-1">
+                <span className="truncate font-mono text-sm">{r.name}</span>
+                <LabelChips labels={labels.bySubject(r.name)} />
+              </span>
               {r.locked && (
                 <span
                   className="flex-none cursor-help text-[color:var(--text-subtle)]"
@@ -451,6 +467,15 @@ export default function Models() {
                   ? t("pages.models.view")
                   : t("pages.models.edit")}
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-[30px]"
+                aria-label={t("labels.labelsOf", { name: r.name })}
+                onClick={() => setLabelling(r.name)}
+              >
+                <Tag className="h-3.5 w-3.5" />
+              </Button>
               {r.origin === "db" && (
                 <button
                   type="button"
@@ -500,6 +525,17 @@ export default function Models() {
           />
         )}
       </ListTable>
+
+      {labelling && (
+        <LabelSheet
+          open
+          onOpenChange={(open) => !open && setLabelling(null)}
+          orgId=""
+          subjectType="model"
+          subjectId={labelling}
+          subjectName={labelling}
+        />
+      )}
 
       <ModelSheet
         open={!!sheet}

@@ -15,11 +15,17 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
   createLabel,
+  createModelLabel,
   deleteLabel,
+  deleteModelLabel,
   fetchLabels,
+  fetchModelLabels,
   updateLabel,
+  updateModelLabel,
+  type LabelFilter,
   type LabelRow,
 } from "@/lib/api";
+import { type Capability } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 
@@ -91,11 +97,40 @@ export function LabelChips({ labels }: { labels: LabelRow[] }) {
   );
 }
 
+export type LabelSubject = "provider" | "provider_group" | "route" | "model";
+
+/**
+ * The two surfaces over one table, as the dashboard uses them.
+ *
+ * A provider, group or route belongs to an org and is addressed by its row id;
+ * a model belongs to the deployment-wide pricing catalog and is addressed by
+ * its name, which is also why writing one is a superadmin's act. Everything
+ * above this line is the same for both, so the difference lives here.
+ */
+function endpoints(subjectType: LabelSubject, orgId: string) {
+  const model = subjectType === "model";
+  return {
+    list: (filter: LabelFilter) =>
+      model ? fetchModelLabels(filter) : fetchLabels(orgId, filter),
+    create: (subjectId: string, key: string, value?: string) =>
+      model
+        ? createModelLabel({ model: subjectId, key, value })
+        : createLabel(orgId, { subject_type: subjectType, subject_id: subjectId, key, value }),
+    update: (id: string, value?: string) =>
+      model ? updateModelLabel(id, value) : updateLabel(orgId, id, value),
+    remove: (id: string) => (model ? deleteModelLabel(id) : deleteLabel(orgId, id)),
+    createGate: (model ? "model_label:create" : "label:create") as Capability,
+    deleteGate: (model ? "model_label:delete" : "label:delete") as Capability,
+  };
+}
+
 export interface LabelSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** unused for a model, which is deployment-wide */
   orgId: string;
-  subjectType: "provider" | "provider_group" | "route";
+  subjectType: LabelSubject;
+  /** the row id, or the model's name */
   subjectId: string;
   /** the subject's own name, which is what the panel is about */
   subjectName: string;
@@ -124,10 +159,11 @@ export function LabelSheet({
   const [value, setValue] = React.useState("");
   const [deleting, setDeleting] = React.useState<LabelRow | null>(null);
 
+  const api = endpoints(subjectType, orgId);
   const labels = useQuery({
     queryKey: [...LABELS_QUERY_KEY, orgId, subjectType, subjectId],
-    queryFn: () => fetchLabels(orgId, { subject_type: subjectType, subject_id: subjectId }),
-    enabled: open && !!orgId,
+    queryFn: () => api.list({ subject_type: subjectType, subject_id: subjectId }),
+    enabled: open && (subjectType === "model" || !!orgId),
   });
 
   const invalidate = () => {
@@ -135,13 +171,7 @@ export function LabelSheet({
   };
 
   const add = useMutation({
-    mutationFn: () =>
-      createLabel(orgId, {
-        subject_type: subjectType,
-        subject_id: subjectId,
-        key: key.trim(),
-        value: value.trim() || undefined,
-      }),
+    mutationFn: () => api.create(subjectId, key.trim(), value.trim() || undefined),
     onSuccess: () => {
       invalidate();
       setKey("");
@@ -156,7 +186,7 @@ export function LabelSheet({
   });
 
   const remove = useMutation({
-    mutationFn: (row: LabelRow) => deleteLabel(orgId, row.id),
+    mutationFn: (row: LabelRow) => api.remove(row.id),
     onSuccess: (_result, row) => {
       invalidate();
       toast.push({ tone: "success", title: t("labels.removed", { label: labelText(row) }) });
@@ -171,7 +201,7 @@ export function LabelSheet({
 
   const rename = useMutation({
     mutationFn: ({ row, next }: { row: LabelRow; next: string }) =>
-      updateLabel(orgId, row.id, next.trim() || undefined),
+      api.update(row.id, next.trim() || undefined),
     onSuccess: invalidate,
     onError: (error) =>
       toast.push({
@@ -235,7 +265,7 @@ export function LabelSheet({
                     }}
                   />
                   <GatedButton
-                    gate="label:delete"
+                    gate={api.deleteGate}
                     variant="ghost"
                     size="sm"
                     aria-label={t("labels.removeOne", { label: labelText(row) })}
@@ -295,7 +325,7 @@ export function LabelSheet({
                 />
               </Field>
               <GatedButton
-                gate="label:create"
+                gate={api.createGate}
                 className="mb-[1px]"
                 disabled={!key.trim() || duplicate || add.isPending}
                 onClick={() => add.mutate()}
@@ -351,12 +381,15 @@ export interface SubjectLabels {
  */
 export function useSubjectLabels(
   orgId: string | undefined,
-  subjectType: "provider" | "provider_group" | "route",
+  subjectType: LabelSubject,
 ): SubjectLabels {
   const labels = useQuery({
     queryKey: [...LABELS_QUERY_KEY, orgId, subjectType],
-    queryFn: () => fetchLabels(orgId as string, { subject_type: subjectType }),
-    enabled: !!orgId,
+    queryFn: () =>
+      subjectType === "model"
+        ? fetchModelLabels()
+        : fetchLabels(orgId as string, { subject_type: subjectType }),
+    enabled: subjectType === "model" || !!orgId,
     retry: false,
   });
   const map = React.useMemo(() => {
