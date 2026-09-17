@@ -69,6 +69,26 @@ presents to the server's authorization server. The dashboard does this on
     server that publishes nothing. When you do, both travel together — one of
     them is not a fallback — and both must be `https`, with `http` accepted
     only on loopback so a local stub still works.
+
+    **Endpoint discovery** picks the mode. **Discover automatically** treats the
+    two URLs as an optional fallback; **Configure manually** never probes the
+    server and makes both URLs required. Re-saving the form keeps whichever
+    mode the server already has.
+  </Step>
+  <Step title="Pin the issuer (optional)">
+    **Issuer** is the authorization server's issuer identifier. Pinning it
+    makes RFC 9207 validation strict: a callback whose `iss` does not match is
+    refused. It matters most for a hand-configured server — with no discovery
+    metadata and no pinned issuer, an authorization response that carries `iss`
+    has nothing authentic to be checked against and is refused.
+  </Step>
+  <Step title="Check what discovery found">
+    Under automatic discovery, **Discovered endpoints** shows the issuer,
+    authorization URL and token URL the last successful discovery resolved,
+    when it ran, and whether the server sends `iss` in its callbacks. It is
+    read-only and empty until someone first connects, because only an
+    interactive **Connect** probes the server. Changing the issuer or the mode
+    clears it, and the form warns you before you save.
   </Step>
   <Step title="Copy the redirect URI">
     The **Redirect URI** field is filled in for you from the deployment's own
@@ -86,8 +106,9 @@ presents to the server's authorization server. The dashboard does this on
   <Step title="Connect">
     **Connect** on the server card starts consent and opens the authorization
     server in a new tab. Finish the approval there; the resulting session shows
-    up on **Auth Sessions**. The action stays disabled until a client is
-    registered, because until then there is nowhere to send the user.
+    up on **Auth Sessions**. The action stays disabled until a client ID is
+    registered — and, for a server set to manual discovery, until both
+    endpoints are too — because until then there is nowhere to send the user.
   </Step>
 </Steps>
 
