@@ -176,19 +176,32 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/** A blank draft: nothing is valid yet, and the sheet says which fields. */
+/**
+ * A blank draft: the sheet preselects the first provider, so the model id is
+ * what is missing, and clearing the provider makes that the first reason.
+ */
 export const Add: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await expect(dialog.getByRole("heading", { name: "Add model" })).toBeVisible();
+    // the draft starts with no provider until the seed effect picks the first
+    // one; asserting before the seed raced it and read whichever state won
+    // (#1500)
+    await seeded(dialog);
     // the primary action keeps its place and greys out while the draft is
-    // incomplete (#1265), with the first blocking reason beside it
-    await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
-    await expect(dialog.getByRole("alert")).toHaveTextContent(/Pick the upstream provider/);
+    // incomplete (#1265), with the first blocking reason beside it — read
+    // through the button's own description so no sibling field hint can match
+    const save = dialog.getByRole("button", { name: "Add model" });
+    await expect(save).toBeDisabled();
+    await expect(save).toHaveAccessibleDescription(/Enter the model id exactly/);
+    await userEvent.selectOptions(dialog.getByLabelText("Provider"), "");
+    await waitFor(() =>
+      expect(save).toHaveAccessibleDescription(/Pick the upstream provider/),
+    );
     // `getAll`: the sheet states each error under its field *and* repeats the
     // set in a summary above the footer
-    await expect(dialog.getAllByText(/Pick the upstream provider/).length).toBeGreaterThan(0);
+    await expect(dialog.getAllByText(/Pick the upstream provider/).length).toBeGreaterThan(1);
     // "duplicate from" is offered only where there is something to duplicate
     await expect(dialog.getByLabelText("Duplicate from")).toBeVisible();
   },
