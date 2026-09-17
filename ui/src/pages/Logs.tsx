@@ -19,7 +19,7 @@ import {
   AnalyticsUnavailableError,
   fetchBusinessUnits,
   fetchCustomers,
-  fetchInvocations,
+  fetchInvocationsPage,
   fetchLoggingSettings,
   fetchModels,
   type InvocationRow,
@@ -71,7 +71,12 @@ export default function Logs() {
   const [modelSel, setModelSel] = React.useState<string[]>([]);
   const [unitSel, setUnitSel] = React.useState<string[]>([]);
   const [customerSel, setCustomerSel] = React.useState<string[]>([]);
-  const [page, setPage] = React.useState(0);
+  // the cursor each page after the first was opened with, oldest first. a
+  // stack rather than a page index: the control plane pages on a keyset, so
+  // "previous" has to return to a cursor it was handed rather than compute a
+  // row offset, which the gateway's writes would shift (#1410, #1411)
+  const [cursors, setCursors] = React.useState<string[]>([]);
+  const page = cursors.length;
   const [selected, setSelected] = React.useState<InvocationRow | null>(null);
   // below `md` the 248px filter rail would leave the table 127px; below `lg`
   // the 380px detail drawer pushes it off screen entirely (#1203). both become
@@ -120,7 +125,7 @@ export default function Logs() {
   useErrorState(!!models.error, "logs");
 
   React.useEffect(
-    () => setPage(0),
+    () => setCursors([]),
     [status, modelSel, unitSel, customerSel],
   );
 
@@ -132,10 +137,10 @@ export default function Logs() {
       modelSel[0] ?? "",
       unitSel.join(","),
       customerSel.join(","),
-      page,
+      cursors[page - 1] ?? "",
     ],
     queryFn: () =>
-      fetchInvocations({
+      fetchInvocationsPage({
         since: window.since,
         model: modelSel[0] || undefined,
         // the rail allows several of each, so the whole selection travels
@@ -143,7 +148,7 @@ export default function Logs() {
         customer: customerSel.length ? customerSel : undefined,
         status,
         limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
+        cursor: cursors[page - 1],
       }),
     retry: (n, error) => !isUnavailable(error) && n < 2,
     placeholderData: (prev) => prev,
@@ -154,8 +159,16 @@ export default function Logs() {
   // here instead made `limit` mean something else: a unit that served 3 of
   // the last 50 requests showed 3 rows under a full-looking pager, and paging
   // was the only way to find the rest
-  const rows = query.data ?? [];
-  const hasMore = rows.length === PAGE_SIZE;
+  const rows = query.data?.data ?? [];
+  const nextCursor = query.data?.next_cursor ?? null;
+  // a short page is the last one even though it still carries a cursor. while
+  // a page is loading the previous one stays on screen as a placeholder, and
+  // its cursor is the one just followed: a second click would push it again
+  const hasMore =
+    nextCursor != null && rows.length === PAGE_SIZE && !query.isPlaceholderData;
+  const toNextPage = () => {
+    if (hasMore) setCursors((stack) => [...stack, nextCursor]);
+  };
   const unitName = (id: string) => units.data?.find((u) => u.id === id)?.name;
   const customerName = (id: string) =>
     customers.data?.find((c) => c.id === id)?.name;
@@ -360,7 +373,7 @@ export default function Logs() {
                 title={t("pages.logs.prevPage")}
                 aria-label={t("pages.logs.prevPage")}
                 disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => setCursors((stack) => stack.slice(0, -1))}
                 className="flex rounded-md border border-[color:var(--border-subtle)] p-[5px] text-[color:var(--text-subtle)] transition-colors enabled:hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
@@ -371,7 +384,7 @@ export default function Logs() {
                 title={t("pages.logs.nextPage")}
                 aria-label={t("pages.logs.nextPage")}
                 disabled={!hasMore}
-                onClick={() => setPage((p) => p + 1)}
+                onClick={toNextPage}
                 className="flex rounded-md border border-[color:var(--border-subtle)] p-[5px] text-[color:var(--text-subtle)] transition-colors enabled:hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -484,7 +497,23 @@ export default function Logs() {
               <ListSkeleton rows={8} />
             </div>
           )}
-          {!query.isLoading && !query.error && rows.length === 0 && (
+          {/* a full page can be the last one, so the page after it may come
+              back empty. that is the end of the log, not a deployment that
+              has served nothing, and the way out is back to the newest */}
+          {!query.isLoading && !query.error && rows.length === 0 && page > 0 && (
+            <EmptyState
+              uxTarget="request-logs"
+              icon={<ScrollText />}
+              title={t("pages.logs.endTitle")}
+              description={t("pages.logs.endBody")}
+              actions={
+                <Button variant="outline" onClick={() => setCursors([])}>
+                  {t("pages.logs.firstPage")}
+                </Button>
+              }
+            />
+          )}
+          {!query.isLoading && !query.error && rows.length === 0 && page === 0 && (
             <EmptyState
               uxTarget="request-logs"
               icon={<ScrollText />}

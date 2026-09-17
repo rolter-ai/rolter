@@ -3,6 +3,7 @@ import {
   fetchConfig,
   createOrg,
   fetchAnalyticsSummary,
+  fetchInvocationsPage,
   AnalyticsUnavailableError,
   ApiError,
   isOpenModeNoSession,
@@ -221,6 +222,43 @@ describe("api client", () => {
       await expect(createOrg({ name: "Bad", slug: "bad" })).rejects.toThrow(
         "Invalid org name",
       );
+    });
+  });
+
+  describe("fetchInvocationsPage", () => {
+    it("sends the cursor and never an offset (#1411)", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], next_cursor: null }), { status: 200 }),
+      );
+      await fetchInvocationsPage({ limit: 50, cursor: "2026-07-19 12:00:01.000|req-1" });
+      const url = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
+      expect(url.searchParams.get("cursor")).toBe("2026-07-19 12:00:01.000|req-1");
+      expect(url.searchParams.get("limit")).toBe("50");
+      expect(url.searchParams.has("offset")).toBe(false);
+    });
+
+    it("omits the cursor for the first page", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+      await fetchInvocationsPage({ limit: 50 });
+      expect(String(fetchMock.mock.calls[0][0])).not.toContain("cursor");
+    });
+
+    it("reads next_cursor, and a missing one as the end", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ request_id: "a" }], next_cursor: "t|a" }), {
+          status: 200,
+        }),
+      );
+      const page = await fetchInvocationsPage();
+      expect(page.next_cursor).toBe("t|a");
+      expect(page.data).toHaveLength(1);
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+      expect(await fetchInvocationsPage()).toEqual({ data: [], next_cursor: null });
     });
   });
 
