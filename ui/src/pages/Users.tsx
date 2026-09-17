@@ -17,6 +17,7 @@ import {
   Toolbar,
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog,
   DialogDescription,
@@ -27,7 +28,6 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   createInvitation,
@@ -514,15 +514,14 @@ function InviteUserDialog({
             />
           </Field>
           <Field label={t("pages.users.method")}>
-            <Select
+            <Combobox
               value={method}
-              onChange={(e) =>
-                setMethod(e.target.value as "link" | "password")
-              }
-            >
-              <option value="link">{t("pages.users.methodLink")}</option>
-              <option value="password">{t("pages.users.methodPassword")}</option>
-            </Select>
+              onChange={(picked) => setMethod(picked as "link" | "password")}
+              options={[
+                { value: "link", label: t("pages.users.methodLink") },
+                { value: "password", label: t("pages.users.methodPassword") },
+              ]}
+            />
           </Field>
           {method === "password" && (
             <Field
@@ -538,13 +537,11 @@ function InviteUserDialog({
             </Field>
           )}
           <Field label={t("pages.users.orgRole")}>
-            <Select value={role} onChange={(e) => setRole(e.target.value)}>
-              {ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </Select>
+            <Combobox
+              value={role}
+              onChange={setRole}
+              options={ROLES.map((r) => ({ value: r, label: r }))}
+            />
           </Field>
         </div>
     </EditorSheet>
@@ -786,31 +783,22 @@ function AddRoleDialog({
     >
       <div className="space-y-3">
         <Field label={t("pages.users.scope")}>
-          <Select
+          <Combobox
             value={scopeType}
-            onChange={(e) =>
-              setScopeType(
-                e.target.value as (typeof MEMBERSHIP_SCOPE_TYPES)[number],
-              )
+            onChange={(picked) =>
+              setScopeType(picked as (typeof MEMBERSHIP_SCOPE_TYPES)[number])
             }
-          >
-            {MEMBERSHIP_SCOPE_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </Select>
+            options={MEMBERSHIP_SCOPE_TYPES.map((kind) => ({ value: kind, label: kind }))}
+          />
         </Field>
         {scopeType === "team" && (
           <Field label={t("pages.users.team")}>
-            <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-              {teams.length === 0 && <option value="">{t("pages.users.noTeams")}</option>}
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
+            <Combobox
+              value={teamId}
+              onChange={setTeamId}
+              placeholder={teams.length === 0 ? t("pages.users.noTeams") : undefined}
+              options={teams.map((team) => ({ value: team.id, label: team.name }))}
+            />
           </Field>
         )}
         {scopeType === "project" && (
@@ -827,13 +815,11 @@ function AddRoleDialog({
           </Field>
         )}
         <Field label={t("pages.users.role")}>
-          <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </Select>
+          <Combobox
+            value={role}
+            onChange={setRole}
+            options={ROLES.map((r) => ({ value: r, label: r }))}
+          />
         </Field>
       </div>
     </EditorSheet>

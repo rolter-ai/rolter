@@ -8,10 +8,12 @@ line. And a native select has no type-to-filter, only first-letter jumping,
 which makes a fleet of `provider/model` addresses unusable (#968).
 
 `ui/src/components/ui/combobox.tsx` is the replacement. New dropdowns use it.
-`Select` stays for now while the remaining call sites migrate screen by screen —
-the Playground's model picker, the editor sheets (model, provider, provider
-group, params) and the shared pickers (key expiry and cache, key attribution,
-the scope rail, the org scope picker) are done.
+`Select` stays for now while the remaining call sites migrate screen by screen.
+Done so far: the Playground, the editor sheets (model, provider, provider group,
+params), the shared pickers (key expiry and cache, key attribution, the scope
+rail, the org scope picker), and the screens whose dropdowns list fixed choices
+— Limits, Users, Guardrail rules, Guardrail providers, Keys, Plugins, MCP
+management, Prompt repository and Skills repository.
 
 ## Using it
 
@@ -37,6 +39,7 @@ const options: ComboboxOption[] = [
 | `size` | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs` |
 | `className` | wrapper layout only (margins, width) — the control's own height comes from `size` |
 | `listClassName` | the popup, mainly to widen it past the control |
+| `title` | native tooltip, for a compact control whose label sits elsewhere |
 
 `description` is the secondary line under the label. The Playground's model
 picker uses it for what `owned_by` says, which the native control could not

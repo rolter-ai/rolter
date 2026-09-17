@@ -9,6 +9,7 @@ import {
   expectSheetClosed,
   expectSkeleton,
   json,
+  pickOption,
   pending,
   routes,
   scoped,
@@ -228,12 +229,13 @@ export const TheUnpricedOverrideDefaultsToInherit: Story = {
   ),
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add budget/i);
-    const select = within(sheet()).getByLabelText("Unpriced traffic");
-    await expect(select).toHaveValue("");
+    // a combobox reads as the option's label; "" is the value behind "inherit"
+    const picker = within(sheet()).getByLabelText("Unpriced traffic");
+    await expect(picker).toHaveValue("Inherit deployment setting");
     // picking an override makes the form dirty, so closing it prompts rather
     // than dropping a choice that changes what the gateway will serve
-    await userEvent.selectOptions(select, "block");
-    await expect(select).toHaveValue("block");
+    await pickOption(picker, "Refuse");
+    await expect(picker).toHaveValue("Refuse");
   },
 };
 

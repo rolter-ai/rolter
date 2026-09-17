@@ -9,6 +9,7 @@ import {
   expectSheetClosed,
   expectSkeleton,
   json,
+  pickOption,
   pending,
   routes,
   scoped,
@@ -214,7 +215,7 @@ export const ChoosingAPasswordRevealsTheField: Story = {
     await clickWhenEnabled(canvasElement, /invite user/i);
     const form = sheet();
     await expect(within(form).queryByLabelText("Password (optional)")).not.toBeInTheDocument();
-    await userEvent.selectOptions(within(form).getByLabelText("Method"), "password");
+    await pickOption(within(form).getByLabelText("Method"), "Set a password now");
     await expect(within(form).getByLabelText("Password (optional)")).toBeInTheDocument();
   },
 };

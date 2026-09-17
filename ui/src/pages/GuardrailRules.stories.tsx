@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailRules from "./GuardrailRules";
-import { cancelConfirmation, confirmDestructive, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, pickOption, recording } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
 
 const RULES: GuardrailRuleRow[] = [
@@ -103,7 +103,7 @@ export const CreatesCustomRule: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: /add rule/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Rule name"), "Prompt injection policy");
-    await userEvent.selectOptions(within(dialog).getByLabelText("Source"), "pattern");
+    await pickOption(within(dialog).getByLabelText("Source"), "Custom regex");
     await userEvent.type(within(dialog).getByLabelText("Regular expression"), "ignore previous instructions");
     await expect(within(dialog).getByRole("button", { name: "Publish rule" })).toBeEnabled();
   },

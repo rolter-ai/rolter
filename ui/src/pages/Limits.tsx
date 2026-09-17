@@ -16,10 +16,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+
 import {
   createBudget,
   createRateLimit,
@@ -181,19 +182,17 @@ export default function Limits() {
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.limits.scopeTypeLabel")}>
-            <Select
+            <Combobox
               value={scopeType}
-              onChange={(e) => {
-                setScopeType(e.target.value);
-                setScopeId(e.target.value === "project" ? scope.projectId ?? "" : "");
+              onChange={(picked) => {
+                setScopeType(picked);
+                setScopeId(picked === "project" ? scope.projectId ?? "" : "");
               }}
-            >
-              {SCOPE_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {t(`pages.limits.scopeTypes.${type}`)}
-                </option>
-              ))}
-            </Select>
+              options={SCOPE_TYPES.map((type) => ({
+                value: type,
+                label: t(`pages.limits.scopeTypes.${type}`),
+              }))}
+            />
           </Field>
           <Field
             label={t("pages.limits.scopeLabel")}
@@ -202,61 +201,49 @@ export default function Limits() {
             })}
           >
             {scopeType === "org" && scope.orgs.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectOrg")}</option>
-                {scope.orgs.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectOrg")}
+                options={scope.orgs.map((o) => ({ value: o.id, label: o.name }))}
+              />
             ) : scopeType === "team" && scope.teams.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectTeam")}</option>
-                {scope.teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectTeam")}
+                options={scope.teams.map((team) => ({ value: team.id, label: team.name }))}
+              />
             ) : scopeType === "project" && scope.projects.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectProject")}</option>
-                {scope.projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectProject")}
+                options={scope.projects.map((p) => ({ value: p.id, label: p.name }))}
+              />
             ) : scopeType === "virtual_key" && virtualKeys.data && virtualKeys.data.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectVirtualKey")}</option>
-                {virtualKeys.data.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name || k.key_prefix}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectVirtualKey")}
+                options={virtualKeys.data.map((k) => ({ value: k.id, label: k.name || k.key_prefix }))}
+              />
             ) : scopeType === "business_unit" &&
               businessUnits.data &&
               businessUnits.data.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectBusinessUnit")}</option>
-                {businessUnits.data.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectBusinessUnit")}
+                options={businessUnits.data.map((u) => ({ value: u.id, label: u.name }))}
+              />
             ) : scopeType === "customer" && customers.data && customers.data.length > 0 ? (
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">{t("pages.limits.selectCustomer")}</option>
-                {customers.data.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
+              <Combobox
+                value={scopeId}
+                onChange={setScopeId}
+                placeholder={t("pages.limits.selectCustomer")}
+                options={customers.data.map((c) => ({ value: c.id, label: c.name }))}
+              />
             ) : (
               <Input
                 value={scopeId}
@@ -591,18 +578,18 @@ function AddBudgetDialog({
           hint={t("pages.limits.unpricedHint")}
           htmlFor="budget-unpriced-policy"
         >
-          <Select
+          <Combobox
             id="budget-unpriced-policy"
             value={unpriced}
-            onChange={(e) => setUnpriced(e.target.value as UnpricedPolicy | "")}
-          >
-            <option value="">{t("pages.limits.unpriced.inherit")}</option>
-            {UNPRICED_POLICIES.map((policy) => (
-              <option key={policy} value={policy}>
-                {t(`pages.limits.unpriced.${policy}`)}
-              </option>
-            ))}
-          </Select>
+            onChange={(picked) => setUnpriced(picked as UnpricedPolicy | "")}
+            options={[
+              { value: "", label: t("pages.limits.unpriced.inherit") },
+              ...UNPRICED_POLICIES.map((policy) => ({
+                value: policy,
+                label: t(`pages.limits.unpriced.${policy}`),
+              })),
+            ]}
+          />
         </Field>
       </div>
     </EditorSheet>
