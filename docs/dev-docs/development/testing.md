@@ -358,9 +358,57 @@ uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
   .github/workflows/ .github/actions/
 ```
 
-Some audits query the GitHub API (`impostor-commit`, `stale-action-refs`), so
-export a `GH_TOKEN` — or pass `--offline` to skip them, which is enough for a
-quick check but is **not** what CI runs.
+Some audits query the GitHub API (`impostor-commit`, `stale-action-refs`,
+`known-vulnerable-actions`), so export a `GH_TOKEN` — or pass `--offline` to
+skip them, which is enough for a quick check but is **not** what CI runs.
+
+#### Retrying an API hiccup, but never a finding
+
+Those online audits are also the gate's one source of flake. A single 401, 5xx
+or rate-limit answer from the GitHub API aborts the **whole** run with `fatal:
+no audit was performed`, so a PR that touched no workflow goes red for a reason
+that has nothing to do with it. While the job was informational that was
+invisible; now that it blocks, it is indistinguishable from a real finding. So
+the step retries, up to three attempts with a short backoff (#1509).
+
+What makes the retry safe is that zizmor's exit code already separates the two
+cases, so the retry never has to infer which one it is:
+
+| Exit | Meaning | Gate behaviour |
+|---|---|---|
+| `0` | audit completed, nothing to report | pass, first attempt |
+| `11`–`14` | audit completed, findings at informational…high | **fail, first attempt** |
+| `1` | no audit was produced | retry, but only when the output names a GitHub API failure |
+| `2`, `3` | bad arguments / no inputs collected | fail, first attempt |
+
+A completed run is a verdict, and a verdict is final immediately — a genuine
+finding can never be retried away because it never reaches the retryable branch.
+Only exit `1` is a candidate, and then only when the output matches `no audit
+was performed`, `request error while accessing GitHub API` or `couldn't list
+tags`; an internal zizmor bug fails fast instead of costing three runs.
+Exhausting the three attempts is a failure, never a silent pass — the same rule
+`ci-ok` applies to its own run listing: no answer is not an answer.
+
+#### Why `known-vulnerable-actions` still gates every PR
+
+`known-vulnerable-actions` checks pinned actions against zizmor's advisory
+database, so alone among the audits its verdict can change while the repository
+does not: a newly published advisory against an action we pin turns every open
+PR red at once, for something none of those PRs did. That is the same shape as a
+fresh RUSTSEC advisory, which is exactly why `cargo audit` runs on a schedule
+from `audit.yml` rather than on each PR.
+
+It stays in the blocking PR gate anyway, and deliberately. zizmor has no flag
+that disables a single audit — the only granularity is `--no-online-audits`,
+which would also drop `impostor-commit` and `stale-action-refs`, and those two
+are precisely the audits that catch a bad action ref *introduced by the diff in
+front of you*. Trading away the audits that read the current diff to pre-empt an
+advisory that has not fired yet costs more than it saves, and the remedy in the
+noisy case is to bump the pin — the change we would want to make regardless, on
+whichever PR notices first. Revisit this if zizmor gains per-audit selection or
+if the advisory case starts actually costing PR time; a scheduled `zizmor
+--min-severity=medium` job in `audit.yml`, beside `cargo audit`, is the shape
+that split would take.
 
 Fix a finding rather than silencing it. Where a finding is genuinely a
 false positive for this repository, suppress that one rule on that one step with
