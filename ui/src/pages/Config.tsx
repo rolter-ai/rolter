@@ -30,7 +30,11 @@ export default function Config() {
 
   const cfg = config.data;
   const summary = cfg
-    ? `${cfg.providers.length} providers · ${cfg.routes.length} routes · ${cfg.virtual_keys.length} virtual keys`
+    ? t("pages.config.summary.line", {
+        providers: t("pages.config.summary.providers", { count: cfg.providers.length }),
+        routes: t("pages.config.summary.routes", { count: cfg.routes.length }),
+        keys: t("pages.config.summary.keys", { count: cfg.virtual_keys.length }),
+      })
     : "";
 
   return (

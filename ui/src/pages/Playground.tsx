@@ -821,8 +821,8 @@ function AudioMode({ models }: { models: ModelOption[] }) {
         value={tab}
         onChange={setTab}
         tabs={[
-          { value: "tts", label: "Text → Speech" },
-          { value: "stt", label: "Speech → Text" },
+          { value: "tts", label: t("pages.playground.audioTabs.tts") },
+          { value: "stt", label: t("pages.playground.audioTabs.stt") },
         ]}
       />
       {tab === "tts" ? (
@@ -1058,6 +1058,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
 
 /* ---------------- page ---------------- */
 export default function Playground() {
+  const { t } = useTranslation();
   const [mode, setMode] = React.useState("chat");
   const { options: models, source } = useModelCatalog();
 
@@ -1069,11 +1070,11 @@ export default function Playground() {
         value={mode}
         onChange={setMode}
         tabs={[
-          { value: "chat", label: "Chat" },
-          { value: "embeddings", label: "Embeddings" },
-          { value: "image", label: "Image" },
-          { value: "audio", label: "Audio" },
-          { value: "realtime", label: "Realtime" },
+          { value: "chat", label: t("pages.playground.modes.chat") },
+          { value: "embeddings", label: t("pages.playground.modes.embeddings") },
+          { value: "image", label: t("pages.playground.modes.image") },
+          { value: "audio", label: t("pages.playground.modes.audio") },
+          { value: "realtime", label: t("pages.playground.modes.realtime") },
         ]}
       />
       {mode === "chat" && <ChatMode models={models} />}

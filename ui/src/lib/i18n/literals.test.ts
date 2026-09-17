@@ -408,3 +408,83 @@ describe("findLiterals tells a comparison from a tag", () => {
     expect(texts(source)).toEqual(["Cancel"]);
   });
 });
+
+// prose that reaches the screen without ever sitting in a JSX prop or a text
+// node: the donut built its tail slice as `{ label: `Other (${n})` }` (#1482),
+// and `ProviderSheet` held its CTA in a `const` it rendered later (#1531).
+// both were invisible to the gate (#1537)
+describe("findLiterals follows copy through object keys and local bindings", () => {
+  test("reads a template literal assigned to a user-facing object key", () => {
+    const source = "const tail = { label: `Other (${rest.length})`, value: sum, color: PALETTE[5] };";
+    expect(texts(source)).toEqual(["Other ({…})"]);
+  });
+
+  test("reads a plain string and a ternary under a user-facing object key", () => {
+    expect(texts('const TABS = [{ key: "limits", title: "Rate limits" }];')).toEqual(["Rate limits"]);
+    expect(texts('const row = { description: ok ? "Healthy upstream" : "Degraded upstream" };')).toEqual([
+      "Healthy upstream",
+      "Degraded upstream",
+    ]);
+    expect(texts('const a11y = { "aria-label": "Close dialog" };')).toEqual(["Close dialog"]);
+  });
+
+  test("ignores keys nobody reads, type annotations and a variable named like a key", () => {
+    const source = [
+      'const opts = { id: "Some Thing", className: "Flex Row", kind: "Upstream Model" };',
+      "interface Props { label: string; title?: React.ReactNode }",
+      "const shown = open ? label : fallback;",
+      "const tail = { label: `${a}/${b}`, title: `/v1/${id}` };",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("reads a template literal in a user-facing JSX prop", () => {
+    expect(texts("<Sheet title={`Edit ${provider.name}`} />")).toEqual(["Edit {…}"]);
+  });
+
+  test("reads English held in a local binding and rendered later", () => {
+    const source = `
+      const cta = mode === "add" ? "Create provider" : "Save provider";
+      const title = \`Edit \${initial.name}\`;
+      return (
+        <Sheet>
+          <SheetHeader title={title} />
+          <Button>{cta}</Button>
+        </Sheet>
+      );`;
+    expect(texts(source)).toEqual(["Create provider", "Save provider", "Edit {…}"]);
+  });
+
+  test("ignores a local binding that never reaches the screen", () => {
+    const source = `
+      const kind = "Upstream Model";
+      const header = \`Bearer \${token}\`;
+      send(kind, { headers: { Authorization: header } });
+      return <Button>{t("common.save")}</Button>;`;
+    expect(texts(source)).toEqual([]);
+  });
+});
+
+// `{cond ? "Yes" : "No"} today` reported the prose but not the labels inside
+// the expression beside it (#1371)
+describe("findLiterals reads expressions that share a text node with prose", () => {
+  test("reads the strings inside an interpolation beside prose", () => {
+    expect(texts('<span>{healthy ? "All good" : "Degraded"} today</span>')).toEqual([
+      "{…} today",
+      "All good",
+      "Degraded",
+    ]);
+  });
+});
+
+// a template message carrying an embedded quote closed the `THROWN` match on
+// the quote rather than on the backtick, so it never matched (#1390)
+describe("findLiterals reads template-literal error messages", () => {
+  test("reads a thrown template literal with embedded quotes", () => {
+    expect(texts('throw new Error(`duplicate param "${key}"`);')).toEqual(['duplicate param "{…}"']);
+    expect(texts('throw new Error(`"${key}": not a valid number`);')).toEqual(['"{…}": not a valid number']);
+    // a template without quotes in it matched the old pattern too; it is one
+    // finding, not the raw `${…}` spelling beside the placeholder one
+    expect(texts("throw new Error(`Request failed: ${res.status}`);")).toEqual(["Request failed: {…}"]);
+  });
+});

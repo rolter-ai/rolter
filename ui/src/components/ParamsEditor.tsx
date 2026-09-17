@@ -115,14 +115,28 @@ function rowsFromParams(
   return { rows, mode };
 }
 
-// serialize rows back to a params object; throws with a human message on the
-// first row that fails to parse for its declared type
+/**
+ * the first row that fails to parse for its declared type. it names the
+ * problem rather than describing it, so the editor can render the message in
+ * the dashboard's locale (#1390)
+ */
+class ParamRowError extends Error {
+  constructor(
+    readonly problem: "duplicate" | "number" | "json",
+    readonly key: string,
+  ) {
+    super(problem);
+  }
+}
+
+// serialize rows back to a params object; throws a `ParamRowError` on the first
+// row that fails to parse for its declared type
 function rowsToParams(rows: ParamRow[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const row of rows) {
     const key = row.key.trim();
     if (!key) continue;
-    if (key in out) throw new Error(`duplicate param "${key}"`);
+    if (key in out) throw new ParamRowError("duplicate", key);
     switch (row.type) {
       case "string":
         out[key] = row.value;
@@ -130,7 +144,7 @@ function rowsToParams(rows: ParamRow[]): Record<string, unknown> {
       case "number": {
         const n = Number(row.value);
         if (row.value.trim() === "" || Number.isNaN(n)) {
-          throw new Error(`"${key}": not a valid number`);
+          throw new ParamRowError("number", key);
         }
         out[key] = n;
         break;
@@ -142,7 +156,7 @@ function rowsToParams(rows: ParamRow[]): Record<string, unknown> {
         try {
           out[key] = JSON.parse(row.value || "null");
         } catch {
-          throw new Error(`"${key}": invalid JSON value`);
+          throw new ParamRowError("json", key);
         }
         break;
     }
@@ -206,6 +220,19 @@ export function ParamsEditor(props: EditProps | CreateProps) {
   const [mode, setMode] = React.useState<PolicyMode>("allow");
   const [localError, setLocalError] = React.useState<string | null>(null);
 
+  const describe = React.useCallback(
+    (e: unknown) => {
+      if (!(e instanceof ParamRowError)) return (e as Error).message;
+      const messages = {
+        duplicate: t("paramsEditor.errors.duplicate", { key: e.key }),
+        number: t("paramsEditor.errors.number", { key: e.key }),
+        json: t("paramsEditor.errors.json", { key: e.key }),
+      };
+      return messages[e.problem];
+    },
+    [t],
+  );
+
   React.useEffect(() => {
     const seeded = rowsFromParams(params ?? {}, paramPolicy ?? {});
     setRows(seeded.rows);
@@ -221,9 +248,9 @@ export function ParamsEditor(props: EditProps | CreateProps) {
       const value = { params: rowsToParams(rows), paramPolicy: policyFor(mode, rows) };
       onChange({ ok: true, value });
     } catch (e) {
-      onChange({ ok: false, error: (e as Error).message });
+      onChange({ ok: false, error: describe(e) });
     }
-  }, [rows, mode, onChange]);
+  }, [rows, mode, onChange, describe]);
 
   const updateRow = (id: number, patch: Partial<ParamRow>) =>
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -246,7 +273,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
     try {
       params = rowsToParams(rows);
     } catch (e) {
-      setLocalError((e as Error).message);
+      setLocalError(describe(e));
       return;
     }
     setLocalError(null);

@@ -155,7 +155,12 @@ function Timeline({ buckets, className }: { buckets: TimelineRow[]; className?: 
         return (
           <div
             key={b.bucket}
-            title={`${b.bucket}: ${b.ok} ok, ${b.errors} error, ${b.timeouts} timeout`}
+            title={t("pages.health.bucketTitle", {
+              bucket: b.bucket,
+              ok: b.ok,
+              errors: b.errors,
+              timeouts: b.timeouts,
+            })}
             className={cn(
               "w-1.5 flex-1 rounded-sm",
               down ? "bg-destructive" : "bg-[color:var(--status-success)]/70",

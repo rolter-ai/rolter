@@ -522,6 +522,7 @@ function FieldLabel({
   /** for a group (a segmented control) that is `aria-labelledby` this id */
   id?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-1.5">
       <label
@@ -532,7 +533,7 @@ function FieldLabel({
         {label}
       </label>
       {required && <span className="text-xs text-[color:var(--status-danger-text)]">*</span>}
-      {info && <InfoHint text={info} label={`About ${label}`} />}
+      {info && <InfoHint text={info} label={t("common.aboutField", { label })} />}
     </div>
   );
 }
@@ -557,6 +558,7 @@ function Section({
   children: React.ReactNode;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-[10px] border border-[color:var(--border-subtle)]">
       {/* the toggle is a real button and the InfoHint sits beside it rather
@@ -579,7 +581,7 @@ function Section({
             )}
           />
         </button>
-        {info && <InfoHint text={info} label={`About ${title}`} />}
+        {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
       </div>
       {open && (
         <div
@@ -651,9 +653,8 @@ function LockButton({
   onToggle: () => void;
   disabled?: boolean;
 }) {
-  const label = locked
-    ? "Locked — clients can't override. Click to unlock."
-    : "Unlocked — clients can override. Click to lock.";
+  const { t } = useTranslation();
+  const label = locked ? t("modelSheet.lock.buttonLocked") : t("modelSheet.lock.buttonUnlocked");
 
   return (
     <button
@@ -744,12 +745,13 @@ function SwitchRow({
   onChange: (v: boolean) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-3 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="text-sm">{title}</span>
-          {info && <InfoHint text={info} label={`About ${title}`} />}
+          {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
         </div>
         {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
       </div>
