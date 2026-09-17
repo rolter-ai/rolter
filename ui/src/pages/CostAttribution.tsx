@@ -368,8 +368,10 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   isError: boolean;
   error?: Error;
   onRetry: () => void;
-  onCreate: (form: EditorState) => void;
-  onUpdate: (form: EditorState, original: T) => void;
+  // both take the closer for the same reason the delete below does: the caller
+  // owns the mutation, so only the caller knows the save was accepted (#1626)
+  onCreate: (form: EditorState, onSuccess: () => void) => void;
+  onUpdate: (form: EditorState, original: T, onSuccess: () => void) => void;
   onRetire: (row: T, retired: boolean) => void;
   // the caller owns the mutation, so it is the caller that knows the delete
   // succeeded — it closes the confirmation through `onSuccess` (#1179)
@@ -623,9 +625,12 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           pending={mutating}
           error={mutationError?.message}
           onSubmit={() => {
-            if (editing) onUpdate(form, editing);
-            else onCreate(form);
-            setOpen(false);
+            // closing here unconditionally threw the draft away whenever the
+            // control plane refused the save — the name, the slug and the
+            // slug-change acknowledgement the operator ticked on purpose (#1626)
+            const close = () => setOpen(false);
+            if (editing) onUpdate(form, editing, close);
+            else onCreate(form, close);
           }}
         />
       </Sheet>
@@ -757,8 +762,8 @@ export function BusinessUnits() {
           | Error
           | undefined
       }
-      onCreate={(form) => create.mutate(form)}
-      onUpdate={(form, row) => update.mutate({ form, row })}
+      onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
+      onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}
       onRetire={(row, retired) => retire.mutate({ row, retired })}
       onDelete={(row, onSuccess) => remove.mutate(row, { onSuccess })}
       deleting={remove.isPending}
@@ -907,8 +912,8 @@ export function Customers() {
           | Error
           | undefined
       }
-      onCreate={(form) => create.mutate(form)}
-      onUpdate={(form, row) => update.mutate({ form, row })}
+      onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
+      onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}
       onRetire={(row, retired) => retire.mutate({ row, retired })}
       onDelete={(row, onSuccess) => remove.mutate(row, { onSuccess })}
       deleting={remove.isPending}
