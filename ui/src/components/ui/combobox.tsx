@@ -83,6 +83,100 @@ interface Section {
   items: { option: ComboboxOption; index: number }[];
 }
 
+/**
+ * Rows rendered at once, above which the popup windows instead (#1579).
+ *
+ * Below it every filtered option is a DOM node, which is both simpler and
+ * indistinguishable in practice — the type-to-filter narrows a fleet to a
+ * handful in two keystrokes. Above it a deployment with thousands of
+ * `provider/model` addresses pays for the whole list on every keystroke.
+ */
+const VIRTUALISE_ABOVE = 120;
+
+/** rows kept beyond each edge of the viewport, so a fast scroll has something */
+const OVERSCAN = 8;
+
+/**
+ * Row heights, in px, written here rather than measured.
+ *
+ * A variable-height virtual list normally has to render a row to find out how
+ * tall it is, and then correct the scroll it already reported. Here it does
+ * not have to: a row is tall exactly when the option carries a `description`,
+ * and that is known from the data. The numbers are applied to the rows as an
+ * inline `height`, so the arithmetic and the layout cannot drift apart — the
+ * rows are what these say they are, rather than these being a guess at what
+ * the classes produce.
+ */
+const ROW = {
+  default: { plain: 32, described: 48 },
+  sm: { plain: 28, described: 44 },
+} as const;
+const HEADER_HEIGHT = 26;
+
+/** one thing the popup stacks vertically: a group's header, or an option */
+interface Row {
+  kind: "header" | "option";
+  /** section this row belongs to, so a window can rebuild the group wrappers */
+  section: number;
+  option?: ComboboxOption;
+  /** index into the filtered list — what `active` and the option id speak in */
+  index: number;
+  top: number;
+  height: number;
+}
+
+/** every row with its offset, which is all the window needs to place itself */
+function measure(sections: Section[], size: "default" | "sm"): { rows: Row[]; total: number } {
+  const rows: Row[] = [];
+  let top = 0;
+  sections.forEach((section, s) => {
+    if (section.label) {
+      rows.push({ kind: "header", section: s, index: -1, top, height: HEADER_HEIGHT });
+      top += HEADER_HEIGHT;
+    }
+    for (const { option, index } of section.items) {
+      const height = ROW[size][option.description ? "described" : "plain"];
+      rows.push({ kind: "option", section: s, option, index, top, height });
+      top += height;
+    }
+  });
+  return { rows, total: top };
+}
+
+/**
+ * The window's rows, split back into the sections they belong to.
+ *
+ * A group's header only renders when its own row is inside the window; the
+ * wrapper still carries `aria-label`, so a run of options scrolled past its
+ * heading is announced under the right name either way.
+ */
+function slices(rows: Row[], first: number, last: number) {
+  const out: { section: number; header: boolean; items: Row[] }[] = [];
+  for (let i = first; i <= last; i += 1) {
+    const r = rows[i];
+    const open = out[out.length - 1];
+    if (r.kind === "header") {
+      out.push({ section: r.section, header: true, items: [] });
+      continue;
+    }
+    if (open && open.section === r.section) open.items.push(r);
+    else out.push({ section: r.section, header: false, items: [r] });
+  }
+  return out.filter((slice) => slice.items.length > 0);
+}
+
+/** the first row at or after `offset`, by binary search over the offsets */
+function rowAt(rows: Row[], offset: number): number {
+  let lo = 0;
+  let hi = rows.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].top + rows[mid].height <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function layout(options: ComboboxOption[]): Section[] {
   const sections: Section[] = [];
   options.forEach((option, index) => {
@@ -126,9 +220,13 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
     const [active, setActive] = React.useState(0);
     const [above, setAbove] = React.useState(false);
 
+    const [scrollTop, setScrollTop] = React.useState(0);
+    const [viewport, setViewport] = React.useState(240);
+
     const wrapper = React.useRef<HTMLDivElement>(null);
     const input = React.useRef<HTMLInputElement>(null);
     const list = React.useRef<HTMLDivElement>(null);
+    const listbox = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => input.current as HTMLInputElement);
 
     const selected = options.find((o) => o.value === value);
@@ -141,6 +239,29 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
       () => filtered.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0),
       [filtered],
     );
+
+    // above the threshold the popup renders a window of rows rather than all of
+    // them (#1579). the offsets come from the data, since a row is tall exactly
+    // when its option has a description
+    const virtual = filtered.length > VIRTUALISE_ABOVE;
+    const { rows, total } = React.useMemo(
+      () => (virtual ? measure(sections, size) : { rows: [], total: 0 }),
+      [virtual, sections, size],
+    );
+    const window_ = React.useMemo(() => {
+      if (!virtual) return null;
+      let first = Math.max(0, rowAt(rows, scrollTop) - OVERSCAN);
+      let last = Math.min(rows.length - 1, rowAt(rows, scrollTop + viewport) + OVERSCAN);
+      // the active option must be a rendered node whatever the scroll says, or
+      // aria-activedescendant names an id that is not in the document and the
+      // screen reader announces nothing — the one regression #968 must not have
+      const at = rows.findIndex((r) => r.kind === "option" && r.index === active);
+      if (at >= 0) {
+        first = Math.min(first, at);
+        last = Math.max(last, at);
+      }
+      return { first, last };
+    }, [virtual, rows, scrollTop, viewport, active]);
 
     const optionId = (index: number) => `${generatedId}-opt-${index}`;
     // what the control reads while closed is the selection, not the last query
@@ -176,11 +297,19 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
       setOpen(true);
     }, [disabled]);
 
-    // keep the active option in view while arrowing through a long list
-    React.useEffect(() => {
+    // keep the active option in view while arrowing through a long list.
+    // a layout effect rather than an effect: the window is computed from
+    // `scrollTop`, so the scroll and the state that follows it have to settle
+    // before the browser paints, or a long list flashes the old window
+    React.useLayoutEffect(() => {
       if (!open) return;
       const node = list.current?.querySelector<HTMLElement>('[data-active="true"]');
       node?.scrollIntoView({ block: "nearest" });
+      const box = listbox.current;
+      if (box) {
+        setScrollTop(box.scrollTop);
+        if (box.clientHeight > 0) setViewport(box.clientHeight);
+      }
     }, [open, active, filtered]);
 
     // the active option is reset whenever the candidate set changes, so the
@@ -252,6 +381,70 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
     };
 
     const count = filtered.length;
+
+    /** one option row. its height is pinned while windowing, since the offsets
+        the window is computed from are these numbers and nothing else */
+    const row = ({ option, index }: { option: ComboboxOption; index: number }) => (
+      <div
+        key={option.value}
+        id={optionId(index)}
+        role="option"
+        aria-selected={option.value === value}
+        aria-disabled={option.disabled || undefined}
+        data-active={index === active}
+        style={virtual ? { height: ROW[size][option.description ? "described" : "plain"] } : undefined}
+        // mousedown rather than click: the default would blur the input and
+        // close the popup before the click ever landed
+        onMouseDown={(event) => {
+          event.preventDefault();
+          commit(option);
+        }}
+        onMouseMove={() => {
+          if (!option.disabled) setActive(index);
+        }}
+        className={cn(
+          "flex cursor-pointer items-start gap-2 rounded-[var(--radius-sm)] px-2 py-1.5",
+          size === "sm" ? "text-xs" : "text-sm",
+          index === active && "bg-[color:var(--surface-hover)]",
+          option.disabled && "cursor-not-allowed opacity-50",
+        )}
+      >
+        <Check
+          aria-hidden
+          className={cn(
+            "mt-0.5 h-3.5 w-3.5 flex-none",
+            option.value === value ? "opacity-100" : "opacity-0",
+          )}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{option.label}</span>
+          {option.description && (
+            <span className="block truncate text-xs text-muted-foreground">
+              {option.description}
+            </span>
+          )}
+        </span>
+      </div>
+    );
+
+    /** a run of options under their heading, or the bare run when ungrouped */
+    const group = (label: string | undefined, children: React.ReactNode[], header = true) => {
+      if (!label) return children;
+      return (
+        <div key={`${label}-${(children[0] as { key?: string })?.key ?? ""}`} role="group" aria-label={label}>
+          {header && (
+            <p
+              aria-hidden
+              style={virtual ? { height: HEADER_HEIGHT } : undefined}
+              className="px-2 pb-1 pt-2 text-2xs font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              {label}
+            </p>
+          )}
+          {children}
+        </div>
+      );
+    };
 
     return (
       <div
@@ -352,8 +545,14 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
             </p>
           )}
           <div
+            ref={listbox}
             id={listId}
             role="listbox"
+            onScroll={(event) => {
+              if (!virtual) return;
+              setScrollTop(event.currentTarget.scrollTop);
+              if (event.currentTarget.clientHeight > 0) setViewport(event.currentTarget.clientHeight);
+            }}
             // a generic name on purpose: naming the listbox after the field
             // would put a second node with that accessible name on the page,
             // and `getByLabelText("Provider")` would stop being unambiguous —
@@ -370,62 +569,27 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
                 screen with a dropdown of audit actions had two nodes reading
                 `provider.create` and `getByText` stopped being unambiguous —
                 and a long list paid its DOM cost on every render */}
-            {open &&
-              sections.map((section) => {
-              const options = section.items.map(({ option, index }) => (
+            {open && !virtual && sections.map((section) => group(section.label, section.items.map(row)))}
+            {open && virtual && window_ && (
+              <>
+                {/* the rows above and below the window are one box each. they
+                    carry role="none" so the listbox still owns nothing but
+                    options and groups, which is what aria-required-children
+                    asks of it */}
+                <div role="none" style={{ height: rows[window_.first].top }} />
+                {slices(rows, window_.first, window_.last).map((slice) =>
+                  group(
+                    sections[slice.section].label,
+                    slice.items.map(({ option, index }) => row({ option: option!, index })),
+                    slice.header,
+                  ),
+                )}
                 <div
-                  key={option.value}
-                  id={optionId(index)}
-                  role="option"
-                  aria-selected={option.value === value}
-                  aria-disabled={option.disabled || undefined}
-                  data-active={index === active}
-                  // mousedown rather than click: the default would blur the
-                  // input and close the popup before the click ever landed
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    commit(option);
-                  }}
-                  onMouseMove={() => {
-                    if (!option.disabled) setActive(index);
-                  }}
-                  className={cn(
-                    "flex cursor-pointer items-start gap-2 rounded-[var(--radius-sm)] px-2 py-1.5",
-                    size === "sm" ? "text-xs" : "text-sm",
-                    index === active && "bg-[color:var(--surface-hover)]",
-                    option.disabled && "cursor-not-allowed opacity-50",
-                  )}
-                >
-                  <Check
-                    aria-hidden
-                    className={cn(
-                      "mt-0.5 h-3.5 w-3.5 flex-none",
-                      option.value === value ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{option.label}</span>
-                    {option.description && (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {option.description}
-                      </span>
-                    )}
-                  </span>
-                </div>
-              ));
-              if (!section.label) return options;
-              return (
-                <div key={section.label} role="group" aria-label={section.label}>
-                  <p
-                    aria-hidden
-                    className="px-2 pb-1 pt-2 text-2xs font-medium uppercase tracking-wide text-muted-foreground"
-                  >
-                    {section.label}
-                  </p>
-                  {options}
-                </div>
-                );
-              })}
+                  role="none"
+                  style={{ height: total - (rows[window_.last].top + rows[window_.last].height) }}
+                />
+              </>
+            )}
           </div>
         </div>
       </div>
