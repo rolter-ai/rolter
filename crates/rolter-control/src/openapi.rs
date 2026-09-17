@@ -85,6 +85,12 @@ struct QueryParam {
     /// the JSON Schema type of the value
     ty: &'static str,
     description: &'static str,
+    /// the request fails without it. `/api/v1/budgets` and
+    /// `/api/v1/rate-limits` are the reason this exists: their handlers
+    /// deserialize `scope_type` and `scope_id` as bare fields rather than
+    /// `Option`, so a caller following a reference that called them optional
+    /// gets a 400 and no clue which parameter it forgot (#1412)
+    required: bool,
 }
 
 impl QueryParam {
@@ -93,6 +99,17 @@ impl QueryParam {
             name,
             ty,
             description,
+            required: false,
+        }
+    }
+
+    /// A parameter the route refuses to run without.
+    const fn required(name: &'static str, ty: &'static str, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            description,
+            required: true,
         }
     }
 
@@ -100,7 +117,7 @@ impl QueryParam {
         json!({
             "name": self.name,
             "in": "query",
-            "required": false,
+            "required": self.required,
             "description": self.description,
             "schema": {"type": self.ty}
         })
@@ -228,6 +245,227 @@ impl Op {
         Value::Object(op)
     }
 }
+
+/// The MCP call log's query string. The same keyset-paging problem as the
+/// invocation log below, and the one #1412 names first: `next_cursor` comes
+/// back in the body, and a caller who does not know to send it as `cursor`
+/// sees page one forever.
+const MCP_LOGS_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+    QueryParam::new(
+        "server",
+        "string",
+        "exact MCP server id; omit for every server",
+    ),
+    QueryParam::new("tool", "string", "exact tool name; omit for every tool"),
+    QueryParam::new(
+        "transport",
+        "string",
+        "exact transport; omit for every transport",
+    ),
+    QueryParam::new(
+        "status",
+        "string",
+        "exact call status; omit for every status",
+    ),
+    QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
+    QueryParam::new("user", "string", "exact user id; omit for every user"),
+    QueryParam::new("limit", "integer", "page size; the server caps it"),
+    QueryParam::new(
+        "cursor",
+        "string",
+        "opaque keyset cursor; send back the previous page's `next_cursor`",
+    ),
+];
+
+/// The audit log's query string. Keyset-paged like the two logs above — it was
+/// equally undiscoverable — and it pages in both directions, which is the part
+/// a caller cannot guess at all.
+const AUDIT_LOG_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "actor",
+        "string",
+        "exact actor user id; omit for every actor",
+    ),
+    QueryParam::new(
+        "action",
+        "string",
+        "exact action name; omit for every action",
+    ),
+    QueryParam::new(
+        "target_type",
+        "string",
+        "exact target type; omit for every type",
+    ),
+    QueryParam::new(
+        "start_at",
+        "string",
+        "inclusive lower bound, RFC 3339; omit for no lower bound",
+    ),
+    QueryParam::new(
+        "end_at",
+        "string",
+        "exclusive upper bound, RFC 3339; omit for no upper bound",
+    ),
+    QueryParam::new("limit", "integer", "page size; the server caps it"),
+    QueryParam::new(
+        "cursor",
+        "string",
+        "opaque keyset cursor; send back the previous page's `next_cursor`",
+    ),
+    QueryParam::new(
+        "direction",
+        "string",
+        "which way to page from `cursor`: `forward` (older) or `backward` (newer)",
+    ),
+    QueryParam::new(
+        "include_total",
+        "boolean",
+        "also count every matching row; off by default because the count is the expensive half",
+    ),
+];
+
+/// The scope selector both budget and rate-limit lists require. Not optional:
+/// the handlers deserialize these as bare fields, so omitting either is a 400.
+const SCOPE_QUERY: &[QueryParam] = &[
+    QueryParam::required(
+        "scope_type",
+        "string",
+        "what the limit is attached to: `org`, `team`, `project`, `key`, `user` or `business_unit`",
+    ),
+    QueryParam::required("scope_id", "string", "uuid of that scope"),
+];
+
+/// The time window the analytics, health and usage summaries share.
+const WINDOW_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+];
+
+/// The window plus the bucket only the timeseries endpoint reads.
+const TIMESERIES_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+    QueryParam::new(
+        "bucket",
+        "string",
+        "time bucket: `hour`, `day`, `week` or `month`",
+    ),
+];
+
+/// The uptime endpoint's window plus the target it measures against.
+const UPTIME_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+    QueryParam::new(
+        "sla",
+        "number",
+        "uptime target to compare against, as a fraction (e.g. 0.999)",
+    ),
+];
+
+/// The alert history's filters.
+const ALERT_HISTORY_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "rule_id",
+        "string",
+        "exact alert rule id; omit for every rule",
+    ),
+    QueryParam::new("limit", "integer", "page size; the server caps it"),
+];
+
+/// The label index's filters. Every one narrows; none is required.
+const LABEL_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "subject_type",
+        "string",
+        "what the label is attached to; omit for every kind",
+    ),
+    QueryParam::new(
+        "subject_id",
+        "string",
+        "exact subject id; omit for every subject",
+    ),
+    QueryParam::new("key", "string", "exact label key; omit for every key"),
+    QueryParam::new("value", "string", "exact label value; omit for every value"),
+    QueryParam::new(
+        "source",
+        "string",
+        "how the label was set; omit for every source",
+    ),
+];
+
+/// The RBAC matrix's optional org filter.
+const MATRIX_QUERY: &[QueryParam] = &[QueryParam::new(
+    "org_id",
+    "string",
+    "resolve against this organization; omit for the deployment-wide matrix",
+)];
+
+/// The scope an effective-permission lookup is resolved against.
+const EFFECTIVE_QUERY: &[QueryParam] = &[
+    QueryParam::new("org_id", "string", "organization to resolve against"),
+    QueryParam::new("team_id", "string", "team to resolve against"),
+    QueryParam::new("project_id", "string", "project to resolve against"),
+];
+
+/// The attribution report's window plus the two knobs that change which rows
+/// come back at all — not merely how many.
+const ATTRIBUTION_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "since",
+        "string",
+        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
+    ),
+    QueryParam::new(
+        "until",
+        "string",
+        "exclusive upper bound, RFC 3339; defaults to now",
+    ),
+    QueryParam::new(
+        "dimension",
+        "string",
+        "group by `business_unit` (default) or `customer`",
+    ),
+    QueryParam::new(
+        "include_unattributed",
+        "boolean",
+        "also return rows the key left unattributed; off by default so a chargeback report is not skewed by an empty bucket",
+    ),
+];
 
 /// The invocation log's query string. Written down because it is keyset-paged:
 /// a caller that does not know to send back `next_cursor` as `cursor` cannot
@@ -416,7 +654,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/audit-log",
                 "listAuditLog",
                 "Page an organization's audit log",
-            ),
+            )
+            .query(AUDIT_LOG_QUERY),
             Op::get(
                 "/api/v1/orgs/{org_id}/teams",
                 "listTeams",
@@ -548,12 +787,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/rbac/matrix",
                 "getRbacMatrix",
                 "The capability matrix every guard enforces",
-            ),
+            )
+            .query(MATRIX_QUERY),
             Op::get(
                 "/api/v1/rbac/effective",
                 "getEffectiveRbac",
                 "What the calling principal may do at a scope",
-            ),
+            )
+            .query(EFFECTIVE_QUERY),
             Op::get(
                 "/api/v1/orgs/{org_id}/custom-roles",
                 "listCustomRoles",
@@ -845,7 +1086,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/usage",
                 "getMyUsage",
                 "Spend and usage for the calling account's keys",
-            ),
+            )
+            .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
@@ -878,6 +1120,7 @@ fn operations() -> Vec<Op> {
         "governance",
         vec![
             Op::get("/api/v1/budgets", "listBudgets", "List spend budgets")
+                .query(SCOPE_QUERY)
                 .ok(Payload::List("Budget")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
@@ -888,6 +1131,7 @@ fn operations() -> Vec<Op> {
                 "Delete a spend budget",
             ),
             Op::get("/api/v1/rate-limits", "listRateLimits", "List rate limits")
+                .query(SCOPE_QUERY)
                 .ok(Payload::List("RateLimit")),
             Op::post(
                 "/api/v1/rate-limits",
@@ -1070,7 +1314,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/labels",
                 "listOrgLabels",
                 "List labels on an org's providers, provider groups and routes",
-            ),
+            )
+            .query(LABEL_QUERY),
             Op::post(
                 "/api/v1/orgs/{org_id}/labels",
                 "createOrgLabel",
@@ -1090,7 +1335,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/model-labels",
                 "listModelLabels",
                 "List model labels",
-            ),
+            )
+            .query(LABEL_QUERY),
             Op::post(
                 "/api/v1/model-labels",
                 "createModelLabel",
@@ -1252,12 +1498,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp/logs",
                 "listMcpLogs",
                 "Page MCP tool-call events",
-            ),
+            )
+            .query(MCP_LOGS_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/summary",
                 "getMcpLogSummary",
                 "Aggregate MCP tool-call activity",
-            ),
+            )
+            .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/{event_id}",
                 "getMcpLogEvent",
@@ -1315,7 +1563,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/alert-notifications",
                 "listAlertNotifications",
                 "Page delivered alert notifications",
-            ),
+            )
+            .query(ALERT_HISTORY_QUERY),
         ],
     ));
 
@@ -1326,22 +1575,26 @@ fn operations() -> Vec<Op> {
                 "/api/v1/analytics/summary",
                 "getAnalyticsSummary",
                 "Spend, tokens and request counts over a window",
-            ),
+            )
+            .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/analytics/timeseries",
                 "getAnalyticsTimeseries",
                 "Bucketed spend and usage over a window",
-            ),
+            )
+            .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
                 "Spend and usage grouped by model",
-            ),
+            )
+            .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
                 "Spend and usage grouped by business unit or customer",
-            ),
+            )
+            .query(ATTRIBUTION_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations",
                 "listInvocations",
@@ -1358,17 +1611,20 @@ fn operations() -> Vec<Op> {
                 "/api/v1/health/uptime",
                 "getUptime",
                 "Per-provider uptime over a window",
-            ),
+            )
+            .query(UPTIME_QUERY),
             Op::get(
                 "/api/v1/health/timeline",
                 "getHealthTimeline",
                 "Per-provider health transitions over a window",
-            ),
+            )
+            .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
                 "Mean time to recovery per provider",
-            ),
+            )
+            .query(WINDOW_QUERY),
         ],
     ));
 
@@ -2822,6 +3078,253 @@ mod tests {
         // the bundle is loaded from this control plane, never a cdn (air-gapped)
         assert!(html.contains(DOCS_BUNDLE_PATH));
         assert!(!html.contains("cdn.jsdelivr.net"));
+    }
+
+    /// Handler names in one file whose signature takes an axum `Query<T>`.
+    ///
+    /// Scoped to a single file on purpose. Keying by bare function name across
+    /// the crate collides: `list_users` exists in both `crud.rs` (no query
+    /// string) and `scim.rs` (RFC 7644's), and `callback` in both
+    /// `mcp_oauth_flow.rs` and `sso.rs`. A crate-wide map reported the
+    /// `crud.rs` route as taking a query string it does not take. Handlers and
+    /// the `router()` that mounts them live in the same module here, so
+    /// matching within the file is both correct and stricter.
+    fn handlers_taking_query(text: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for (at, _) in text.match_indices("async fn ") {
+            let rest = &text[at + "async fn ".len()..];
+            let Some(open) = rest.find('(') else { continue };
+            let name: String = rest[..open]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            // the parameter list only, so a `Query<..>` built in the body does
+            // not count as an extractor
+            let mut depth = 0usize;
+            let mut close = open;
+            for (i, c) in rest[open..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = open + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if rest[open..close].contains("Query<") {
+                out.insert(name);
+            }
+        }
+        out
+    }
+
+    /// Every `(path, method)` whose handler takes a `Query<T>`.
+    ///
+    /// Read out of the source for the same reason `registered_routes` is: a
+    /// hand-kept list of "routes with a query string" is exactly the thing that
+    /// drifts, which is how every route but one ended up undocumented (#1412).
+    fn routes_taking_query() -> BTreeSet<(String, String)> {
+        let mut out = BTreeSet::new();
+        for file in sources() {
+            let text = scannable(&std::fs::read_to_string(&file).expect("source is utf-8"));
+            let handlers = handlers_taking_query(&text);
+            if handlers.is_empty() {
+                continue;
+            }
+            for (at, _) in text.match_indices(".route(") {
+                let open = at + ".route(".len() - 1;
+                let after = &text[open + 1..];
+                let Some(quote) = after.find('"') else {
+                    continue;
+                };
+                let Some(end) = after[quote + 1..].find('"') else {
+                    continue;
+                };
+                let path = &after[quote + 1..quote + 1 + end];
+                let mut depth = 0usize;
+                let mut close = open;
+                for (i, c) in text[open..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = open + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let call = &text[open + 1 + quote + 1 + end..close];
+                for method in methods_in(call) {
+                    // the handler named inside this method's own parentheses,
+                    // not any other on the same chain
+                    let Some(m_at) = call.find(&format!("{method}(")) else {
+                        continue;
+                    };
+                    let args = &call[m_at + method.len() + 1..];
+                    let handler: String = args
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if handlers.contains(&handler) {
+                        out.insert((to_openapi_path(path), method));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Routes whose handler takes a `Query<T>` that the document deliberately
+    /// says nothing about. Each one needs a reason, because the default is that
+    /// a query string a caller cannot see is a query string they cannot use.
+    const QUERY_UNDOCUMENTED: &[(&str, &str, &str)] = &[
+        (
+            "/scim/v2/Users",
+            "get",
+            "SCIM's filter/startIndex/count are RFC 7644, not ours to redefine; \
+             the SCIM service-provider config advertises them",
+        ),
+        (
+            "/scim/v2/Groups",
+            "get",
+            "same: RFC 7644 defines this query string",
+        ),
+        (
+            "/internal/snapshot",
+            "get",
+            "control-plane to data-plane only; `version` is the 304 short-circuit \
+             the gateway sends back, not a public knob",
+        ),
+        (
+            "/auth/mcp/callback",
+            "get",
+            "an OAuth redirect target: the authorization server fills the query \
+             string in, and a caller never builds one",
+        ),
+        (
+            "/auth/sso/{slug}/callback",
+            "get",
+            "same: the identity provider fills this in",
+        ),
+    ];
+
+    /// #1412: the mechanism to document a query string existed but was used on
+    /// exactly one route, and nothing noticed the other twenty. A route whose
+    /// handler takes a `Query<T>` now either documents its parameters or names
+    /// itself in `QUERY_UNDOCUMENTED` with a reason.
+    ///
+    /// This is deliberately not "every `Query<T>` route must have parameters":
+    /// a few genuinely should not, and an allowlist that has to be edited on
+    /// purpose is what keeps that a decision rather than an oversight.
+    #[test]
+    fn every_route_with_a_query_string_documents_it_or_says_why_not() {
+        let doc = document();
+        let excused: BTreeSet<(String, String)> = QUERY_UNDOCUMENTED
+            .iter()
+            .map(|(path, method, _)| (path.to_string(), method.to_string()))
+            .collect();
+        let documented = documented_routes();
+        let mut missing: Vec<String> = Vec::new();
+        for (path, method) in routes_taking_query() {
+            if method == "any" || excused.contains(&(path.clone(), method.clone())) {
+                continue;
+            }
+            // a route the document does not describe at all is the other test's
+            // to report; this one only judges routes that are described
+            if !documented.contains(&(path.clone(), method.clone())) {
+                continue;
+            }
+            let params = doc["paths"][&path][&method]["parameters"].as_array();
+            let has_query = params.is_some_and(|ps| ps.iter().any(|p| p["in"] == "query"));
+            if !has_query {
+                missing.push(format!("{} {path}", method.to_uppercase()));
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "these routes take a query string the served OpenAPI document never mentions; \
+             give the operation a `.query(...)` in `operations()`, or add it to \
+             `QUERY_UNDOCUMENTED` with the reason:\n{}",
+            missing.join("\n")
+        );
+    }
+
+    /// The scan behind that guard has to actually find things, or it passes by
+    /// finding nothing — the same failure mode `the_source_scan_finds_the_routes_it_is_meant_to`
+    /// guards for the route scan.
+    #[test]
+    fn the_query_scan_finds_the_handlers_it_is_meant_to() {
+        let routes = routes_taking_query();
+        assert!(
+            routes.len() > 15,
+            "only found {} routes taking Query<>",
+            routes.len()
+        );
+        assert!(
+            routes.contains(&("/api/v1/mcp/logs".into(), "get".into())),
+            "{routes:?}"
+        );
+        assert!(
+            routes.contains(&("/api/v1/budgets".into(), "get".into())),
+            "{routes:?}"
+        );
+        // a handler with no Query<> extractor must not be swept in
+        assert!(
+            !routes.contains(&("/api/v1/orgs".into(), "post".into())),
+            "{routes:?}"
+        );
+    }
+
+    /// The two lists that make a caller's request fail rather than merely
+    /// return more rows than they wanted.
+    #[test]
+    fn the_scope_filtered_lists_document_their_required_parameters() {
+        let doc = document();
+        for path in ["/api/v1/budgets", "/api/v1/rate-limits"] {
+            let params = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} declares its query parameters"));
+            for name in ["scope_type", "scope_id"] {
+                let param = params
+                    .iter()
+                    .find(|p| p["name"] == name)
+                    .unwrap_or_else(|| panic!("{path} documents {name}"));
+                assert_eq!(
+                    param["required"], true,
+                    "{path}'s {name} is not optional: the handler deserializes it as a bare \
+                     field, so omitting it is a 400"
+                );
+            }
+        }
+    }
+
+    /// Both remaining keyset-paged logs, which #1412 names as the reason it
+    /// was filed: without the cursor written down, page two is unreachable.
+    #[test]
+    fn the_keyset_paged_logs_document_their_cursors() {
+        let doc = document();
+        for path in ["/api/v1/mcp/logs", "/api/v1/orgs/{org_id}/audit-log"] {
+            let params = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} declares its query parameters"));
+            let names: BTreeSet<&str> = params
+                .iter()
+                .map(|p| p["name"].as_str().expect("a parameter has a name"))
+                .collect();
+            assert!(names.contains("cursor"), "{path}: {names:?}");
+            assert!(names.contains("limit"), "{path}: {names:?}");
+        }
     }
 
     #[test]
