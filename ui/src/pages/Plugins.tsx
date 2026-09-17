@@ -16,10 +16,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -530,31 +530,23 @@ function PluginDialog({
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.plugins.fieldScope")} htmlFor="plugin-scope">
-            <Select
+            <Combobox
               id="plugin-scope"
               value={form.project_id}
-              onChange={(event) => set({ project_id: event.target.value })}
-            >
-              <option value="">{t("pages.plugins.scopeOrgWide")}</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </Select>
+              onChange={(project_id) => set({ project_id })}
+              options={[
+                { value: "", label: t("pages.plugins.scopeOrgWide") },
+                ...projects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
           </Field>
           <Field label={t("pages.plugins.fieldStage")} htmlFor="plugin-stage">
-            <Select
+            <Combobox
               id="plugin-stage"
               value={form.stage}
-              onChange={(event) => set({ stage: event.target.value as Stage })}
-            >
-              {stages.map((stage) => (
-                <option key={stage.key} value={stage.key}>
-                  {stage.label}
-                </option>
-              ))}
-            </Select>
+              onChange={(stage) => set({ stage: stage as Stage })}
+              options={stages.map((stage) => ({ value: stage.key, label: stage.label }))}
+            />
           </Field>
         </div>
         <Field
@@ -586,23 +578,19 @@ function PluginDialog({
             label={t("pages.plugins.fieldFailure")}
             htmlFor="plugin-failure"
           >
-            <Select
+            <Combobox
               id="plugin-failure"
               value={form.failure_mode}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  failure_mode: event.target
-                    .value as PluginInstanceRow["failure_mode"],
+                  failure_mode: picked as PluginInstanceRow["failure_mode"],
                 })
               }
-            >
-              <option value="fail_open">
-                {t("pages.plugins.failOpenOption")}
-              </option>
-              <option value="fail_closed">
-                {t("pages.plugins.failClosedOption")}
-              </option>
-            </Select>
+              options={[
+                { value: "fail_open", label: t("pages.plugins.failOpenOption") },
+                { value: "fail_closed", label: t("pages.plugins.failClosedOption") },
+              ]}
+            />
           </Field>
         </div>
         <Field

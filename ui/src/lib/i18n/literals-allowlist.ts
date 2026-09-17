@@ -21,10 +21,6 @@ export const NOT_COPY: AllowList = {
     "{…} rpm": "a rate unit named after the `rpm` field the limit is set through; the badge is notation",
     "{…} tpm": "a rate unit named after the `tpm` field the limit is set through; the badge is notation",
   },
-  "src/pages/Playground.tsx": {
-    "n=1": "the OpenAI images `n` request parameter, shown as the value sent",
-    "n=4": "the OpenAI images `n` request parameter, shown as the value sent",
-  },
   "src/pages/PromptRepository.tsx": {
     "v{…}": "a version number in `v3` notation, the same in every locale",
   },

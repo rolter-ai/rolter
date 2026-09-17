@@ -29,7 +29,6 @@ import {
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { ScatterPlot, type ScatterPoint } from "@/components/ui/scatter-plot";
-import { Select } from "@/components/ui/select";
 import { StatusRow } from "@/components/ui/status-row";
 import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
@@ -710,25 +709,27 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           className="min-h-[120px] text-sm"
         />
         <div className="flex gap-2.5">
-          <Select
+          <Combobox
             value={size}
-            onChange={(e) => setSize(e.target.value)}
+            onChange={(picked) => setSize(picked)}
             aria-label={t("pages.playground.imageSizeAria")}
             className="h-8 text-xs"
-          >
-            <option value="1024x1024">1024²</option>
-            <option value="1024x1792">1024×1792</option>
-            <option value="1792x1024">1792×1024</option>
-          </Select>
-          <Select
+            options={[
+              { value: "1024x1024", label: "1024²" },
+              { value: "1024x1792", label: "1024×1792" },
+              { value: "1792x1024", label: "1792×1024" },
+            ]}
+          />
+          <Combobox
             value={String(n)}
-            onChange={(e) => setN(Number(e.target.value))}
+            onChange={(picked) => setN(Number(picked))}
             aria-label={t("pages.playground.imageCountAria")}
             className="h-8 text-xs"
-          >
-            <option value="1">n=1</option>
-            <option value="4">n=4</option>
-          </Select>
+            options={[
+              { value: "1", label: "n=1" },
+              { value: "4", label: "n=4" },
+            ]}
+          />
           <Button size="sm" onClick={gen} disabled={busy}>
             {busy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -831,16 +832,17 @@ function AudioMode({ models }: { models: ModelOption[] }) {
               className="min-h-[100px] text-sm"
             />
             <div className="flex gap-2.5">
-              <Select
+              <Combobox
                 value={voice}
-                onChange={(e) => setVoice(e.target.value)}
+                onChange={(picked) => setVoice(picked)}
                 aria-label={t("pages.playground.voiceAria")}
                 className="h-8 text-xs"
-              >
-                <option value="nova">{t("pages.playground.voiceOption", { voice: "nova" })}</option>
-                <option value="onyx">{t("pages.playground.voiceOption", { voice: "onyx" })}</option>
-                <option value="shimmer">{t("pages.playground.voiceOption", { voice: "shimmer" })}</option>
-              </Select>
+                options={[
+                  { value: "nova", label: t("pages.playground.voiceOption", { voice: "nova" }) },
+                  { value: "onyx", label: t("pages.playground.voiceOption", { voice: "onyx" }) },
+                  { value: "shimmer", label: t("pages.playground.voiceOption", { voice: "shimmer" }) },
+                ]}
+              />
               <Button size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />

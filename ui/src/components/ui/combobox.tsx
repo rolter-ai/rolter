@@ -44,6 +44,8 @@ export interface ComboboxProps {
   size?: "default" | "sm";
   id?: string;
   name?: string;
+  /** native tooltip, for a compact control whose label is elsewhere */
+  title?: string;
   /** layout classes for the wrapper — margins, width, grid placement */
   className?: string;
   /** extra classes for the popup, mainly to widen it past the control */
@@ -103,6 +105,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
       size = "default",
       id,
       name,
+      title,
       className,
       listClassName,
       "aria-label": ariaLabel,
@@ -270,6 +273,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(
           autoComplete="off"
           spellCheck={false}
           disabled={disabled}
+          title={title}
           value={text}
           placeholder={
             (open && selected?.label) || placeholder || t("common.combobox.placeholder")

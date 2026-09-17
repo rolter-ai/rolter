@@ -32,6 +32,7 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
 import { EditorSheet } from "@/components/EditorSheet";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -43,7 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Select } from "@/components/ui/select";
+
 import { Tag } from "@/components/ui/tag";
 import {
   createVirtualKey,
@@ -290,7 +291,7 @@ export default function Keys() {
               unit={unitName(key.business_unit_id)}
               customer={customerName(key.customer_id)}
             />
-            <Select
+            <Combobox
               aria-label={t("pages.virtualKeys.cacheAria", {
                 name: key.name ?? key.key_prefix,
               })}
@@ -298,14 +299,15 @@ export default function Keys() {
               className="h-8 text-xs"
               value={cacheMode(key.cache_enabled)}
               disabled={setCache.isPending || updateGate.denied}
-              onChange={(event) =>
-                setCache.mutate({ id: key.id, cache: parseCacheMode(event.target.value) })
+              onChange={(picked) =>
+                setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })
               }
-            >
-              <option value="inherit">inherit</option>
-              <option value="off">off</option>
-              <option value="on">on</option>
-            </Select>
+              options={[
+                { value: "inherit", label: "inherit" },
+                { value: "off", label: "off" },
+                { value: "on", label: "on" },
+              ]}
+            />
             <GatedSwitch
               gate="virtual_key:update"
               checked={!key.disabled}

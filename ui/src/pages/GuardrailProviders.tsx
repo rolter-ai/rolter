@@ -21,9 +21,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+
 import { Switch } from "@/components/ui/switch";
 import {
   createGuardrailProvider,
@@ -338,33 +339,34 @@ function ProviderDialog({
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("pages.guardrailProviders.fieldStage")} htmlFor="provider-stage">
-            <Select
+            <Combobox
               id="provider-stage"
               value={form.stage}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  stage: event.target.value as GuardrailProviderInput["stage"],
+                  stage: picked as GuardrailProviderInput["stage"],
                 })
               }
-            >
-              <option value="pre_call">{t("pages.guardrailProviders.stagePre")}</option>
-              <option value="post_call">{t("pages.guardrailProviders.stagePost")}</option>
-            </Select>
+              options={[
+                { value: "pre_call", label: t("pages.guardrailProviders.stagePre") },
+                { value: "post_call", label: t("pages.guardrailProviders.stagePost") },
+              ]}
+            />
           </Field>
           <Field label={t("pages.guardrailProviders.fieldFailure")} htmlFor="provider-failure">
-            <Select
+            <Combobox
               id="provider-failure"
               value={form.failure_mode}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  failure_mode: event.target
-                    .value as GuardrailProviderInput["failure_mode"],
+                  failure_mode: picked as GuardrailProviderInput["failure_mode"],
                 })
               }
-            >
-              <option value="fail_closed">{t("pages.guardrailProviders.failClosed")}</option>
-              <option value="fail_open">{t("pages.guardrailProviders.failOpen")}</option>
-            </Select>
+              options={[
+                { value: "fail_closed", label: t("pages.guardrailProviders.failClosed") },
+                { value: "fail_open", label: t("pages.guardrailProviders.failOpen") },
+              ]}
+            />
           </Field>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -403,22 +405,22 @@ function ProviderDialog({
           </Field>
         </div>
         <Field label={t("pages.guardrailProviders.fieldAuth")} htmlFor="provider-auth">
-          <Select
+          <Combobox
             id="provider-auth"
             value={form.auth_kind}
-            onChange={(event) => {
-              const auth_kind = event.target
-                .value as GuardrailProviderInput["auth_kind"];
+            onChange={(picked) => {
+              const auth_kind = picked as GuardrailProviderInput["auth_kind"];
               set({
                 auth_kind,
                 auth_env: auth_kind === "none" ? null : form.auth_env,
               });
             }}
-          >
-            <option value="none">{t("pages.guardrailProviders.authNone")}</option>
-            <option value="bearer">{t("pages.guardrailProviders.authBearer")}</option>
-            <option value="shared_secret">{t("pages.guardrailProviders.authSharedSecret")}</option>
-          </Select>
+            options={[
+              { value: "none", label: t("pages.guardrailProviders.authNone") },
+              { value: "bearer", label: t("pages.guardrailProviders.authBearer") },
+              { value: "shared_secret", label: t("pages.guardrailProviders.authSharedSecret") },
+            ]}
+          />
         </Field>
         {form.auth_kind !== "none" && (
           <Field

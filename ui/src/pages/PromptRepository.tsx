@@ -26,9 +26,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -658,7 +659,7 @@ function VariableEditor({ variables, onChange }: { variables: PromptTemplateVari
         {variables.length === 0 ? <p className="rounded-lg border border-dashed border-[color:var(--border-default)] p-3 text-xs text-muted-foreground">{t("pages.promptRepo.noVariables")}</p> : variables.map((variable, index) => (
           <div key={index} className="grid gap-2 rounded-lg border border-[color:var(--border-subtle)] p-3 sm:grid-cols-[minmax(8rem,1fr)_8rem_minmax(8rem,1fr)_auto]">
             <label className="text-xs font-medium">{t("pages.promptRepo.fieldName")}<Input className="mt-1" aria-label={t("pages.promptRepo.variableNameAria", { index: index + 1 })} value={variable.name} placeholder="customer_name" onChange={(event) => update(index, { name: event.target.value })} /></label>
-            <label className="text-xs font-medium">{t("pages.promptRepo.fieldMode")}<Select className="mt-1" aria-label={t("pages.promptRepo.variableModeAria", { index: index + 1 })} value={variable.required ? "required" : "default"} onChange={(event) => update(index, event.target.value === "required" ? { required: true, default: undefined } : { required: false, default: variable.default ?? "" })}><option value="required">{t("pages.promptRepo.modeRequired")}</option><option value="default">{t("pages.promptRepo.modeHasDefault")}</option></Select></label>
+            <label className="text-xs font-medium">{t("pages.promptRepo.fieldMode")}<Combobox className="mt-1" aria-label={t("pages.promptRepo.variableModeAria", { index: index + 1 })} value={variable.required ? "required" : "default"} onChange={(picked) => update(index, picked === "required" ? { required: true, default: undefined } : { required: false, default: variable.default ?? "" })} options={[{ value: "required", label: t("pages.promptRepo.modeRequired") }, { value: "default", label: t("pages.promptRepo.modeHasDefault") }]} /></label>
             <label className="text-xs font-medium">{t("pages.promptRepo.fieldDefault")}<Input className="mt-1" aria-label={t("pages.promptRepo.variableDefaultAria", { index: index + 1 })} disabled={variable.required} value={variable.default ?? ""} placeholder={variable.required ? t("pages.promptRepo.defaultNotAvailable") : t("pages.promptRepo.defaultFallback")} onChange={(event) => update(index, { default: event.target.value })} /></label>
             <Button variant="ghost" aria-label={t("pages.promptRepo.removeVariableAria", { name: variable.name || index + 1 })} onClick={() => onChange(variables.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
           </div>
@@ -686,8 +687,8 @@ function DecoratorEditor({ decorators, onChange }: { decorators: PromptTemplateD
           <article key={index} className="rounded-lg border border-[color:var(--border-subtle)] p-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">{String(index + 1).padStart(2, "0")}</span>
-              <Select aria-label={t("pages.promptRepo.decoratorRoleAria", { index: index + 1 })} value={decorator.role} onChange={(event) => update(index, { role: event.target.value as PromptTemplateDecorator["role"] })}><option value="system">{t("pages.promptRepo.roleSystem")}</option><option value="assistant">{t("pages.promptRepo.roleAssistant")}</option><option value="user">{t("pages.promptRepo.roleUser")}</option></Select>
-              <Select aria-label={t("pages.promptRepo.decoratorPositionAria", { index: index + 1 })} value={decorator.position} onChange={(event) => update(index, { position: event.target.value as PromptTemplateDecorator["position"] })}><option value="prepend">{t("pages.promptRepo.positionPrepend")}</option><option value="append">{t("pages.promptRepo.positionAppend")}</option></Select>
+              <Combobox aria-label={t("pages.promptRepo.decoratorRoleAria", { index: index + 1 })} value={decorator.role} onChange={(picked) => update(index, { role: picked as PromptTemplateDecorator["role"] })} options={[{ value: "system", label: t("pages.promptRepo.roleSystem") }, { value: "assistant", label: t("pages.promptRepo.roleAssistant") }, { value: "user", label: t("pages.promptRepo.roleUser") }]} />
+              <Combobox aria-label={t("pages.promptRepo.decoratorPositionAria", { index: index + 1 })} value={decorator.position} onChange={(picked) => update(index, { position: picked as PromptTemplateDecorator["position"] })} options={[{ value: "prepend", label: t("pages.promptRepo.positionPrepend") }, { value: "append", label: t("pages.promptRepo.positionAppend") }]} />
               <span className="flex-1" />
               <Button variant="ghost" aria-label={t("pages.promptRepo.moveDecoratorUpAria", { index: index + 1 })} disabled={index === 0} onClick={() => move(index, index - 1)}><ArrowUp className="h-4 w-4" /></Button>
               <Button variant="ghost" aria-label={t("pages.promptRepo.moveDecoratorDownAria", { index: index + 1 })} disabled={index === decorators.length - 1} onClick={() => move(index, index + 1)}><ArrowDown className="h-4 w-4" /></Button>

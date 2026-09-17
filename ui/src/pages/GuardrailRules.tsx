@@ -21,9 +21,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -320,25 +321,21 @@ function RuleDialog({
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("pages.guardrailRules.fieldSource")} htmlFor="rule-source">
-            <Select
+            <Combobox
               id="rule-source"
               value={form.source_type}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  source_type: event.target
-                    .value as GuardrailRuleInput["source_type"],
-                  builtin: event.target.value === "builtin" ? "email" : null,
-                  pattern: event.target.value === "pattern" ? "" : null,
+                  source_type: picked as GuardrailRuleInput["source_type"],
+                  builtin: picked === "builtin" ? "email" : null,
+                  pattern: picked === "pattern" ? "" : null,
                 })
               }
-            >
-              <option value="builtin">
-                {t("pages.guardrailRules.sourceBuiltin")}
-              </option>
-              <option value="pattern">
-                {t("pages.guardrailRules.sourcePattern")}
-              </option>
-            </Select>
+              options={[
+                { value: "builtin", label: t("pages.guardrailRules.sourceBuiltin") },
+                { value: "pattern", label: t("pages.guardrailRules.sourcePattern") },
+              ]}
+            />
           </Field>
           <Field
             label={t("pages.guardrailRules.fieldPosition")}
@@ -358,28 +355,21 @@ function RuleDialog({
         </div>
         {form.source_type === "builtin" ? (
           <Field label={t("pages.guardrailRules.fieldDetector")} htmlFor="rule-builtin">
-            <Select
+            <Combobox
               id="rule-builtin"
               value={form.builtin ?? "email"}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  builtin: event.target.value as GuardrailRuleInput["builtin"],
+                  builtin: picked as GuardrailRuleInput["builtin"],
                 })
               }
-            >
-              <option value="email">
-                {t("pages.guardrailRules.detectorEmail")}
-              </option>
-              <option value="phone">
-                {t("pages.guardrailRules.detectorPhone")}
-              </option>
-              <option value="api_token">
-                {t("pages.guardrailRules.detectorApiToken")}
-              </option>
-              <option value="payment_card">
-                {t("pages.guardrailRules.detectorPaymentCard")}
-              </option>
-            </Select>
+              options={[
+                { value: "email", label: t("pages.guardrailRules.detectorEmail") },
+                { value: "phone", label: t("pages.guardrailRules.detectorPhone") },
+                { value: "api_token", label: t("pages.guardrailRules.detectorApiToken") },
+                { value: "payment_card", label: t("pages.guardrailRules.detectorPaymentCard") },
+              ]}
+            />
           </Field>
         ) : (
           <Field
@@ -397,43 +387,35 @@ function RuleDialog({
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("pages.guardrailRules.fieldStage")} htmlFor="rule-stage">
-            <Select
+            <Combobox
               id="rule-stage"
               value={form.stage}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  stage: event.target.value as GuardrailRuleInput["stage"],
+                  stage: picked as GuardrailRuleInput["stage"],
                 })
               }
-            >
-              <option value="pre_call">
-                {t("pages.guardrailRules.stagePre")}
-              </option>
-              <option value="post_call">
-                {t("pages.guardrailRules.stagePost")}
-              </option>
-            </Select>
+              options={[
+                { value: "pre_call", label: t("pages.guardrailRules.stagePre") },
+                { value: "post_call", label: t("pages.guardrailRules.stagePost") },
+              ]}
+            />
           </Field>
           <Field label={t("pages.guardrailRules.fieldAction")} htmlFor="rule-action">
-            <Select
+            <Combobox
               id="rule-action"
               value={form.action}
-              onChange={(event) =>
+              onChange={(picked) =>
                 set({
-                  action: event.target.value as GuardrailRuleInput["action"],
+                  action: picked as GuardrailRuleInput["action"],
                 })
               }
-            >
-              <option value="annotate">
-                {t("pages.guardrailRules.actionAnnotate")}
-              </option>
-              <option value="block">
-                {t("pages.guardrailRules.actionBlock")}
-              </option>
-              <option value="redact">
-                {t("pages.guardrailRules.actionRedact")}
-              </option>
-            </Select>
+              options={[
+                { value: "annotate", label: t("pages.guardrailRules.actionAnnotate") },
+                { value: "block", label: t("pages.guardrailRules.actionBlock") },
+                { value: "redact", label: t("pages.guardrailRules.actionRedact") },
+              ]}
+            />
           </Field>
         </div>
         {form.action === "redact" && (
