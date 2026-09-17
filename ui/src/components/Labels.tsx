@@ -8,6 +8,7 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -330,4 +331,70 @@ export function LabelSheet({
 /** the distinct `key=value` pairs in a set of labels, for a filter control */
 export function labelOptions(labels: LabelRow[]): string[] {
   return [...new Set(labels.map(labelText))].sort((a, b) => a.localeCompare(b));
+}
+
+export interface SubjectLabels {
+  /** the labels on one subject, by its id */
+  bySubject: (id: string) => LabelRow[];
+  /** the `key=value` pairs present, for the filter control */
+  options: string[];
+  /** whether a subject carries the chosen `key=value`; "" matches everything */
+  matches: (id: string, filter: string) => boolean;
+}
+
+/**
+ * Every label of one kind in the org, in one request rather than one per row.
+ *
+ * `retry: false` and no error surface: a caller without `label:read` gets a 403
+ * that will not improve, and the screens these hang off are about providers,
+ * groups and routes — they keep working without the labels.
+ */
+export function useSubjectLabels(
+  orgId: string | undefined,
+  subjectType: "provider" | "provider_group" | "route",
+): SubjectLabels {
+  const labels = useQuery({
+    queryKey: [...LABELS_QUERY_KEY, orgId, subjectType],
+    queryFn: () => fetchLabels(orgId as string, { subject_type: subjectType }),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const map = React.useMemo(() => {
+    const out = new Map<string, LabelRow[]>();
+    for (const label of labels.data ?? []) {
+      out.set(label.subject_id, [...(out.get(label.subject_id) ?? []), label]);
+    }
+    return out;
+  }, [labels.data]);
+  const bySubject = React.useCallback((id: string) => map.get(id) ?? [], [map]);
+  return {
+    bySubject,
+    options: labelOptions(labels.data ?? []),
+    matches: (id, filter) => !filter || bySubject(id).some((l) => labelText(l) === filter),
+  };
+}
+
+/** the toolbar control that narrows a list to one `key=value` */
+export function LabelFilterSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+}) {
+  const { t } = useTranslation();
+  return (
+    <Combobox
+      size="sm"
+      clearable
+      className="w-56"
+      value={value}
+      onChange={onChange}
+      placeholder={t("labels.filter")}
+      aria-label={t("labels.filter")}
+      options={options.map((l) => ({ value: l, label: l }))}
+    />
+  );
 }

@@ -1,16 +1,18 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Route, Trash2 } from "lucide-react";
+import { Loader2, Route, Tag, Trash2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -93,6 +95,10 @@ export default function RoutingRules() {
   // a route is the public name clients call; deleting one breaks them silently,
   // so it is confirmed by name before anything leaves (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<RouteRow | null>(null);
+  const [labelFilter, setLabelFilter] = React.useState("");
+  const [labelling, setLabelling] = React.useState<RouteRow | null>(null);
+  // routes are project-scoped rows, but a label lives on the org that owns them
+  const labels = useSubjectLabels(scope.orgId, "route");
   // reset first: an error left over from a previous failed delete would
   // otherwise greet the next route the operator picks
   const startDelete = (route: RouteRow) => {
@@ -100,12 +106,19 @@ export default function RoutingRules() {
     setDeleteTarget(route);
   };
 
+  const shown = (routes.data ?? []).filter((r) => labels.matches(r.id, labelFilter));
+
   return (
     <PageBody>
       <Toolbar>
         <span className="text-sm text-muted-foreground">
           {t("pages.routing.summary", { count: routes.data?.length ?? 0 })}
         </span>
+        <LabelFilterSelect
+          value={labelFilter}
+          onChange={setLabelFilter}
+          options={labels.options}
+        />
         <GatedButton gate="route:create" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!scope.projectId}>
           + {t("pages.routing.emptyAction")}
         </GatedButton>
@@ -119,21 +132,32 @@ export default function RoutingRules() {
           onRetry={() => void routes.refetch()}
         />
       )}
-      {routes.data && routes.data.length === 0 && (
+      {routes.data && shown.length === 0 && (
+        // a label filter that matches nothing is not a project with no routes:
+        // the copy blames the narrowing and offers to clear it rather than
+        // offering to add the first route to a project that already has some
         <EmptyState
           uxTarget="routes"
           icon={<Route />}
-          title={t("pages.routing.emptyTitle")}
-          description={t("pages.routing.emptyBody")}
+          title={labelFilter ? t("pages.routing.noMatchTitle") : t("pages.routing.emptyTitle")}
+          description={
+            labelFilter ? t("pages.routing.noMatchBody") : t("pages.routing.emptyBody")
+          }
           actions={
-            <GatedButton gate="route:create" disabled={!scope.projectId} onClick={() => setAddOpen(true)}>
-              {t("pages.routing.emptyAction")}
-            </GatedButton>
+            labelFilter ? (
+              <Button variant="outline" onClick={() => setLabelFilter("")}>
+                {t("common.clearSearch")}
+              </Button>
+            ) : (
+              <GatedButton gate="route:create" disabled={!scope.projectId} onClick={() => setAddOpen(true)}>
+                {t("pages.routing.emptyAction")}
+              </GatedButton>
+            )
           }
         />
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr))]">
-        {(routes.data ?? []).map((r) => {
+        {shown.map((r) => {
           const targets = targetsByRoute.get(r.id) ?? [];
           const totalWeight = targets.reduce((a, t) => a + t.weight, 0) || 1;
           const tone = strategyTone(r.strategy);
@@ -150,6 +174,7 @@ export default function RoutingRules() {
                 >
                   {r.strategy}
                 </span>
+                <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
                   <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-[0.6875rem] uppercase text-[color:var(--text-subtle)]">
                     disabled
@@ -199,6 +224,15 @@ export default function RoutingRules() {
                 </span>
                 {/* the label names the route, so a grid of cards does not
                     expose N buttons a screen reader cannot tell apart (#1214) */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-[30px]"
+                  aria-label={t("labels.labelsOf", { name: r.model })}
+                  onClick={() => setLabelling(r)}
+                >
+                  <Tag className="h-3.5 w-3.5" />
+                </Button>
                 <button
                   type="button"
                   title={
@@ -211,7 +245,7 @@ export default function RoutingRules() {
                     (remove.isPending && remove.variables === r.id)
                   }
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {remove.isPending && remove.variables === r.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -226,6 +260,17 @@ export default function RoutingRules() {
       </div>
       {remove.isError && !deleteTarget && (
         <p className="text-xs text-[color:var(--status-danger-text)]">{(remove.error as Error).message}</p>
+      )}
+
+      {scope.orgId && labelling && (
+        <LabelSheet
+          open
+          onOpenChange={(open) => !open && setLabelling(null)}
+          orgId={scope.orgId}
+          subjectType="route"
+          subjectId={labelling.id}
+          subjectName={labelling.model}
+        />
       )}
 
       <ConfirmDialog

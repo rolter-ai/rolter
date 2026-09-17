@@ -26,9 +26,9 @@ model. Rolter stores two kinds, and the difference matters when you act on one.
 
 ## In the dashboard
 
-The Providers screen shows every label a provider carries under its name, and
-the tag button on each row opens a panel that reads, adds, changes and removes
-them.
+The Providers, Provider Groups and Routing Rules screens show every label their
+rows carry, and the tag button on each row (or card) opens a panel that reads,
+adds, changes and removes them.
 
 Automatic labels are told apart from your own three ways at once — a different
 tone, a different icon, and the word *automatic* in what a screen reader says —
@@ -38,12 +38,14 @@ shown with what was observed and when, and offers no edit or delete control:
 the API refuses both, and the only thing that changes one is the subsystem
 observing again.
 
-The **Filter by label** control at the top of the list narrows it to the
-providers carrying one `key=value`, alongside the search box.
+The **Filter by label** control at the top of each list narrows it to the rows
+carrying one `key=value`, alongside the search box where there is one. A filter
+that matches nothing says so and offers to clear itself, rather than reading as
+an organization with nothing in it.
 
 Reading labels takes the `viewer` role and writing them takes `admin`, so a
 caller who may not read them simply sees the screen without them rather than an
-error.
+error. Models are not labelled from the dashboard yet.
 
 ---
 

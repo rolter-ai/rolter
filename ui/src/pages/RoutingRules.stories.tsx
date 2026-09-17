@@ -18,7 +18,7 @@ import {
   expectEmptyState,
   expectForbidden,
 } from "./story-harness";
-import type { ProviderRow, RouteRow, RouteTargetRow } from "@/lib/api";
+import type { LabelRow, ProviderRow, RouteRow, RouteTargetRow } from "@/lib/api";
 
 const PROVIDERS: ProviderRow[] = [
   {
@@ -92,10 +92,16 @@ const TARGETS: Record<string, RouteTargetRow[]> = {
   "route-2": [],
 };
 
-const answer = (routes: RouteRow[], status = 200): FetchStub =>
+const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
     if (url.includes("/providers")) return json(PROVIDERS);
+    // the label list is its own endpoint; without this branch it would be
+    // answered with the route list and the chips would be nonsense (#1329)
+    if (url.includes("/labels")) {
+      const subject = new URL(url, "http://localhost").searchParams.get("subject_id");
+      return json(subject ? labels.filter((l) => l.subject_id === subject) : labels);
+    }
     const targets = /\/routes\/([^/]+)\/targets/.exec(url);
     if (targets) return json(TARGETS[targets[1]] ?? []);
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
@@ -276,5 +282,111 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Delete route claude-sonnet");
+  },
+};
+
+// ------------------------------------------------------------- labels (#1329)
+
+const ROUTE_LABELS: LabelRow[] = [
+  {
+    id: "rl-1",
+    subject_type: "route",
+    subject_id: "route-1",
+    key: "tier",
+    value: "gold",
+    source: "custom",
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "rl-2",
+    subject_type: "route",
+    subject_id: "route-1",
+    key: "tier",
+    value: "observed-gold",
+    source: "auto",
+    observed_at: "2026-05-03T08:00:00Z",
+    observation: "priced on every target",
+    created_at: "2026-05-03T08:00:00Z",
+    updated_at: "2026-05-03T08:00:00Z",
+  },
+];
+
+const labelled = answer(ROUTES, 200, ROUTE_LABELS);
+
+/** the chips ride on the route card, both sources distinguishable */
+export const Labelled: Story = {
+  render: () => (
+    <Harness fetchStub={labelled}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible());
+    await expect(canvas.getByLabelText("tier=observed-gold, automatic label")).toBeVisible();
+  },
+};
+
+/** filtering narrows the grid to the routes carrying the label */
+export const FilteredByLabel: Story = {
+  render: () => (
+    <Harness fetchStub={labelled}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("claude-sonnet").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(await within(document.body).findByRole("option", { name: "tier=gold" }));
+    await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
+    await expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * A filter that matches nothing is not a project with no routes: the copy
+ * blames the narrowing and offers to clear it rather than offering to add the
+ * first route to a project that already has two.
+ */
+export const NoLabelMatch: Story = {
+  render: () => (
+    <Harness
+      fetchStub={answer(ROUTES, 200, [
+        { ...ROUTE_LABELS[0], id: "rl-3", subject_id: "route-missing", value: "silver" },
+      ])}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "tier=silver" }),
+    );
+    await waitFor(() => expect(canvas.getByText(/No routes match/i)).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
+  },
+};
+
+/** the panel names the route it was opened from, and the observation is read-only */
+export const LabelPanel: Story = {
+  render: () => (
+    <Harness fetchStub={labelled}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await expect(await panel.findByText(/priced on every target/)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
+    await expect(panel.queryByRole("button", { name: "Remove tier=observed-gold" })).toBeNull();
   },
 };

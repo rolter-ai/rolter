@@ -525,8 +525,6 @@
       "emptyBody": "A provider is an upstream the gateway can route to. Add one with its API base and credential to start serving traffic.",
       "noMatchBody": "Nothing matched your search. Clear it to see every provider in this organization.",
       "noOrgTitle": "Choose an organization",
-      "labelFilter": "Filter by label",
-      "labelsOf": "Labels on {{name}}",
       "editOne": "Edit provider {{name}}"
     },
     "plugins": {
@@ -615,6 +613,8 @@
       "targetCount_other": "{{count}} targets",
       "emptyTitle": "No routes yet",
       "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
+      "noMatchTitle": "No routes match",
+      "noMatchBody": "No route in this project carries that label. Clear the filter to see them all.",
       "emptyAction": "Add route",
       "deleteRoute": "Delete route {{model}}",
       "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
@@ -2574,6 +2574,8 @@
     }
   },
   "labels": {
+    "labelsOf": "Labels on {{name}}",
+    "filter": "Filter by label",
     "sheetTitle": "Labels",
     "customHeading": "Your labels",
     "autoHeading": "Automatic labels",
