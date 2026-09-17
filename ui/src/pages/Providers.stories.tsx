@@ -11,6 +11,8 @@ import {
   pending,
   routes,
   scoped,
+  Toasted,
+  expectToast,
 } from "./story-harness";
 import type { ProviderRow } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -162,5 +164,40 @@ export const Tablet: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * The delete is refused (#1607).
+ *
+ * Deleting a provider strands every route that targets it, so a control plane
+ * that refuses has a reason worth reading — the dialog stays open carrying it
+ * rather than closing over a provider that is still registered.
+ */
+export const DeleteRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "openai-prod is the target of 4 live routes" } }, 409)
+          : loaded(input, init),
+      )}
+    >
+      <Toasted>
+        <Providers />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Delete provider openai-prod" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+
+    await expectToast(canvasElement, /target of 4 live routes/, "error");
+    await waitFor(() => expect(dialog.getByText(/target of 4 live routes/)).toBeVisible());
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };
