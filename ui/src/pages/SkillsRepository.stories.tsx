@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
-import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import { Toasted, expectRefused, expectToast, withCapabilities, type StoryRole, expectEmptyState } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 
@@ -122,6 +122,9 @@ export const Empty: Story = {
   render: () => {
     const stub = loadedStub();
     return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/skills`) ? json([]) : stub(input, init)} />;
+  },
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No skills yet/, /Create skill/);
   },
 };
 

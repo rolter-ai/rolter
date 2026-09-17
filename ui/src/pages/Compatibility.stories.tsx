@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Compatibility from "./Compatibility";
-import { Toasted, expectSkeleton, expectToast } from "./story-harness";
+import { Toasted, expectSkeleton, expectToast, expectForbidden } from "./story-harness";
 import type { CompatibilityPolicyDto } from "@/lib/api";
 
 const BASE: CompatibilityPolicyDto = {
@@ -71,6 +71,9 @@ export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // the server owns the restart list, so the notice appears whenever it is

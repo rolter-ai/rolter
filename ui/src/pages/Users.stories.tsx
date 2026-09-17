@@ -15,6 +15,7 @@ import {
   scoped,
   sheet,
   withConfirm,
+  expectEmptyState,
 } from "./story-harness";
 import type { MembershipRow, UserRow } from "@/lib/api";
 
@@ -112,6 +113,9 @@ export const Empty: Story = {
       <Users />
     </Harness>
   ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No users yet/, /Invite user/);
+  },
 };
 
 export const Forbidden: Story = {

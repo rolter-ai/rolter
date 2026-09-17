@@ -4,6 +4,7 @@ import { expect, within } from "storybook/test";
 import Dashboard from "./Dashboard";
 import { Harness, json, pending, routes, scoped, type FetchStub } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const fmt = formattersFor("en");
@@ -112,15 +113,30 @@ export const Loaded: Story = {
 
 export const Loading: Story = { render: () => render(pending) };
 
+// a deployment that has served nothing yet. the summary is an aggregate with no
+// `group by`, so the control plane always answers one row — of zeroes. this stub
+// used to answer `data: []`, which is not a quiet day but a query failure, and
+// the story sat on the "cannot reach the control plane" screen with no `play`
+// to notice
+const QUIET = Object.fromEntries(Object.keys(SUMMARY).map((k) => [k, 0]));
+
 export const Empty: Story = {
   render: () =>
     render(
       routes([
-        ["/api/v1/analytics/summary", () => ({ data: [] })],
+        ["/api/v1/analytics/summary", () => ({ data: [QUIET] })],
         ["/api/v1/analytics", () => ({ data: [] })],
         ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
       ]),
     ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(en.pages.dashboard.statRequests)).toBeVisible();
+    // zero traffic is an answer, not a failure: no error panel, and no `NaN%`
+    // from dividing the error count by no requests
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvasElement.textContent ?? "").not.toMatch(/NaN|undefined/);
+  },
 };
 
 /**

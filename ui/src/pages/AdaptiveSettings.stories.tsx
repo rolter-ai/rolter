@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AdaptiveSettings from "./AdaptiveSettings";
-import { Toasted, expectSkeleton, expectToast } from "./story-harness";
+import { Toasted, expectSkeleton, expectToast, expectForbidden } from "./story-harness";
 import type { AdaptiveRoutingPolicyDto } from "@/lib/api";
 
 const BASE: AdaptiveRoutingPolicyDto = {
@@ -94,6 +94,9 @@ export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // an all-zero blend does not stop adaptive routing, it turns the strategy into

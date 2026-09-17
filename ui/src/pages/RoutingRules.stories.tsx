@@ -14,6 +14,8 @@ import {
   recording,
   scoped,
   type FetchStub,
+  expectEmptyState,
+  expectForbidden,
 } from "./story-harness";
 import type { ProviderRow, RouteRow, RouteTargetRow } from "@/lib/api";
 
@@ -139,6 +141,9 @@ export const Empty: Story = {
       <RoutingRules />
     </Harness>
   ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No routes yet/, /Add route/);
+  },
 };
 
 export const Forbidden: Story = {
@@ -147,6 +152,9 @@ export const Forbidden: Story = {
       <RoutingRules />
     </Harness>
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // deleting a route silently breaks every client calling that public model name,

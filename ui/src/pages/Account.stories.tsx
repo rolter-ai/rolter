@@ -17,6 +17,7 @@ import {
   sheet,
   withConfirm,
   type FetchStub,
+  expectSkeleton,
 } from "./story-harness";
 import type {
   MfaStatus,
@@ -191,6 +192,9 @@ export const Loading: Story = {
       <Account />
     </Harness>
   ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+  },
 };
 
 export const Empty: Story = {

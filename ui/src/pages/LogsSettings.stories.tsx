@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import LogsSettings from "./LogsSettings";
-import { Toasted, expectSkeleton, expectToast } from "./story-harness";
+import { Toasted, expectSkeleton, expectToast, expectForbidden } from "./story-harness";
 import type { LoggingSettingsDto } from "@/lib/api";
 
 const BASE: LoggingSettingsDto = {
@@ -134,6 +134,9 @@ export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
   ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
 };
 
 // payloads outliving the metadata they belong to would leak prompt content the
