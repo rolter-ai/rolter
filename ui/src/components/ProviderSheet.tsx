@@ -337,9 +337,10 @@ export function ProviderSheet({
           </Select>
         </Field>
 
-        {/* three children — the input, the resolved url and the doubled-/v1
-            warning — so the id is written out rather than left to the field's
-            fallback (#1264) */}
+        {/* two children — the input and the resolved url — so the id is
+            written out rather than left to the field's fallback (#1264). the
+            doubled-/v1 warning is the field's error rather than a loose <p>, so
+            it lands in the input's description and flips aria-invalid (#1544) */}
         <Field
           label={t("providerSheet.fields.apiBase")}
           htmlFor="provider-api-base"
@@ -349,6 +350,7 @@ export function ProviderSheet({
               : "providerSheet.apiBase.excludesV1",
             { kind: draft.kind },
           )}
+          error={baseDoublesV1 ? t("providerSheet.apiBase.doubled") : undefined}
         >
           <Input
             id="provider-api-base"
@@ -368,11 +370,6 @@ export function ProviderSheet({
             >
               {t("providerSheet.apiBase.resolvesTo")}{" "}
               <span className="font-mono break-all">{resolvedUrl}</span>
-            </p>
-          )}
-          {baseDoublesV1 && (
-            <p className="mt-1 text-xs text-[color:var(--status-danger-text)]">
-              {t("providerSheet.apiBase.doubled")}
             </p>
           )}
         </Field>

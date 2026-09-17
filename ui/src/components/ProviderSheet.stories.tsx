@@ -277,6 +277,11 @@ export const BaseUrlDoublesTheVersionPrefix: Story = {
       await canvas.findByText("https://gpustack.localhost/v1/v1/chat/completions"),
     ).toBeVisible();
     await expect(canvas.getByText(/remove the trailing \/v1/i)).toBeVisible();
+    // the warning is the input's own description, not text beside it, so a
+    // screen reader hears the misconfiguration on the field itself (#1544)
+    const base = canvas.getByLabelText("API base");
+    await expect(base).toHaveAttribute("aria-invalid", "true");
+    await expect(base).toHaveAccessibleDescription(/remove the trailing \/v1/i);
   },
 };
 
@@ -289,6 +294,10 @@ export const BaseUrlIsWellFormed: Story = {
       await canvas.findByText("https://api.openai.com/v1/chat/completions"),
     ).toBeVisible();
     await expect(canvas.queryByText(/remove the trailing/i)).not.toBeInTheDocument();
+    // a sound base is described by the kind's hint alone and is not invalid
+    const base = canvas.getByLabelText("API base");
+    await expect(base).not.toHaveAttribute("aria-invalid");
+    await expect(base).toHaveAccessibleDescription(/Leave off the version prefix/);
   },
 };
 
