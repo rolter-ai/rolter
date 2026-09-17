@@ -2266,6 +2266,17 @@
       "providerKeyEnv": "Provider key env var (optional)",
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)"
+    },
+    "title": {
+      "add": "Add provider",
+      "edit": "Edit {{name}}"
+    },
+    "subtitle": {
+      "add": "an upstream provider used as a route target"
+    },
+    "cta": {
+      "create": "Create provider",
+      "save": "Save provider"
     }
   },
   "scope": {
