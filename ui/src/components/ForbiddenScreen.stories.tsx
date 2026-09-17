@@ -2,7 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, waitFor, within } from "storybook/test";
 
 import { ForbiddenScreen, superadminOnly } from "./ForbiddenScreen";
-import { Harness, expectForbidden, json, pending } from "@/pages/story-harness";
+import { CapabilityProvider } from "@/lib/can";
+import { Harness, expectForbidden, json, pending, recording, scoped } from "@/pages/story-harness";
 
 const meta = {
   title: "Screens/ForbiddenScreen",
@@ -63,6 +64,17 @@ export const Superadmin: Story = {
   },
 };
 
+// the gate's question, left hanging or failed. `Harness role=` cannot say
+// either: it answers `/api/v1/rbac/effective` itself, ahead of the story's
+// stub, so the provider is mounted by hand and the stub keeps the last word
+const unanswered = recording(
+  scoped(async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/rbac/effective") return new Promise<Response>(() => {});
+    return json({});
+  }),
+);
+
 /**
  * the effective-permissions answer never arrives: only an explicit "not a
  * superadmin" blocks, so the screen still mounts and still gets its 403 the
@@ -71,19 +83,46 @@ export const Superadmin: Story = {
 export const GateUnanswered: Story = {
   args: { resource: "" },
   render: () => (
-    <Harness
-      role="superadmin"
-      fetchStub={async (input) => {
-        const path = new URL(String(input), "http://localhost").pathname;
-        if (path === "/api/v1/rbac/effective") return new Promise<Response>(() => {});
-        return json({});
-      }}
-    >
-      <Gated />
+    <Harness fetchStub={unanswered.stub}>
+      <CapabilityProvider>
+        <Gated />
+      </CapabilityProvider>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText(/runtime policy/)).toBeVisible());
+    // the question really is out and really is unanswered — without this the
+    // story would pass just as well with no gate in play at all
+    await unanswered.expectSent("GET", "/api/v1/rbac/effective");
+    await expect(canvas.getByText(/runtime policy/)).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+const failed = recording(
+  scoped(async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/rbac/effective") return json({ error: "boom" }, 500);
+    return json({});
+  }),
+);
+
+/** a failed answer is not a "no" either: an rbac outage must not lock the settings away */
+export const GateFailedToAnswer: Story = {
+  args: { resource: "" },
+  render: () => (
+    <Harness fetchStub={failed.stub}>
+      <CapabilityProvider>
+        <Gated />
+      </CapabilityProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await failed.expectSent("GET", "/api/v1/rbac/effective");
+    // give the 500 time to land before saying the screen survived it
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await expect(canvas.getByText(/runtime policy/)).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
