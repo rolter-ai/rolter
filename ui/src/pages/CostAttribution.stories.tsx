@@ -9,7 +9,9 @@ import {
   confirmDestructive,
   expectLoadError,
   expectSkeleton,
+  expectToast,
   recording,
+  Toasted,
 } from "./story-harness";
 import type {
   AttributionSpendRow,
@@ -282,6 +284,56 @@ export const RejectsAnInvalidSlug: Story = {
     await userEvent.type(slug, "Not A Slug");
     await waitFor(() =>
       expect(sheet.getByText(/Slug must be lowercase alphanumerics/)).toBeVisible(),
+    );
+  },
+};
+
+/**
+ * The unit is refused (#1607).
+ *
+ * The refusal is reported twice — an assertive toast and the inline message
+ * beside the toolbar — and both are asserted, because either could stop
+ * reporting on its own.
+ *
+ * The sheet is *not* asserted to survive, because it does not: `onSubmit` calls
+ * `setOpen(false)` before the mutation has answered, so a rejected save takes
+ * the draft with it. That is the failure this issue is about and it is a
+ * production fix rather than a story change, so it is filed as #1626 and the
+ * story pins the behaviour as it actually is today.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        units: (init) =>
+          init?.method === "POST"
+            ? json({ error: { message: "slug ops is already taken" } }, 409)
+            : json(UNITS),
+      })}
+    >
+      <Toasted>
+        <BusinessUnits />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
+    await userEvent.click(canvas.getAllByRole("button", { name: "+ New business unit" })[0]);
+    const panel = within(document.body);
+    await userEvent.type(await panel.findByLabelText("Name"), "Ops");
+    await userEvent.click(panel.getByRole("button", { name: "Create" }));
+
+    await expectToast(canvasElement, /already taken/, "error");
+    // and the inline copy beside the toolbar, which is what is left on screen
+    // once the toast has gone — matched by excluding the toast's own live
+    // region, since both carry the same words
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByText(/already taken/)
+          .some((node) => node.closest('[role="alert"]') === null),
+      ).toBe(true),
     );
   },
 };
