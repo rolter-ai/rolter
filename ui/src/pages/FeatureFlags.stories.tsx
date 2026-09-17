@@ -130,6 +130,37 @@ export const SavesChanges: Story = {
   },
 };
 
+/**
+ * The save is refused (#1607).
+ *
+ * There is no text to lose here, so "the draft survives" is the switch: it has
+ * to stay where the operator put it rather than snapping back to the flag the
+ * server last confirmed, which would read as if the click had never landed.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json(
+          { error: { message: "complexity routing needs an adaptive policy first" } },
+          409,
+        );
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const complexity = await canvas.findByRole("switch", { name: "Complexity Routing" });
+    await userEvent.click(complexity);
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+
+    await expectToast(canvasElement, /needs an adaptive policy first/, "error");
+    await waitFor(() => expect(complexity).toHaveAttribute("aria-checked", "true"));
+  },
+};
+
 // What a non-superadmin gets, which is the screen refused before it asks
 // (#1606).
 //

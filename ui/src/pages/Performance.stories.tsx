@@ -156,6 +156,35 @@ export const SavesChanges: Story = {
   },
 };
 
+/**
+ * The save is refused (#1607).
+ *
+ * `SavesChanges` covers the answer; this covers the other one. The refusal
+ * reaches the toast queue, and the form keeps the value that was typed rather
+ * than snapping back to the setting the server last confirmed — a settings
+ * screen that reverts on a rejected save loses the edit without saying so.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "4 retries exceeds the configured budget" } }, 422);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const field = await canvas.findByLabelText("Max retries");
+    await userEvent.clear(field);
+    await userEvent.type(field, "4");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expectToast(canvasElement, /exceeds the configured budget/, "error");
+    await waitFor(() => expect(canvas.getByLabelText("Max retries")).toHaveValue("4"));
+  },
+};
+
 // What a non-superadmin gets, which is the screen refused before it asks
 // (#1606).
 //

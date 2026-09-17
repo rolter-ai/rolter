@@ -176,6 +176,37 @@ export const SavesSampleRateAsFraction: Story = {
   },
 };
 
+/**
+ * The save is refused (#1607).
+ *
+ * `SavesSampleRateAsFraction` covers the answer; this covers the other one. The
+ * percent field keeps what was typed rather than reverting to the fraction the
+ * server last confirmed.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "the collector rejected the sample rate" } }, 422);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "10");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+
+    await expectToast(canvasElement, /collector rejected the sample rate/, "error");
+    await waitFor(() =>
+      expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10"),
+    );
+  },
+};
+
 // What a non-superadmin gets, which is the screen refused before it asks
 // (#1606).
 //
