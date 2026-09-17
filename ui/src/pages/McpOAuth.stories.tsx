@@ -42,6 +42,12 @@ const SERVERS: McpServerRow[] = [
     client_id: "rolter-github",
     default_scopes: ["repo"],
     has_client_secret: true,
+    auth_kind: "oauth",
+    auth_header_name: null,
+    has_credential: false,
+    connect_timeout_ms: null,
+    request_timeout_ms: null,
+    max_retries: null,
   },
   {
     id: "srv-jira",
@@ -61,6 +67,12 @@ const SERVERS: McpServerRow[] = [
     client_id: "rolter-jira",
     default_scopes: [],
     has_client_secret: false,
+    auth_kind: "oauth",
+    auth_header_name: null,
+    has_credential: false,
+    connect_timeout_ms: null,
+    request_timeout_ms: null,
+    max_retries: null,
   },
 ];
 

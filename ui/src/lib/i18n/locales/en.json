@@ -1160,6 +1160,65 @@
         "toolsHint": "One tool name per line.",
         "scopes": "Required OAuth scopes",
         "scopesHint": "One scope per line."
+      },
+      "auth": {
+        "title": "Authentication",
+        "lead": "How Rolter authenticates to this server on every proxied call. A bearer token or header key is one credential shared by the whole deployment; OAuth mints a token per user.",
+        "kindLabel": "Authentication method",
+        "kinds": {
+          "none": {
+            "label": "None — unauthenticated",
+            "hint": "Rolter sends no credential. Use it only for a server that accepts anonymous calls.",
+            "badge": "no auth"
+          },
+          "bearer": {
+            "label": "Bearer token",
+            "hint": "Sent as Authorization: Bearer on every call.",
+            "badge": "bearer"
+          },
+          "header": {
+            "label": "API key header",
+            "hint": "Sent in a header the server names, such as X-Api-Key.",
+            "badge": "api key"
+          },
+          "oauth": {
+            "label": "OAuth consent",
+            "hint": "Each user connects once; calls carry that user's own token.",
+            "badge": "oauth"
+          }
+        },
+        "credentialStored": "Credential stored",
+        "credentialMissing": "No credential stored",
+        "clearCredential": "Clear stored credential",
+        "headerName": "Header name",
+        "headerPlaceholder": "X-Api-Key",
+        "headerHint": "The header the server reads its API key from.",
+        "headerReserved": "Rolter sets {{name}} itself, so it cannot carry an API key. Choose another header, such as X-Api-Key.",
+        "headerShape": "Use a valid HTTP header name of up to 64 characters: letters, digits and - _ . with no spaces or colons.",
+        "apiKey": "API key",
+        "bearerToken": "Bearer token",
+        "credentialHint": "Write-only. It is sealed before storage and can never be read back.",
+        "credentialKeepHint": "Write-only. Leave blank to keep the stored credential; type a new value to replace it.",
+        "credentialPlaceholder": "Sealed — type a new value to replace",
+        "dropsOnSave": "Saving with this method deletes the stored credential.",
+        "kekTitle": "The control plane has no ROLTER_KEK",
+        "kekBody": "Credentials are sealed with the deployment key before they are stored, and Rolter refuses to keep one in the clear. Set ROLTER_KEK on the control plane, restart it, then save again — nothing in this form needs to change."
+      },
+      "overrides": {
+        "title": "Transport overrides",
+        "lead": "Leave a field blank to inherit the deployment default. Only these per-server values currently reach the proxy; the org-wide MCP settings are stored but not yet applied.",
+        "connectTimeout": "Connect timeout (ms)",
+        "requestTimeout": "Request timeout (ms)",
+        "maxRetries": "Maximum retries",
+        "inherit": "Inherit",
+        "range": "{{min}}–{{max}}",
+        "outOfRange": "A whole number from {{min}} to {{max}}, or blank to inherit."
+      },
+      "confirm": {
+        "clearCredentialTitle": "Clear the stored credential for {{name}}?",
+        "clearCredentialBody": "The credential is deleted and the server switches to no authentication, so Rolter calls it unauthenticated from now on. The value cannot be read back — to restore it you must paste it again.",
+        "switchKindBody": "Switching to {{kind}} deletes the stored credential. The value cannot be read back — to go back you must paste it again.",
+        "clearCredentialConfirm": "Clear credential"
       }
     },
     "mcpOAuth": {

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, KeyRound, Link2, Loader2, Plus, Puzzle, Server, Settings2, ShieldCheck, Wrench } from "lucide-react";
+import type { TFunction } from "i18next";
+import { Boxes, KeyRound, Link2, Loader2, Plus, Puzzle, Server, Settings2, ShieldAlert, ShieldCheck, Timer, Wrench } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -28,19 +29,43 @@ import {
   fetchMcpServers,
   fetchMcpSettings,
   fetchMcpToolGroups,
+  MCP_AUTH_KINDS,
   setMcpOAuthClient,
+  setMcpServerAuth,
   startMcpOAuth,
   updateMcpServer,
   updateMcpSettings,
   updateMcpToolGroup,
   type McpGatewaySettingsRow,
+  type McpAuthKind,
   type McpLibraryItem,
   type McpOAuthClientInput,
+  type McpServerAuthInput,
   type McpServerInput,
   type McpServerRow,
   type McpToolGroupRow,
   type McpToolRef,
+  type McpTransportOverridesPatch,
 } from "@/lib/api";
+import { useFormat } from "@/lib/i18n/format";
+import {
+  authDraft,
+  authDraftValid,
+  authInput,
+  carriesCredential,
+  dropsCredential,
+  headerNameProblem,
+  isKekMissing,
+  OVERRIDE_BOUNDS,
+  OVERRIDE_KEYS,
+  overrideDraft,
+  overridesPatch,
+  overridesValid,
+  parseOverride,
+  type AuthDraft,
+  type OverrideDraft,
+  type OverrideKey,
+} from "@/lib/mcp-server-auth";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -180,51 +205,189 @@ export function McpCatalog() {
   // the OAuth client lives behind its own endpoint, keyed by server id, so it
   // is written after the row — which is also how a client can be registered on
   // a server in the same breath as creating it
+  // the same holds for authentication (#1447): the credential has a route of
+  // its own so the general PATCH never carries a secret. a create takes no
+  // override fields, so a new server that asks for any gets them in a PATCH
+  // straight after. once the row exists the dialog is re-pointed at it, so a
+  // later step that fails — a missing ROLTER_KEK, most likely — is retried as
+  // an edit instead of a second create colliding on the slug
   const save = useMutation({
-    mutationFn: async ({ initial, input, oauth }: { initial: McpServerRow | null; input: McpServerInput; oauth: McpOAuthClientInput | null }) => {
-      const server = initial ? await updateMcpServer(initial.id, input) : await createMcpServer(orgId as string, input);
-      if (oauth) await setMcpOAuthClient(server.id, oauth);
+    mutationFn: async ({ initial, draft }: { initial: McpServerRow | null; draft: ServerSave }) => {
+      let server = initial ? await updateMcpServer(initial.id, { ...draft.input, ...draft.overrides }) : await createMcpServer(orgId as string, draft.input);
+      if (!initial) {
+        setEditing(server);
+        if (Object.keys(draft.overrides).length) server = await updateMcpServer(server.id, { ...draft.input, ...draft.overrides });
+      }
+      if (draft.auth) server = await setMcpServerAuth(server.id, draft.auth);
+      if (draft.oauth) await setMcpOAuthClient(server.id, draft.oauth);
       return server;
     },
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }); void client.invalidateQueries({ queryKey: ["mcp-oauth-client"] }); setEditing(undefined); },
+    onSettled: () => { void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }); void client.invalidateQueries({ queryKey: ["mcp-oauth-client"] }); },
+    onSuccess: () => setEditing(undefined),
   });
   const remove = useMutation({ mutationFn: deleteMcpServer, onSuccess: () => { void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }); setDeleting(null); } });
-  const toggle = useMutation({ mutationFn: (server: McpServerRow) => updateMcpServer(server.id, { ...server, enabled: !server.enabled }), onSuccess: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }) });
+  const toggle = useMutation({ mutationFn: (server: McpServerRow) => updateMcpServer(server.id, { ...serverInput(server), enabled: !server.enabled }), onSuccess: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }) });
   if (!orgId) return <PageBody><EmptyState uxTarget="mcp-no-org" icon={<Server />} title={t("pages.mcpCatalog.noOrgTitle")} description={t("pages.mcpCatalog.noOrgBody")} /></PageBody>;
   // only enabled servers reach the gateway snapshot, so the tool tally counts theirs
   const live = query.data?.filter((server) => server.enabled) ?? [];
   const liveTools = live.reduce((sum, server) => sum + server.tools.length, 0);
   return <PageBody>
-    <PageLead eyebrow={t("pages.mcpCatalog.eyebrow")} action={<Button onClick={() => setEditing(null)}><Plus className="h-4 w-4" aria-hidden />{t("pages.mcpCatalog.registerServer")}</Button>}>
+    <PageLead eyebrow={t("pages.mcpCatalog.eyebrow")} action={<GatedButton gate="mcp_server:create" onClick={() => setEditing(null)}><Plus className="h-4 w-4" aria-hidden />{t("pages.mcpCatalog.registerServer")}</GatedButton>}>
       {query.data ? <><span>{t("pages.mcpCatalog.enabledServers", { count: live.length })}</span>{" · "}<span>{t("pages.mcpCatalog.declaredTools", { count: liveTools })}</span></> : t("pages.mcpCatalog.registryHint")}
     </PageLead>
-    {query.isLoading ? <CardGridSkeleton cards={3} height={190} min={300} /> : query.error ? <LoadError error={query.error} resource={t("errors.resources.mcpServers")} onRetry={() => void query.refetch()} /> : !query.data?.length ? <EmptyState uxTarget="mcp-servers" icon={<Server />} title={t("pages.mcpCatalog.emptyTitle")} description={t("pages.mcpCatalog.emptyBody")} actions={<Button onClick={() => setEditing(null)}>{t("pages.mcpCatalog.registerServer")}</Button>} /> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{query.data.map((server) => <article key={server.id} className={`min-w-0 rounded-[10px] border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}>
+    {query.isLoading ? <CardGridSkeleton cards={3} height={190} min={300} /> : query.error ? <LoadError error={query.error} resource={t("errors.resources.mcpServers")} onRetry={() => void query.refetch()} /> : !query.data?.length ? <EmptyState uxTarget="mcp-servers" icon={<Server />} title={t("pages.mcpCatalog.emptyTitle")} description={t("pages.mcpCatalog.emptyBody")} actions={<GatedButton gate="mcp_server:create" onClick={() => setEditing(null)}>{t("pages.mcpCatalog.registerServer")}</GatedButton>} /> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{query.data.map((server) => <article key={server.id} className={`min-w-0 rounded-[10px] border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}>
       <div className="flex items-start gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)]"><Server className="h-4 w-4" aria-hidden /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="truncate font-mono text-sm font-semibold">{server.name}</h2><Badge tone={server.source === "library" ? "accent" : "neutral"}>{server.source}</Badge></div><p className="mt-1 truncate font-mono text-xs text-muted-foreground">{server.url}</p></div><GatedSwitch gate="mcp_server:update" checked={server.enabled} aria-label={t("pages.mcpCatalog.servers.toggleAria", { name: server.name })} onCheckedChange={() => toggle.mutate(server)} /></div>
       <p className="mt-3 min-h-10 text-xs leading-relaxed text-muted-foreground">{server.description || t("pages.mcpCatalog.noDescription")}</p><div className="mt-3"><ToolBadges tools={server.tools} /></div>
-      <div className="mt-4 flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3"><Badge tone="info">{server.transport.replace("_", " ")}</Badge><span className="ml-auto flex flex-wrap justify-end gap-1"><ConnectButton server={server} /><GatedButton gate="mcp_server:delete" variant="ghost" aria-label={t("pages.mcpCatalog.servers.deleteAria", { name: server.name })} onClick={() => setDeleting(server)}>{t("common.delete")}</GatedButton><GatedButton gate="mcp_server:update" variant="outline" aria-label={t("pages.mcpCatalog.servers.configureAria", { name: server.name })} onClick={() => setEditing(server)}>{t("pages.mcpCatalog.configure")}</GatedButton></span></div>
+      <div className="mt-4 flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3"><Badge tone="info">{server.transport.replace("_", " ")}</Badge><AuthBadge server={server} /><span className="ml-auto flex flex-wrap justify-end gap-1"><ConnectButton server={server} /><GatedButton gate="mcp_server:delete" variant="ghost" aria-label={t("pages.mcpCatalog.servers.deleteAria", { name: server.name })} onClick={() => setDeleting(server)}>{t("common.delete")}</GatedButton><GatedButton gate="mcp_server:update" variant="outline" aria-label={t("pages.mcpCatalog.servers.configureAria", { name: server.name })} onClick={() => setEditing(server)}>{t("pages.mcpCatalog.configure")}</GatedButton></span></div>
     </article>)}</div>}
-    {editing !== undefined && <ServerDialog initial={editing} pending={save.isPending} error={save.error} onClose={() => setEditing(undefined)} onSave={(input, oauth) => save.mutate({ initial: editing, input, oauth })} />}
+    {editing !== undefined && <ServerDialog initial={editing} pending={save.isPending} error={save.error} onClose={() => { save.reset(); setEditing(undefined); }} onSave={(draft) => save.mutate({ initial: editing, draft })} />}
     {deleting && <ConfirmDelete server={deleting} pending={remove.isPending} error={remove.error} onClose={() => setDeleting(null)} onConfirm={() => remove.mutate(deleting.id)} />}
   </PageBody>;
 }
 
-function ServerDialog({ initial, pending, error, onClose, onSave }: { initial: McpServerRow | null; pending: boolean; error: Error | null; onClose: () => void; onSave: (input: McpServerInput, oauth: McpOAuthClientInput | null) => void }) {
+// the PATCH-able part of a row. picked field by field rather than spread, so a
+// save never echoes the overrides back — sending one unchanged would still be
+// sending it, and the absent/null distinction is the whole contract (#1447)
+const serverInput = (server: McpServerRow): McpServerInput => ({ name: server.name, slug: server.slug, url: server.url, transport: server.transport, description: server.description, enabled: server.enabled, tools: server.tools, source: server.source, required_scopes: server.required_scopes });
+
+interface ServerSave {
+  input: McpServerInput;
+  overrides: McpTransportOverridesPatch;
+  auth: McpServerAuthInput | null;
+  oauth: McpOAuthClientInput | null;
+}
+
+// the card says how a server authenticates, so a bearer-armed server is not
+// indistinguishable from an open one until someone opens Configure
+function AuthBadge({ server }: { server: McpServerRow }) {
   const { t } = useTranslation();
-  const [form, setForm] = React.useState<McpServerInput>(initial ?? { name: "", slug: "", url: "", transport: "streamable_http", description: "", enabled: true, tools: [], source: "custom", required_scopes: [] });
+  const armed = carriesCredential(server.auth_kind) && server.has_credential;
+  return <Badge tone={server.auth_kind === "none" ? "neutral" : armed || server.auth_kind === "oauth" ? "success" : "warning"}>{t(`pages.mcpCatalog.auth.kinds.${server.auth_kind}.badge`)}</Badge>;
+}
+
+// the refusal a deployment without ROLTER_KEK gives. it is a deployment
+// problem rather than anything in the form, so it says what to change and
+// where; the control plane's own message stays underneath it
+function SaveError({ error }: { error: Error }) {
+  const { t } = useTranslation();
+  if (!isKekMissing(error)) return <p role="alert" className="text-sm text-[color:var(--danger-text)]">{error.message}</p>;
+  return <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[color:var(--status-danger-text)]/40 bg-[color:var(--surface-subtle)] p-3"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--status-danger-text)]" aria-hidden /><div className="min-w-0 text-xs leading-relaxed"><p className="font-semibold text-foreground">{t("pages.mcpCatalog.auth.kekTitle")}</p><p className="mt-1 text-muted-foreground">{t("pages.mcpCatalog.auth.kekBody")}</p><p className="mt-1 font-mono text-[color:var(--text-subtle)]">{error.message}</p></div></div>;
+}
+
+// one card per kind, each saying what Rolter will actually send. `none` is
+// spelled out as unauthenticated so it cannot be read as "not configured yet"
+function AuthKindPicker({ value, onChange }: { value: McpAuthKind; onChange: (kind: McpAuthKind) => void }) {
+  const { t } = useTranslation();
+  return <fieldset><legend className="text-sm font-medium">{t("pages.mcpCatalog.auth.kindLabel")}</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{MCP_AUTH_KINDS.map((kind) => {
+    const selected = value === kind;
+    return <label key={kind} className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-folk)] bg-[color:var(--surface-subtle)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}>
+      <input type="radio" name="mcp-auth-kind" value={kind} checked={selected} onChange={() => onChange(kind)} className="mt-0.5 accent-[color:var(--red-folk)]" aria-describedby={`mcp-auth-kind-${kind}-hint`} />
+      <span className="min-w-0"><span className="block text-sm font-medium">{t(`pages.mcpCatalog.auth.kinds.${kind}.label`)}</span><span id={`mcp-auth-kind-${kind}-hint`} className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{t(`pages.mcpCatalog.auth.kinds.${kind}.hint`)}</span></span>
+    </label>;
+  })}</div></fieldset>;
+}
+
+function headerNameError(t: TFunction, name: string): string | undefined {
+  const problem = headerNameProblem(name.trim());
+  if (!problem || (problem === "required" && !name)) return undefined;
+  return problem === "reserved" ? t("pages.mcpCatalog.auth.headerReserved", { name: name.trim() }) : t("pages.mcpCatalog.auth.headerShape");
+}
+
+// the static-credential branch: bearer and header. the credential input is
+// write-only — never pre-filled, and blank means "keep the stored one"
+function CredentialSection({ server, draft, onChange, onClear }: { server: McpServerRow | null; draft: AuthDraft; onChange: (patch: Partial<AuthDraft>) => void; onClear: () => void }) {
+  const { t } = useTranslation();
+  const stored = !!server?.has_credential;
+  const kept = stored && !draft.credential;
+  return <div className="grid gap-3">
+    <div className="flex flex-wrap items-center gap-2"><Badge tone={stored ? "success" : "neutral"} dot={stored}>{stored ? t("pages.mcpCatalog.auth.credentialStored") : t("pages.mcpCatalog.auth.credentialMissing")}</Badge>{stored && <GatedButton gate="mcp_server:update" type="button" variant="outline" size="sm" className="ml-auto" onClick={onClear}>{t("pages.mcpCatalog.auth.clearCredential")}</GatedButton>}</div>
+    {draft.kind === "header" && <Field label={t("pages.mcpCatalog.auth.headerName")} htmlFor="mcp-auth-header" hint={t("pages.mcpCatalog.auth.headerHint")} error={headerNameError(t, draft.headerName)}><Input id="mcp-auth-header" className="font-mono" autoComplete="off" spellCheck={false} placeholder={t("pages.mcpCatalog.auth.headerPlaceholder")} value={draft.headerName} onChange={(event) => onChange({ headerName: event.target.value })} /></Field>}
+    <Field label={draft.kind === "header" ? t("pages.mcpCatalog.auth.apiKey") : t("pages.mcpCatalog.auth.bearerToken")} htmlFor="mcp-auth-credential" hint={kept ? t("pages.mcpCatalog.auth.credentialKeepHint") : t("pages.mcpCatalog.auth.credentialHint")}><Input id="mcp-auth-credential" type="password" autoComplete="new-password" placeholder={stored ? t("pages.mcpCatalog.auth.credentialPlaceholder") : undefined} value={draft.credential} onChange={(event) => onChange({ credential: event.target.value })} /></Field>
+  </div>;
+}
+
+// blank inherits, and the placeholder says so rather than showing a number:
+// the org-wide MCP settings do not reach the proxy yet (#1404), so quoting them
+// here would describe a default that is not the one in effect
+function OverridesSection({ draft, onChange }: { draft: OverrideDraft; onChange: (patch: Partial<OverrideDraft>) => void }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const labels: Record<OverrideKey, string> = { connect_timeout_ms: t("pages.mcpCatalog.overrides.connectTimeout"), request_timeout_ms: t("pages.mcpCatalog.overrides.requestTimeout"), max_retries: t("pages.mcpCatalog.overrides.maxRetries") };
+  return <section className="rounded-[10px] border border-[color:var(--border-subtle)] p-4">
+    <div className="flex items-center gap-2"><Timer className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden /><h3 className="text-sm font-semibold">{t("pages.mcpCatalog.overrides.title")}</h3></div>
+    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.overrides.lead")}</p>
+    <div className="mt-4 grid gap-3 sm:grid-cols-3">{OVERRIDE_KEYS.map((key) => {
+      const { min, max } = OVERRIDE_BOUNDS[key];
+      const range = { min: fmt.number(min), max: fmt.number(max) };
+      const bad = parseOverride(key, draft[key]) === undefined;
+      return <Field key={key} label={labels[key]} htmlFor={`mcp-override-${key}`} hint={bad ? undefined : t("pages.mcpCatalog.overrides.range", range)} error={bad ? t("pages.mcpCatalog.overrides.outOfRange", range) : undefined}><Input id={`mcp-override-${key}`} inputMode="numeric" className="font-mono" placeholder={t("pages.mcpCatalog.overrides.inherit")} value={draft[key]} onChange={(event) => onChange({ [key]: event.target.value })} /></Field>;
+    })}</div>
+  </section>;
+}
+
+function ServerDialog({ initial, pending, error, onClose, onSave }: { initial: McpServerRow | null; pending: boolean; error: Error | null; onClose: () => void; onSave: (draft: ServerSave) => void }) {
+  const { t } = useTranslation();
+  const client = useQueryClient();
+  const [form, setForm] = React.useState<McpServerInput>(() => initial ? serverInput(initial) : { name: "", slug: "", url: "", transport: "streamable_http", description: "", enabled: true, tools: [], source: "custom", required_scopes: [] });
   const [tools, setTools] = React.useState(form.tools.join("\n"));
   const [scopes, setScopes] = React.useState(form.required_scopes.join("\n"));
   const [oauth, setOAuth] = React.useState<OAuthDraft>(() => oauthDraft(initial));
-  const oauthValid = (!oauthTouched(oauth) || oauthComplete(oauth)) && oauthEndpointsValid(oauth);
-  const valid = form.name.trim() && (initial || slugify(form.slug || form.name)) && /^https?:\/\//.test(form.url) && oauthValid;
-  return <Dialog open onClose={onClose}><DialogHeader><DialogTitle>{initial ? t("pages.mcpCatalog.dialog.titleEdit") : t("pages.mcpCatalog.dialog.titleAdd")}</DialogTitle><DialogDescription>{t("pages.mcpCatalog.dialog.lead")}</DialogDescription></DialogHeader><div className="grid gap-4 py-4">
-    <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.name")} htmlFor="mcp-name"><Input id="mcp-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={t("pages.mcpCatalog.fields.slug")} htmlFor="mcp-slug" hint={t("pages.mcpCatalog.fields.slugHint")}><Input id="mcp-slug" disabled={!!initial} value={initial?.slug ?? form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} /></Field></div>
-    <Field label={t("pages.mcpCatalog.fields.url")} htmlFor="mcp-url"><Input id="mcp-url" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} /></Field>
-    <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.transport")} htmlFor="mcp-transport"><Select id="mcp-transport" value={form.transport} onChange={(event) => setForm({ ...form, transport: event.target.value })}>{TRANSPORTS.map((transport) => <option key={transport}>{transport}</option>)}</Select></Field><div className="flex items-end"><label className="flex min-h-9 w-full items-center justify-between rounded-md border border-[color:var(--border-default)] px-3 text-sm"><span id="mcp-server-enabled-label">{t("pages.mcpCatalog.fields.enabledInGateway")}</span><Switch checked={form.enabled} aria-labelledby="mcp-server-enabled-label" onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></label></div></div>
-    <Field label={t("pages.mcpCatalog.fields.description")} htmlFor="mcp-description"><Textarea id="mcp-description" rows={2} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></Field>
-    <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.tools")} htmlFor="mcp-tools" hint={t("pages.mcpCatalog.fields.toolsHint")}><Textarea id="mcp-tools" rows={5} value={tools} onChange={(event) => setTools(event.target.value)} /></Field><Field label={t("pages.mcpCatalog.fields.scopes")} htmlFor="mcp-scopes" hint={t("pages.mcpCatalog.fields.scopesHint")}><Textarea id="mcp-scopes" rows={5} value={scopes} onChange={(event) => setScopes(event.target.value)} /></Field></div>
-    <OAuthClientSection server={initial} draft={oauth} onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))} />
-    {error && <p role="alert" className="text-sm text-[color:var(--danger-text)]">{error.message}</p>}
-  </div><DialogFooter><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button disabled={!valid || pending} onClick={() => onSave({ ...form, slug: initial?.slug ?? slugify(form.slug || form.name), tools: lines(tools), required_scopes: lines(scopes) }, oauthTouched(oauth) && oauthChanged(oauth, initial) ? toOAuthInput(oauth) : null)}>{pending ? t("common.saving") : initial ? t("pages.mcpCatalog.dialog.saveServer") : t("pages.mcpCatalog.registerServer")}</Button></DialogFooter></Dialog>;
+  // the row the auth diff is taken against. it moves when the credential is
+  // cleared from inside the dialog, so a later save compares with what is
+  // stored now rather than with what was stored when the dialog opened
+  const [row, setRow] = React.useState<McpServerRow | null>(initial);
+  React.useEffect(() => setRow((current) => current ?? initial), [initial]);
+  const [auth, setAuth] = React.useState<AuthDraft>(() => authDraft(initial));
+  const [overrides, setOverrides] = React.useState<OverrideDraft>(() => overrideDraft(initial));
+  const [confirming, setConfirming] = React.useState<"save" | "clear" | null>(null);
+
+  // clearing is its own immediate action rather than a draft flag: the schema
+  // lets a bearer or header server exist only with a credential, so "clear" is
+  // a move to `none` — the server is unauthenticated from that moment on
+  const clear = useMutation({
+    mutationFn: (id: string) => setMcpServerAuth(id, { auth_kind: "none" }),
+    onSuccess: (next) => { setRow(next); setAuth(authDraft(next)); setConfirming(null); void client.invalidateQueries({ queryKey: ["mcp-servers", next.org_id] }); },
+  });
+
+  const oauthValid = auth.kind !== "oauth" || ((!oauthTouched(oauth) || oauthComplete(oauth)) && oauthEndpointsValid(oauth));
+  const valid = form.name.trim() && (initial || slugify(form.slug || form.name)) && /^https?:\/\//.test(form.url) && oauthValid && authDraftValid(auth, row) && overridesValid(overrides);
+  const draft = (): ServerSave => ({
+    input: { ...form, slug: initial?.slug ?? slugify(form.slug || form.name), tools: lines(tools), required_scopes: lines(scopes) },
+    overrides: overridesPatch(overrides, initial),
+    auth: authInput(auth, row),
+    oauth: auth.kind === "oauth" && oauthTouched(oauth) && oauthChanged(oauth, initial) ? toOAuthInput(oauth) : null,
+  });
+  const submit = () => dropsCredential(auth, row) ? setConfirming("save") : onSave(draft());
+  const name = form.name.trim() || initial?.name || "";
+
+  return <>
+    <BaseDialog open={!confirming} onOpenChange={(open) => !open && onClose()}><DialogHeader><DialogTitle>{initial ? t("pages.mcpCatalog.dialog.titleEdit") : t("pages.mcpCatalog.dialog.titleAdd")}</DialogTitle><DialogDescription>{t("pages.mcpCatalog.dialog.lead")}</DialogDescription></DialogHeader><div className="grid max-h-[70vh] gap-4 overflow-y-auto py-4 pr-1">
+      <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.name")} htmlFor="mcp-name"><Input id="mcp-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={t("pages.mcpCatalog.fields.slug")} htmlFor="mcp-slug" hint={t("pages.mcpCatalog.fields.slugHint")}><Input id="mcp-slug" disabled={!!initial} value={initial?.slug ?? form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} /></Field></div>
+      <Field label={t("pages.mcpCatalog.fields.url")} htmlFor="mcp-url"><Input id="mcp-url" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} /></Field>
+      <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.transport")} htmlFor="mcp-transport"><Select id="mcp-transport" value={form.transport} onChange={(event) => setForm({ ...form, transport: event.target.value })}>{TRANSPORTS.map((transport) => <option key={transport}>{transport}</option>)}</Select></Field><div className="flex items-end"><label className="flex min-h-9 w-full items-center justify-between rounded-md border border-[color:var(--border-default)] px-3 text-sm"><span id="mcp-server-enabled-label">{t("pages.mcpCatalog.fields.enabledInGateway")}</span><Switch checked={form.enabled} aria-labelledby="mcp-server-enabled-label" onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></label></div></div>
+      <Field label={t("pages.mcpCatalog.fields.description")} htmlFor="mcp-description"><Textarea id="mcp-description" rows={2} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></Field>
+      <div className="grid gap-3 sm:grid-cols-2"><Field label={t("pages.mcpCatalog.fields.tools")} htmlFor="mcp-tools" hint={t("pages.mcpCatalog.fields.toolsHint")}><Textarea id="mcp-tools" rows={5} value={tools} onChange={(event) => setTools(event.target.value)} /></Field><Field label={t("pages.mcpCatalog.fields.scopes")} htmlFor="mcp-scopes" hint={t("pages.mcpCatalog.fields.scopesHint")}><Textarea id="mcp-scopes" rows={5} value={scopes} onChange={(event) => setScopes(event.target.value)} /></Field></div>
+      <section className="grid gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
+        <div><div className="flex items-center gap-2"><KeyRound className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden /><h3 className="text-sm font-semibold">{t("pages.mcpCatalog.auth.title")}</h3></div><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.auth.lead")}</p></div>
+        <AuthKindPicker value={auth.kind} onChange={(kind) => setAuth((current) => ({ ...current, kind }))} />
+        {carriesCredential(auth.kind) && <CredentialSection server={row} draft={auth} onChange={(patch) => setAuth((current) => ({ ...current, ...patch }))} onClear={() => { clear.reset(); setConfirming("clear"); }} />}
+        {auth.kind === "oauth" && <OAuthClientSection server={initial} draft={oauth} onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))} />}
+        {dropsCredential(auth, row) && <p className="text-xs leading-relaxed text-[color:var(--status-warning-text)]">{t("pages.mcpCatalog.auth.dropsOnSave")}</p>}
+      </section>
+      <OverridesSection draft={overrides} onChange={(patch) => setOverrides((current) => ({ ...current, ...patch }))} />
+      {error && <SaveError error={error} />}
+    </div><DialogFooter><Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button><Button disabled={!valid || pending} onClick={submit}>{pending ? t("common.saving") : initial ? t("pages.mcpCatalog.dialog.saveServer") : t("pages.mcpCatalog.registerServer")}</Button></DialogFooter></BaseDialog>
+    <ConfirmDialog
+      open={confirming !== null}
+      onOpenChange={(open) => !open && setConfirming(null)}
+      title={t("pages.mcpCatalog.confirm.clearCredentialTitle", { name })}
+      description={confirming === "save" ? t("pages.mcpCatalog.confirm.switchKindBody", { kind: t(`pages.mcpCatalog.auth.kinds.${auth.kind}.label`) }) : t("pages.mcpCatalog.confirm.clearCredentialBody")}
+      confirmLabel={t("pages.mcpCatalog.confirm.clearCredentialConfirm")}
+      pending={confirming === "save" ? pending : clear.isPending}
+      error={confirming === "save" ? error : clear.error}
+      onConfirm={() => { if (confirming === "clear" && row) clear.mutate(row.id); else if (confirming === "save") onSave(draft()); }}
+    />
+  </>;
 }
 
 export function McpLibrary() {

@@ -28,6 +28,41 @@ are one credential shared by the deployment.
 
 ---
 
+## In the dashboard
+
+**MCP Catalog → Configure** sets everything on this page without `curl`. The
+*Authentication* section shows one choice per `auth_kind` and only the fields
+that kind uses:
+
+- **None — unauthenticated** asks for nothing. It means Rolter calls the server
+  anonymously, not that authentication is still to be set up.
+- **Bearer token** asks for the token.
+- **API key header** asks for the header name and the key. A reserved header
+  name (see below) is refused in the form, before anything is sent.
+- **OAuth consent** shows the OAuth client fields described in
+  [MCP OAuth](/security/mcp-oauth).
+
+The credential field is write-only. A badge says whether one is stored, and
+leaving the field blank keeps it. Leaving it blank is what lets you rename a
+header or move from bearer to header without pasting the secret again. Each
+server card also shows its authentication method.
+
+**Clear stored credential** asks for confirmation and then moves the server to
+**None**, because a bearer or header server cannot exist without a credential.
+Saving a server that has a credential after choosing **None** or **OAuth
+consent** asks for the same confirmation, since that also deletes it. Neither
+can be undone: the value cannot be read back, so restoring it means pasting it
+again.
+
+If the control plane has no `ROLTER_KEK`, the form says so and keeps what you
+typed. Set the variable, restart the control plane and save again.
+
+*Transport overrides* holds the three per-server settings described
+[below](#per-server-timeouts). A blank field inherits the default, clearing a
+field sends `null`, and a field you did not touch is not sent at all.
+
+---
+
 ## Setting a credential
 
 ```bash

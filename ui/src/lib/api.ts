@@ -3332,6 +3332,63 @@ export interface McpServerRow {
   /// whether a sealed client secret is stored, so the UI can show the client is
   /// confidential without the control plane handing the secret out
   has_client_secret: boolean;
+  /// how rolter authenticates to this server (#952). `oauth` is the per-user
+  /// consent flow; `bearer` and `header` present one deployment-wide credential
+  auth_kind: McpAuthKind;
+  /// the header a `header`-kind credential is presented in, e.g. `X-Api-Key`
+  auth_header_name: string | null;
+  /// whether a sealed static credential is stored. the credential itself is
+  /// write-only and never crosses this boundary
+  has_credential: boolean;
+  /// per-server transport overrides; `null` inherits the deployment default
+  connect_timeout_ms: number | null;
+  request_timeout_ms: number | null;
+  max_retries: number | null;
+}
+
+export const MCP_AUTH_KINDS = ["none", "bearer", "header", "oauth"] as const;
+export type McpAuthKind = (typeof MCP_AUTH_KINDS)[number];
+
+/**
+ * Header names the control plane refuses as `auth_header_name`, lowercased —
+ * mirrors `RESERVED_AUTH_HEADERS` in `crates/rolter-control/src/mcp_oauth.rs`
+ * and the `mcp_servers_auth_header_name_shape` constraint, so the form refuses
+ * them before the server has to.
+ */
+export const MCP_RESERVED_AUTH_HEADERS = [
+  "authorization",
+  "host",
+  "content-length",
+  "content-type",
+  "connection",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+  "proxy-authorization",
+] as const;
+
+/**
+ * `PUT /api/v1/mcp-servers/{id}/auth`. `credential` is tri-state on the wire:
+ * omitted leaves the stored one, `""` clears it, anything else replaces it —
+ * so a form must only send it when the operator actually typed one.
+ */
+export interface McpServerAuthInput {
+  auth_kind: McpAuthKind;
+  /** required for `header`, refused for every other kind */
+  auth_header_name?: string;
+  credential?: string;
+}
+
+/**
+ * The transport overrides a `PATCH` may carry. Each is tri-state as well:
+ * absent leaves the override, `null` drops it back to inheriting, a number
+ * sets it. A form that always sends every field cannot say "leave it".
+ */
+export interface McpTransportOverridesPatch {
+  connect_timeout_ms?: number | null;
+  request_timeout_ms?: number | null;
+  max_retries?: number | null;
 }
 
 export interface McpServerInput {
@@ -3428,9 +3485,20 @@ export function createMcpServer(
 
 export function updateMcpServer(
   id: string,
-  input: Omit<McpServerInput, "slug" | "source">,
+  input: Omit<McpServerInput, "slug" | "source"> & McpTransportOverridesPatch,
 ): Promise<McpServerRow> {
   return sendJson<McpServerRow>("PATCH", `/api/v1/mcp-servers/${id}`, input);
+}
+
+// the only route that takes a server's static credential, kept apart from the
+// PATCH so the general edit path never carries a secret. setting anything here
+// needs ROLTER_KEK on the control plane, which refuses rather than storing a
+// credential in the clear
+export function setMcpServerAuth(
+  id: string,
+  input: McpServerAuthInput,
+): Promise<McpServerRow> {
+  return sendJson<McpServerRow>("PUT", `/api/v1/mcp-servers/${id}/auth`, input);
 }
 
 export function deleteMcpServer(id: string): Promise<void> {
