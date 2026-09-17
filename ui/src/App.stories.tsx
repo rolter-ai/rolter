@@ -8,6 +8,7 @@ import {
   shellStubWithStability,
 } from "./pages/shell-harness";
 import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { withPageA11y } from "@/lib/story-a11y";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -40,8 +41,8 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** The rail once the session, the capabilities and the scope have all landed. */
-async function railOf(canvasElement: HTMLElement): Promise<HTMLElement> {
-  return within(canvasElement).findByRole("navigation", { name: NAV_LABEL });
+async function railOf(canvasElement: HTMLElement, label = NAV_LABEL): Promise<HTMLElement> {
+  return within(canvasElement).findByRole("navigation", { name: label });
 }
 
 /**
@@ -158,15 +159,67 @@ export const ExperimentalMarker: Story = {
     });
     await expect(marked).toBeVisible();
     // the badge is the entry's own, not a row of its own
-    await expect(
-      within(marked).getByText(en.shell.experimental),
-    ).toBeVisible();
+    const badge = within(marked).getByText(en.shell.experimental);
+    await expect(badge).toBeVisible();
+    // its note is the catalog's copy for the subsystem id, not the English
+    // prose the stub sent on the wire (#1401)
+    await expect(badge).toHaveAttribute("title", en.stability.notes.plugins);
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
     const plain = within(rail).getByRole("button", { name: nav.playground });
     await expect(
       within(plain).queryByText(en.shell.experimental),
     ).toBeNull();
+  },
+};
+
+/**
+ * The note follows the dashboard's locale (#1401). The control plane only ever
+ * sends English prose, so a Russian rail used to read "Экспериментально" with a
+ * sentence of English behind it; the rail now looks the note up by subsystem
+ * id, and the wire's `note` is never what a user reads.
+ */
+export const ExperimentalMarkerTranslated: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <AppShell
+      route="/dashboard"
+      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement, ru.shell.navLabel);
+    const marked = await within(rail).findByRole("button", {
+      name: `${ru.nav.plugins} ${ru.shell.experimental}`,
+    });
+    const badge = within(marked).getByText(ru.shell.experimental);
+    await expect(badge).toHaveAttribute("title", ru.stability.notes.plugins);
+    await expect(badge).not.toHaveAttribute("title", EXPERIMENTAL_SUBSYSTEM.note);
+  },
+};
+
+/**
+ * A subsystem this build's catalogs have no note for — a newer control plane
+ * behind an older bundle — still marks its entry. Only the explanation is
+ * missing, and nothing falls back to the English on the wire.
+ */
+export const ExperimentalMarkerWithoutNote: Story = {
+  render: () => (
+    <AppShell
+      route="/dashboard"
+      fetchStub={shellStubWithStability([
+        { ...EXPERIMENTAL_SUBSYSTEM, id: "not_in_this_build" },
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const marked = await within(rail).findByRole("button", {
+      name: `${nav.plugins} ${en.shell.experimental}`,
+    });
+    const badge = within(marked).getByText(en.shell.experimental);
+    await expect(badge).toBeVisible();
+    await expect(badge).not.toHaveAttribute("title");
   },
 };
 

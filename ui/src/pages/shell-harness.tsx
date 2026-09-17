@@ -71,6 +71,10 @@ const VERSION = {
  * and the story is about the shell reading `nav_keys` at all, not about which
  * corners of this particular build are unfinished. Which list the marker comes
  * from is the control plane's business, and the stub is standing in for it.
+ *
+ * `note` is deliberately not the catalog's copy: the rail renders
+ * `stability.notes.<id>` instead (#1401), and a stub note that differs is what
+ * lets a story prove the wire's English never reaches the badge.
  */
 export const EXPERIMENTAL_SUBSYSTEM: SubsystemStability = {
   id: "plugins",

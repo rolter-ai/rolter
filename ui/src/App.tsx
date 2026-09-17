@@ -34,7 +34,12 @@ import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
-import { useStability, useVersionStatus, type ExperimentalNavKeys } from "@/lib/version";
+import {
+  stabilityNoteKey,
+  useStability,
+  useVersionStatus,
+  type ExperimentalNavKeys,
+} from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
 import {
   UxScreenProvider,
@@ -186,14 +191,20 @@ const GithubIcon = (
 // here is exactly the drift `crates/rolter-core/src/stability.rs` exists to
 // prevent — so an empty map (older control plane, failed read, no session yet)
 // simply renders a rail with no markers.
+//
+// the note comes from the catalog, keyed by subsystem id, rather than from the
+// wire's English prose (#1401). an id this build's catalogs have never heard of
+// still gets its marker, just without the explanation — the note is
+// supplementary, and English in a translated rail is the bug this avoids
 function toNavItem(def: NavDef, t: TFunction, marked: ExperimentalNavKeys): NavItem {
-  const note = marked.get(def.key);
+  const id = marked.get(def.key);
   return {
     key: def.key,
     label: t(`nav.${def.key}`),
     icon: def.icon,
-    experimental: note !== undefined,
-    experimentalNote: note,
+    experimental: id !== undefined,
+    experimentalNote:
+      id === undefined ? undefined : t(stabilityNoteKey(id), { defaultValue: "" }) || undefined,
     children: def.children?.map((child) => toNavItem(child, t, marked)),
   };
 }

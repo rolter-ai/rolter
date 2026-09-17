@@ -60,7 +60,9 @@ describe("experimentalNavKeysFrom", () => {
       },
     ]);
     expect([...marked.keys()].sort()).toEqual(["mcp-catalog", "mcp-settings", "tool-groups"]);
-    expect(marked.get("mcp-settings")).toBe(mcp.note);
+    // the id, not the English note: the rail looks the copy up in the catalog
+    expect(marked.get("mcp-settings")).toBe(mcp.id);
+    expect(marked.get("mcp-catalog")).toBe("mcp_tool_groups");
   });
 
   // a control plane that predates #1385, a failed read, or a session still
