@@ -4,7 +4,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Plugins from "./Plugins";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectForbidden, expectSkeleton, recording } from "./story-harness";
+import { cancelConfirmation, confirmDestructive, expectEmptyState, expectForbidden, expectSkeleton, expectToast, recording, Toasted } from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
 
 const PLUGINS: PluginInstanceRow[] = [
@@ -55,7 +55,10 @@ const scopeResponse = (url: string) => {
   return null;
 };
 
-function Harness({ fetchStub }: { fetchStub: FetchStub }) {
+// `toasted` is opt-in rather than always on: the Toaster contributes its own
+// role="status" and role="alert" regions, and the stories that query those by
+// role would stop being able to
+function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boolean }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
@@ -64,7 +67,17 @@ function Harness({ fetchStub }: { fetchStub: FetchStub }) {
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub]);
   React.useEffect(() => () => { if (original.current) globalThis.fetch = original.current; }, []);
-  return <QueryClientProvider client={client}><Plugins /></QueryClientProvider>;
+  return (
+    <QueryClientProvider client={client}>
+      {toasted ? (
+        <Toasted>
+          <Plugins />
+        </Toasted>
+      ) : (
+        <Plugins />
+      )}
+    </QueryClientProvider>
+  );
 }
 
 const withPlugins = (plugins: PluginInstanceRow[], pluginStatus = 200): FetchStub => async (input) => {
@@ -107,6 +120,42 @@ export const InstallsWebhookConfiguration: Story = {
     await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument());
+  },
+};
+
+/**
+ * The install is refused (#1607).
+ *
+ * `RejectsInvalidConfiguration` is the client-side guard — this is the server's
+ * answer, which is a different code path. The dialog stays open with the name
+ * and the endpoint typed, and the refusal reaches the toast queue.
+ */
+export const InstallRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      toasted
+      fetchStub={async (input, init) => {
+        const scoped = scopeResponse(String(input));
+        if (scoped) return scoped;
+        if (init?.method === "POST") {
+          return json({ error: { message: "slug policy-webhook is already installed" } }, 409);
+        }
+        return json(PLUGINS);
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
+    const dialog = within(document.body).getByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
+
+    await expectToast(canvasElement, /already installed/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(dialog).getByLabelText("Name")).toHaveValue("Policy webhook");
   },
 };
 

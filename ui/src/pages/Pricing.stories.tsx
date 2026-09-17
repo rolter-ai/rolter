@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Pricing from "./Pricing";
 import {
@@ -13,6 +13,8 @@ import {
   routes,
   scoped,
   sheet,
+  Toasted,
+  expectToast,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
 
@@ -163,5 +165,44 @@ export const AddsAPrice: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add price/i);
     await expect(within(sheet()).getByLabelText("Currency")).toHaveValue("USD");
+  },
+};
+
+/**
+ * The price is refused (#1607).
+ *
+ * The sheet closes on success, so a rejected save is the only case where it has
+ * to stay — and it has to, because the three rates were typed by hand from a
+ * provider's price sheet.
+ */
+export const AddRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "PUT"
+          ? json({ error: { message: "gpt-4o already has a price in USD" } }, 409)
+          : withCurrency(CONFIGURED)(input, init),
+      )}
+    >
+      <Toasted>
+        <Pricing />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Model name"), "gpt-4o");
+    await userEvent.type(form.getByLabelText("Input price per Mtok"), "2.50");
+    await userEvent.type(form.getByLabelText("Output price per Mtok"), "10.00");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    await expectToast(canvasElement, /already has a price in USD/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(form.getByLabelText("Model name")).toHaveValue("gpt-4o");
+    // a number input, so the value reads back numeric rather than as typed
+    await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(10);
   },
 };

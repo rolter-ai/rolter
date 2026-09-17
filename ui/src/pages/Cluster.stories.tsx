@@ -141,6 +141,33 @@ export const RefusesDrainingTheLastGateway: Story = {
   },
 };
 
+// the other half of the drain: the refusal has a story, the answer did not.
+// draining is deliberately not confirmed — it is reversible from the same
+// control, so a dialog would be ceremony — which makes the request itself the
+// only thing a story can hold onto (#1607)
+const drains = recording(async (_input, init) => {
+  if (init?.method === "PUT") return json(node({ desired_state: "draining" }));
+  return json([node()]);
+});
+
+export const DrainsANode: Story = {
+  render: () => <Harness fetchStub={drains.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Drain node gw-1" }),
+    );
+    const body = await drains.expectSentBody<{ draining: boolean }>(
+      "PUT",
+      "/cluster/nodes/gw-1/drain",
+    );
+    // `draining: true`, not a bare toggle: the same endpoint returns the node
+    // to service, and sending the wrong flag would look identical on screen
+    await expect(body.draining).toBe(true);
+    await expectToast(canvasElement, /gw-1/);
+  },
+};
+
 // forgetting a node that is still polling is pointless — it reappears on its
 // next snapshot poll — so the action is only offered once it has gone stale
 export const ForgetOnlyOfferedForStaleNodes: Story = {
@@ -207,5 +234,36 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(FLEET)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+  },
+};
+
+/**
+ * The forget is refused (#1607).
+ *
+ * `ConfirmDialog` owns the pending state, so the dialog has to stay open on a
+ * refusal rather than closing over a node that is still in the inventory — the
+ * operator would walk away believing it had gone.
+ */
+export const ForgetRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (_input, init) => {
+        if (init?.method === "DELETE") {
+          return json({ error: { message: "gw-old reported in while you were deciding" } }, 409);
+        }
+        return json([node(), node({ id: "gw-old", live: false })]);
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Forget node gw-old" }),
+    );
+    await confirmDestructive(/gw-old/, /forget node/i);
+    await expectToast(canvasElement, /reported in while you were deciding/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
   },
 };
