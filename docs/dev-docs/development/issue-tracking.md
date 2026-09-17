@@ -112,6 +112,53 @@ count as done. Everything noticed outside the scope of the current task becomes
 an issue before that task is reported done — see the scope-discipline section of
 `AGENTS.md`.
 
+## How defaults are seeded, and why they cannot clobber you
+
+`project-automation.yml` adds every new issue and PR to the board and seeds a
+starting `Status` — `Todo` for an issue, `In Review` for a PR, since an open PR
+is by definition waiting on review — plus `Priority: Medium` on an issue.
+
+**Seeding is initialization, not policy.** A field that already carries a value
+was set deliberately, and the automation leaves it alone. It reads the item's
+current single-select values immediately before writing, and skips any field
+that is already populated, logging a `::notice::` naming the value it kept.
+
+Until #1469 this ran unconditionally, and the consequence was not hypothetical:
+#1461 was created and triaged to `Status: Backlog, Priority: High` through
+`gh project item-edit`, the workflow completed successfully afterwards, and a
+later read returned `Todo` / `Medium`. A backlog proposal had become scheduled
+work and a high-priority defect had been demoted, with nothing red anywhere.
+The same sequence ran across #1462–#1468.
+
+### The race is narrowed, not closed — do not let anyone claim otherwise
+
+`updateProjectV2ItemFieldValue` takes no expected-value or version input: the
+Projects v2 API has **no compare-and-set**. So the check above is a
+read-then-write and is *not* atomic. A field set in the window between the
+workflow's read and its write is still overwritten.
+
+What changed is the shape of the exposure, and that is worth being precise
+about rather than rounding to "fixed":
+
+- **Before:** every explicit triage applied before the workflow's write was
+  lost, however early it was set. The window was the whole span from issue
+  creation to the workflow finishing — seconds to minutes, and entirely the
+  user's to lose.
+- **After:** only triage landing inside the gap between one read and one write
+  is lost — a few hundred milliseconds, and only for a field the user edits in
+  that exact instant.
+
+If the API ever grows a conditional update, this is the place to use it. Until
+then, the honest description is "a much smaller race", and a test asserting the
+check is atomic would be asserting something untrue.
+
+### Triaging right after filing
+
+Because of that window, the durable order is: create the issue, let the
+automation land, then set fields. Setting fields as part of creation is not
+wrong — it is simply the ordering with a window. Reading the board back after
+triage is cheap and settles it either way.
+
 ## Editing the board's single-select options
 
 Projects v2 option ids are **not stable**. `updateProjectV2Field` replaces a
