@@ -14,12 +14,14 @@ const TEAM = { id: "team-1", org_id: ORG.id, name: "Platform", created_at: ORG.c
 const PROJECT = { id: "project-1", team_id: TEAM.id, name: "Gateway", created_at: ORG.created_at };
 // what every server row carries since #952: no credential, no overrides
 const NO_AUTH = { auth_kind: "none", auth_header_name: null, has_credential: false, connect_timeout_ms: null, request_timeout_ms: null, max_retries: null } as const;
+// and nothing discovered yet (#1347): a server that nobody has connected to
+const UNDISCOVERED = { oauth_issuer: null, oauth_discovery: "auto", oauth_discovered_issuer: null, oauth_discovered_authorize_url: null, oauth_discovered_token_url: null, oauth_discovered_iss_supported: false, oauth_discovered_at: null } as const;
 const SERVERS: McpServerRow[] = [
-  { id: "server-github", org_id: ORG.id, name: "GitHub", slug: "github", url: "https://api.githubcopilot.com/mcp/", transport: "streamable_http", description: "Repository and pull request operations.", enabled: true, tools: ["search_code", "create_issue", "get_pull_request"], source: "library", required_scopes: ["repo"], created_at: ORG.created_at, authorize_url: null, token_url: null, client_id: null, default_scopes: [], has_client_secret: false, ...NO_AUTH },
-  { id: "server-sentry", org_id: ORG.id, name: "Sentry", slug: "sentry", url: "https://mcp.sentry.dev/mcp", transport: "streamable_http", description: "Production issue investigation.", enabled: false, tools: ["list_issues", "get_issue"], source: "custom", required_scopes: ["org:read"], created_at: ORG.created_at, authorize_url: null, token_url: null, client_id: null, default_scopes: [], has_client_secret: false, ...NO_AUTH },
+  { id: "server-github", org_id: ORG.id, name: "GitHub", slug: "github", url: "https://api.githubcopilot.com/mcp/", transport: "streamable_http", description: "Repository and pull request operations.", enabled: true, tools: ["search_code", "create_issue", "get_pull_request"], source: "library", required_scopes: ["repo"], created_at: ORG.created_at, authorize_url: null, token_url: null, client_id: null, default_scopes: [], has_client_secret: false, ...NO_AUTH, ...UNDISCOVERED },
+  { id: "server-sentry", org_id: ORG.id, name: "Sentry", slug: "sentry", url: "https://mcp.sentry.dev/mcp", transport: "streamable_http", description: "Production issue investigation.", enabled: false, tools: ["list_issues", "get_issue"], source: "custom", required_scopes: ["org:read"], created_at: ORG.created_at, authorize_url: null, token_url: null, client_id: null, default_scopes: [], has_client_secret: false, ...NO_AUTH, ...UNDISCOVERED },
 ];
-// a server whose OAuth client is already registered: Connect is only offered
-// once all three of authorize url, token url and client id are on the row
+// a server whose OAuth client is already registered: Connect needs a client id,
+// plus the endpoint pair only when discovery is off (#1415)
 const CONNECTABLE: McpServerRow = { ...SERVERS[0], id: "server-linear", name: "Linear", slug: "linear", url: "https://mcp.linear.app/mcp", enabled: true, authorize_url: "https://linear.app/oauth/authorize", token_url: "https://api.linear.app/oauth/token", client_id: "rolter-linear", default_scopes: ["read", "write"], has_client_secret: true };
 // one fixture per auth kind (#1447). the credential never appears on a row,
 // only `has_credential`, so none of these could leak one into a story either
@@ -138,14 +140,18 @@ export const CatalogRegistersOAuthClient: Story = {
       client_id: "Iv1.abc123",
       default_scopes: ["repo", "read:org"],
       client_secret: "s3cr3t",
+      // the mode and issuer always travel, since an omitted mode reads as auto
+      discovery: "auto",
+      issuer: null,
     });
     // a client alone does not make the gateway use it: the kind has to say oauth
     await expect(await clientSaves.sent("PUT", "/mcp-servers/server-github/auth")).toEqual({ auth_kind: "oauth" });
   },
 };
 
-// three fields that travel together: two of them is not a client, and the
-// endpoints must be https before the control plane will take them
+// since #1347 a client id alone is a client — discovery supplies the rest — but
+// the typed endpoints still travel as a pair, and must be https before the
+// control plane will take them (#1415)
 export const CatalogRefusesAHalfClient: Story = {
   render: () => <Harness fetchStub={routed()}><McpCatalog /></Harness>,
   play: async ({ canvasElement }) => {
@@ -154,9 +160,14 @@ export const CatalogRefusesAHalfClient: Story = {
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.click(dialog.getByRole("radio", { name: /^OAuth consent/ }));
     await userEvent.type(dialog.getByLabelText("Client ID"), "Iv1.abc123");
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeEnabled();
     await userEvent.type(dialog.getByLabelText("Authorization URL"), "http://sentry.example.com/authorize");
     await expect(dialog.getAllByText("Must be an https URL (http is accepted only on loopback).").length).toBeGreaterThan(0);
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await userEvent.clear(dialog.getByLabelText("Authorization URL"));
+    await userEvent.type(dialog.getByLabelText("Authorization URL"), "https://sentry.io/oauth/authorize");
+    await expect(dialog.getByRole("alert")).toHaveTextContent(/Enter both the authorization URL and the token URL/);
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
   },
 };
 
@@ -377,6 +388,136 @@ export const CatalogGatedForViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Register server");
     await expectRefused(canvasElement, "Configure server Context7");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// discovery, issuer and what discovery found (#1415)
+
+// a client with nothing but an id, whose endpoints discovery already resolved
+const DISCOVERED: McpServerRow = { ...OAUTH, id: "server-notion", name: "Notion", slug: "notion", url: "https://mcp.notion.com/mcp", authorize_url: null, token_url: null, client_id: "rolter-notion", has_client_secret: false, default_scopes: [], oauth_discovered_issuer: "https://api.notion.com", oauth_discovered_authorize_url: "https://api.notion.com/v1/oauth/authorize", oauth_discovered_token_url: "https://api.notion.com/v1/oauth/token", oauth_discovered_iss_supported: true, oauth_discovered_at: "2026-09-12T08:30:00Z" };
+// the same, before anyone has connected: an id and no cache
+const UNPROBED: McpServerRow = { ...DISCOVERED, id: "server-figma", name: "Figma", slug: "figma", url: "https://mcp.figma.com/mcp", client_id: "rolter-figma", ...UNDISCOVERED };
+// a hand-configured server that publishes no metadata, with its issuer pinned
+const MANUAL_OAUTH: McpServerRow = { ...OAUTH, id: "server-jira", name: "Jira", slug: "jira", url: "https://mcp.atlassian.com/v1/sse", authorize_url: "https://auth.atlassian.com/authorize", token_url: "https://auth.atlassian.com/oauth/token", client_id: "rolter-jira", oauth_discovery: "manual", oauth_issuer: "https://auth.atlassian.com" };
+const DISCOVERY_ROWS = [DISCOVERED, UNPROBED, MANUAL_OAUTH];
+// a PATCH answers with the row it was sent to, since the client PUT that
+// follows is addressed by the id that comes back
+const discoverySaves = () => bodyRecording(routed({ servers: async (input, init) => init?.method === "PATCH" ? json(DISCOVERY_ROWS.find((row) => urlOf(input).endsWith(`/${row.id}`)) ?? DISCOVERED) : json(DISCOVERY_ROWS) }));
+
+// an operator can see what discovery resolved instead of guessing whether it
+// worked, and a server that relies on it can connect with a client id alone
+const shows = discoverySaves();
+export const OAuthDiscoveryShowsWhatItFound: Story = {
+  render: () => <Harness fetchStub={shows.stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: "Start the consent flow for Notion" })).toBeEnabled();
+    const dialog = await openConfigure(canvasElement, "Notion");
+    await expect(dialog.getByRole("radio", { name: /^Discover automatically/ })).toBeChecked();
+    const found = within(dialog.getByRole("group", { name: "Discovered endpoints" }));
+    await expect(found.getByText("https://api.notion.com/v1/oauth/authorize")).toBeVisible();
+    await expect(found.getByText("https://api.notion.com/v1/oauth/token")).toBeVisible();
+    await expect(found.getByText("https://api.notion.com")).toBeVisible();
+    await expect(found.getByText("Sends iss in callbacks")).toBeVisible();
+    // the heading and the timestamp both start that way; the timestamp is the second
+    await expect(found.getAllByText(/^Discovered /)).toHaveLength(2);
+    // the typed pair is the fallback here, so blank is a valid answer
+    await expect(dialog.getByRole("group", { name: "Fallback endpoints" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeEnabled();
+    // nothing about the client moved, so the audited PUT is not sent
+    await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
+    await shows.sent("PATCH", "/mcp-servers/server-notion");
+    await expect(shows.calls.some((call) => call.method === "PUT" && call.url.includes("/oauth-client"))).toBe(false);
+  },
+};
+
+// a fresh server honestly says nothing has been found, and registering it
+// needs only the client id — no endpoint keys go on the wire at all
+const unprobed = discoverySaves();
+export const OAuthDiscoveryNothingFoundYet: Story = {
+  render: () => <Harness fetchStub={unprobed.stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Figma");
+    const found = within(dialog.getByRole("group", { name: "Discovered endpoints" }));
+    await expect(found.getByText(/Nothing discovered yet/)).toBeVisible();
+    await userEvent.type(dialog.getByLabelText("Default scopes"), "file:read");
+    await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
+    await expect(await unprobed.sent("PUT", "/mcp-servers/server-figma/oauth-client")).toEqual({ client_id: "rolter-figma", discovery: "auto", issuer: null, default_scopes: ["file:read"] });
+  },
+};
+
+// manual never probes, so the pair becomes required, the discovered panel goes
+// away, and half a pair is refused with a message rather than a 400
+const manual = discoverySaves();
+export const OAuthManualRequiresEndpoints: Story = {
+  render: () => <Harness fetchStub={manual.stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Figma");
+    await userEvent.click(dialog.getByRole("radio", { name: /^Configure manually/ }));
+    await expect(dialog.queryByRole("group", { name: "Discovered endpoints" })).not.toBeInTheDocument();
+    await expect(dialog.getByRole("group", { name: "Endpoints" })).toBeVisible();
+    await expect(dialog.getByRole("alert")).toHaveTextContent(/Manual discovery needs an authorization URL and a token URL/);
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await userEvent.type(dialog.getByLabelText("Authorization URL"), "https://www.figma.com/oauth");
+    await expect(dialog.getByRole("alert")).toHaveTextContent(/Enter both the authorization URL and the token URL/);
+    await userEvent.type(dialog.getByLabelText("Token URL"), "https://api.figma.com/v1/oauth/token");
+    await userEvent.type(dialog.getByLabelText("Issuer"), "https://www.figma.com");
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
+    await expect(await manual.sent("PUT", "/mcp-servers/server-figma/oauth-client")).toEqual({
+      client_id: "rolter-figma",
+      discovery: "manual",
+      issuer: "https://www.figma.com",
+      authorize_url: "https://www.figma.com/oauth",
+      token_url: "https://api.figma.com/v1/oauth/token",
+      default_scopes: [],
+    });
+  },
+};
+
+// re-saving a manual server used to omit the mode, which the control plane
+// reads as auto. the mode and the pinned issuer now round-trip untouched
+const resave = discoverySaves();
+export const OAuthManualResaveKeepsTheMode: Story = {
+  render: () => <Harness fetchStub={resave.stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Jira");
+    await expect(dialog.getByRole("radio", { name: /^Configure manually/ })).toBeChecked();
+    await expect(dialog.getByLabelText("Issuer")).toHaveValue("https://auth.atlassian.com");
+    await userEvent.type(dialog.getByLabelText("Default scopes"), "read:jira-work");
+    await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
+    const body = await resave.sent("PUT", "/mcp-servers/server-jira/oauth-client");
+    await expect(body).toMatchObject({ discovery: "manual", issuer: "https://auth.atlassian.com", authorize_url: MANUAL_OAUTH.authorize_url, token_url: MANUAL_OAUTH.token_url });
+  },
+};
+
+// re-pinning the issuer drops what discovery cached, so the form says so before
+// the operator saves rather than leaving the panel empty afterwards unexplained
+export const OAuthIssuerChangeResetsDiscovery: Story = {
+  render: () => <Harness fetchStub={discoverySaves().stub}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Notion");
+    await expect(dialog.queryByText(/clears these results/)).not.toBeInTheDocument();
+    await userEvent.type(dialog.getByLabelText("Issuer"), "http://api.notion.com");
+    await expect(dialog.getByText("Must be an https URL (http is accepted only on loopback).")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await userEvent.clear(dialog.getByLabelText("Issuer"));
+    await userEvent.type(dialog.getByLabelText("Issuer"), "https://api.notion.com");
+    await expect(dialog.getByText(/clears these results/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeEnabled();
+  },
+};
+
+// the client read is best-effort: refused, the section still edits off the
+// server row and only the redirect uri, which nothing else can supply, is gone
+export const OAuthClientReadRefused: Story = {
+  render: () => <Harness fetchStub={routed({ servers: async () => json(DISCOVERY_ROWS), oauthClient: async () => json({ error: { message: "forbidden" } }, 403) })}><McpCatalog /></Harness>,
+  play: async ({ canvasElement }) => {
+    const dialog = await openConfigure(canvasElement, "Jira");
+    await expect(dialog.getByLabelText("Client ID")).toHaveValue("rolter-jira");
+    await expect(dialog.queryByLabelText("Redirect URI")).not.toBeInTheDocument();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toBeEnabled();
   },
 };
 

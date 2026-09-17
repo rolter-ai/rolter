@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Boxes, KeyRound, Link2, Loader2, Plus, Puzzle, Server, Settings2, ShieldAlert, ShieldCheck, Timer, Wrench } from "lucide-react";
+import { Boxes, KeyRound, Link2, Loader2, Plus, Puzzle, Radar, Server, Settings2, ShieldAlert, ShieldCheck, Timer, Wrench } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -30,6 +30,7 @@ import {
   fetchMcpSettings,
   fetchMcpToolGroups,
   MCP_AUTH_KINDS,
+  MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
   setMcpServerAuth,
   startMcpOAuth,
@@ -40,6 +41,7 @@ import {
   type McpAuthKind,
   type McpLibraryItem,
   type McpOAuthClientInput,
+  type McpOAuthDiscovery,
   type McpServerAuthInput,
   type McpServerInput,
   type McpServerRow,
@@ -66,6 +68,18 @@ import {
   type OverrideDraft,
   type OverrideKey,
 } from "@/lib/mcp-server-auth";
+import {
+  oauthChanged,
+  oauthConnectable,
+  oauthDraft,
+  oauthEndpoint,
+  oauthProblem,
+  oauthResetsDiscovery,
+  oauthTouched,
+  oauthValid,
+  toOAuthInput,
+  type OAuthDraft,
+} from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -90,53 +104,45 @@ function ToolBadges({ tools }: { tools: string[] }) {
 
 // ---------------------------------------------------------------------------
 // the OAuth client rolter presents to one server's authorization server (#707).
-// registering it is what makes the Connect action possible: without an
-// authorize url, a token url and a client id there is nowhere to send the user
+// registering it is what makes the Connect action possible. since #1347 only
+// the client id is required: discovery resolves the endpoints, and the typed
+// pair is either a fallback (`auto`) or the whole answer (`manual`, #1415)
 
-// the same rule mcp_oauth_flow.rs enforces on write — https, with http allowed
-// only on loopback so a local stub stays usable. checked here as well so a typo
-// disables the button instead of costing a round trip
-const LOOPBACK = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/;
-const oauthEndpoint = (value: string) => /^https:\/\//.test(value) || LOOPBACK.test(value);
-
-interface OAuthDraft {
-  authorizeUrl: string;
-  tokenUrl: string;
-  clientId: string;
-  /** never pre-filled: the stored secret is sealed and is never read back */
-  secret: string;
-  clearSecret: boolean;
-  scopes: string;
+function DiscoveryPicker({ value, onChange }: { value: McpOAuthDiscovery; onChange: (mode: McpOAuthDiscovery) => void }) {
+  const { t } = useTranslation();
+  return <fieldset><legend className="text-sm font-medium">{t("pages.mcpCatalog.oauth.discovery.label")}</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{MCP_OAUTH_DISCOVERY_MODES.map((mode) => {
+    const selected = value === mode;
+    return <label key={mode} className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-folk)] bg-card" : "border-[color:var(--border-default)] hover:bg-card/60"}`}>
+      <input type="radio" name="mcp-oauth-discovery" value={mode} checked={selected} onChange={() => onChange(mode)} className="mt-0.5 accent-[color:var(--red-folk)]" aria-describedby={`mcp-oauth-discovery-${mode}-hint`} />
+      <span className="min-w-0"><span className="block text-sm font-medium">{t(`pages.mcpCatalog.oauth.discovery.${mode}.label`)}</span><span id={`mcp-oauth-discovery-${mode}-hint`} className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{t(`pages.mcpCatalog.oauth.discovery.${mode}.hint`)}</span></span>
+    </label>;
+  })}</div></fieldset>;
 }
 
-const oauthDraft = (server: McpServerRow | null): OAuthDraft => ({ authorizeUrl: server?.authorize_url ?? "", tokenUrl: server?.token_url ?? "", clientId: server?.client_id ?? "", secret: "", clearSecret: false, scopes: (server?.default_scopes ?? []).join(", ") });
-
-// the three endpoint fields travel together: a client with two of them is not
-// a client, so the section is either filled in or left alone entirely
-const oauthTouched = (draft: OAuthDraft) => !!(draft.authorizeUrl.trim() || draft.tokenUrl.trim() || draft.clientId.trim());
-const oauthComplete = (draft: OAuthDraft) => !!draft.authorizeUrl.trim() && !!draft.tokenUrl.trim() && !!draft.clientId.trim();
-const oauthEndpointsValid = (draft: OAuthDraft) => (!draft.authorizeUrl.trim() || oauthEndpoint(draft.authorizeUrl.trim())) && (!draft.tokenUrl.trim() || oauthEndpoint(draft.tokenUrl.trim()));
-
-// only send the PUT when something actually moved: the endpoint writes an audit
-// entry on every call, and re-saving identical values would fill the log with
-// changes nobody made
-const oauthChanged = (draft: OAuthDraft, server: McpServerRow | null) =>
-  draft.authorizeUrl.trim() !== (server?.authorize_url ?? "") ||
-  draft.tokenUrl.trim() !== (server?.token_url ?? "") ||
-  draft.clientId.trim() !== (server?.client_id ?? "") ||
-  lines(draft.scopes).join(" ") !== (server?.default_scopes ?? []).join(" ") ||
-  !!draft.secret ||
-  draft.clearSecret;
-
-// the secret is tri-state on the wire: omitted leaves it alone, "" clears it, a
-// value rotates it. an empty input must never clear a secret the operator
-// simply was not rotating
-function toOAuthInput(draft: OAuthDraft): McpOAuthClientInput {
-  const input: McpOAuthClientInput = { authorize_url: draft.authorizeUrl.trim(), token_url: draft.tokenUrl.trim(), client_id: draft.clientId.trim(), default_scopes: lines(draft.scopes) };
-  if (draft.clearSecret) input.client_secret = "";
-  else if (draft.secret) input.client_secret = draft.secret;
-  return input;
+// read-only: what the last successful discovery resolved, so an operator can
+// see whether it worked instead of guessing. the control plane only probes on
+// an interactive Connect, so a fresh server honestly has nothing to show yet
+function DiscoveredEndpoints({ server, resets }: { server: McpServerRow | null; resets: boolean }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const found = server?.oauth_discovered_at ? server : null;
+  const rows = found ? [
+    [t("pages.mcpCatalog.oauth.discovered.issuer"), found.oauth_discovered_issuer],
+    [t("pages.mcpCatalog.oauth.authorizeUrl"), found.oauth_discovered_authorize_url],
+    [t("pages.mcpCatalog.oauth.tokenUrl"), found.oauth_discovered_token_url],
+  ] as const : [];
+  return <div role="group" aria-labelledby="mcp-oauth-discovered-title" className="rounded-[10px] border border-dashed border-[color:var(--border-default)] bg-card p-3">
+    <div className="flex flex-wrap items-center gap-2"><Radar className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden /><h4 id="mcp-oauth-discovered-title" className="text-xs font-semibold uppercase tracking-[0.12em]">{t("pages.mcpCatalog.oauth.discovered.title")}</h4>
+      {found?.oauth_discovered_at && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{t("pages.mcpCatalog.oauth.discovered.at", { when: fmt.dateTime(found.oauth_discovered_at) })}</span>}</div>
+    {found ? <>
+      <dl className="mt-3 grid gap-2 text-xs">{rows.filter(([, value]) => value).map(([label, value]) => <div key={label} className="grid gap-0.5 sm:grid-cols-4 sm:gap-3"><dt className="text-muted-foreground">{label}</dt><dd className="min-w-0 break-all font-mono sm:col-span-3">{value}</dd></div>)}</dl>
+      <div className="mt-3"><Badge tone={found.oauth_discovered_iss_supported ? "success" : "neutral"} dot={found.oauth_discovered_iss_supported}>{found.oauth_discovered_iss_supported ? t("pages.mcpCatalog.oauth.discovered.issSupported") : t("pages.mcpCatalog.oauth.discovered.issUnsupported")}</Badge></div>
+    </> : <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.oauth.discovered.none")}</p>}
+    {resets && <p className="mt-3 text-xs leading-relaxed text-[color:var(--status-warning-text)]">{t("pages.mcpCatalog.oauth.discovered.resets")}</p>}
+  </div>;
 }
+
+const endpointError = (t: TFunction, value: string) => value.trim() && !oauthEndpoint(value.trim()) ? t("pages.mcpCatalog.oauth.endpointError") : undefined;
 
 function OAuthClientSection({ server, draft, onChange }: { server: McpServerRow | null; draft: OAuthDraft; onChange: (patch: Partial<OAuthDraft>) => void }) {
   const { t } = useTranslation();
@@ -145,22 +151,30 @@ function OAuthClientSection({ server, draft, onChange }: { server: McpServerRow 
   // works off the server row when the read is refused or the server is new
   const client = useQuery({ queryKey: ["mcp-oauth-client", server?.id], queryFn: () => fetchMcpOAuthClient(server?.id as string), enabled: !!server, retry: false });
   const stored = server?.has_client_secret ?? false;
+  const manual = draft.discovery === "manual";
+  const problem = oauthTouched(draft, server) ? oauthProblem(draft) : null;
   return <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-4">
     <div className="flex flex-wrap items-center gap-2"><KeyRound className="h-4 w-4 text-[color:var(--red-folk)]" aria-hidden /><h3 className="text-sm font-semibold">{t("pages.mcpCatalog.oauth.title")}</h3><Badge tone={stored && !draft.clearSecret ? "success" : "neutral"}>{stored && !draft.clearSecret ? t("pages.mcpCatalog.oauth.secretSet") : t("pages.mcpCatalog.oauth.secretMissing")}</Badge></div>
     <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("pages.mcpCatalog.oauth.lead")}</p>
     <div className="mt-4 grid gap-3">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={t("pages.mcpCatalog.oauth.authorizeUrl")} htmlFor="mcp-authorize-url" error={draft.authorizeUrl.trim() && !oauthEndpoint(draft.authorizeUrl.trim()) ? t("pages.mcpCatalog.oauth.endpointError") : undefined}><Input id="mcp-authorize-url" value={draft.authorizeUrl} onChange={(event) => onChange({ authorizeUrl: event.target.value })} /></Field>
-        <Field label={t("pages.mcpCatalog.oauth.tokenUrl")} htmlFor="mcp-token-url" error={draft.tokenUrl.trim() && !oauthEndpoint(draft.tokenUrl.trim()) ? t("pages.mcpCatalog.oauth.endpointError") : undefined}><Input id="mcp-token-url" value={draft.tokenUrl} onChange={(event) => onChange({ tokenUrl: event.target.value })} /></Field>
-      </div>
+      <DiscoveryPicker value={draft.discovery} onChange={(discovery) => onChange({ discovery })} />
+      {!manual && <DiscoveredEndpoints server={server} resets={oauthResetsDiscovery(draft, server)} />}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t("pages.mcpCatalog.oauth.clientId")} htmlFor="mcp-client-id"><Input id="mcp-client-id" value={draft.clientId} onChange={(event) => onChange({ clientId: event.target.value })} /></Field>
         <Field label={t("pages.mcpCatalog.oauth.clientSecret")} htmlFor="mcp-client-secret" hint={draft.clearSecret ? t("pages.mcpCatalog.oauth.clearingSecret") : t("pages.mcpCatalog.oauth.secretHint")}><Input id="mcp-client-secret" type="password" autoComplete="new-password" disabled={draft.clearSecret} placeholder={stored ? t("pages.mcpCatalog.oauth.secretPlaceholder") : undefined} value={draft.secret} onChange={(event) => onChange({ secret: event.target.value })} /></Field>
       </div>
       {stored && <div><Button type="button" variant={draft.clearSecret ? "default" : "outline"} aria-pressed={draft.clearSecret} onClick={() => onChange({ clearSecret: !draft.clearSecret, secret: "" })}>{t("pages.mcpCatalog.oauth.clearSecret")}</Button></div>}
+      <div role="group" aria-labelledby="mcp-oauth-endpoints-title" aria-describedby="mcp-oauth-endpoints-hint" className="grid gap-3 border-t border-[color:var(--border-subtle)] pt-3">
+        <div><h4 id="mcp-oauth-endpoints-title" className="text-sm font-medium">{manual ? t("pages.mcpCatalog.oauth.endpoints.manualTitle") : t("pages.mcpCatalog.oauth.endpoints.fallbackTitle")}</h4><p id="mcp-oauth-endpoints-hint" className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{manual ? t("pages.mcpCatalog.oauth.endpoints.manualHint") : t("pages.mcpCatalog.oauth.endpoints.fallbackHint")}</p></div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={t("pages.mcpCatalog.oauth.authorizeUrl")} htmlFor="mcp-authorize-url" error={endpointError(t, draft.authorizeUrl)}><Input id="mcp-authorize-url" className="font-mono" spellCheck={false} required={manual} value={draft.authorizeUrl} onChange={(event) => onChange({ authorizeUrl: event.target.value })} /></Field>
+          <Field label={t("pages.mcpCatalog.oauth.tokenUrl")} htmlFor="mcp-token-url" error={endpointError(t, draft.tokenUrl)}><Input id="mcp-token-url" className="font-mono" spellCheck={false} required={manual} value={draft.tokenUrl} onChange={(event) => onChange({ tokenUrl: event.target.value })} /></Field>
+        </div>
+      </div>
+      <Field label={t("pages.mcpCatalog.oauth.issuer")} htmlFor="mcp-oauth-issuer" hint={endpointError(t, draft.issuer) ? undefined : t("pages.mcpCatalog.oauth.issuerHint")} error={endpointError(t, draft.issuer)}><Input id="mcp-oauth-issuer" className="font-mono" spellCheck={false} placeholder={t("pages.mcpCatalog.oauth.issuerPlaceholder")} value={draft.issuer} onChange={(event) => onChange({ issuer: event.target.value })} /></Field>
       <Field label={t("pages.mcpCatalog.oauth.scopes")} htmlFor="mcp-default-scopes" hint={t("pages.mcpCatalog.oauth.scopesHint")}><Input id="mcp-default-scopes" value={draft.scopes} onChange={(event) => onChange({ scopes: event.target.value })} /></Field>
       {client.data && <Field label={t("pages.mcpCatalog.oauth.redirectUri")} htmlFor="mcp-redirect-uri" hint={t("pages.mcpCatalog.oauth.redirectHint")}><Input id="mcp-redirect-uri" readOnly value={client.data.redirect_uri} /></Field>}
-      {oauthTouched(draft) && !oauthComplete(draft) && <p role="alert" className="text-xs text-[color:var(--danger-text)]">{t("pages.mcpCatalog.oauth.incomplete")}</p>}
+      {problem && problem !== "endpoint" && <p role="alert" className="text-xs text-[color:var(--danger-text)]">{t(`pages.mcpCatalog.oauth.problems.${problem}`)}</p>}
     </div>
   </section>;
 }
@@ -171,7 +185,7 @@ function OAuthClientSection({ server, draft, onChange }: { server: McpServerRow 
 function ConnectButton({ server }: { server: McpServerRow }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const ready = !!(server.authorize_url && server.token_url && server.client_id);
+  const ready = oauthConnectable(server);
   const connect = useMutation({
     mutationFn: () => startMcpOAuth(server.id),
     onSuccess: (started) => {
@@ -349,13 +363,13 @@ function ServerDialog({ initial, pending, error, onClose, onSave }: { initial: M
     onSuccess: (next) => { setRow(next); setAuth(authDraft(next)); setConfirming(null); void client.invalidateQueries({ queryKey: ["mcp-servers", next.org_id] }); },
   });
 
-  const oauthValid = auth.kind !== "oauth" || ((!oauthTouched(oauth) || oauthComplete(oauth)) && oauthEndpointsValid(oauth));
-  const valid = form.name.trim() && (initial || slugify(form.slug || form.name)) && /^https?:\/\//.test(form.url) && oauthValid && authDraftValid(auth, row) && overridesValid(overrides);
+  const clientValid = auth.kind !== "oauth" || oauthValid(oauth, initial);
+  const valid = form.name.trim() && (initial || slugify(form.slug || form.name)) && /^https?:\/\//.test(form.url) && clientValid && authDraftValid(auth, row) && overridesValid(overrides);
   const draft = (): ServerSave => ({
     input: { ...form, slug: initial?.slug ?? slugify(form.slug || form.name), tools: lines(tools), required_scopes: lines(scopes) },
     overrides: overridesPatch(overrides, initial),
     auth: authInput(auth, row),
-    oauth: auth.kind === "oauth" && oauthTouched(oauth) && oauthChanged(oauth, initial) ? toOAuthInput(oauth) : null,
+    oauth: auth.kind === "oauth" && oauthTouched(oauth, initial) && oauthChanged(oauth, initial) ? toOAuthInput(oauth) : null,
   });
   const submit = () => dropsCredential(auth, row) ? setConfirming("save") : onSave(draft());
   const name = form.name.trim() || initial?.name || "";

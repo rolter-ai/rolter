@@ -48,6 +48,13 @@ const SERVERS: McpServerRow[] = [
     connect_timeout_ms: null,
     request_timeout_ms: null,
     max_retries: null,
+    oauth_issuer: null,
+    oauth_discovery: "auto",
+    oauth_discovered_issuer: null,
+    oauth_discovered_authorize_url: null,
+    oauth_discovered_token_url: null,
+    oauth_discovered_iss_supported: false,
+    oauth_discovered_at: null,
   },
   {
     id: "srv-jira",
@@ -73,6 +80,13 @@ const SERVERS: McpServerRow[] = [
     connect_timeout_ms: null,
     request_timeout_ms: null,
     max_retries: null,
+    oauth_issuer: null,
+    oauth_discovery: "auto",
+    oauth_discovered_issuer: null,
+    oauth_discovered_authorize_url: null,
+    oauth_discovered_token_url: null,
+    oauth_discovered_iss_supported: false,
+    oauth_discovered_at: null,
   },
 ];
 

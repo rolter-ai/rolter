@@ -3344,7 +3344,24 @@ export interface McpServerRow {
   connect_timeout_ms: number | null;
   request_timeout_ms: number | null;
   max_retries: number | null;
+  /// the authorization server's issuer as an operator pinned it (#1347), for
+  /// RFC 9207 `iss` validation against something authentic
+  oauth_issuer: string | null;
+  /// `auto` tries RFC 9728 discovery before the configured endpoints; `manual`
+  /// never probes
+  oauth_discovery: McpOAuthDiscovery;
+  /// what the last successful discovery resolved — a cache the interactive
+  /// authorize refreshes, cleared whenever the url, issuer or mode moves
+  oauth_discovered_issuer: string | null;
+  oauth_discovered_authorize_url: string | null;
+  oauth_discovered_token_url: string | null;
+  /// whether that metadata advertised `authorization_response_iss_parameter_supported`
+  oauth_discovered_iss_supported: boolean;
+  oauth_discovered_at: string | null;
 }
+
+export const MCP_OAUTH_DISCOVERY_MODES = ["auto", "manual"] as const;
+export type McpOAuthDiscovery = (typeof MCP_OAUTH_DISCOVERY_MODES)[number];
 
 export const MCP_AUTH_KINDS = ["none", "bearer", "header", "oauth"] as const;
 export type McpAuthKind = (typeof MCP_AUTH_KINDS)[number];
@@ -3600,12 +3617,27 @@ export interface McpOAuthClientRow {
   /** the callback to register upstream; derived from the deployment, so it is
    * returned rather than guessed from the browser's own origin */
   redirect_uri: string;
+  issuer: string | null;
+  discovery: McpOAuthDiscovery;
+  /** the RFC 8707 resource every token for this server is bound to */
+  resource: string | null;
+  discovered_issuer: string | null;
+  discovered_authorize_url: string | null;
+  discovered_token_url: string | null;
+  discovered_at: string | null;
 }
 
 export interface McpOAuthClientInput {
-  authorize_url: string;
-  token_url: string;
+  /** optional since #1347, and both or neither: under `auto` discovery they
+   * are only the fallback, under `manual` they are required */
+  authorize_url?: string;
+  token_url?: string;
   client_id: string;
+  /** `null` unpins the issuer */
+  issuer?: string | null;
+  /** always sent: an omitted mode is read as `auto`, which silently reset a
+   * `manual` server on every re-save */
+  discovery?: McpOAuthDiscovery;
   /** omitted leaves the sealed secret alone; `""` clears it, which is how a
    * confidential client is downgraded to a public one */
   client_secret?: string;

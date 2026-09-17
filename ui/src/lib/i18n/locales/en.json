@@ -1085,7 +1085,7 @@
     "mcpCatalog": {
       "oauth": {
         "title": "OAuth client",
-        "lead": "The client Rolter presents to this server's authorization server. Registering it is what makes Connect possible; nothing here mints a token.",
+        "lead": "The client Rolter presents to this server's authorization server. Only the client ID is required: Rolter discovers the endpoints from the server itself unless you switch discovery off. Nothing here mints a token.",
         "authorizeUrl": "Authorization URL",
         "tokenUrl": "Token URL",
         "clientId": "Client ID",
@@ -1101,7 +1101,40 @@
         "redirectUri": "Redirect URI",
         "redirectHint": "Register this exact callback with the authorization server; it is derived from the deployment, never from the browser.",
         "endpointError": "Must be an https URL (http is accepted only on loopback).",
-        "incomplete": "An OAuth client needs an authorization URL, a token URL and a client ID together."
+        "issuer": "Issuer",
+        "issuerPlaceholder": "https://auth.example.com",
+        "issuerHint": "Optional. Pinning the authorization server's issuer makes RFC 9207 validation strict: a callback whose iss does not match is refused. A server with no discovery metadata and no pinned issuer cannot have its iss verified, so its consent is refused.",
+        "discovery": {
+          "label": "Endpoint discovery",
+          "auto": {
+            "label": "Discover automatically",
+            "hint": "Rolter reads the server's RFC 9728 metadata when someone connects. Endpoints you enter are only a fallback."
+          },
+          "manual": {
+            "label": "Configure manually",
+            "hint": "Rolter never probes the server and uses only the endpoints you enter."
+          }
+        },
+        "discovered": {
+          "title": "Discovered endpoints",
+          "at": "Discovered {{when}}",
+          "issuer": "Issuer",
+          "issSupported": "Sends iss in callbacks",
+          "issUnsupported": "Does not advertise iss",
+          "none": "Nothing discovered yet. Discovery runs the first time someone connects, and what it finds is shown here.",
+          "resets": "Saving a new issuer or discovery mode clears these results. The next Connect discovers again."
+        },
+        "endpoints": {
+          "fallbackTitle": "Fallback endpoints",
+          "fallbackHint": "Used only when the server publishes no metadata. Enter both or leave both blank.",
+          "manualTitle": "Endpoints",
+          "manualHint": "Required: nothing is discovered in manual mode."
+        },
+        "problems": {
+          "clientId": "An OAuth client needs a client ID.",
+          "pair": "Enter both the authorization URL and the token URL, or leave both blank.",
+          "manualNeedsEndpoints": "Manual discovery needs an authorization URL and a token URL, since nothing is discovered to fall back on."
+        }
       },
       "connect": {
         "action": "Connect",
