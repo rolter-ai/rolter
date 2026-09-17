@@ -1,10 +1,23 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Plugins from "./Plugins";
-import { cancelConfirmation, confirmDestructive, expectEmptyState, expectForbidden, expectSkeleton, expectToast, recording, Toasted } from "./story-harness";
+import {
+  cancelConfirmation,
+  confirmDestructive,
+  expectEmptyState,
+  expectForbidden,
+  expectRefused,
+  expectSkeleton,
+  expectToast,
+  Harness as ScreenHarness,
+  json,
+  NEEDS_ADMIN,
+  recording,
+  Toasted,
+  type FetchStub,
+  type StoryRole,
+} from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
 
 const PLUGINS: PluginInstanceRow[] = [
@@ -46,8 +59,6 @@ const PLUGINS: PluginInstanceRow[] = [
   },
 ];
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const scopeResponse = (url: string) => {
   if (url.endsWith("/api/v1/orgs")) return json([{ id: "org-1", name: "Rolter", slug: "rolter", created_at: "" }]);
   if (url.includes("/teams")) return json([{ id: "team-1", org_id: "org-1", name: "Platform", created_at: "" }]);
@@ -55,20 +66,28 @@ const scopeResponse = (url: string) => {
   return null;
 };
 
-// `toasted` is opt-in rather than always on: the Toaster contributes its own
-// role="status" and role="alert" regions, and the stories that query those by
-// role would stop being able to
-function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boolean }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    localStorage.removeItem("rolter.scope");
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub]);
-  React.useEffect(() => () => { if (original.current) globalThis.fetch = original.current; }, []);
+/**
+ * The screen under the shared fetch-stub harness, with a role to render as.
+ *
+ * `role` is what a story needs to mount a `CapabilityProvider` at all: with no
+ * provider above it `can()` answers "unknown" and every gated control renders
+ * enabled, so a story without one can never see a control refused (#1606).
+ *
+ * `toasted` is opt-in rather than always on: the Toaster contributes its own
+ * role="status" and role="alert" regions, and the stories that query those by
+ * role would stop being able to.
+ */
+function Harness({
+  fetchStub,
+  role,
+  toasted,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  toasted?: boolean;
+}) {
   return (
-    <QueryClientProvider client={client}>
+    <ScreenHarness fetchStub={fetchStub} role={role}>
       {toasted ? (
         <Toasted>
           <Plugins />
@@ -76,7 +95,7 @@ function Harness({ fetchStub, toasted }: { fetchStub: FetchStub; toasted?: boole
       ) : (
         <Plugins />
       )}
-    </QueryClientProvider>
+    </ScreenHarness>
   );
 }
 
@@ -218,5 +237,29 @@ export const KeepsOtherRowsInteractiveWhileOneToggles: Story = {
     await expect(
       canvas.getByRole("button", { name: "Delete plugin Response audit" }),
     ).toBeEnabled();
+  },
+};
+
+// `plugin` is admin at every action (#1606). The card carries three controls
+// on three separate gates — the enable switch is a `GatedSwitch`, not a
+// `GatedButton` — so the toolbar's create says nothing about any of them.
+export const RefusedToAViewer: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} role="viewer" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Install plugin");
+    await expectRefused(canvasElement, "Delete plugin PII redaction");
+    await expectRefused(canvasElement, "Configure plugin PII redaction");
+    const toggle = await canvas.findByRole("switch", { name: "Enable PII redaction" });
+    await waitFor(() => expect(toggle).toBeDisabled());
+    await expect(toggle).toHaveAttribute("title", NEEDS_ADMIN);
+  },
+};
+
+export const RefusedToAMember: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} role="member" />,
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Install plugin");
+    await expectRefused(canvasElement, "Delete plugin PII redaction");
   },
 };
