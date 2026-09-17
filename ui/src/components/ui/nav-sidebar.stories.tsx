@@ -317,8 +317,9 @@ export const ExperimentalItems: Story = {
       name: `Tool groups ${en.shell.experimental}`,
     });
     await expect(marked).toBeVisible();
-    // the note the build sent explains what is unfinished, without spending a
-    // line of a 232px rail on it
+    // the note explains what is unfinished, without spending a line of a
+    // 232px rail on it. the sidebar renders whatever it is handed; the shell
+    // resolves it from the catalog (#1401)
     const badge = within(marked).getByText(en.shell.experimental);
     await expect(badge).toHaveAttribute("title", EXPERIMENTAL_NOTE);
     // an unmarked sibling is exactly as it was

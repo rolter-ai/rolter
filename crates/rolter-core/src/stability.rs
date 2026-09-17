@@ -75,8 +75,10 @@ pub struct SubsystemStability {
     pub id: &'static str,
     /// how finished it is; never [`Stability::Stable`] for a listed entry
     pub stability: Stability,
-    /// what specifically is unfinished, in one sentence. Rendered verbatim, so
-    /// it names the gap rather than restating the level
+    /// what specifically is unfinished, in one sentence, naming the gap rather
+    /// than restating the level. English for API consumers and the docs; the
+    /// dashboard renders its own translated copy keyed by `id` from
+    /// `stability.notes.<id>` in every `ui/` catalog (#1401)
     pub note: &'static str,
     /// dashboard nav leaf keys this subsystem surfaces on, from `NAV` in
     /// `ui/src/lib/nav.tsx`.

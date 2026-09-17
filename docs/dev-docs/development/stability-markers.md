@@ -107,6 +107,25 @@ entirely in how rarely it appears.
 4. `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx`, checked by
    `every_nav_key_is_claimed_once_and_exists_in_the_dashboard_nav`. Leave it
    empty when the subsystem has no screen of its own; that is normal, not a gap.
+5. Add the note to the dashboard catalogs as `stability.notes.<id>` in
+   `ui/src/lib/i18n/locales/en.json` **and** every sibling catalog, and drop it
+   when the row goes. `ui/scripts/stability-notes.test.ts` (part of
+   `bun run test`) fails while the `en` keys and the `SUBSYSTEMS` ids disagree,
+   and `bun run check:i18n` holds every other locale to the `en` key set.
+
+### Why the dashboard does not render `note`
+
+`note` on the wire is English, and a dashboard running in Russian used to show
+the translated word *Экспериментально* with a sentence of English behind it
+(#1401). The rail therefore uses only the `id` from the answer and looks the
+note up in the catalogs, where every other string it shows already lives. The
+list itself keeps one owner — which subsystems are marked, and on which nav
+entries, still comes from the control plane.
+
+An id the dashboard's catalogs do not know (in practice only a control plane
+newer than the bundle it serves) still gets its marker, just without the
+explanation. Nothing falls back to the English `note`: the marker carries the
+level, and the note is supplementary.
 
 **Graduating a subsystem is a deliberate act.** Deleting a row says the shape is
 now something we will not change in a minor release, so it belongs in the pull

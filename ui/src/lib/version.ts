@@ -57,14 +57,24 @@ export function useVersionStatus(
 }
 
 /**
- * The nav leaf keys this build ships as experimental, and why (#1386).
+ * The nav leaf keys this build ships as experimental, each mapped to the id of
+ * the subsystem that marks it (#1386).
  *
  * Keyed by nav leaf key rather than by subsystem id: the rail asks "is this
  * entry marked", and `nav_keys` on the wire is what makes that answerable
  * without a second list in `ui/`. A subsystem with no nav entry contributes
  * nothing here — it is documented, not navigated.
+ *
+ * The value is the id, not the wire `note`: the note is English prose from the
+ * build, and the rail renders the catalog copy under `stability.notes.<id>`
+ * instead so it follows the dashboard's locale (#1401).
  */
 export type ExperimentalNavKeys = ReadonlyMap<string, string>;
+
+/** The catalog key holding the translated note for a subsystem id (#1401). */
+export function stabilityNoteKey(id: string): string {
+  return `stability.notes.${id}`;
+}
 
 export function experimentalNavKeysFrom(
   subsystems: readonly SubsystemStability[] | undefined,
@@ -74,7 +84,7 @@ export function experimentalNavKeysFrom(
     // the level rides on each entry, so membership of the list is never what
     // the marker is inferred from
     if (entry.stability !== "experimental") continue;
-    for (const key of entry.nav_keys ?? []) marked.set(key, entry.note);
+    for (const key of entry.nav_keys ?? []) marked.set(key, entry.id);
   }
   return marked;
 }

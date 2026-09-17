@@ -47,7 +47,7 @@ anywhere: it describes the build, not a tenant's data. An anonymous request is
 |---|---|
 | `id` | stable subsystem identifier, `snake_case`. Never renamed once published, so it is safe to key off |
 | `stability` | `experimental` today. `stable` exists in the vocabulary but is never sent |
-| `note` | one sentence naming what specifically is unfinished. Written to be shown verbatim |
+| `note` | one sentence naming what specifically is unfinished, in English. Written to be shown verbatim; the dashboard shows its own translation for the same `id` instead, in whichever language it is set to |
 | `nav_keys` | the dashboard screens this subsystem owns, if any. Empty is normal — a gateway surface or a cross-cutting concept has no screen of its own |
 
 An empty array is a healthy answer: it means this build marks nothing

@@ -1938,7 +1938,11 @@ export interface SubsystemStability {
   id: string;
   /** never `"stable"`: the wire carries the exceptions alone */
   stability: "experimental";
-  /** what specifically is unfinished, one sentence, English from the build */
+  /**
+   * what specifically is unfinished, one sentence, English from the build. The
+   * dashboard does not render it: the rail reads `stability.notes.<id>` from
+   * the catalogs so the note follows the locale (#1401)
+   */
   note: string;
   /** nav leaf keys from `NAV` in `@/lib/nav` */
   nav_keys: string[];
