@@ -107,10 +107,11 @@ cargo install cargo-nextest cargo-deny
 `cargo test`. CI remains authoritative for database-backed tests that need
 `ROLTER_TEST_DATABASE_URL`.
 
-### When the push hooks skip Rust
+### When the hooks skip Rust
 
-The `rust-tests` and `cargo-deny` push hooks run through
-`scripts/prek-rust-gate.sh`, which skips them when the pushed range touches no
+The `rust-tests`, `cargo-deny` and `cargo-clippy-postgres` push hooks, and the
+`cargo-fmt` and `cargo-clippy` commit hooks, run through
+`scripts/prek-rust-gate.sh`, which skips them when the change touches no
 Rust input — so a dashboard- or docs-only push does not wait on a cold
 `--all-features` build of the whole workspace (#1486). A push counts as touching
 Rust when any changed, added, deleted or renamed path is one of:
@@ -121,12 +122,15 @@ Rust when any changed, added, deleted or renamed path is one of:
 - the files a Rust test reads from outside its crate: `rolter.example.toml`,
   `docs/dev-docs/development/stability-markers.md` and `ui/src/lib/nav.tsx`
 
-The range is the one prek hands the hook (`PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF`).
-Whenever there is no range to inspect — `prek run --all-files`, a push with no
-remote ancestor, a ref that does not resolve — the hooks run in full, and
-`ROLTER_PREK_RUST_ALWAYS=1` forces them. The gate is a script rather than a
-`files =` filter because prek drops deleted paths before matching, so a push
-that only removes a `.rs` file would otherwise skip the suite it can break.
+A push hook inspects the range prek hands it
+(`PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF`). A commit hook gets no range, so it
+passes `--staged` and the gate reads the index (`git diff --cached`) instead.
+Whenever there is nothing to inspect — `prek run --all-files`, an empty index, a
+push with no remote ancestor, a ref that does not resolve — the hooks run in
+full, and `ROLTER_PREK_RUST_ALWAYS=1` forces them. The gate is a script rather
+than a `files =` or `types =` filter because prek drops deleted paths before
+matching, so a change that only removes a `.rs` file would otherwise skip the
+fmt, clippy and test runs it can break (#1526).
 
 When a Rust test starts reading a new file from outside `crates/`, add the path
 to the list in `scripts/prek-rust-gate.sh` and here. The hook only saves local
