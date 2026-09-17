@@ -79,7 +79,20 @@ curl -sS -X POST https://rolter.example.com/api/v1/me/mfa/confirm \
 
 ## Signing in with a factor armed
 
-`POST /api/v1/auth/login` answers with a challenge instead of a session:
+In the dashboard this is a second step on the sign-in screen: the password
+form is replaced by one field that takes either the six digits from your app
+or a recovery code. A wrong code says how many of the three attempts are left;
+the third one, or a prompt left sitting past its five minutes, sends you back
+to the password step rather than leaving you typing into a prompt that can no
+longer succeed.
+
+If the organization requires a factor your account has not set up, the sign-in
+stops at the password step and says so — there is nothing to retype, and the
+way forward is an administrator relaxing the policy or running the break-glass
+reset below.
+
+Over the API, `POST /api/v1/auth/login` answers with a challenge instead of a
+session:
 
 ```json
 { "mfa_required": true, "mfa_token": "rolter_mfa_...", "expires_at": "..." }
