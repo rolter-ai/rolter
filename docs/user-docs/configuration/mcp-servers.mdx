@@ -46,6 +46,11 @@ For a header API key, name the header:
 Setting a credential requires `ROLTER_KEK` on the control plane. Without it the
 request is refused rather than storing the credential in the clear.
 
+Only a request that actually **stores** one needs the key. Clearing a
+credential, renaming a `header` server's header, or moving a server to `none` or
+`oauth` all work on a deployment with no `ROLTER_KEK` — so losing the key never
+strands a server on a credential the gateway can no longer open.
+
 <Warning>
 Rolter refuses `Authorization`, `Host`, `Content-Length`, `Content-Type`,
 `Connection`, `Transfer-Encoding`, `Upgrade`, `TE`, `Trailer` and
@@ -69,7 +74,10 @@ re-typing a secret you have no way to look up:
 -d '{"auth_kind": "header", "auth_header_name": "X-Api-Key"}'
 ```
 
-Send `"credential": ""` to clear it, or any other value to replace it.
+Send any other value to replace it. To **remove** a credential, move the server
+to a kind that carries none — see below. `"credential": ""` on `bearer` or
+`header` is refused with a `400`, because those kinds are required to hold one;
+an empty string there would leave the row in a shape the database rejects.
 
 ### Changing to a kind that has no credential clears it
 
@@ -77,8 +85,16 @@ Moving a server to `none` or `oauth` deletes the sealed credential rather than
 leaving it stored and unused. An orphaned secret is one `rolter kek verify` would
 keep auditing forever with nothing able to use it, so Rolter does not keep one.
 
+So `auth_kind: "none"` is how you remove a credential:
+
+```bash
+# drops the sealed credential; needs no ROLTER_KEK
+-d '{"auth_kind": "none"}'
+```
+
 The reverse is refused: arming `bearer` or `header` on a server that has no
-stored credential and sending none returns `400`.
+stored credential and sending none returns `400`, as does sending an empty
+credential to either.
 
 ---
 

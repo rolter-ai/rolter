@@ -261,9 +261,16 @@ impl McpServerRepo<'_> {
     /// "leave it": binding the existing ciphertext back would need it read out
     /// first, and reading a sealed credential to write it again is a decrypt
     /// this path has no reason to perform.
+    /// `kek` is optional because most shapes of this call seal nothing: moving
+    /// to a kind that carries no credential, clearing one, or renaming a
+    /// header while keeping the stored value. Requiring a key for those made
+    /// them impossible on a deployment without `ROLTER_KEK`, which stranded a
+    /// server on `bearer` for an operator who had lost theirs (#1554). Only the
+    /// branch that actually encrypts needs it, and it says so rather than
+    /// unwrapping.
     pub async fn set_auth(
         &self,
-        kek: &super::super::crypto::Kek,
+        kek: Option<&super::super::crypto::Kek>,
         id: Uuid,
         auth: McpAuthConfig<'_>,
     ) -> Result<McpServer> {
@@ -275,6 +282,12 @@ impl McpServerRepo<'_> {
             None => None,
             Some("") => Some((None, None)),
             Some(credential) => {
+                let kek = kek.ok_or_else(|| {
+                    Error::Config(
+                        "sealing an MCP credential needs a key encryption key; this is a caller                          bug, since only a request that stores a credential should reach here"
+                            .to_string(),
+                    )
+                })?;
                 let (c, n) = kek.encrypt(credential)?;
                 Some((Some(c), Some(n)))
             }
