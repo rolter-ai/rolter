@@ -123,10 +123,16 @@ function McpLogsScreen() {
   return (
     <PageBody className="h-full min-h-0">
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-        <McpStat label={t("pages.mcpLogs.calls24h")} value={summary.data ? String(summary.data.calls) : "—"} />
+        {/* a window the deployment proxied nothing in answers with no row at
+            all, and that is a count of zero, not an unknown one — the dash is
+            for a summary that has not arrived or did not load (#1611) */}
+        <McpStat
+          label={t("pages.mcpLogs.calls24h")}
+          value={summary.isSuccess ? String(summary.data?.calls ?? 0) : "—"}
+        />
         <McpStat
           label={t("pages.mcpLogs.failures")}
-          value={summary.data ? String(summary.data.failures) : "—"}
+          value={summary.isSuccess ? String(summary.data?.failures ?? 0) : "—"}
         />
         <McpStat label={t("pages.mcpLogs.avgLatency")} value={latencyStat(summary.data?.avg_latency_ms, ms)} />
         <McpStat label={t("pages.mcpLogs.p95Latency")} value={latencyStat(summary.data?.p95_latency_ms, ms)} />

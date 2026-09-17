@@ -3410,12 +3410,19 @@ export function fetchMcpLogs(
   );
 }
 
+/**
+ * The one aggregate row, or `null` for an empty envelope rather than
+ * `undefined` — the same rule as `fetchAnalyticsSummary`, one endpoint over
+ * (#1611). react-query v5 rejects a query function that resolves to
+ * `undefined`, so an empty `data` turned the MCP logs summary into the load
+ * error panel instead of zeroes.
+ */
 export function fetchMcpSummary(
   window: AnalyticsWindow = {},
-): Promise<McpSummaryRow | undefined> {
+): Promise<McpSummaryRow | null> {
   return getAnalytics<{ data: McpSummaryRow[] }>(
     `/api/v1/mcp/logs/summary${windowParams(window)}`,
-  ).then((r) => r.data[0]);
+  ).then((r) => r.data[0] ?? null);
 }
 
 export function fetchMcpLogDetail(eventId: string): Promise<McpLogDetail> {

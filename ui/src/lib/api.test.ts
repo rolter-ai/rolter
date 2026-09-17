@@ -3,6 +3,7 @@ import {
   fetchConfig,
   createOrg,
   fetchAnalyticsSummary,
+  fetchMcpSummary,
   fetchInvocationsPage,
   AnalyticsUnavailableError,
   ApiError,
@@ -302,6 +303,29 @@ describe("api client", () => {
       const result = await fetchAnalyticsSummary();
       expect(result).toBeNull();
       expect(result).not.toBeUndefined();
+    });
+
+    // the same rule one endpoint over: the MCP logs summary is a single
+    // aggregate row read straight into a query, so an empty envelope there is
+    // the same outage screen on a quiet deployment (#1611)
+    it("resolves an empty mcp summary envelope to null too", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+
+      const result = await fetchMcpSummary();
+      expect(result).toBeNull();
+      expect(result).not.toBeUndefined();
+    });
+
+    it("reads the one row an mcp summary envelope carries", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ calls: 12, failures: 1, servers: 2 }] }), {
+          status: 200,
+        }),
+      );
+
+      expect(await fetchMcpSummary()).toMatchObject({ calls: 12, failures: 1 });
     });
 
     it("should throw AnalyticsUnavailableError on 503", async () => {
