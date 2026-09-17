@@ -68,9 +68,57 @@ jobs:
               }
             }' -f project="$PROJECT_ID")
 
+          # what the item already carries. read as late as possible, and once:
+          # `updateProjectV2ItemFieldValue` has no compare-and-set input, so
+          # this is a read-then-write and NOT atomic. see the initialization
+          # contract in docs/dev-docs/development/issue-tracking.md (#1469)
+          # shellcheck disable=SC2016
+          EXISTING=$(gh api graphql -f query='
+            query($item:ID!){
+              node(id:$item){
+                ... on ProjectV2Item {
+                  fieldValues(first:50){
+                    nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name
+                        field { ... on ProjectV2SingleSelectField { name } }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f item="$ITEM_ID")
+
+          # a graphql error comes back as http 200 with a null `node`, which
+          # `gh` does not always treat as a failure. left unchecked, every
+          # field then reads as empty and the seed writes its defaults over
+          # whatever the item already had — silently the very bug this step
+          # exists to prevent. so prove the item came back before trusting the
+          # absence of a value; an unreadable item is a hard failure, never an
+          # "assume nothing is set"
+          if [ "$(jq -r '.data.node.fieldValues.nodes | type' <<<"$EXISTING")" != "array" ]; then
+            echo "::error::could not read current field values for item $ITEM_ID; refusing to seed defaults over values that may exist"
+            echo "$EXISTING" >&2
+            exit 1
+          fi
+
           set_field() {
             field_name=$1
             option_name=$2
+
+            # seeding is initialization, not policy: a value already on the
+            # item was put there deliberately and outranks our default. before
+            # #1469 this ran unconditionally, so triage applied seconds after
+            # creation was silently demoted — a Backlog proposal became Todo
+            # and a High defect became Medium
+            current=$(jq -r --arg f "$field_name" \
+              '[.data.node.fieldValues.nodes[]
+                | select(.field.name == $f) | .name] | .[0] // ""' <<<"$EXISTING")
+            if [ -n "$current" ]; then
+              echo "::notice::$field_name is already '$current'; leaving it alone"
+              return 0
+            fi
+
             field_id=$(jq -r --arg f "$field_name" \
               '.data.node.fields.nodes[] | select(.name == $f) | .id' <<<"$FIELDS")
             option_id=$(jq -r --arg f "$field_name" --arg o "$option_name" \
