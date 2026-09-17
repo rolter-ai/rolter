@@ -1,0 +1,156 @@
+---
+title: "Set Rolter Up With a Coding Agent"
+sidebarTitle: "Agent Setup"
+description: "Paste one of these prompts into Claude Code, Cursor or any coding agent and it will stand Rolter up, connect a provider key, or repoint your agent at the gateway."
+---
+
+If you have a coding agent open, you do not have to read a quickstart and type
+the steps yourself. Each block below is a complete prompt: paste one into the
+agent, in the directory you want Rolter to run from, and it will do the work and
+report back.
+
+Every prompt tells the agent what it is about to do before it does it, and stops
+to ask rather than inventing a value it cannot know. They are ordered — the
+first needs no credential of any kind, and you can stop after it.
+
+<Note>
+  These run on your machine, against your own deployment. Nothing in them calls
+  a service Rolter operates, so they work on an air-gapped host once the binary
+  is there.
+</Note>
+
+## The rules every prompt carries
+
+Each prompt ends with the same block, because these are instructions for a
+program acting on your machine:
+
+- Never invent an email address, an organisation name, a password or an API
+  key. Ask.
+- Never write a provider credential into a file, and never into anything that is
+  about to be committed. It belongs in an environment variable the gateway reads
+  at runtime, or sealed in the control plane's store.
+- Print a secret at most once, when it is created and cannot be read again.
+- On any step that fails, stop and report what happened. Do not work around it.
+
+If you adapt a prompt, keep that block.
+
+## 1. Try Rolter locally, with no credentials
+
+Nothing here needs a provider account. The gateway ships a built-in `fake-llm`
+model that answers deterministic text, so the whole path — client, virtual key,
+routing, logging — is exercised before any provider key exists.
+
+```text Try Rolter locally
+Set up Rolter locally so I can send a chat completion without any provider
+credentials, and show me the result.
+
+Do this:
+1. Tell me what you are about to run before you run it.
+2. Install Rolter if it is not on PATH: `cargo install rolter`, or the release
+   binary for my platform from https://github.com/rolter-ai/rolter/releases.
+   Tell me which you chose.
+3. Run `rolter easy-up` in this directory and wait for it to print the gateway
+   and control-plane addresses. It writes a `rolter.toml` from the bundled
+   example on first run; do not write one yourself.
+4. Read the virtual key out of that generated `rolter.toml` — the `key` field of
+   the first `[[virtual_keys]]` entry, `sk-rolter-dev` in the bundled example.
+   The gateway rejects an unauthenticated request, so the call needs it.
+5. Send one request and show me the response body:
+   curl {gateway}/v1/chat/completions -H 'Content-Type: application/json'
+     -H 'Authorization: Bearer <that key>'
+     -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
+6. Find that request in easy-up's log output and show me the line.
+7. Summarise: the gateway url, the control-plane url, where rolter.toml is, and
+   how to stop the stack.
+
+Rules: do not invent any value — if easy-up did not print or write something you
+need, say so and stop. Do not put any credential in a file that will be
+committed. Print a secret at most once. If a step fails, stop and tell me
+exactly what failed; do not work around it.
+```
+
+<Note>
+  The dashboard is served by the control plane only when a built UI is present
+  (`ui/dist`, which a release binary ships). Running from a source checkout
+  without one, easy-up says so and serves the API alone — the prompt above uses
+  the log rather than the dashboard for that reason.
+</Note>
+
+## 2. Connect your first provider key
+
+Run this once the first prompt has worked. Which path applies depends on how the
+deployment stores its configuration, and the prompt makes the agent ask rather
+than assume:
+
+- **File mode** — what `easy-up` gives you by default. Providers live in
+  `rolter.toml` and the key is read at runtime from the environment variable
+  named by `api_key_env`. The key itself never enters the file.
+- **Database mode** — `easy-up --database-url …`, or a control plane of its own.
+  The CRUD API and the dashboard exist here, and a key added through them is
+  sealed in the store. In file mode those endpoints are not mounted at all, so
+  an agent that assumes them gets a 404.
+
+```text Connect a provider key
+Connect my first real model provider to the Rolter deployment running locally,
+and prove it works.
+
+Do this:
+1. Ask me which provider it is (OpenAI, Anthropic, or another), and whether this
+   deployment is in file mode (a rolter.toml, no --database-url) or
+   database-backed. Do not guess: in file mode the control plane serves no
+   /api/v1/providers endpoint, and a request to it returns 404.
+2. Ask me how you should receive the key. Do not read one out of my shell
+   history, and do not print it back to me.
+3. Tell me what you are about to change, and where, before you change it.
+4. File mode: make sure rolter.toml has a [[providers]] entry for that vendor
+   with `api_key_env` naming an environment variable, and add a [[routes]] entry
+   mapping a model name I choose onto it. Then tell me to export that variable
+   and restart easy-up. Never write the key into rolter.toml or any other file.
+   Database mode: add the provider and the route through the dashboard or
+   `POST {control}/api/v1/providers`, so the key is sealed in the store.
+5. Send one chat completion through the gateway against the model name I chose,
+   with the virtual key, and show me the response and how long it took.
+6. Show me where that request's cost comes from, and what it was.
+
+Rules: never invent an email, an organisation, a model name or a key — ask.
+Never write a provider credential into a file. Print a secret at most once. If a
+step fails, stop and report it rather than trying another way.
+```
+
+## 3. Repoint your coding agent at Rolter
+
+This is the one that pays for the rest: your agent's own traffic goes through the
+gateway, so it is routed, budgeted and logged like everything else.
+
+```text Repoint my agent at Rolter
+Repoint my coding agent at my local Rolter gateway so its model traffic goes
+through it.
+
+Do this:
+1. Ask me which agent or client to repoint, and which model name it should ask
+   for. Do not guess.
+2. Tell me what you are about to change, and where, before you change it.
+3. Give that client a virtual key of its own rather than reusing the one the
+   example config ships. File mode: add a [[virtual_keys]] entry to rolter.toml
+   with a name that says which client it is, and restart easy-up. Database mode:
+   mint the key in the dashboard, scoped to the project I name and with a budget
+   I confirm, and show it to me once — it cannot be read again.
+4. Point the client at the gateway: base url {gateway}/v1, api key that virtual
+   key. Use the client's own configuration file or an environment variable, and
+   tell me which file you touched. Do not commit the key.
+5. Verify with one real call from the client, and show me that request in
+   Rolter's logs — the model it asked for, the provider it landed on, the cost.
+6. Tell me how to undo this in one step.
+
+Rules: never invent a key, a budget or a project name — ask. Never commit the
+virtual key. Print it at most once. If the verification call does not show up in
+the logs, stop and tell me; do not start changing the client until we know why.
+```
+
+## For the agent, not for you
+
+[`/llms.txt`](/llms.txt) is the machine-readable index of this documentation:
+what Rolter is, the endpoints it serves, the commands that matter, and every
+page with the line that says what is on it. It is generated from the navigation,
+so it cannot quietly fall behind. Point an agent at it when you want it to
+answer from the docs rather than from memory.

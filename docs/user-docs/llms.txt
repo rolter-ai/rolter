@@ -1,0 +1,130 @@
+# Rolter
+
+> An OpenAI- and Anthropic-compatible AI gateway and load balancer. One endpoint
+> in front of many model providers: drop-in `/v1` compatibility, virtual keys
+> with budgets, routing and failover across providers, and per-request cost and
+> latency tracking. Self-hosted — every url below is the reader's own
+> deployment, never a service Rolter operates.
+
+Endpoints a client talks to, on a deployment of your own:
+
+- `POST {gateway}/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`,
+  `/v1/models` — the data plane, OpenAI and Anthropic dialects side by side.
+  Authenticate with a virtual key: `Authorization: Bearer <key>`.
+- `{control}/api/v1/...` — the control plane (providers, routes, keys, limits),
+  behind an operator session. `{control}/openapi.json` is its full contract.
+- Model `fake-llm` is built into the gateway and needs no provider and no
+  credential. Use it to prove a path end to end before any key exists.
+
+Commands that matter:
+
+- `rolter easy-up` — the zero-credential local stack: control plane, gateway
+  and dashboard, no config file to write first.
+- `rolter gateway --config rolter.toml` / `rolter control` — the two planes,
+  run separately, which is how a real deployment runs them.
+- `rolter config export --output rolter.toml` — write the live configuration
+  back out as a file `rolter-seed --import` accepts. No credential is ever
+  emitted.
+- `rolter mfa reset --email <address> --reason <why>` — host-side break-glass
+  for a lost second factor.
+
+Reading order for an agent standing Rolter up for the first time: the setup
+prompts below, then the quickstart, then the page for whatever it is wiring.
+
+## Documentation
+
+### Get Started
+
+- [Introduction](/introduction): Rolter is a high-performance AI gateway and load balancer with drop-in OpenAI and Anthropic compatibility, smart routing, virtual keys, and cost tracking.
+- [Quickstart](/quickstart): Follow these steps to install Rolter, configure your first provider, start the gateway, and send a chat completions request in under five minutes.
+- [Installation](/installation): Install the Rolter AI gateway using Docker Compose for a full stack, or choose a single-binary install via Cargo or uv/pip for a lighter setup.
+- [Agent Setup](/agent-setup): Paste one of these prompts into Claude Code, Cursor or any coding agent and it will stand Rolter up, connect a provider key, or repoint your agent at the gateway.
+- [Dashboard](/concepts/dashboard): How to sign in to the control-plane dashboard, what the left rail holds, how the org/team/project scope works, and how navigation adapts to a phone or a tablet.
+
+### Core Concepts
+
+- [Providers & Routes](/concepts/providers-and-routes): Learn how providers define upstream AI services and how routes map public model names to those upstreams with strategies, param defaults, and variants.
+- [Virtual Keys](/concepts/virtual-keys): Understand how virtual keys authenticate clients, restrict model access, and support expiry and revocation — all without storing plaintext secrets.
+- [Load Balancing](/concepts/load-balancing): Explore Rolter's load balancing strategies, understand when to use each one, and see how to configure them in your route definitions.
+- [Cache-Aware Routing](/concepts/cache-aware-routing): Learn how Rolter's cache-aware strategy maximizes KV cache reuse across vLLM replicas, reducing time-to-first-token on prefix-heavy workloads.
+- [Adaptive Routing](/concepts/adaptive-routing): How Rolter's adaptive strategy scores targets from live latency, cost and load, and how to tune the blend without accidentally turning it into a random balancer.
+- [Prompt templates](/concepts/prompt-templates): Author versioned prompt decorators, preview variables, and publish them to organization, project, route, or virtual-key scopes.
+- [Skills repository](/concepts/skills-repository): Share immutable agent skills across an organization with role and team access policies, inline content or artifact references, and safe rollback.
+
+### Configuration
+
+- [Config File](/configuration/config-file): Complete reference for rolter.toml covering server, providers, routes, virtual keys, model prices, budgets, rate limits, and reliability settings.
+- [Config Export](/configuration/config-export): Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs.
+- [Env Vars](/configuration/environment-variables): All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values.
+- [Providers](/configuration/providers): How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it.
+- [Hot Reload](/configuration/hot-reload): Rolter applies provider, route, and key changes from the dashboard instantly without restarting gateways or dropping in-flight connections.
+- [Feature Flags](/configuration/feature-flags): Toggle the response cache, cache-aware routing, circuit breaker, health checks, complexity routing and guardrails from the dashboard, and have every gateway replica pick the change up without a restart.
+- [Plugins](/configuration/plugins): Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline.
+- [Compatibility](/configuration/compatibility): The values Rolter applies when translating a request between the OpenAI and Anthropic wire formats — the Anthropic API version header and the default max_tokens.
+- [Client Settings](/configuration/client-settings): The base URL Rolter advertises to clients, which inbound headers reach the provider, which headers Rolter adds itself, and the header carrying the request id.
+- [Model Settings](/configuration/model-settings): Sampling parameters and a fallback model Rolter fills in when a client omits them — never overwriting a value the caller sent.
+- [Labels](/configuration/labels): Attach your own labels to providers, provider groups, routes and models, and read the automatic labels Rolter derives — including what the timestamp on an automatic label does and does not promise.
+- [MCP Credentials](/configuration/mcp-servers): How Rolter authenticates to an MCP server — bearer tokens, header API keys, or the OAuth consent flow — how those credentials are sealed at rest, and the per-server timeout overrides.
+- [Gemini Interactions](/configuration/gemini-interactions): Configure the gemini_interactions provider kind, which maps OpenAI Chat, OpenAI Responses and Anthropic Messages requests onto Google's stateful Gemini Interactions API.
+
+### Reliability
+
+- [Retries & Cooldowns](/reliability/retries-and-cooldowns): Configure automatic retries and per-target cooldowns so Rolter handles transient upstream failures transparently, without changes to your client code.
+- [Circuit Breakers](/reliability/circuit-breakers): Use Rolter's per-target circuit breakers to automatically shed traffic from upstream models that are consistently failing, protecting latency and capacity.
+- [Health Checks](/reliability/health-checks): Enable Rolter's background health probing to automatically skip unavailable upstream providers during routing, before a real request ever fails.
+- [Performance Tuning](/reliability/performance-tuning): Tune Rolter's upstream retry budget, connect and request timeouts, and the per-provider bounded admission queue from the dashboard or the management API.
+
+### Access & Security
+
+- [Which key do I need?](/security/which-key): Rolter handles three different credentials that all get called an API key. This page names each one, says who holds it, and shows how to tell them apart.
+- [Authentication](/security/authentication): Pass a virtual key in every request using the OpenAI or Anthropic header style; manage key access and expiry through virtual key properties.
+- [RBAC](/security/rbac): Assign admin, member, and viewer roles at org, team, or project scope to control what each user can manage in the Rolter control plane.
+- [Single Sign-On](/security/single-sign-on): Register an OIDC provider from the dashboard, map its groups to Rolter roles, and decide whether your organization still accepts passwords.
+- [Two-factor authentication](/security/two-factor-authentication): TOTP second factor for local accounts, recovery codes, org enforcement policy, and the break-glass path back in.
+- [User Provisioning (SCIM)](/security/user-provisioning): Issue an org-scoped SCIM token, wire it into your identity provider, map its groups to teams, and let joiners, movers, and leavers flow into Rolter automatically.
+- [MCP OAuth](/security/mcp-oauth): How Rolter records user consent for MCP servers, what a session holds, why revoking a grant revokes its sessions, and who can see which rows.
+- [Guardrails](/security/guardrails): Manage in-gateway inspection rules and one active external guardrail service without restarting gateways.
+- [PII sanitizer](/security/pii-sanitizer): Hand request content to an external de-identification service before it reaches a provider, and optionally reverse the substitution on the way back.
+- [Budgets & Rate Limits](/security/budgets-and-rate-limits): Configure USD spend caps and RPM/TPM throughput limits at org, team, project, or key scope to control LLM costs and prevent runaway usage.
+- [Cost Attribution](/security/cost-attribution): Roll teams up into business units and attribute spend to your own customers, without breaking the identity that historical spend was recorded against.
+
+### Observability
+
+- [Metrics](/observability/metrics): Scrape Rolter's Prometheus endpoint to monitor request rates, latency histograms, upstream errors, and auth failures across models and providers.
+- [Logs & Cost](/observability/logs-and-cost): Enable ClickHouse logging to record every proxied request with token counts, cost in USD, latency, and error details for analysis and billing.
+- [Tracing](/observability/tracing): Configure Rolter to export OpenTelemetry traces to Grafana, Honeycomb, Datadog, SigNoz, or Langfuse for end-to-end LLM observability.
+- [What to look at](/observability/what-to-look-at): The handful of queries and trace views that answer why a request was slow and whether a dashboard screen is usable — with the shape of a healthy answer, so you can tell a real problem from noise.
+- [Log Settings](/observability/log-settings): Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, and how long each half is kept.
+- [Connectors](/observability/connectors): Configure outbound destinations for Rolter's request logs, traces and metrics — endpoint, credential and sampling rate — and verify each one with a test delivery before you turn it on.
+
+### Deployment
+
+- [Docker](/deployment/docker): Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host.
+- [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
+- [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
+- [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, runtime egress guarantees, an operator checklist, and an offline smoke test.
+- [Backup & restore](/deployment/backup-and-restore): How to back up the Rolter control-plane database, restore it safely, verify that ROLTER_KEK still opens your stored credentials, and rotate the key-encryption key without splitting the fleet.
+- [Upgrading](/deployment/upgrading): How Rolter carries your configuration across a version boundary, how to preview an upgrade before you run it, and why skipping releases is safe.
+
+### Project
+
+- [Versioning & compatibility](/community/versioning): What a Rolter major version guarantees on each surface — the OpenAI/Anthropic gateway API, the control API, config files, the database schema and the Rust crates — plus the deprecation window before anything is removed.
+- [Brand guidelines](/community/brand): How to use the Rolter mark, the accent and folkloric reds, the вышивка ornament and the Geist type in docs, decks, integrations and third-party pages — with clear space, minimum sizes and the things not to do.
+
+## API Reference
+
+### Gateway API
+
+- [Overview](/api/overview): The Rolter gateway exposes OpenAI and Anthropic-compatible endpoints. Authenticate with a virtual key as a Bearer token or x-api-key header.
+- [/v1/chat/completions](/api/chat-completions): Create a chat completion by sending a list of messages. Supports streaming via Server-Sent Events and is fully OpenAI SDK-compatible.
+- [/v1/completions](/api/completions): Create a text completion using the OpenAI legacy completions endpoint. Pass a prompt string and receive a completion response from your configured route.
+- [/v1/messages](/api/messages): Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config.
+- [Realtime](/api/realtime): Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and what it does not yet cover.
+- [MCP](/api/mcp): Proxy Streamable HTTP and SSE MCP servers with user-bound OAuth authorization.
+- [/v1/models](/api/models): List the model route names configured in Rolter that your virtual key is authorized to use, filtered by the key allow-list defined in rolter.toml.
+- [Health & Metrics](/api/health-and-metrics): Use GET /healthz for liveness probes, GET /readyz for readiness probes, and GET /metrics for Prometheus scraping to integrate Rolter into your monitoring and orchestration stack.
+- [Stability](/api/stability): GET /api/v1/stability lists the subsystems this build marks experimental — the ones that may change shape or be removed in a minor release. Absence means stable.
+- [UX Events](/api/ui-events): POST /api/v1/ui-events records structural dashboard usability telemetry — screen views, time-to-interactive, form abandons and error states — into ClickHouse alongside request logs.
+- [Version](/api/version): GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint.
+- [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
+- [Control-plane schema](/api/control-plane-openapi): The rolter control plane serves an OpenAPI 3.1 description of its management API at GET /openapi.json and renders it interactively at GET /docs — generate a client instead of hand-writing one.

@@ -423,6 +423,22 @@ jobs:
       - name: build
         run: bun run build
 
+  # ── docs: the agent-facing index tracks the nav ─────────────────────────────
+  # llms.txt is generated from docs.json plus each page's frontmatter (#1582).
+  # a hand-maintained index goes stale silently — a page is added and the index
+  # keeps listing the ones that existed when someone last remembered — so the
+  # committed file is regenerated here and the job fails when it has drifted
+  llms-txt:
+    name: llms.txt tracks the docs nav
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: check
+        run: bun scripts/gen-llms-txt.ts --check
+
   # ── storybook: build + play/interaction tests (headless chromium) ───────────
   # builds the static Storybook and runs the interaction (play) tests via the
   # test-runner against it. a merge gate since #753 — every screen ships stories
