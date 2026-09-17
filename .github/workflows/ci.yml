@@ -106,6 +106,46 @@ jobs:
             bash scripts/check-agent-session-urls.sh --pr-for-ref "${REPO}" "${REF_NAME}"
           fi
 
+  # the commit-message half of the same gap, and it lives here for the same
+  # reason the body half does: it needs to resolve a pull request from the api,
+  # and `quality.yml` deliberately takes no secrets so that dependabot and fork
+  # PRs — which receive none — run the identical gate (#734). that invariant is
+  # worth more than the symmetry of keeping both halves in one file.
+  #
+  # `quality.yml`'s own `session-urls` job still owns the `pull_request` path
+  # and is untouched. what it could not cover is `workflow_dispatch`: it reads
+  # base/head from `github.event.pull_request`, so a dispatched run skipped it
+  # outright — and a skipped job inside a reusable workflow does not fail it,
+  # so `quality` reported success and `ci-ok` went green having never read a
+  # commit message (#1562). the two runs that take the dispatch path are
+  # exactly the wrong ones to have no verdict on: the release PR, which only
+  # ever gets a dispatched run because release-plz opens it with the repo
+  # `GITHUB_TOKEN` (#1025), and the documented recovery for a head sha whose
+  # `opened` event froze a dirty body (#1522).
+  #
+  # a dispatch carries no pull request in its payload, so the range is resolved
+  # by head ref through the same lookup #1523 added for the body.
+  dispatch-commit-urls:
+    name: no agent session urls (commits, dispatch)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the base sha comes from the api, but the walk to it is local, so
+          # this path needs real history just as the pull_request one does
+          fetch-depth: 0
+      - name: check commit messages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+        run: bash scripts/check-agent-session-urls.sh --commit-range-for-ref "${REPO}" "${REF_NAME}"
+
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -201,7 +241,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [quality, pr-title, codeql, session-urls]
+    needs: [quality, pr-title, codeql, session-urls, dispatch-commit-urls]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -282,6 +322,7 @@ jobs:
           echo "pr-title:     ${{ needs.pr-title.result }}"
           echo "codeql:       ${{ needs.codeql.result }}"
           echo "session-urls: ${{ needs.session-urls.result }}"
+          echo "dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }}"
           echo "action:       ${GITHUB_EVENT_ACTION}"
           # quality and codeql must succeed; pr-title may be skipped (push and
           # workflow_dispatch builds) but must not have failed. on a title-only `edited` event the heavy
@@ -322,6 +363,19 @@ jobs:
               echo "::error::the pr body was not confirmed free of coding-agent session urls (session-urls: ${{ needs.session-urls.result }})"
               exit 1
             fi
+          fi
+          # the commit half only runs on a dispatch, so `skipped` is the normal
+          # result everywhere else — `quality.yml`'s own session-urls job has
+          # already checked the range on a pull_request run. a `failure` here is
+          # never tolerated (#1562)
+          if [ "${{ needs.dispatch-commit-urls.result }}" = "failure" ]; then
+            echo "::error::a coding-agent session url was found in this pr's commit messages"
+            exit 1
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+             && [ "${{ needs.dispatch-commit-urls.result }}" != "success" ]; then
+            echo "::error::the commit messages were not confirmed free of coding-agent session urls on this dispatched build (dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }})"
+            exit 1
           fi
           # pr-title still cannot run on a dispatch — the action it uses reads
           # the title out of the event payload. that path exists for the

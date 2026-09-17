@@ -137,8 +137,10 @@ newest `ci-ok` on the sha.
 remote-connection url — a `claude.ai/code/session…` link, or any agent's own
 `<Name>-Session:` git trailer carrying a url — in a commit message or a pull
 request body. It runs as the `no-agent-session-urls` prek hook, as
-`session-urls` in `quality.yml` over every commit the PR introduces, and as
-`session-urls` in `ci.yml` over the PR body. The links are ephemeral and
+`session-urls` in `quality.yml` over every commit the PR introduces, as
+`session-urls` in `ci.yml` over the PR body, and as `dispatch-commit-urls` in
+`ci.yml` over the commit range on a dispatched run, where the `quality.yml` job
+cannot see one. The links are ephemeral and
 sometimes private, and a merged commit message can only be corrected with a
 history rewrite, so the rule has no exceptions.
 
@@ -215,6 +217,44 @@ a gate reports green.
 `ci-ok` was tightened to match: a skipped `session-urls` is accepted **only** on
 a `push` build, the one case with no pull request to check. Anywhere else, a
 skip is a failure rather than a pass.
+
+#### The commit half of the dispatch path
+
+The body was only one half. `quality.yml`'s `session-urls` job — the one that
+reads the commit messages the PR introduces — took base and head from
+`github.event.pull_request`, so a dispatched run skipped it. A skipped job
+inside a reusable workflow does not fail it, so `quality` still reported
+`success` and `ci-ok` went green having never read a commit message (#1562).
+
+That is the wrong place to have no verdict twice over: the release PR **only**
+ever gets a dispatched run, and dispatching is the documented recovery below
+for a head sha whose `opened` event froze a dirty body. A commit message is
+also the half that cannot be fixed after the fact — correcting a merged one
+takes a history rewrite.
+
+`ci.yml` therefore carries a `dispatch-commit-urls` job that runs only on
+`workflow_dispatch` and resolves the range through
+`--commit-range-for-ref`. It lives in `ci.yml` rather than beside its
+`pull_request` twin **because `quality.yml` takes no secrets** (#734): every
+job there scans the checked-out source with pinned public tooling, so the gate
+behaves identically on dependabot and fork PRs, which receive none. Resolving a
+pull request needs a token, so it belongs on this side of the line. The
+`pull_request` path in `quality.yml` is unchanged.
+
+The contract matches the body half: no open PR for the ref is a `::notice::`
+and a pass, a failed API listing fails the job, and a range whose endpoints are
+not both in the clone fails rather than silently checking nothing. `ci-ok`
+treats a `failure` here as fatal on any event, and additionally requires
+`success` on a dispatched build — a skip is honest only where the job does not
+apply.
+
+Both `--pr-for-ref` and `--commit-range-for-ref` share one lookup helper and
+one fixture override, so neither is shell that only CI can run:
+
+```bash
+ROLTER_PULLS_JSON=pulls.json \
+  bash scripts/check-agent-session-urls.sh --commit-range-for-ref rolter-ai/rolter some/branch
+```
 
 `pr-title` still cannot run on a dispatch — the action it uses reads the title
 out of the event payload, and there is no supported way to hand it one. The
