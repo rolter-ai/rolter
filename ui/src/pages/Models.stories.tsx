@@ -13,6 +13,8 @@ import {
   pending,
   routes,
   scoped,
+  Toasted,
+  expectToast,
 } from "./story-harness";
 import type { EffectiveModelDto, RouteRow, RouteTargetRow } from "@/lib/api";
 
@@ -172,6 +174,44 @@ const oneRoutedModel = routes([
   ["/providers", () => FANOUT_PROVIDERS],
   ["/routes", () => [FANOUT_ROUTE]],
 ]);
+
+/**
+ * The delete is refused (#1607).
+ *
+ * Deleting a model takes a route and its targets with it, so the dialog has to
+ * stay open on a refusal rather than closing over a model that is still
+ * serving. The refusal is reported twice — the toast queue and the line inside
+ * the dialog — and both are asserted.
+ */
+export const DeleteRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "gpt-4o is still referenced by 2 virtual keys" } }, 409)
+          : oneRoutedModel(input, init),
+      )}
+    >
+      <Toasted>
+        <Models />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Delete model gpt-4o" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+
+    await expectToast(canvasElement, /referenced by 2 virtual keys/, "error");
+    await waitFor(() =>
+      expect(dialog.getByText(/referenced by 2 virtual keys/)).toBeVisible(),
+    );
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
 
 // The two gates on this screen take different authorities (#1606).
 //

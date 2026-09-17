@@ -12,6 +12,8 @@ import {
   pending,
   routes,
   scoped,
+  Toasted,
+  expectToast,
 } from "./story-harness";
 import type { ProviderGroupRow } from "@/lib/api";
 
@@ -152,5 +154,42 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add group/i);
     await expectRefused(canvasElement, "Delete provider group frontier");
+  },
+};
+
+/**
+ * The delete is refused (#1607).
+ *
+ * A group is what routes fan out through, so one that is still referenced
+ * cannot go — and the dialog has to stay open saying why rather than closing
+ * over a group that is still live.
+ */
+export const DeleteRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "frontier is still the target of 3 routes" } }, 409)
+          : loaded(input, init),
+      )}
+    >
+      <Toasted>
+        <ProviderGroups />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Delete provider group frontier" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+
+    await expectToast(canvasElement, /still the target of 3 routes/, "error");
+    await waitFor(() =>
+      expect(dialog.getByText(/still the target of 3 routes/)).toBeVisible(),
+    );
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };

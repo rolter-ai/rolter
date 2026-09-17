@@ -51,9 +51,17 @@ function stub(test: () => Promise<Response>): FetchStub {
 function Harness({
   fetchStub,
   provider = PROVIDER,
+  onOpenChange = () => {},
 }: {
   fetchStub: FetchStub;
   provider?: ProviderRow;
+  /**
+   * Threaded through so a story can assert the sheet was never *asked* to
+   * close. Rendering `open` unconditionally means the sheet stays on screen
+   * whatever the component decides, so "is the dialog still there" would pass
+   * against a sheet that closed itself (#1607).
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
@@ -72,7 +80,7 @@ function Harness({
       <ProviderSheet
         open
         mode="edit"
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         orgId={PROVIDER.org_id}
         provider={provider}
         onDone={() => {}}
@@ -349,3 +357,47 @@ export const SavingAnnouncesTheOutcome: Story = {
     await expect(within(status).getByText(/openai-primary updated/)).toBeInTheDocument();
   },
 };
+
+/**
+ * The save is refused (#1607).
+ *
+ * `SavingAnnouncesTheOutcome` covers the answer; this covers the other one. The
+ * refusal reaches the toast queue, and the sheet is never asked to close — an
+ * API key is typed once and a sheet that closed on a rejected save would make
+ * the operator fetch it again.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => {
+    const closes: boolean[] = [];
+    closeRequests = closes;
+    return (
+      <ToastProvider>
+        <Harness
+          onOpenChange={(open) => closes.push(open)}
+          fetchStub={async (input, init) => {
+            if (String(input).includes("/provider-kinds")) return json(KINDS);
+            if (init?.method === "PUT" || init?.method === "POST") {
+              return json({ error: { message: "the api key was rejected upstream" } }, 502);
+            }
+            return json(PROVIDER);
+          }}
+        />
+        <Toaster />
+      </ToastProvider>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await screen().findByRole("button", { name: "Save provider" }));
+    const canvas = within(canvasElement);
+    const alert = await waitFor(() => canvas.getByRole("alert"));
+    await waitFor(() =>
+      expect(within(alert).getByText(/rejected upstream/)).toBeVisible(),
+    );
+    // never asked to close, and the draft is still in the fields
+    await expect(closeRequests).toEqual([]);
+    await expect(screen().getByLabelText("Name")).toHaveValue("openai-primary");
+  },
+};
+
+// the story's own recorder, hoisted so `play` can read what `render` wired up
+let closeRequests: boolean[] = [];
