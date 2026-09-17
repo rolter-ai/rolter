@@ -13,6 +13,8 @@ import {
   routes,
   scoped,
   sheet,
+  Toasted,
+  expectToast,
 } from "./story-harness";
 import type {
   AccessProfileDetail,
@@ -351,6 +353,45 @@ export const CreatesACustomRole: Story = {
     expect(body.name).toBe("Support engineer");
     expect(body.base_role).toBe("viewer");
     expect(body.grants).toEqual([{ resource: "virtual_key", action: "create" }]);
+  },
+};
+
+/**
+ * The role is refused (#1607).
+ *
+ * A grid of ticked capability cells is expensive to rebuild, so the sheet has to
+ * survive a rejected save with every tick still set — and the refusal has to be
+ * announced, since this screen reports one only through the toast queue.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "a role with that slug already exists" } }, 409)
+          : withRoles([], MATRIX)(input, init)
+      }
+    >
+      <Toasted>
+        <Rbac />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await clickWhenEnabled(canvasElement, "+ New role");
+
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "Support engineer");
+    await userEvent.click(form.getByLabelText("Create on virtual_key"));
+    await userEvent.click(form.getByRole("button", { name: "Create role" }));
+
+    await expectToast(canvasElement, /slug already exists/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(form.getByLabelText("Name")).toHaveValue("Support engineer");
+    await expect(form.getByLabelText("Create on virtual_key")).toBeChecked();
   },
 };
 

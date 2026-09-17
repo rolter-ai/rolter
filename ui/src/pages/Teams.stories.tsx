@@ -1,14 +1,18 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Teams from "./Teams";
 import {
   Harness,
   ORG,
+  Toasted,
+  clickWhenEnabled,
   expectEmptyState,
   expectLoadError,
   expectSkeleton,
+  expectToast,
   json,
+  sheet,
   type FetchStub,
 } from "./story-harness";
 import type { TeamRow } from "@/lib/api";
@@ -100,5 +104,42 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to teams/);
+  },
+};
+
+/**
+ * The team is refused (#1607).
+ *
+ * `onError` only pushes a toast — the sheet is left standing on purpose, so the
+ * name survives a duplicate-slug refusal and can be corrected in place.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (init?.method === "POST") {
+          return json({ error: { message: "a team called Platform already exists" } }, 409);
+        }
+        if (path === "/api/v1/orgs") return json([ORG]);
+        if (/\/teams$/.test(path)) return json(TEAMS);
+        return json([]);
+      }}
+    >
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /new team/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Team name"), "Platform");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await expectToast(canvasElement, /already exists/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(form).getByLabelText("Team name")).toHaveValue("Platform");
   },
 };
