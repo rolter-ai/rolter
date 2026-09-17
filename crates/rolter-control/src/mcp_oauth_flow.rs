@@ -184,6 +184,12 @@ struct OAuthClientView {
     discovered_issuer: Option<String>,
     discovered_authorize_url: Option<String>,
     discovered_token_url: Option<String>,
+    /// whether the discovered metadata advertised
+    /// `authorization_response_iss_parameter_supported`. it decides which line
+    /// of the RFC 9207 §2.4 table a callback carrying no `iss` is judged by —
+    /// advertised means a missing `iss` is rejected — so a client reading only
+    /// this endpoint needs it to explain why a callback was refused (#1569)
+    discovered_iss_supported: bool,
     discovered_at: Option<DateTime<Utc>>,
 }
 
@@ -208,6 +214,7 @@ impl OAuthClientView {
             discovered_issuer: server.oauth_discovered_issuer,
             discovered_authorize_url: server.oauth_discovered_authorize_url,
             discovered_token_url: server.oauth_discovered_token_url,
+            discovered_iss_supported: server.oauth_discovered_iss_supported,
             discovered_at: server.oauth_discovered_at,
         }
     }

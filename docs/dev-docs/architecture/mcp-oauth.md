@@ -201,6 +201,13 @@ fails the check is refused whole: its `error`, `error_description` and
 resolves the login state and validates the issuer *before* it reads anything
 else in the response.
 
+Which line applies is visible over the API: `GET /api/v1/mcp-servers/{id}/oauth-client`
+returns `discovered_iss_supported` beside the rest of the discovery cache
+(#1569). Without it a client reading only that endpoint can see *what* was
+discovered but not how a callback with no `iss` will be judged, which is the
+difference between "proceed" and "reject". Note the naming: the row and the
+server list use `oauth_discovered_*`, the client view drops the prefix.
+
 A row with no recorded issuer at all — hand-configured, no metadata, no pinned
 `issuer` — lands on the last line of the table and keeps working exactly as it
 did. But an `iss` that arrives for such a row is **refused**, because there is
