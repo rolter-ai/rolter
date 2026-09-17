@@ -536,3 +536,36 @@ describe("findLiterals reads every copy-carrying prop name", () => {
     expect(texts(source)).toEqual([]);
   });
 });
+
+// any all-lowercase run of class-list characters read as a Tailwind class list,
+// so lowercase copy was dropped while the capitalised spelling was reported
+// (#1546). a class list is told apart by its tokens, not by its case
+describe("findLiterals tells lowercase prose from a class list", () => {
+  test("reports a lowercase error message, prop and text node", () => {
+    expect(texts("throw new Error(`request failed: ${res.status}`);")).toEqual(["request failed: {…}"]);
+    expect(texts('throw new Error("not a valid number");')).toEqual(["not a valid number"]);
+    expect(texts('<Field hint="no events yet" />')).toEqual(["no events yet"]);
+    expect(texts("<p>none available</p>")).toEqual(["none available"]);
+    expect(texts('<Badge label={armed ? "secret set" : "no secret"} />')).toEqual(["secret set", "no secret"]);
+  });
+
+  test("reports lowercase prose that carries a class-list character", () => {
+    expect(texts('<p title="per-model limits apply" />')).toEqual(["per-model limits apply"]);
+    expect(texts('<Field hint="retry in 5s" />')).toEqual(["retry in 5s"]);
+    expect(texts("<span>voice: nova</span>")).toEqual(["voice: nova"]);
+  });
+
+  test("still ignores real class lists, standalone utilities included", () => {
+    const source = [
+      'const a = { title: "flex items-center gap-2" };',
+      'const b = { title: "relative flex" };',
+      'const c = { title: "hidden sm:block truncate" };',
+      'const d = { title: "border-b border-[color:var(--border-subtle)] px-3.5 py-[9px]" };',
+      'const e = { title: "group relative overflow-hidden" };',
+      'const f = { title: "sr-only md:not-sr-only" };',
+      'const g = { title: "1px solid transparent" };',
+      '<div className={cn("absolute inset-0", open && "block italic")} />',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});

@@ -146,7 +146,7 @@ function AlertChannelsScreen() {
               </Pill>
               {c.secret_configured && (
                 <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                  secret set
+                  {t("pages.alerting.channels.secretSet")}
                 </Pill>
               )}
               {/* the label names the channel: a column of cards each
@@ -606,7 +606,7 @@ function AddRuleDialog({
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.rules.fieldName")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="high error rate" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pages.alerting.rules.namePlaceholder")} />
         </Field>
         <Field label={t("pages.alerting.rules.fieldSignal")}>
           <Select value={signal} onChange={(e) => setSignal(e.target.value)}>

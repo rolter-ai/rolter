@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { ArrowRight, Check, Download, ShieldCheck } from "lucide-react";
 import { Link } from "react-router";
 
@@ -51,9 +51,12 @@ export default function Config() {
         </div>
         <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground">
           <ShieldCheck className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
-          Admin-only · read-only view. Config is applied from{" "}
-          <span className="font-mono text-[color:var(--text-secondary)]">rolter.toml</span> or the
-          control-plane store and synced on reload.
+          <span>
+            <Trans
+              i18nKey="pages.config.readOnlyNotice"
+              components={[<span key="file" className="font-mono text-[color:var(--text-secondary)]" />]}
+            />
+          </span>
         </div>
 
         {config.isError && (

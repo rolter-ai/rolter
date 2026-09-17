@@ -705,6 +705,7 @@ function ChipGroup({
   onToggle: (v: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const id = React.useId();
   return (
     <div className="space-y-1.5" role="group" aria-labelledby={id}>
@@ -713,7 +714,7 @@ function ChipGroup({
       </span>
       <div className="flex flex-wrap gap-1.5">
         {options.length === 0 && (
-          <p className="text-xs text-muted-foreground">none available</p>
+          <p className="text-xs text-muted-foreground">{t("modelSheet.noneAvailable")}</p>
         )}
         {options.map((o) => {
           const on = selected.includes(o.id);

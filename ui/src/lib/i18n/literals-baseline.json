@@ -14,7 +14,6 @@
   ],
   "src/pages/Config.tsx": [
     "API base",
-    "Admin-only · read-only view. Config is applied from",
     "Config hot-swaps with no restart — the gateway polls the control plane's snapshot endpoint.",
     "Effective config",
     "Kind",
