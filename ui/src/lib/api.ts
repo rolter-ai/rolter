@@ -318,12 +318,19 @@ export interface AnalyticsByModelRow {
   p95_latency_ms: number | string;
 }
 
+/**
+ * the summary is an aggregate with no `group by`, so a healthy control plane
+ * always answers exactly one row. an empty `data` still has to become `null`
+ * rather than `undefined`: react-query v5 rejects a query function that
+ * resolves to `undefined`, which turned a quiet deployment into the "cannot
+ * reach the control plane" panel instead of zeroes (#1608)
+ */
 export function fetchAnalyticsSummary(
   window: AnalyticsWindow = {},
-): Promise<AnalyticsSummary | undefined> {
+): Promise<AnalyticsSummary | null> {
   return getAnalytics<DataEnvelope<AnalyticsSummary>>(
     `/api/v1/analytics/summary${windowParams(window)}`,
-  ).then((r) => r.data[0]);
+  ).then((r) => r.data[0] ?? null);
 }
 
 export function fetchAnalyticsTimeseries(

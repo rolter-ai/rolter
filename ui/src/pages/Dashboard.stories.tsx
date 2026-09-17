@@ -140,6 +140,34 @@ export const Empty: Story = {
 };
 
 /**
+ * The same quiet day, answered as an *empty* envelope rather than a row of
+ * zeroes. `fetchAnalyticsSummary` used to resolve `r.data[0]`, which is
+ * `undefined` here, and react-query v5 rejects a query function that resolves
+ * to `undefined` — so this rendered "cannot reach the control plane" (#1608).
+ *
+ * The sibling of `Empty` rather than a replacement for it: the control plane
+ * answers one row today, and this story is what keeps the other shape from
+ * becoming an outage screen if a backend change or a proxy ever answers it.
+ */
+export const EmptySummaryEnvelope: Story = {
+  render: () =>
+    render(
+      routes([
+        ["/api/v1/analytics/summary", () => ({ data: [] })],
+        ["/api/v1/analytics", () => ({ data: [] })],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+      ]),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(en.pages.dashboard.statRequests)).toBeVisible();
+    await expect(await canvas.findByText(fmt.currency(0, "USD"))).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvasElement.textContent ?? "").not.toMatch(/NaN|undefined/);
+  },
+};
+
+/**
  * #959 was measured here: at 375px the stat cards were cut mid-value — `132`
  * rendered as `13`, `5.30%` as `5.3` — because four columns were four columns
  * at every width. One card per row, and the value is whole again.

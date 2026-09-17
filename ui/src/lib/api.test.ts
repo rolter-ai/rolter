@@ -291,6 +291,19 @@ describe("api client", () => {
       expect(callArgs[0]).toContain("/api/v1/analytics/summary");
     });
 
+    // react-query v5 rejects a query function that resolves to `undefined`, so
+    // an empty envelope has to come back as `null` or the dashboard renders the
+    // load-error panel instead of zeroes (#1608)
+    it("should resolve an empty envelope to null, never undefined", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+
+      const result = await fetchAnalyticsSummary();
+      expect(result).toBeNull();
+      expect(result).not.toBeUndefined();
+    });
+
     it("should throw AnalyticsUnavailableError on 503", async () => {
       fetchMock.mockResolvedValueOnce(
         new Response(
