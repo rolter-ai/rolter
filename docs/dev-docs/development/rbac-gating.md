@@ -59,6 +59,12 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   `gate` prop, and a hand-rolled `<button>` reads `useGate()` at the top of the
   screen — one call for the whole list, because the answer does not vary by
   row.
+- **The settings cards that save a whole form.** A card whose only mutating
+  control is one Save — the sign-in policy on the SSO screen is the model — is
+  gated on that resource's `:update` (`org_auth_policy:update`). The fields
+  stay readable and editable; the Save is the refusal, because a policy value
+  is information a member is allowed to have and blanking the card would leave
+  them guessing why sign-in asks for a code (#1078).
 - **The workbench header controls.** The prompt repository and the skills
   repository are master-detail screens, so their mutating controls sit in the
   workbench header rather than on a row. Rename, Settings, Save new version,

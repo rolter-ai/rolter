@@ -145,6 +145,15 @@ switches, and takes one of four values:
 | `required_superadmin` | superadmins must have an armed factor to sign in |
 | `required_all` | every member must have an armed factor to sign in |
 
+In the dashboard it is the **Second factor** control on **Single sign-on →
+Sign-in policy**, beside the password and SSO switches. Choosing either
+`required_*` value confirms before it saves: the confirmation says how many
+members the organization has, spells out that an unenrolled member cannot
+enrol without signing in first, and links this page's break-glass procedure.
+Relaxing the policy saves without a confirmation — it locks nobody out.
+
+Over the API:
+
 ```bash
 curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \

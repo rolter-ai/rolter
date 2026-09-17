@@ -1660,7 +1660,29 @@
         "ssoLabel": "Single sign-on",
         "ssoHint": "Members sign in through a registered identity provider. The sign-in screen shows one button per enabled provider.",
         "save": "Save policy",
-        "bothOff": "At least one sign-in method has to stay on — both off is an outage, not a policy."
+        "bothOff": "At least one sign-in method has to stay on — both off is an outage, not a policy.",
+        "mfaLabel": "Second factor",
+        "mfaOptions": {
+          "off": "Off",
+          "optional": "Optional",
+          "requiredSuperadmin": "Required for superadmins",
+          "requiredAll": "Required for everyone"
+        },
+        "mfaHints": {
+          "off": "Nobody is asked for an authenticator code, and the dashboard does not offer to set one up.",
+          "optional": "Members may set up an authenticator app from their account. Nobody is required to.",
+          "requiredSuperadmin": "Superadmins are refused a session until they have an authenticator app set up. Everyone else may still choose.",
+          "requiredAll": "Every member is refused a session until they have an authenticator app set up. Superadmins included."
+        },
+        "mfaConfirm": {
+          "title": "Require a second factor to sign in?",
+          "body": "Members who have not set up an authenticator app are refused a session from their next sign-in — they cannot set one up without signing in first, so turn this on once the accounts it binds have enrolled.",
+          "bodyWithCount_one": "This organization has {{count}} member. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
+          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
+          "confirm": "Require it",
+          "breakGlass": "Someone locked out is cleared on the host with `rolter mfa reset`, which is audited.",
+          "breakGlassLink": "Break-glass procedure"
+        }
       },
       "providers": {
         "title": "Identity providers",
