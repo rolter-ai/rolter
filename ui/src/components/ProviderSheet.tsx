@@ -264,12 +264,15 @@ export function ProviderSheet({
     },
   });
 
-  const title = mode === "add" ? "Add provider" : `Edit ${provider?.name ?? ""}`;
+  const title =
+    mode === "add"
+      ? t("providerSheet.title.add")
+      : t("providerSheet.title.edit", { name: provider?.name ?? "" });
   const subtitle =
     mode === "add"
-      ? "an upstream provider used as a route target"
+      ? t("providerSheet.subtitle.add")
       : `${draft.slug || "—"} · ${draft.kind}`;
-  const cta = mode === "add" ? "Create provider" : "Save provider";
+  const cta = mode === "add" ? t("providerSheet.cta.create") : t("providerSheet.cta.save");
   const canSave =
     !!draft.name.trim() && !!draft.apiBase.trim() && !save.isPending &&
     (mode === "add" ? !!orgId : true);

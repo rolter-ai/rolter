@@ -27,8 +27,7 @@ test("provider create → edit → delete", async ({ page }) => {
   const sheet = page.getByRole("dialog");
   await sheet.getByLabel(t("providerSheet.fields.name"), { exact: true }).fill(name);
   await sheet.getByLabel(t("providerSheet.fields.apiBase"), { exact: true }).fill("http://sim-a:8000");
-  // the sheet's footer labels are not in the catalog yet (#1531)
-  await sheet.getByRole("button", { name: "Create provider", exact: true }).click();
+  await sheet.getByRole("button", { name: t("providerSheet.cta.create"), exact: true }).click();
   await expect(sheet).toHaveCount(0);
 
   // the new provider's row actions are named after it
@@ -43,7 +42,7 @@ test("provider create → edit → delete", async ({ page }) => {
   const apiBase = sheet.getByLabel(t("providerSheet.fields.apiBase"), { exact: true });
   await expect(apiBase).toHaveValue("http://sim-a:8000");
   await apiBase.fill("http://sim-b:8000");
-  await sheet.getByRole("button", { name: "Save provider", exact: true }).click();
+  await sheet.getByRole("button", { name: t("providerSheet.cta.save"), exact: true }).click();
   await expect(sheet).toHaveCount(0);
   await expect(page.getByText("http://sim-b:8000")).toBeVisible();
 
