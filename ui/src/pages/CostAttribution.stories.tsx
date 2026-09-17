@@ -11,6 +11,7 @@ import {
   expectSkeleton,
   expectToast,
   recording,
+  sheet,
   Toasted,
 } from "./story-harness";
 import type {
@@ -295,11 +296,10 @@ export const RejectsAnInvalidSlug: Story = {
  * beside the toolbar — and both are asserted, because either could stop
  * reporting on its own.
  *
- * The sheet is *not* asserted to survive, because it does not: `onSubmit` calls
- * `setOpen(false)` before the mutation has answered, so a rejected save takes
- * the draft with it. That is the failure this issue is about and it is a
- * production fix rather than a story change, so it is filed as #1626 and the
- * story pins the behaviour as it actually is today.
+ * The sheet survives it, with the typed draft intact. It did not: `onSubmit`
+ * called `setOpen(false)` before the mutation had answered, so a refused save
+ * threw away the name, the slug and the slug-change acknowledgement, leaving
+ * nothing on screen that could bring them back (#1626).
  */
 export const CreateRejectedByTheServer: Story = {
   render: () => (
@@ -335,6 +335,13 @@ export const CreateRejectedByTheServer: Story = {
           .some((node) => node.closest('[role="alert"]') === null),
       ).toBe(true),
     );
+    // and the draft is still there to correct: the sheet stands, the name field
+    // holds what was typed, and the inline refusal is inside the sheet
+    await expect(panel.getByRole("button", { name: "Create" })).toBeVisible();
+    await expect(await panel.findByLabelText("Name")).toHaveValue("Ops");
+    await expect(
+      within(sheet()).getByText(/already taken/),
+    ).toBeVisible();
   },
 };
 
