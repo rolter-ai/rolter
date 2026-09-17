@@ -302,7 +302,8 @@
       "baseUrl": "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value."
-    }
+    },
+    "noneAvailable": "none available"
   },
   "nav": {
     "playground": "Playground",
@@ -644,7 +645,8 @@
       "audioTabs": {
         "tts": "Text → Speech",
         "stt": "Speech → Text"
-      }
+      },
+      "voiceOption": "voice: {{voice}}"
     },
     "promptRepo": {
       "renameTitle": "Rename prompt template",
@@ -940,7 +942,8 @@
         "fieldName": "Name",
         "fieldEndpoint": "Endpoint URL",
         "fieldSecret": "Bearer secret (optional, write-only)",
-        "secretPlaceholder": "stored encrypted"
+        "secretPlaceholder": "stored encrypted",
+        "secretSet": "secret set"
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -967,7 +970,8 @@
         "fieldThreshold": "Threshold",
         "fieldWindow": "Window (seconds)",
         "fieldChannel": "Channel",
-        "channelNone": "none (record only)"
+        "channelNone": "none (record only)",
+        "namePlaceholder": "high error rate"
       },
       "history": {
         "emptyTitle": "No alerts delivered yet",
@@ -2085,7 +2089,8 @@
           "title": "Performance tuning",
           "desc": "Upstream retries, timeouts, and the bounded admission queue."
         }
-      }
+      },
+      "readOnlyNotice": "Admin-only · read-only view. Config is applied from <0>rolter.toml</0> or the control-plane store and synced on reload."
     },
     "mcpSettings": {
       "defaultTransport": "Default transport",

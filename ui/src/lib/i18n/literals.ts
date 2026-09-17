@@ -318,12 +318,47 @@ function isNotCopy(text: string): boolean {
   if (/^https?:\/\//.test(t) || t.includes("://")) return true;
   // a numeric placeholder like "0.00" or "1024"
   if (/^[\d.,\s%-]+$/.test(t)) return true;
-  // a tailwind class list or a css value never starts with a capital and
-  // never carries sentence punctuation; a capitalised class-looking token is
-  // still checked by the caller
-  if (/^[a-z0-9:[\]()\-./%]+( [a-z0-9:[\]()\-./%]+)+$/.test(t)) return true;
+  // a tailwind class list or a css value: lowercase, no sentence punctuation,
+  // and every token a utility. the character set alone is not enough —
+  // `request failed: {…}` and `no events yet` fit it too, and were dropped
+  // while their capitalised spellings were reported (#1546). one plain word
+  // among the tokens makes it prose
+  if (/^[a-z0-9:[\]()\-./%]+( [a-z0-9:[\]()\-./%]+)+$/.test(t) && t.split(" ").every(isUtilityToken)) {
+    return true;
+  }
   return false;
 }
+
+/**
+ * A token that reads as a Tailwind utility or a css value rather than a word:
+ * it carries a dash, a bracket, a slash, a percent or a digit (`px-3.5`,
+ * `w-[9px]`, `w-1/2`, `1px`), a variant colon with something after it
+ * (`sm:block`, where `failed:` ends a clause), or it is one of the utilities
+ * and css keywords that are a bare word.
+ */
+function isUtilityToken(token: string): boolean {
+  return /[-[\]/%\d]|:./.test(token) || BARE_UTILITIES.has(token);
+}
+
+// utilities and css keywords spelled as a plain word. only a class list made
+// entirely of these and dashed tokens is skipped, so a word that doubles as
+// English (`block`, `none`) costs nothing beside real prose
+const BARE_UTILITIES = new Set([
+  // display, position and visibility
+  "flex", "grid", "block", "inline", "hidden", "contents", "table",
+  "relative", "absolute", "fixed", "sticky", "static", "isolate",
+  "visible", "invisible", "collapse",
+  // type
+  "truncate", "italic", "uppercase", "lowercase", "capitalize", "underline",
+  "antialiased", "ordinal", "grow", "shrink",
+  // borders, effects and state markers
+  "border", "rounded", "shadow", "ring", "outline", "transition", "transform",
+  "filter", "blur", "resize", "container", "group", "peer", "prose", "dark",
+  // css values
+  "auto", "none", "solid", "dashed", "dotted", "transparent", "inherit",
+  "currentcolor", "normal", "bold", "nowrap", "pointer", "center", "ease",
+  "linear", "infinite",
+]);
 
 // values that read as capitalised words but are wire codes the browser or the
 // api defines, not copy. keyboard keys and http header names are the bulk

@@ -841,9 +841,9 @@ function AudioMode({ models }: { models: ModelOption[] }) {
                 aria-label={t("pages.playground.voiceAria")}
                 className="h-8 text-xs"
               >
-                <option value="nova">voice: nova</option>
-                <option value="onyx">voice: onyx</option>
-                <option value="shimmer">voice: shimmer</option>
+                <option value="nova">{t("pages.playground.voiceOption", { voice: "nova" })}</option>
+                <option value="onyx">{t("pages.playground.voiceOption", { voice: "onyx" })}</option>
+                <option value="shimmer">{t("pages.playground.voiceOption", { voice: "shimmer" })}</option>
               </Select>
               <Button size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
