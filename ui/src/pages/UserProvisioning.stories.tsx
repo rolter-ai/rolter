@@ -222,17 +222,55 @@ export const IssueRevealsTheSecretOnce: Story = {
   },
 };
 
+const revokedTokens: string[] = [];
+
+/**
+ * The mint is refused (#1607).
+ *
+ * `IssueRevealsTheSecretOnce` covers the answer; this covers the other one. The
+ * sheet reports the control plane's own message and stays open with the name
+ * typed, because closing it would drop the draft on a token that was never
+ * issued.
+ */
+export const IssueRejectedByTheServer: Story = {
+  render: () => {
+    const stub = scoped(async (init) => {
+      if (init?.method === "POST") {
+        return json({ error: { message: "this org already has 10 provisioning tokens" } }, 409);
+      }
+      return json([]);
+    });
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      (await canvas.findAllByRole("button", { name: /Issue token/ }))[0],
+    );
+    const panel = within(await within(document.body).findByRole("dialog"));
+    const name = panel.getByPlaceholderText("Okta production");
+    await userEvent.type(name, "Okta production");
+    await userEvent.click(panel.getByRole("button", { name: /Issue token/ }));
+
+    await waitFor(() =>
+      expect(panel.getByText(/already has 10 provisioning tokens/)).toBeVisible(),
+    );
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(name).toHaveValue("Okta production");
+  },
+};
+
 // revoking is immediate and does not touch the accounts already provisioned —
 // the confirmation has to say that before the operator commits
 export const RevokeExplainsWhatItDoesNotDo: Story = {
   render: () => {
-    let revoked = false;
+    revokedTokens.length = 0;
     const stub = scoped(async (init) => {
       if (init?.method === "DELETE") {
-        revoked = true;
+        revokedTokens.push("tok-1");
         return json(token({ revoked_at: NOW }));
       }
-      return json([revoked ? token({ revoked_at: NOW }) : token()]);
+      return json([revokedTokens.length ? token({ revoked_at: NOW }) : token()]);
     });
     return <Harness fetchStub={stub} />;
   },
@@ -249,6 +287,10 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
       modal.getByText(/nobody is deactivated or logged out/),
     ).toBeVisible();
     await userEvent.click(modal.getByRole("button", { name: "Revoke" }));
+    // the DELETE itself, not just the badge: the row re-renders off a fixture
+    // this story controls, so "REVOKED" on screen would pass a screen that
+    // never sent the request (#1607)
+    await waitFor(() => expect(revokedTokens).toEqual(["tok-1"]));
     await waitFor(() => expect(canvas.getByText("REVOKED")).toBeVisible());
   },
 };
@@ -336,6 +378,42 @@ export const MapGroupPostsTheScopedRole: Story = {
       team_id: "team-1",
     });
     await waitFor(() => expect(canvas.getByText("sre-oncall")).toBeVisible());
+  },
+};
+
+/**
+ * The mapping is refused (#1607).
+ *
+ * This form clears the group name on success only, so a rejected POST has to
+ * leave it standing — and the refusal is rendered inline beside the form that
+ * caused it rather than in the toast queue.
+ */
+export const MapGroupRejectedByTheServer: Story = {
+  render: () => {
+    const stub = scoped(
+      async () => json(TOKENS),
+      async (init) => {
+        if (init?.method === "POST") {
+          return json({ error: { message: "sre-oncall is already mapped" } }, 409);
+        }
+        return json([]);
+      },
+    );
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText("IdP group");
+    await userEvent.type(group, "sre-oncall");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+
+    await waitFor(() =>
+      expect(
+        canvas.getAllByRole("alert").some((a) => /already mapped/.test(a.textContent ?? "")),
+      ).toBe(true),
+    );
+    await expect(group).toHaveValue("sre-oncall");
   },
 };
 

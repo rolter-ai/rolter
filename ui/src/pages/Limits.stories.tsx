@@ -4,11 +4,13 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Limits from "./Limits";
 import {
   Harness,
+  Toasted,
   clickWhenEnabled,
   expectClosesWithoutPrompting,
   expectRefused,
   expectSheetClosed,
   expectSkeleton,
+  expectToast,
   json,
   pickOption,
   pending,
@@ -176,6 +178,47 @@ export const CreatesABudget: Story = {
     await userEvent.type(limit, "250");
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
     await expectSheetClosed();
+  },
+};
+
+/**
+ * The budget is refused (#1607).
+ *
+ * The sheet closes on success, so a `CreatesABudget` that also passed when the
+ * write failed would be indistinguishable — this pins the other branch: the
+ * refusal is announced and the sheet stays with the amount that was typed.
+ */
+export const BudgetCreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST") {
+          return json({ error: { message: "this project already has a 30d budget" } }, 409);
+        }
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(BUDGETS);
+        return json(RATE_LIMITS);
+      })}
+    >
+      <Toasted>
+        <Limits />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    const limit = within(form).getByLabelText("Limit (USD)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "250");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+
+    await expectToast(canvasElement, /already has a 30d budget/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(250);
   },
 };
 

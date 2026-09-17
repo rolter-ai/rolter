@@ -126,6 +126,39 @@ export const SavesChanges: Story = {
   },
 };
 
+/**
+ * The save is refused (#1607).
+ *
+ * This screen is a form, not a sheet, so "the draft survives" means the edited
+ * field still holds what was typed rather than snapping back to the value the
+ * server last confirmed — and the refusal reaches the toast queue, which is the
+ * only place a rejected write is reported here.
+ */
+export const SaveRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (_input, init) =>
+        init?.method === "PUT"
+          ? json({ error: { message: "https://console.example.com is not a valid origin" } }, 422)
+          : json(BASE)
+      }
+    >
+      <Toasted>
+        <Security />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const origins = await canvas.findByDisplayValue("https://app.example.com");
+    await userEvent.clear(origins);
+    await userEvent.type(origins, "https://console.example.com");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expectToast(canvasElement, /is not a valid origin/, "error");
+    await waitFor(() => expect(origins).toHaveValue("https://console.example.com"));
+  },
+};
+
 /** The settings panels are one column below `sm`, and nothing spills (#1203). */
 export const Mobile: Story = {
   ...atMobile,

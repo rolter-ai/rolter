@@ -328,6 +328,48 @@ export const CreatesAProvider: Story = {
   },
 };
 
+/**
+ * The provider is refused (#1607).
+ *
+ * The client secret is typed once and never comes back from the server, so a
+ * sheet that closed on a rejected save would make the operator fetch it from
+ * the identity provider again. It stays, and the refusal is announced.
+ */
+export const CreateRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        (init?.method ?? "GET").toUpperCase() === "POST" &&
+        String(input).includes("/sso-providers")
+          ? json({ error: { message: "the issuer did not answer its discovery document" } }, 502)
+          : api({ providers: () => [provider()] })(input, init),
+      )}
+    >
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+
+    const panel = within(sheet());
+    await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
+    await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4");
+    await userEvent.type(panel.getByLabelText("Client secret"), "s3cr3t");
+    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
+
+    await expectToast(canvasElement, /discovery document/, "error");
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
+    );
+    await expect(panel.getByLabelText("Client secret")).toHaveValue("s3cr3t");
+    await expect(panel.getByLabelText("Issuer URL")).toHaveValue("https://acme.okta.com");
+  },
+};
+
 // #1233: editing in place. before this, rotating a secret or fixing a typo
 // meant deleting the provider and registering it again, which dropped every
 // group mapping and changed the id in the audit trail
