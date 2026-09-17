@@ -3,10 +3,11 @@ import { expect, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
 import {
-  Harness,
   expectEmptyState,
+  expectForbidden,
   expectLoadError,
   expectSkeleton,
+  Harness,
   json,
   pending,
   routes,
@@ -141,5 +142,35 @@ export const NoAnalyticsStore: Story = {
     await expectLoadError(canvasElement, /Analytics are not configured/i);
     await expect(canvas.getByText(/CLICKHOUSE_URL/)).toBeVisible();
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  },
+};
+
+// What a non-superadmin gets, which is the screen refused before it asks
+// (#1606).
+//
+// The MCP call log is is a deployment-scoped resource, so `superadminOnly` never mounts the
+// screen for an org role however high. The stub answers the screen's own
+// request with a perfectly good payload on purpose: if the wrapper is dropped
+// the screen renders that payload and this story fails, which the `Forbidden`
+// story cannot do — it stubs the 403 itself, so it passes either way.
+export const RefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="admin">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
+};
+
+export const RefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="viewer">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
   },
 };
