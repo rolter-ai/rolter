@@ -20,7 +20,7 @@ import {
   scoped,
   sheet,
   Toasted,
-  withConfirm,
+  answerDiscardPrompt,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -361,14 +361,13 @@ export const AnEditedRuleFormPromptsBeforeDiscarding: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "half typed");
 
-    await withConfirm(false, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-    });
-    await withConfirm(true, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expectSheetClosed();
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(false);
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
   },
 };
 

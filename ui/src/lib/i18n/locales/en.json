@@ -47,6 +47,8 @@
     "create": "Create",
     "delete": "Delete",
     "discardChanges": "Discard unsaved changes?",
+    "discardBody": "The edits in this form have not been saved and will be lost.",
+    "discardConfirm": "Discard",
     "filters": "Filters",
     "hideFilters": "Hide filters",
     "search": "Search…",

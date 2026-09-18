@@ -35,6 +35,7 @@ export function Sheet({ open, onOpenChange, onDismiss, children }: SheetProps) {
       <div
         className="absolute inset-0 bg-black/50 rl-fade-in"
         onClick={dismiss}
+        data-testid="sheet-scrim"
         aria-hidden
       />
       <div
@@ -64,10 +65,13 @@ export function SheetHeader({
   title,
   subtitle,
   onClose,
+  closeDisabled = false,
 }: {
   title: string;
   subtitle: string;
   onClose: () => void;
+  /** a save is in flight and dismissal is refused; a live button would no-op */
+  closeDisabled?: boolean;
 }) {
   const { t } = useTranslation();
   const titleId = React.useContext(TitleIdContext);
@@ -86,7 +90,8 @@ export function SheetHeader({
         title={t("common.close")}
         aria-label={t("common.close")}
         onClick={onClose}
-        className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-muted-foreground transition-colors hover:bg-[color:var(--surface-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        disabled={closeDisabled}
+        className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-muted-foreground transition-colors hover:bg-[color:var(--surface-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
       >
         <X className="h-[17px] w-[17px]" />
       </button>

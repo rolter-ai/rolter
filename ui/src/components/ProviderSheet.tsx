@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -193,10 +194,6 @@ export function ProviderSheet({
 
   const dirty = initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
-  const guard = React.useCallback(() => {
-    if (!dirty) return true;
-    return window.confirm(t("common.discardChanges"));
-  }, [dirty, t]);
 
   // edit mode uses the backend's tri-state semantics: omit a field to leave it
   // unchanged, send "" to clear it, send a value to set/rotate it. api_key is
@@ -272,6 +269,14 @@ export function ProviderSheet({
     mode === "add"
       ? t("providerSheet.subtitle.add")
       : `${draft.slug || "—"} · ${draft.kind}`;
+  // the sheet's own dismissal paths (Escape, scrim, close, Cancel) all run
+  // through the shared discard prompt (#1463)
+  const { guard, close, locked, prompt } = useDiscardGuard({
+    dirty,
+    saving: save.isPending,
+    onOpenChange,
+  });
+
   const cta = mode === "add" ? t("providerSheet.cta.create") : t("providerSheet.cta.save");
   const canSave =
     !!draft.name.trim() && !!draft.apiBase.trim() && !save.isPending &&
@@ -282,7 +287,8 @@ export function ProviderSheet({
       <SheetHeader
         title={title}
         subtitle={subtitle}
-        onClose={() => guard() && onOpenChange(false)}
+        onClose={close}
+        closeDisabled={locked}
       />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
@@ -441,7 +447,7 @@ export function ProviderSheet({
               )}
             </Button>
           )}
-          <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
+          <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}
           </Button>
           <Button
@@ -455,6 +461,7 @@ export function ProviderSheet({
           </Button>
         </div>
       </SheetFooter>
+      {prompt}
     </Sheet>
   );
 }

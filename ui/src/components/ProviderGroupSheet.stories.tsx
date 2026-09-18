@@ -11,7 +11,7 @@ import {
   json,
   recording,
   sheet,
-  withConfirm,
+  answerDiscardPrompt,
 } from "@/pages/story-harness";
 import type { ProviderGroupRow, ProviderRow } from "@/lib/api";
 
@@ -219,9 +219,8 @@ export const DiscardGuardKeepsTheDraft: Story = {
     // wait for the seed: an edit that lands before it would be overwritten
     await waitFor(() => expect(dialog.getByLabelText("Name")).toHaveValue("vllm-cluster"));
     await userEvent.type(dialog.getByLabelText("Name"), "-eu");
-    await withConfirm(false, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: /close/i }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: /close/i }));
+    await answerDiscardPrompt(false);
     await expect(dialog.getByLabelText("Name")).toHaveValue("vllm-cluster-eu");
   },
 };
@@ -233,9 +232,8 @@ export const DiscardGuardThrowsItAway: Story = {
     const dialog = within(sheet());
     await waitFor(() => expect(dialog.getByLabelText("Name")).toHaveValue("vllm-cluster"));
     await userEvent.type(dialog.getByLabelText("Name"), "-eu");
-    await withConfirm(true, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: /close/i }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: /close/i }));
+    await answerDiscardPrompt(true);
     await expectSheetClosed();
   },
 };

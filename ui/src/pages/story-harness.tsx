@@ -183,21 +183,27 @@ export function StaleSession({
 }
 
 /**
- * Run `body` with `window.confirm` answering `answer`, then restore it.
+ * The open discard prompt (#1463).
  *
- * The editor sheets guard discarding a dirty draft with `window.confirm`, which
- * is a real modal in a browser and would hang the test runner. Stubbing it is
- * also the only way to assert *both* answers — that "cancel" keeps the sheet
- * open is the half a manual click-through never checks.
+ * Looked up by its accessible name rather than positionally: the editor is
+ * still mounted behind it, so there are two `role="dialog"` nodes on the body
+ * and `sheet()` cannot tell them apart.
  */
-export async function withConfirm(answer: boolean, body: () => Promise<void>): Promise<void> {
-  const original = window.confirm;
-  window.confirm = () => answer;
-  try {
-    await body();
-  } finally {
-    window.confirm = original;
-  }
+export async function discardPrompt(): Promise<HTMLElement> {
+  return within(document.body).findByRole("dialog", { name: /discard unsaved changes/i });
+}
+
+/**
+ * Answer the discard prompt — `true` throws the draft away, `false` keeps
+ * editing. Asserting both answers matters: that "cancel" leaves the draft
+ * intact is the half a manual click-through never checks.
+ */
+export async function answerDiscardPrompt(discard: boolean): Promise<void> {
+  const prompt = await discardPrompt();
+  await userEvent.click(
+    within(prompt).getByRole("button", { name: discard ? "Discard" : "Cancel" }),
+  );
+  await waitFor(() => expect(prompt).not.toBeInTheDocument());
 }
 
 /**
@@ -456,19 +462,11 @@ export async function expectSheetClosed(): Promise<void> {
  * one that matters.
  */
 export async function expectClosesWithoutPrompting(closeLabel = "Cancel"): Promise<void> {
-  let asked = false;
-  const original = window.confirm;
-  window.confirm = () => {
-    asked = true;
-    return true;
-  };
-  try {
-    await userEvent.click(within(sheet()).getByRole("button", { name: closeLabel }));
-    await expectSheetClosed();
-    expect(asked).toBe(false);
-  } finally {
-    window.confirm = original;
-  }
+  await userEvent.click(within(sheet()).getByRole("button", { name: closeLabel }));
+  await expectSheetClosed();
+  expect(
+    within(document.body).queryByRole("dialog", { name: /discard unsaved changes/i }),
+  ).toBeNull();
 }
 
 /**

@@ -15,7 +15,7 @@ import {
   recording,
   scoped,
   sheet,
-  withConfirm,
+  answerDiscardPrompt,
   type FetchStub,
   expectEmptyState,
   expectInStatusRegion,
@@ -383,12 +383,11 @@ export const AnEditedMintFormPromptsBeforeDiscarding: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "half typed");
 
-    await withConfirm(false, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      // declining keeps the sheet, and the typing, alive
-      await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-      await expect(within(form).getByLabelText("Name")).toHaveValue("half typed");
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    // declining keeps the sheet, and the typing, alive
+    await answerDiscardPrompt(false);
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(form).getByLabelText("Name")).toHaveValue("half typed");
   },
 };
 

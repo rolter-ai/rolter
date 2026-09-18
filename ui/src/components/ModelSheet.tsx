@@ -12,6 +12,7 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
+import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -934,10 +935,6 @@ export function ModelSheet({
   const dirty = !readonly && initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
   const toast = useToast();
-  const guard = React.useCallback(() => {
-    if (!dirty) return true;
-    return window.confirm(t("common.discardChanges"));
-  }, [dirty, t]);
 
   const set = (patch: Partial<ModelDraft>) => setDraft((d) => ({ ...d, ...patch }));
   const setDeep = <K extends "price" | "net" | "rbac" | "caps">(
@@ -1150,6 +1147,14 @@ export function ModelSheet({
     },
   });
 
+  // the sheet's own dismissal paths (Escape, scrim, close, Cancel) all run
+  // through the shared discard prompt (#1463)
+  const { guard, close, locked, prompt } = useDiscardGuard({
+    dirty,
+    saving: save.isPending,
+    onOpenChange,
+  });
+
   const runTest = () => {
     setTestState("testing");
     window.setTimeout(() => setTestState("ok"), 1100);
@@ -1251,7 +1256,8 @@ export function ModelSheet({
       <SheetHeader
         title={title}
         subtitle={subtitle}
-        onClose={() => guard() && onOpenChange(false)}
+        onClose={close}
+        closeDisabled={locked}
       />
       <SheetBody>
         {readonly && (
@@ -1985,7 +1991,7 @@ export function ModelSheet({
             </p>
           )}
           <span className={cn("inline-flex gap-2.5", !blockingError && "ml-auto")}>
-            <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
+            <Button variant="ghost" disabled={locked} onClick={close}>
               {t("common.cancel")}
             </Button>
             {readonly && (
@@ -2008,6 +2014,7 @@ export function ModelSheet({
           </span>
         </div>
       </SheetFooter>
+      {prompt}
     </Sheet>
   );
 }

@@ -70,13 +70,60 @@ key rotation is the case that motivated it.
 translated — so it is invisible to `check:i18n` and to the locale catalogs
 entirely — and in the story runner it is a modal nothing can answer, which means
 the confirm path of four screens had never been exercised by a test. `rg
-"window.confirm" ui/src` should only ever find the sheets' discard guards, which
-have a different dismiss contract (they answer "may I throw this draft away",
-not "may I destroy this row") and are tracked separately.
+"window.confirm" ui/src` now finds nothing outside the `check:literals` fixtures:
+the discard guards #1179 left behind came over in #1463, described below.
 
 **A confirmation is not a substitute for a reversible action.** Where retiring
 and deleting both exist — `CostAttribution` — the copy points at the reversible
 one rather than only warning about the other.
+
+## Dismissing a dirty editor
+
+The editor sheets ask a different question — "may I throw this draft away",
+not "may I destroy this row" — but they ask it the same way, through
+`useDiscardGuard` (`ui/src/components/DiscardGuard.tsx`). `EditorSheet` wires it
+for every screen built on the shell; `ModelSheet`, `ProviderSheet` and
+`ProviderGroupSheet` call it directly because they assemble their own chrome.
+
+```tsx
+const { guard, close, locked, prompt } = useDiscardGuard({
+  dirty,
+  saving: save.isPending,
+  onOpenChange,
+});
+
+<Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
+  <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
+  ...
+  <Button variant="ghost" disabled={locked} onClick={close}>{t("common.cancel")}</Button>
+  {prompt}
+</Sheet>
+```
+
+`Sheet.onDismiss` answers synchronously — it was shaped around the browser
+prompt — so the hook keeps that contract by *refusing* the dismissal and raising
+the dialog, then closing the sheet from the dialog's confirm one tick later. The
+four dismissal paths (Escape, the scrim, the header's close button, Cancel) all
+land on it, and the rules are:
+
+- **A pristine editor closes without asking.** A prompt on a form nobody edited
+  is what trains people to click through the one that matters.
+- **Cancelling keeps everything.** The draft is the caller's state and is never
+  touched; `useModalA11y` returns focus to the control that raised the prompt.
+  Only a confirmed discard closes the sheet, and the draft is re-seeded on the
+  next open.
+- **One prompt, never a queue.** Raising it is idempotent, so Escape twice, or
+  Escape then a scrim click, is still one dialog. The browser prompt serialised
+  for free; a rendered one has to say so.
+- **A save in flight refuses dismissal outright.** The request is already on the
+  wire and nothing here can call it back, so a sheet that vanished would leave
+  the operator unable to tell whether the mutation landed. Cancel and the close
+  button are disabled while `locked` rather than silently no-opping.
+
+Stories answer the prompt through `answerDiscardPrompt(true | false)` in
+`story-harness.tsx`, which finds it by its accessible name — the sheet is still
+mounted behind it, so `sheet()` cannot tell the two `role="dialog"` nodes apart.
+`expectClosesWithoutPrompting()` covers the pristine case.
 
 ## The control names its row too
 

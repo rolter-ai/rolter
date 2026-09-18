@@ -19,7 +19,7 @@ import {
   routes,
   scoped,
   sheet,
-  withConfirm,
+  answerDiscardPrompt,
 } from "./story-harness";
 import type { MembershipRow, UserRow } from "@/lib/api";
 
@@ -236,14 +236,13 @@ export const AnEditedInviteFormPromptsBeforeDiscarding: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Email"), "half@typed");
 
-    await withConfirm(false, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-    });
-    await withConfirm(true, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expectSheetClosed();
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(false);
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
   },
 };
 

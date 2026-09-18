@@ -4,6 +4,7 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { CopyButton } from "@/components/CopyButton";
+import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -210,10 +211,6 @@ export function ProviderGroupSheet({
   const dirty = initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
   const toast = useToast();
-  const guard = React.useCallback(() => {
-    if (!dirty) return true;
-    return window.confirm(t("common.discardChanges"));
-  }, [dirty, t]);
 
   // form lifecycle for the UX stream (#805). the target names the form and the
   // mode; nothing derived from what was typed into it
@@ -278,6 +275,14 @@ export function ProviderGroupSheet({
       ? t("providerGroupSheet.subtitleAdd")
       : `${draft.slug || "—"}/model · ${draft.strategy}`;
   const cta = mode === "add" ? t("providerGroupSheet.create") : t("providerGroupSheet.save");
+  // the sheet's own dismissal paths (Escape, scrim, close, Cancel) all run
+  // through the shared discard prompt (#1463)
+  const { guard, close, locked, prompt } = useDiscardGuard({
+    dirty,
+    saving: save.isPending,
+    onOpenChange,
+  });
+
   const canSave = !!draft.name.trim() && !save.isPending && (mode === "add" ? !!orgId : true);
 
   return (
@@ -285,7 +290,8 @@ export function ProviderGroupSheet({
       <SheetHeader
         title={title}
         subtitle={subtitle}
-        onClose={() => guard() && onOpenChange(false)}
+        onClose={close}
+        closeDisabled={locked}
       />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
@@ -381,7 +387,7 @@ export function ProviderGroupSheet({
           </p>
         )}
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
-          <Button variant="ghost" onClick={() => guard() && onOpenChange(false)}>
+          <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}
           </Button>
           <Button
@@ -395,6 +401,7 @@ export function ProviderGroupSheet({
           </Button>
         </div>
       </SheetFooter>
+      {prompt}
     </Sheet>
   );
 }

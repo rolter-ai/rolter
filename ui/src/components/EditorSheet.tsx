@@ -2,6 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Loader2 } from "lucide-react";
+import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 
@@ -17,7 +18,7 @@ export interface EditorSheetProps {
   title: string;
   subtitle: string;
   /** true when the draft differs from what it was seeded with; gates the
-   * discard-changes confirmation on scrim/Escape/Cancel */
+   * discard-changes confirmation on scrim/Escape/Cancel (see DiscardGuard) */
   dirty: boolean;
   errorMessage?: string;
   /** overrides the shared `common.cancel` label; already-translated when passed */
@@ -45,25 +46,18 @@ export function EditorSheet({
 }: EditorSheetProps) {
   const { t } = useTranslation();
 
-  const guard = React.useCallback(() => {
-    if (!dirty) return true;
-    return window.confirm(t("common.discardChanges"));
-  }, [dirty, t]);
-
-  const close = React.useCallback(() => {
-    if (guard()) onOpenChange(false);
-  }, [guard, onOpenChange]);
+  const { guard, close, locked, prompt } = useDiscardGuard({ dirty, saving, onOpenChange });
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
-      <SheetHeader title={title} subtitle={subtitle} onClose={close} />
+      <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>{children}</SheetBody>
       <SheetFooter>
         {errorMessage && (
           <p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">{errorMessage}</p>
         )}
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
-          <Button variant="ghost" onClick={close}>
+          <Button variant="ghost" disabled={locked} onClick={close}>
             {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button disabled={!canSave || saving} onClick={onSave}>
@@ -72,6 +66,7 @@ export function EditorSheet({
           </Button>
         </div>
       </SheetFooter>
+      {prompt}
     </Sheet>
   );
 }

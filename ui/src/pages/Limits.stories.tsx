@@ -17,7 +17,7 @@ import {
   routes,
   scoped,
   sheet,
-  withConfirm,
+  answerDiscardPrompt,
 } from "./story-harness";
 import type { BudgetRow, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -296,11 +296,10 @@ export const AnEditedBudgetFormPromptsBeforeDiscarding: Story = {
     await userEvent.clear(limit);
     await userEvent.type(limit, "999");
 
-    await withConfirm(false, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-      await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(999);
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(false);
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(999);
   },
 };
 
