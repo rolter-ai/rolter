@@ -1263,6 +1263,31 @@ export function deleteLabel(orgId: string, id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/orgs/${orgId}/labels/${id}`);
 }
 
+/**
+ * The same four calls for models, which live in the deployment-wide pricing
+ * catalog rather than in an org — so they are a superadmin's to write, and the
+ * subject is the model's own name rather than a row id.
+ */
+export function fetchModelLabels(filter: LabelFilter = {}): Promise<LabelRow[]> {
+  return getJson<LabelRow[]>(`/api/v1/model-labels${labelQuery(filter)}`);
+}
+
+export function createModelLabel(input: {
+  model: string;
+  key: string;
+  value?: string;
+}): Promise<LabelRow> {
+  return sendJson<LabelRow>("POST", "/api/v1/model-labels", input);
+}
+
+export function updateModelLabel(id: string, value?: string): Promise<LabelRow> {
+  return sendJson<LabelRow>("PUT", `/api/v1/model-labels/${id}`, { value });
+}
+
+export function deleteModelLabel(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `/api/v1/model-labels/${id}`);
+}
+
 export function fetchProviders(orgId: string): Promise<ProviderRow[]> {
   return getJson<ProviderRow[]>(`/api/v1/orgs/${orgId}/providers`);
 }

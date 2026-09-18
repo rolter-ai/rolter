@@ -16,7 +16,7 @@ import {
   Toasted,
   expectToast,
 } from "./story-harness";
-import type { EffectiveModelDto, RouteRow, RouteTargetRow } from "@/lib/api";
+import type { EffectiveModelDto, LabelRow, RouteRow, RouteTargetRow } from "@/lib/api";
 
 const MODELS: EffectiveModelDto[] = [
   { model: "gpt-4o", strategy: "weighted", targets: 2, source: "db" },
@@ -245,5 +245,143 @@ export const DeleteRefusedToAnAdmin: Story = {
     await waitFor(() =>
       expect(canvas.getByRole("button", { name: "Edit gpt-4o" })).toBeEnabled(),
     );
+  },
+};
+
+// ------------------------------------------------------------- labels (#1329)
+
+// a model label is addressed by the model's name, because the catalog is
+// deployment-wide and has no row of its own to point at
+const MODEL_LABELS: LabelRow[] = [
+  {
+    id: "ml-1",
+    subject_type: "model",
+    subject_id: "gpt-4o",
+    key: "tier",
+    value: "flagship",
+    source: "custom",
+    created_at: "2026-04-01T00:00:00Z",
+    updated_at: "2026-04-01T00:00:00Z",
+  },
+  {
+    id: "ml-2",
+    subject_type: "model",
+    subject_id: "gpt-4o",
+    key: "tier",
+    value: "priced",
+    source: "auto",
+    observed_at: "2026-04-02T07:00:00Z",
+    observation: "a price row exists for this model",
+    created_at: "2026-04-02T07:00:00Z",
+    updated_at: "2026-04-02T07:00:00Z",
+  },
+];
+
+const withLabels = (labels = MODEL_LABELS) =>
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/model-labels")) {
+      const subject = url.searchParams.get("subject_id");
+      return json(subject ? labels.filter((l) => l.subject_id === subject) : labels);
+    }
+    if (url.pathname.endsWith("/models")) return json(MODELS);
+    if (url.pathname.endsWith("/currency")) return json({ base: "USD", rates: {} });
+    return json([]);
+  });
+
+/** both sources on one key, told apart by name rather than by colour */
+export const Labelled: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels()}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=flagship, your label")).toBeVisible());
+    await expect(canvas.getByLabelText("tier=priced, automatic label")).toBeVisible();
+  },
+};
+
+/** the filter narrows the catalog, and counts as a filter for the empty copy */
+export const FilteredByLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels()}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("claude-sonnet")).toBeVisible());
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "tier=flagship" }),
+    );
+    await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
+    await expect(canvas.getByText("gpt-4o")).toBeVisible();
+  },
+};
+
+/** a label nothing in the catalog carries reads as a filter, not an empty catalog */
+export const NoLabelMatch: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLabels([
+        { ...MODEL_LABELS[0], id: "ml-9", subject_id: "gone-model", value: "legacy" },
+      ])}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "tier=legacy" }),
+    );
+    await waitFor(() => expect(canvas.getByText(/No models match/i)).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+  },
+};
+
+/**
+ * Labelling a model is a superadmin's act — the catalog is deployment-wide, the
+ * way `model_price` is — so an admin sees the panel and its contents with the
+ * write controls disabled rather than a form that answers 403.
+ */
+export const AdminCannotWriteAModelLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels()} role="admin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await expect(await panel.findByText(/a price row exists/)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Add label" })).toBeDisabled();
+    await expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeDisabled();
+  },
+};
+
+/** and a superadmin gets both */
+export const SuperadminCanWriteAModelLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels()} role="superadmin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeEnabled();
+    // still no way to touch the observation
+    await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
   },
 };
