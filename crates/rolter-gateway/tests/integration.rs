@@ -3899,3 +3899,192 @@ async fn an_expired_virtual_key_is_refused_at_the_gateway() {
     // the mere presence of a TTL
     assert_eq!(call("sk-rolter-live").await.status(), 200);
 }
+
+/// Stand up `n` counting upstreams and a provider group over them, addressable
+/// as `fleet/<model>`. Returns the gateway address and the per-member hit
+/// counters, in member order.
+async fn group_over_counting_upstreams(
+    strategy: BalancingStrategy,
+    weights: &[u32],
+) -> (SocketAddr, Vec<Arc<AtomicU32>>) {
+    async fn counted(
+        State(hits): State<Arc<AtomicU32>>,
+        body: Json<Value>,
+    ) -> axum::response::Response {
+        hits.fetch_add(1, Ordering::SeqCst);
+        mock_openai(body).await
+    }
+
+    let mut config = GatewayConfig::default();
+    let mut counters = Vec::new();
+    let mut members = Vec::new();
+    for (i, &weight) in weights.iter().enumerate() {
+        let hits = Arc::new(AtomicU32::new(0));
+        let addr = serve(
+            Router::new()
+                .route("/v1/chat/completions", post(counted))
+                .with_state(hits.clone()),
+        )
+        .await;
+        let name = format!("vllm-a100-0{}", i + 1);
+        config.providers.push(ProviderConfig {
+            name: name.clone(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{addr}"),
+            ..Default::default()
+        });
+        members.push(rolter_core::GroupMember {
+            provider: name,
+            model: None,
+            weight,
+        });
+        counters.push(hits);
+    }
+    config
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "A100 fleet".to_string(),
+            slug: Some("fleet".to_string()),
+            strategy,
+            members,
+        });
+    (serve_gateway(&config).await, counters)
+}
+
+async fn call_group(gw: SocketAddr, times: usize) {
+    let client = reqwest::Client::new();
+    for _ in 0..times {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .json(&json!({"model": "fleet/llama-3.1-8b", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+    }
+}
+
+fn hits(counters: &[Arc<AtomicU32>]) -> Vec<u32> {
+    counters.iter().map(|c| c.load(Ordering::SeqCst)).collect()
+}
+
+/// #1655: every request to a group address landed on the group's first member,
+/// whatever the strategy said, while a plain route over the same providers split
+/// evenly. This is that measurement, end to end over HTTP: nine requests to a
+/// three-member `round_robin` group must reach every box.
+#[tokio::test]
+async fn a_round_robin_group_address_reaches_every_member() {
+    let (gw, counters) =
+        group_over_counting_upstreams(BalancingStrategy::RoundRobin, &[1, 1, 1]).await;
+    call_group(gw, 9).await;
+    assert_eq!(
+        hits(&counters),
+        vec![3, 3, 3],
+        "nine requests to a three-member group split {:?}",
+        hits(&counters)
+    );
+}
+
+/// The weights an operator sets in the dashboard have to reach the fleet, not
+/// just the snapshot: a 3 : 1 : 1 group splits ten requests 6 : 2 : 2.
+#[tokio::test]
+async fn a_weighted_group_address_honours_the_member_weights() {
+    let (gw, counters) =
+        group_over_counting_upstreams(BalancingStrategy::Weighted, &[3, 1, 1]).await;
+    call_group(gw, 10).await;
+    assert_eq!(
+        hits(&counters),
+        vec![6, 2, 2],
+        "ten requests to a 3:1:1 group split {:?}",
+        hits(&counters)
+    );
+}
+
+/// Fan-out is only half of what a group buys; the other half is that a dead box
+/// does not take the group down with it. A member returning 503 has to fail over
+/// to a sibling inside the same request.
+#[tokio::test]
+async fn a_dead_group_member_fails_over_to_a_sibling() {
+    async fn dead(State(hits): State<Arc<AtomicU32>>) -> axum::response::Response {
+        hits.fetch_add(1, Ordering::SeqCst);
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            r#"{"error":{"message":"upstream down"}}"#,
+        )
+            .into_response()
+    }
+    async fn alive(
+        State(hits): State<Arc<AtomicU32>>,
+        body: Json<Value>,
+    ) -> axum::response::Response {
+        hits.fetch_add(1, Ordering::SeqCst);
+        mock_openai(body).await
+    }
+
+    let dead_hits = Arc::new(AtomicU32::new(0));
+    let alive_hits = Arc::new(AtomicU32::new(0));
+    let dead_addr = serve(
+        Router::new()
+            .route("/v1/chat/completions", post(dead))
+            .with_state(dead_hits.clone()),
+    )
+    .await;
+    let alive_addr = serve(
+        Router::new()
+            .route("/v1/chat/completions", post(alive))
+            .with_state(alive_hits.clone()),
+    )
+    .await;
+
+    let mut config = GatewayConfig::default();
+    for (name, addr) in [("down", dead_addr), ("up", alive_addr)] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{addr}"),
+            ..Default::default()
+        });
+    }
+    config
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "fleet".to_string(),
+            slug: Some("fleet".to_string()),
+            strategy: BalancingStrategy::RoundRobin,
+            members: [("down", 1u32), ("up", 1u32)]
+                .into_iter()
+                .map(|(provider, weight)| rolter_core::GroupMember {
+                    provider: provider.to_string(),
+                    model: None,
+                    weight,
+                })
+                .collect(),
+        });
+    let gw = serve_gateway(&config).await;
+
+    // round_robin starts on the dead member, so a 200 can only come from the
+    // in-request failover to its sibling
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "fleet/llama-3.1-8b", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "a group did not fail over past a dead member: {}",
+        resp.text().await.unwrap()
+    );
+    assert_eq!(
+        dead_hits.load(Ordering::SeqCst),
+        1,
+        "the dead member was skipped, not tried"
+    );
+    assert_eq!(
+        alive_hits.load(Ordering::SeqCst),
+        1,
+        "the sibling never saw the request"
+    );
+}
