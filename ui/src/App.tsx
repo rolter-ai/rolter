@@ -6,6 +6,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router"
 
 import { CommandPalette } from "@/components/CommandPalette";
 import { ForbiddenScreen } from "@/components/ForbiddenScreen";
+import { ListSkeleton } from "@/components/LoadingState";
 import { LocalePicker } from "@/components/LocalePicker";
 import { OpenModeBanner } from "@/components/OpenModeBanner";
 import { Toaster } from "@/components/ui/toaster";
@@ -35,51 +36,38 @@ import {
 } from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
 import { UxScreenProvider, useRouteTelemetry, useUxContext } from "@/lib/ux-react";
-import Account from "@/pages/Account";
-import { AlertChannels, AlertHistory, AlertRules } from "@/pages/Alerting";
-import AdaptiveDashboard from "@/pages/AdaptiveDashboard";
-import AdaptiveSettings from "@/pages/AdaptiveSettings";
-import AuditLog from "@/pages/AuditLog";
-import ClientSettings from "@/pages/ClientSettings";
-import Cluster from "@/pages/Cluster";
-import ComplexityRouter from "@/pages/ComplexityRouter";
-import Compatibility from "@/pages/Compatibility";
-import Config from "@/pages/Config";
-import AccessProfiles from "@/pages/AccessProfiles";
-import Connectors from "@/pages/Connectors";
-import { BusinessUnits, Customers } from "@/pages/CostAttribution";
-import Dashboard from "@/pages/Dashboard";
-import FeatureFlags from "@/pages/FeatureFlags";
-import Health from "@/pages/Health";
-import GuardrailProviders from "@/pages/GuardrailProviders";
-import GuardrailRules from "@/pages/GuardrailRules";
-import LogsSettings from "@/pages/LogsSettings";
-import Keys from "@/pages/Keys";
-import Limits from "@/pages/Limits";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Login from "@/pages/Login";
-import Logs from "@/pages/Logs";
-import McpCatalog from "@/pages/McpCatalog";
-import { McpLibrary, McpSettings, ToolGroups } from "@/pages/McpManagement";
-import McpLogs from "@/pages/McpLogs";
-import { AuthSessions, OAuthGrants } from "@/pages/McpOAuth";
-import ModelSettings from "@/pages/ModelSettings";
-import Models from "@/pages/Models";
-import Performance from "@/pages/Performance";
-import Playground from "@/pages/Playground";
-import Plugins from "@/pages/Plugins";
-import Pricing from "@/pages/Pricing";
-import PromptRepository from "@/pages/PromptRepository";
-import ProviderGroups from "@/pages/ProviderGroups";
-import Providers from "@/pages/Providers";
-import Rbac from "@/pages/Rbac";
-import RoutingRules from "@/pages/RoutingRules";
-import Security from "@/pages/Security";
-import SingleSignOn from "@/pages/SingleSignOn";
-import SkillsRepository from "@/pages/SkillsRepository";
-import Teams from "@/pages/Teams";
-import UserProvisioning from "@/pages/UserProvisioning";
-import Users from "@/pages/Users";
+
+/**
+ * A screen as a lazy boundary: its code is fetched when the screen is first
+ * opened rather than in the first paint (#1709).
+ *
+ * The dashboard shipped as one chunk, so signing in downloaded the playground,
+ * the charts, the highlighter grammars and forty-odd screens nobody had asked
+ * for yet. `Login` and `AcceptInvite` stay statically imported below, because
+ * they *are* the first paint for a signed-out reader and deferring them would
+ * add a round trip to the one screen that cannot spare one.
+ *
+ * Nothing about the air-gapped guarantee changes: vite emits every split chunk
+ * into `dist/assets` and the control plane serves them from there, same as the
+ * single bundle it replaces.
+ */
+function screen(load: () => Promise<{ default: React.ComponentType }>): React.ReactNode {
+  const Screen = React.lazy(load);
+  return <Screen />;
+}
+
+/** the same, for the files that export several screens side by side */
+function named<K extends string>(
+  load: () => Promise<Record<K, React.ComponentType>>,
+  key: K,
+): React.ReactNode {
+  const Screen = React.lazy<React.ComponentType>(async () => ({
+    default: (await load())[key],
+  }));
+  return <Screen />;
+}
 
 // screen key → element, one entry per navigable leaf; keys double as route
 // paths (/<key>). exported so `nav.test.ts` can hold the two lists to each
@@ -88,55 +76,55 @@ import Users from "@/pages/Users";
 // so the placeholder was unreachable code that only made the gap look filled —
 // the test is what keeps this table complete now that it is gone (#1201).
 export const SCREENS: Record<string, React.ReactNode> = {
-  playground: <Playground />,
-  plugins: <Plugins />,
-  dashboard: <Dashboard />,
-  logs: <Logs />,
-  "mcp-logs": <McpLogs />,
-  "access-profiles": <AccessProfiles />,
-  connectors: <Connectors />,
-  "model-catalog": <Models />,
-  "model-settings": <ModelSettings />,
-  providers: <Providers />,
-  "provider-groups": <ProviderGroups />,
-  budgets: <Limits />,
-  "routing-rules": <RoutingRules />,
-  "complexity-router": <ComplexityRouter />,
-  "circuit-breaker": <Health />,
-  "pricing-overrides": <Pricing />,
-  "alerting-channels": <AlertChannels />,
-  "alerting-rules": <AlertRules />,
-  "alerting-history": <AlertHistory />,
-  "virtual-keys": <Keys />,
-  "gov-users": <Users />,
-  "gov-teams": <Teams />,
-  rbac: <Rbac />,
-  "audit-logs": <AuditLog />,
-  "mcp-catalog": <McpCatalog />,
-  "mcp-library": <McpLibrary />,
-  "tool-groups": <ToolGroups />,
-  "auth-sessions": <AuthSessions />,
-  "oauth-grants": <OAuthGrants />,
-  "mcp-settings": <McpSettings />,
-  "api-keys": <Account />,
-  security: <Security />,
-  "effective-config": <Config />,
-  "client-settings": <ClientSettings />,
-  "feature-flags": <FeatureFlags />,
-  "guardrail-rules": <GuardrailRules />,
-  "guardrail-providers": <GuardrailProviders />,
-  "logs-settings": <LogsSettings />,
-  performance: <Performance />,
-  compatibility: <Compatibility />,
-  cluster: <Cluster />,
-  "adaptive-dashboard": <AdaptiveDashboard />,
-  "adaptive-settings": <AdaptiveSettings />,
-  "business-units": <BusinessUnits />,
-  customers: <Customers />,
-  "user-provisioning": <UserProvisioning />,
-  sso: <SingleSignOn />,
-  "prompt-repo": <PromptRepository />,
-  "skills-repo": <SkillsRepository />,
+  playground: screen(() => import("@/pages/Playground")),
+  plugins: screen(() => import("@/pages/Plugins")),
+  dashboard: screen(() => import("@/pages/Dashboard")),
+  logs: screen(() => import("@/pages/Logs")),
+  "mcp-logs": screen(() => import("@/pages/McpLogs")),
+  "access-profiles": screen(() => import("@/pages/AccessProfiles")),
+  connectors: screen(() => import("@/pages/Connectors")),
+  "model-catalog": screen(() => import("@/pages/Models")),
+  "model-settings": screen(() => import("@/pages/ModelSettings")),
+  providers: screen(() => import("@/pages/Providers")),
+  "provider-groups": screen(() => import("@/pages/ProviderGroups")),
+  budgets: screen(() => import("@/pages/Limits")),
+  "routing-rules": screen(() => import("@/pages/RoutingRules")),
+  "complexity-router": screen(() => import("@/pages/ComplexityRouter")),
+  "circuit-breaker": screen(() => import("@/pages/Health")),
+  "pricing-overrides": screen(() => import("@/pages/Pricing")),
+  "alerting-channels": named(() => import("@/pages/Alerting"), "AlertChannels"),
+  "alerting-rules": named(() => import("@/pages/Alerting"), "AlertRules"),
+  "alerting-history": named(() => import("@/pages/Alerting"), "AlertHistory"),
+  "virtual-keys": screen(() => import("@/pages/Keys")),
+  "gov-users": screen(() => import("@/pages/Users")),
+  "gov-teams": screen(() => import("@/pages/Teams")),
+  rbac: screen(() => import("@/pages/Rbac")),
+  "audit-logs": screen(() => import("@/pages/AuditLog")),
+  "mcp-catalog": screen(() => import("@/pages/McpCatalog")),
+  "mcp-library": named(() => import("@/pages/McpManagement"), "McpLibrary"),
+  "tool-groups": named(() => import("@/pages/McpManagement"), "ToolGroups"),
+  "auth-sessions": named(() => import("@/pages/McpOAuth"), "AuthSessions"),
+  "oauth-grants": named(() => import("@/pages/McpOAuth"), "OAuthGrants"),
+  "mcp-settings": named(() => import("@/pages/McpManagement"), "McpSettings"),
+  "api-keys": screen(() => import("@/pages/Account")),
+  security: screen(() => import("@/pages/Security")),
+  "effective-config": screen(() => import("@/pages/Config")),
+  "client-settings": screen(() => import("@/pages/ClientSettings")),
+  "feature-flags": screen(() => import("@/pages/FeatureFlags")),
+  "guardrail-rules": screen(() => import("@/pages/GuardrailRules")),
+  "guardrail-providers": screen(() => import("@/pages/GuardrailProviders")),
+  "logs-settings": screen(() => import("@/pages/LogsSettings")),
+  performance: screen(() => import("@/pages/Performance")),
+  compatibility: screen(() => import("@/pages/Compatibility")),
+  cluster: screen(() => import("@/pages/Cluster")),
+  "adaptive-dashboard": screen(() => import("@/pages/AdaptiveDashboard")),
+  "adaptive-settings": screen(() => import("@/pages/AdaptiveSettings")),
+  "business-units": named(() => import("@/pages/CostAttribution"), "BusinessUnits"),
+  customers: named(() => import("@/pages/CostAttribution"), "Customers"),
+  "user-provisioning": screen(() => import("@/pages/UserProvisioning")),
+  sso: screen(() => import("@/pages/SingleSignOn")),
+  "prompt-repo": screen(() => import("@/pages/PromptRepository")),
+  "skills-repo": screen(() => import("@/pages/SkillsRepository")),
 };
 
 // old bookmarkable paths → new IA keys
@@ -282,7 +270,22 @@ function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }
           aria-label={title}
           className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
         >
-          {forbidden ? <ForbiddenScreen resource={t(`nav.${screen}`)} /> : SCREENS[screen]}
+          {forbidden ? (
+            <ForbiddenScreen resource={t(`nav.${screen}`)} />
+          ) : (
+            // the screen's own chunk is in flight on the first visit, so the
+            // region needs a placeholder that says so rather than going blank
+            // — `ListSkeleton` carries the `role="status"` a reader needs
+            <React.Suspense
+              fallback={
+                <div className="p-6">
+                  <ListSkeleton rows={4} />
+                </div>
+              }
+            >
+              {SCREENS[screen]}
+            </React.Suspense>
+          )}
         </div>
       </div>
     </UxScreenProvider>
