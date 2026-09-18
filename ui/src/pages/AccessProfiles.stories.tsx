@@ -289,7 +289,9 @@ export const EditsAProfile: Story = {
     await userEvent.click(edit);
 
     const form = within(sheet());
-    await expect(form.getByRole("checkbox", { name: /Support engineer/ })).toBeChecked();
+    // the sheet reads the role list itself, so the checkbox is a request behind
+    // the dialog it sits in (#1689)
+    await expect(await form.findByRole("checkbox", { name: /Support engineer/ })).toBeChecked();
     await expect(form.getByLabelText("Allowed models")).toHaveValue("gpt-4o\nclaude-*");
 
     // detach the role, keep the policy
@@ -618,7 +620,7 @@ export const SeedsTheComposedScopeIntoTheSheet: Story = {
     await userEvent.click(edit);
 
     const form = within(sheet());
-    await expect(form.getByRole("checkbox", { name: /Deploy admin/ })).toBeChecked();
+    await expect(await form.findByRole("checkbox", { name: /Deploy admin/ })).toBeChecked();
     // the stored scope comes back into the picker rather than resetting to the
     // org
     await expect(await form.findByLabelText("Where Deploy admin applies")).toHaveValue(
@@ -691,6 +693,8 @@ export const TogglingARoleOffLeavesTheDraftClean: Story = {
     // while the stub answered inside the same tick (#1689). And it is looked up
     // again for every act rather than held, since checking a role grows the
     // scope row beside it and re-renders the list
+    // story-wait-allow: a thunk, not a read - the line below is the waiter, and
+    // every call of it happens after that
     const role = () => form.getByRole("checkbox", { name: /Support engineer/ });
     await form.findByRole("checkbox", { name: /Support engineer/ });
     await userEvent.click(role());

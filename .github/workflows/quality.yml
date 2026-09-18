@@ -442,6 +442,14 @@ jobs:
       # assertion that never polls waits zero milliseconds at any budget
       - name: story focus assertions wait for the handover
         run: bun run check:focus
+      # the same class of defect one step out: an assertion that never polls
+      # waits zero milliseconds at any budget, so a one-shot `toBeDisabled()` on
+      # a gated control reads the gate before `/api/v1/rbac/effective` answered,
+      # and a `getByRole` on the statement after a sheet opens reads rows that
+      # are still a request behind the dialog. #1689 was six plays of exactly
+      # that, passing only while the stub answered inside the same tick (#1700)
+      - name: story assertions do not depend on zero latency
+        run: bun run check:waits
       - name: unit tests (bun test)
         run: bun run test
       - name: build

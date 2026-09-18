@@ -578,6 +578,36 @@ surface it sits on:
   control is also disabled by its own form state (an empty key, an invalid
   draft). The `title` is what tells a refusal apart from a draft
 
+`bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces both shapes
+from #1700, in the same `ui lint / build` job as `check:focus` and on the same
+grep-level terms:
+
+- a `toBeDisabled()` outside a waiter, in a story whose harness carries a
+  `role` — the only case where a gate is in flight at all
+- a `getByRole("checkbox" | "radio" | "row" | "cell" | "option" | …)` on the
+  statement right after `sheet()` or a `findByRole("dialog")`
+
+The second rule looks only at roles a screen renders one of per row of fetched
+data. A `heading` or a confirm `button` is part of the sheet's own markup and
+paints with it, and flagging those would mean a waiver on every editor story —
+which is how a guard gets switched off. `getByLabelText` is out for the same
+reason: a sheet's fields are in its first paint.
+
+A case the rule is genuinely not about carries `// story-wait-allow: <reason>`
+in the comment block above the line, the way `check:primitives` takes its
+waiver. There are three in the tree today, and every run prints them:
+
+```ts
+// story-wait-allow: disabled by its own prop from the first paint, so there
+// is no gate answer to wait for - that it stays disabled is the point
+await expect(within(canvasElement).getByRole("button")).toBeDisabled();
+```
+
+Two things the check deliberately does not see, and which a reviewer still has
+to: a one-shot `toBeEnabled()` on a gated control, which passes *before* the
+gate answers because enabled is the pre-answer default ([#1707](https://github.com/rolter-ai/rolter/issues/1707)),
+and a data query more than one statement after the sheet opened.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
