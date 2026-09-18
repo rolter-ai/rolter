@@ -187,10 +187,19 @@ const withRoles = (roles: CustomRoleRow[], matrix = WITH_CUSTOM_ROLE) =>
     ["/access-profiles", () => [{ id: "p-1", name: "Support" }]],
   ]);
 
-/** Open the org-defined half of the screen. */
+/**
+ * Open the org-defined half of the screen, and wait until it is the open one.
+ *
+ * The click is only half of it: every story below then asserts against the
+ * custom-roles panel, and a click that lands while the tablist is still
+ * mounting leaves the screen on Permissions with the assertions reading a panel
+ * that was never opened (#1279).
+ */
 async function openCustomTab(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
-  await userEvent.click(await canvas.findByRole("tab", { name: /Custom roles/ }));
+  const tab = await canvas.findByRole("tab", { name: /Custom roles/ });
+  await userEvent.click(tab);
+  await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"));
 }
 
 const meta = {

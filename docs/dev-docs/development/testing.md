@@ -450,6 +450,35 @@ The job carries no `continue-on-error`, so it blocks: a failing story fails
 `continue-on-error: true` was removed when the job was promoted in #753 and the
 line was left behind.)
 
+#### How long a story waits (#1279)
+
+`.storybook/preview.ts` calls `configure({ asyncUtilTimeout: 5000 })`, which
+raises testing-library's default from one second for every `findBy*` and
+`waitFor` in every story.
+
+The default is a unit-test budget: it assumes the thing being awaited is a
+render. A screen story is not that — it mounts a page that resolves org, then
+team, then project, then its own endpoints, each one a fetch through the stub
+and a react-query transition. On an idle machine that chain lands in a couple
+of hundred milliseconds, which is why every one of these stories passes when it
+is the only file running. Under the full parallel run it does not always:
+#1279 caught `Screens/Rbac` timing out on a branch that touched no RBAC code,
+with the failure dump showing the screen still on its tab header — the
+assertion was right and the data was still in flight.
+
+The budget is a ceiling on how long a *failing* assertion waits, never a delay a
+passing one pays, so the suite does not get slower. Prefer it over a
+per-assertion `{ timeout }`: a timeout written at one first-paint assertion is a
+timeout the next story will not have. The exceptions are the few places that
+genuinely need longer than the shared budget, such as `expectLoadError` in
+`ui/src/pages/story-harness.tsx`, which has to outlast a screen's own retry
+policy and says so beside the number.
+
+To check whether a story is racing rather than broken, add a delay to `scoped()`
+in the harness, rebuild, and re-run the file — and restart the static server
+after every rebuild, since a server left running over a replaced
+`storybook-static` keeps serving the build it started with.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
