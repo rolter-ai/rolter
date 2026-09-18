@@ -8,6 +8,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchRuntimePolicy,
@@ -176,9 +177,9 @@ function PerformanceScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <Card
+      <SettingsPanel
         title={t("pages.performance.retries.title")}
-        desc={t("pages.performance.retries.desc")}
+        description={t("pages.performance.retries.desc")}
       >
         <NumberField
           label={t("pages.performance.retries.maxRetries")}
@@ -195,11 +196,11 @@ function PerformanceScreen() {
           value={form.retryMaxMs}
           onChange={(v) => set({ retryMaxMs: v })}
         />
-      </Card>
+      </SettingsPanel>
 
-      <Card
+      <SettingsPanel
         title={t("pages.performance.timeouts.title")}
-        desc={t("pages.performance.timeouts.desc")}
+        description={t("pages.performance.timeouts.desc")}
       >
         <NumberField
           label={t("pages.performance.timeouts.connect")}
@@ -211,7 +212,7 @@ function PerformanceScreen() {
           value={form.timeoutRequestS}
           onChange={(v) => set({ timeoutRequestS: v })}
         />
-      </Card>
+      </SettingsPanel>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex items-start gap-4">
@@ -289,29 +290,6 @@ function PerformanceScreen() {
   );
 }
 
-// ui-primitives-allow: a settings panel — a titled section wrapping a disabled
-// fieldset — not `ui/card.tsx`'s Card, which is a bare bordered div with its own
-// Header/Title/Description parts. Same name, different component; unpicking the
-// collision is #1682
-function Card({
-  title,
-  desc,
-  children,
-}: {
-  title: string;
-  desc: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div>
-        <span className="text-sm font-medium">{title}</span>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
-      <div className="flex flex-wrap gap-4">{children}</div>
-    </section>
-  );
-}
 
 function NumberField({
   label,
