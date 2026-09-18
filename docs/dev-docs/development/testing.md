@@ -289,6 +289,22 @@ Policy (ROL-246):
 
 `.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
 
+### The rustdoc gate is the one CI check nothing local reproduces
+
+`cargo doc (warnings = errors)` is the gate that most often turns a
+locally-clean branch red, because `cargo fmt`, `cargo clippy` and
+`cargo nextest` are all silent about it. Run it before pushing:
+
+```bash
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+```
+
+The usual failure is `rustdoc::private_intra_doc_links`: a public item whose
+doc comment links `[`Something`]` that is private. It is easy to write, because
+explaining why a public type exists usually means naming the internals it
+wraps — and it is invisible until CI says so. Either unlink it (a plain code
+span reads the same) or make the target public if it deserves to be.
+
 ### UI dependencies and the lockfile
 
 The `ui` and `storybook` jobs both install with `bun install --frozen-lockfile`,
