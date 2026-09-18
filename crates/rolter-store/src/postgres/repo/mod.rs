@@ -2264,7 +2264,7 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
              from virtual_keys where project_id = $1 order by created_at",
         )
         .bind(project_id)
@@ -2275,7 +2275,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
              from virtual_keys where key_hash = $1",
         )
         .bind(key_hash)
@@ -2286,7 +2286,7 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
         sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at
+            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
              from virtual_keys where id = $1",
         )
         .bind(id)
@@ -2310,11 +2310,14 @@ impl VirtualKeyRepo<'_> {
         // when the key stops working; `None` mints an immortal key, which the
         // callers only pass for a deliberate "never expires" choice (#945)
         expires_at: Option<DateTime<Utc>>,
+        // why the key exists when a person did not mint it by hand; `None` for
+        // every operator-created key (#1640)
+        purpose: Option<&str>,
     ) -> Result<VirtualKey> {
         sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, providers, cache_enabled, created_by, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at",
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, providers, cache_enabled, created_by, expires_at, purpose)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(project_id)
         .bind(key_hash)
@@ -2325,6 +2328,7 @@ impl VirtualKeyRepo<'_> {
         .bind(cache_enabled)
         .bind(created_by)
         .bind(expires_at)
+        .bind(purpose)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -2335,7 +2339,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<OwnedVirtualKey>> {
         sqlx::query_as(
             "select vk.id, vk.project_id, p.name as project_name, o.name as org_name,
-                    vk.key_prefix, vk.name, vk.models, vk.disabled, vk.expires_at, vk.created_at
+                    vk.key_prefix, vk.name, vk.models, vk.disabled, vk.expires_at, vk.created_at, vk.purpose
              from virtual_keys vk
              join projects p on p.id = vk.project_id
              join teams t on t.id = p.team_id
@@ -2352,7 +2356,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(disabled)
@@ -2367,7 +2371,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set cache_enabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(cache_enabled)
@@ -2382,7 +2386,7 @@ impl VirtualKeyRepo<'_> {
     pub async fn set_providers(&self, id: Uuid, providers: &[String]) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set providers = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(providers)
@@ -2403,7 +2407,7 @@ impl VirtualKeyRepo<'_> {
     ) -> Result<VirtualKey> {
         sqlx::query_as(
             "update virtual_keys set business_unit_id = $2, customer_id = $3 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at",
+             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(business_unit_id)
@@ -4330,6 +4334,7 @@ mod tests {
                 None,
                 None,
                 Some(Utc::now() + Duration::days(30)),
+                None,
             )
             .await
             .unwrap();

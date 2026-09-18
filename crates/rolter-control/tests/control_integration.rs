@@ -5391,6 +5391,185 @@ async fn self_service_key_lifecycle() {
     assert_eq!(remaining.as_array().unwrap().len(), 1);
 }
 
+/// The playground mints a key the *server* scopes (#1640).
+///
+/// The point of the endpoint is what a caller cannot do with it: it takes no
+/// body, so it cannot ask for a model the project does not route, cannot ask
+/// for a longer life, and cannot be pointed at a project the caller does not
+/// belong to. The dashboard half (#944) puts the returned key straight into the
+/// Playground rather than asking an operator to paste a long-lived one.
+#[tokio::test]
+async fn playground_key_is_scoped_by_the_server() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Playground Co", "slug": "playground-co"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+
+    post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/users"),
+        json!({"email": "operator@example.com", "password": "hunter2!!", "role": "member"}),
+    )
+    .await;
+    let login = post(
+        &client,
+        format!("{base}/api/v1/auth/login"),
+        json!({"email": "operator@example.com", "password": "hunter2!!"}),
+    )
+    .await;
+    let token = login["token"].as_str().unwrap().to_string();
+
+    // a project with no routes has nothing to address, and an empty `models`
+    // list on a virtual key means *every* model — so this must refuse rather
+    // than mint the widest key in the system
+    let empty = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project_id}/playground-key"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        empty.status(),
+        400,
+        "a routeless project must not mint a key"
+    );
+
+    post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "claude-sonnet-4", "strategy": "round_robin"}),
+    )
+    .await;
+
+    let minted = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project_id}/playground-key"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert!(minted.status().is_success());
+    let minted: Value = minted.json().await.unwrap();
+    assert!(minted["key"].as_str().unwrap().starts_with("sk-rolter-"));
+
+    // scoped to exactly the routes this project has, written out rather than
+    // left empty: a key minted before a third route exists must not reach it
+    let mut models: Vec<&str> = minted["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    models.sort_unstable();
+    assert_eq!(models, vec!["claude-sonnet-4", "gpt-4o"]);
+
+    // minutes, not days: the mint endpoint's floor is one day, which is the
+    // whole reason this endpoint exists
+    let expires_at = minted["expires_at"].as_str().expect("an expiry");
+    let expires_at: chrono::DateTime<chrono::Utc> = expires_at.parse().unwrap();
+    let lifetime = expires_at - chrono::Utc::now();
+    assert!(
+        lifetime < chrono::Duration::hours(1) && lifetime > chrono::Duration::minutes(1),
+        "playground key should live minutes, lives {lifetime}"
+    );
+
+    // and it says what it is, so the Keys screen can label it rather than
+    // leaving a reader to infer it from the expiry
+    assert_eq!(minted["purpose"], "playground");
+    let keys: Value = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed = keys.as_array().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["purpose"], "playground");
+
+    // a route added after the key was minted is out of its reach: the list was
+    // resolved once, at mint time, which is what makes the key a snapshot of
+    // what the caller could reach rather than a standing grant
+    post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "o3-mini", "strategy": "round_robin"}),
+    )
+    .await;
+    let keys: Value = client
+        .get(format!("{base}/api/v1/me/virtual-keys"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let still: Vec<&str> = keys.as_array().unwrap()[0]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    assert!(
+        !still.contains(&"o3-mini"),
+        "a key must not widen itself as routes appear: {still:?}"
+    );
+
+    // a session is required: the endpoint mints a credential, so it is never
+    // reachable without one
+    let anon = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project_id}/playground-key"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+}
+
 /// Invitations and single sign-on co-exist (#240): an operator-granted role is
 /// never reconciled away by a later SSO login, an IdP group that disappears
 /// does revoke the role it granted, and an org can require SSO without locking

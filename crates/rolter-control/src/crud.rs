@@ -3550,6 +3550,9 @@ async fn create_virtual_key(
             body.cache,
             None,
             expires_at,
+            // an operator minted this deliberately; `purpose` marks the keys
+            // the dashboard mints for itself (#1640)
+            None,
         )
         .await?;
     publish_config_change(&state).await?;

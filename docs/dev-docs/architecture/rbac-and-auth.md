@@ -43,7 +43,30 @@ equally to the admin (`/api/v1/projects/{id}/virtual-keys`) and self-service
 (`/api/v1/me/projects/{id}/virtual-keys`) paths.
 
 Rotation replaces a secret without renewing the decision: the fresh key inherits
-the old one's `expires_at`.
+the old one's `expires_at`, and its `purpose`.
+
+### The playground key is scoped by the server
+
+`POST /api/v1/me/projects/{id}/playground-key` mints a key for the dashboard's
+own Playground, and it deliberately takes **no request body** (#1640). Both of
+the things a body would carry are the reasons this endpoint exists:
+
+- **Reach.** The mint paths above take `models` from the caller, which is right
+  for a key an operator is configuring and wrong for this one: a key the client
+  scopes cannot be a key that "cannot address a model the user could not already
+  address", because the client can ask for everything. The list is computed here
+  from the routes configured in the project being minted against, and written
+  out explicitly — an empty `models` array means *every* model, so a project with
+  no routes is a `400` rather than a key with the widest possible reach.
+- **Lifetime.** `expires_in_days` has a floor of one day. A playground key lives
+  `PLAYGROUND_KEY_TTL_MINUTES` (30) and the dashboard asks for a fresh one, so a
+  credential does not outlive the tab holding it.
+
+The row carries `purpose = 'playground'` so the Keys screen can say what it is
+rather than leaving a reader to infer it from a short expiry. The list is
+resolved once, at mint time: a route added afterwards is outside that key's
+reach, which makes it a snapshot of what the caller could reach rather than a
+standing grant.
 
 Override either default with `server.require_auth`:
 

@@ -1073,6 +1073,11 @@ fn operations() -> Vec<Op> {
                 "Mint a virtual key for the calling account",
             ),
             Op::post(
+                "/api/v1/me/projects/{project_id}/playground-key",
+                "mintPlaygroundKey",
+                "Mint a short-lived key the server scopes to the project's routes",
+            ),
+            Op::post(
                 "/api/v1/me/virtual-keys/{id}/rotate",
                 "rotateMyVirtualKey",
                 "Rotate one of the calling account's keys",
