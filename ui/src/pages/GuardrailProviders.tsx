@@ -214,6 +214,7 @@ function GuardrailProvidersScreen() {
       )}
 
       <ConfirmDialog
+        name="guardrail-provider-delete"
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
         title={t("pages.guardrailProviders.confirm.title", {

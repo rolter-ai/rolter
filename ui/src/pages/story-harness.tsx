@@ -9,6 +9,8 @@ import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
 import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
 import { ToastProvider } from "@/lib/toast";
+import type { UiEvent } from "@/lib/api";
+import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
 
 // Shared fetch-stub harness for screen stories (#879).
 //
@@ -656,4 +658,62 @@ export async function openOptions(combobox: HTMLElement): Promise<HTMLElement> {
   const listbox = listId ? document.getElementById(listId) : null;
   if (!listbox) throw new Error("openOptions: the control is not a combobox with a listbox");
   return listbox;
+}
+
+// --- the UX event stream ---------------------------------------------------
+//
+// `EditorSheet` and `ConfirmDialog` emit through `useFormTelemetry` for every
+// screen that renders them (#1730), so the assertion that they *do* belongs
+// beside them rather than in each of the twenty-eight call sites. The queue in
+// `ux.ts` is never flushed under a story — nothing stubs the endpoint — so it
+// is readable directly, which is also what makes the negative assertion
+// ("cancelling emitted no submit") possible at all.
+
+/**
+ * Drop the queue before and after a story, for a `beforeEach` in the meta.
+ *
+ * Both ends matter: a story that inherited the previous one's events would
+ * pass on somebody else's signal, and one that left its own behind would hand
+ * that signal to whatever ran next.
+ */
+export function recordUxEvents(): () => void {
+  resetUxForTests();
+  return () => resetUxForTests();
+}
+
+/** Every event queued so far, in the order it was emitted. */
+export function uxEvents(): readonly UiEvent[] {
+  return pendingUxEvents();
+}
+
+// `target` is omitted for the events that name no form — `time_to_interactive`
+// is the screen, not a control on it — so an absent one matches on the action
+const matches = (event: UiEvent, action: UiEvent["action"], target?: string) =>
+  event.action === action && (target === undefined || event.target === target);
+
+/**
+ * Wait for one event and hand it back, so a story can go on to assert the
+ * duration or the outcome on it.
+ *
+ * Matched on `action` and `target` rather than on the whole queue: a screen
+ * emits `screen_view` and `time_to_interactive` of its own, and a story that
+ * asserted an exact queue would break every time an unrelated emitter was
+ * added.
+ */
+export async function expectUxEvent(action: UiEvent["action"], target?: string): Promise<UiEvent> {
+  return waitFor(() => {
+    const found = pendingUxEvents().find((e) => matches(e, action, target));
+    expect(found).toBeDefined();
+    return found as UiEvent;
+  });
+}
+
+/**
+ * Assert no such event was emitted — the half that says a cancel is a cancel.
+ * A dialog that emitted `form_submit` on the way out would pass every
+ * positive assertion above and still make the dogfood data say the delete went
+ * through.
+ */
+export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
+  expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
 }

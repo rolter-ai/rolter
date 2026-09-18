@@ -227,6 +227,7 @@ function GuardrailRulesScreen() {
       )}
 
       <ConfirmDialog
+        name="guardrail-rule-delete"
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
         title={t("pages.guardrailRules.confirm.title", { name: deleteTarget?.name })}

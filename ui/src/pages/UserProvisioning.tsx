@@ -254,6 +254,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
       </div>
 
       <ConfirmDialog
+        name="scim-group-mapping-remove"
         open={!!removeTarget}
         onOpenChange={(open) => !open && setRemoveTarget(null)}
         title={t("pages.userProvisioning.mappings.confirm.title", {

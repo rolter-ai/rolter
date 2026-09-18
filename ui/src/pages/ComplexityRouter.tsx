@@ -351,6 +351,7 @@ function PolicyDialog({
 
   return (
     <EditorSheet
+      name="complexity-policy-edit"
       open
       onOpenChange={(open) => !open && onClose()}
       title={translate("pages.complexityRouter.policyTitle")}

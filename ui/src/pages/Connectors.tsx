@@ -351,6 +351,7 @@ function ConnectorsScreen() {
       )}
 
       <ConfirmDialog
+        name="connector-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.connectors.confirm.title", { name: deleteTarget?.name })}
@@ -443,6 +444,7 @@ function AddConnectorDialog({
 
   return (
     <EditorSheet
+      name="connector-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.connectors.add")}

@@ -496,6 +496,7 @@ function InviteUserDialog({
 
   return (
     <EditorSheet
+      name="user-invite"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.users.inviteTitle")}
@@ -612,6 +613,7 @@ function EditUserDialog({
 
   return (
     <EditorSheet
+      name="user-edit"
       open
       onOpenChange={onOpenChange}
       title={t("pages.users.editTitle")}
@@ -742,6 +744,7 @@ function AddRoleDialog({
 
   return (
     <EditorSheet
+      name="user-grant"
       open
       onOpenChange={onOpenChange}
       title={t("pages.users.grantTitle")}

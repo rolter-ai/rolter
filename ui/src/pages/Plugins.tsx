@@ -196,6 +196,7 @@ export default function Plugins() {
       )}
 
       <ConfirmDialog
+        name="plugin-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.plugins.confirm.title", { name: deleteTarget?.name })}

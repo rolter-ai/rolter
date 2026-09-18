@@ -567,6 +567,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
       )}
 
       <ConfirmDialog
+        name="cost-attribution-delete"
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
         title={t("pages.costAttribution.confirm.title", { name: deleteTarget?.name })}

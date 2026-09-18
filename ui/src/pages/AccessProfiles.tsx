@@ -416,6 +416,7 @@ export default function AccessProfiles() {
       </div>
 
       <ConfirmDialog
+        name="access-profile-delete"
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
         title={t("pages.accessProfiles.confirm.title", { name: deleteTarget?.name })}
@@ -505,6 +506,7 @@ function ProfileSheet({
 
   return (
     <EditorSheet
+      name={draft.id ? "access-profile-edit" : "access-profile-create"}
       open
       onOpenChange={(open) => !open && onClose()}
       title={

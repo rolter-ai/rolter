@@ -5,12 +5,17 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { EditorSheet } from "./EditorSheet";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { UxScreenProvider } from "@/lib/ux-react";
 import {
   answerDiscardPrompt,
   discardPrompt,
   expectClosesWithoutPrompting,
+  expectNoUxEvent,
   expectSheetClosed,
+  expectUxEvent,
+  recordUxEvents,
   sheet,
+  uxEvents,
 } from "@/pages/story-harness";
 
 /**
@@ -42,6 +47,7 @@ function Editor({
       </button>
       {saved != null && <p>Saved {saved}</p>}
       <EditorSheet
+        name="provider-edit"
         open={open}
         onOpenChange={setOpen}
         title="Edit provider"
@@ -68,6 +74,7 @@ const meta = {
   // the stories drive the sheet through `Editor`, which owns the props; these
   // satisfy the required-prop contract for the docs page
   args: {
+    name: "provider-edit",
     open: true,
     onOpenChange: () => {},
     title: "Edit provider",
@@ -79,6 +86,8 @@ const meta = {
     onSave: () => {},
     children: null,
   },
+  // every story starts from an empty UX queue and leaves one behind (#1730)
+  beforeEach: recordUxEvents,
 } satisfies Meta<typeof EditorSheet>;
 
 export default meta;
@@ -272,5 +281,110 @@ export const SavingRefusesDismissal: Story = {
       screen().queryByRole("dialog", { name: /discard unsaved changes/i }),
     ).not.toBeInTheDocument();
     await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
+  },
+};
+
+/* ---------------- UX stream (#1730) ---------------- */
+
+// the screen key travels through context the way the app shell supplies it; a
+// sheet rendered outside a provider is silent rather than mislabelled
+const SCREEN = "providers";
+const TARGET = "provider-edit";
+
+/**
+ * The shell with a save the story can settle either way, because the two
+ * outcomes the sheet reports are read off `saving` falling back and whether
+ * `errorMessage` arrived with it — the only two props a caller uses to say
+ * what happened.
+ */
+function Instrumented({ fails = false }: { fails?: boolean }) {
+  const [open, setOpen] = React.useState(true);
+  const [name, setName] = React.useState("openai-prod");
+  const [saving, setSaving] = React.useState(false);
+  const [errorMessage, setErrorMessage] = React.useState<string | undefined>(undefined);
+
+  // settles the round trip on the commit after it started — no timer, so the
+  // story asserts a real state change rather than a scheduled one
+  React.useEffect(() => {
+    if (!saving) return;
+    setSaving(false);
+    if (fails) setErrorMessage("a provider with slug 'openai-prod' already exists in this org");
+    else setOpen(false);
+  }, [saving, fails]);
+
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <EditorSheet
+        name={TARGET}
+        open={open}
+        onOpenChange={setOpen}
+        title="Edit provider"
+        subtitle="openai-prod · openai"
+        dirty={false}
+        errorMessage={errorMessage}
+        saveLabel="Save provider"
+        canSave
+        saving={saving}
+        onSave={() => {
+          setErrorMessage(undefined);
+          setSaving(true);
+        }}
+      >
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+      </EditorSheet>
+    </UxScreenProvider>
+  );
+}
+
+/**
+ * Pressing save is a `form_submit`, and the round trip landing is a
+ * `save_confirmed` carrying how long it took. Thirteen screens render this
+ * shell, so this is the only place the dogfood week learns any of them was
+ * used at all.
+ */
+export const SaveEmitsSubmitAndConfirmation: Story = {
+  render: () => <Instrumented />,
+  play: async () => {
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Save provider" }));
+    const submit = await expectUxEvent("form_submit", TARGET);
+    await expect(submit.screen).toBe(SCREEN);
+    await expect(submit.outcome).toBe("ok");
+    const confirmed = await expectUxEvent("save_confirmed", TARGET);
+    await expect(confirmed.outcome).toBe("ok");
+  },
+};
+
+/** A refused save is a second `form_submit`, and it is not a confirmation. */
+export const AFailedSaveEmitsAnError: Story = {
+  render: () => <Instrumented fails />,
+  play: async () => {
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Save provider" }));
+    await waitFor(() => {
+      const outcomes = uxEvents()
+        .filter((e) => e.action === "form_submit" && e.target === TARGET)
+        .map((e) => e.outcome);
+      expect(outcomes).toEqual(["ok", "error"]);
+    });
+    expectNoUxEvent("save_confirmed", TARGET);
+  },
+};
+
+/**
+ * A sheet closed without submitting is a `form_abandon` with the dwell time on
+ * it — the signal the issue was filed for, and the one that separates "opened
+ * by mistake" from "filled it in and gave up". It must not look like a submit.
+ */
+export const ClosingWithoutSavingEmitsAnAbandon: Story = {
+  render: () => <Instrumented />,
+  play: async () => {
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+    const event = await expectUxEvent("form_abandon", TARGET);
+    await expect(event.screen).toBe(SCREEN);
+    await expect(event.outcome).toBe("cancelled");
+    await expect(typeof event.duration_ms).toBe("number");
+    expectNoUxEvent("form_submit", TARGET);
   },
 };

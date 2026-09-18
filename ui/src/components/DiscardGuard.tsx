@@ -73,6 +73,9 @@ export function useDiscardGuard({
 
   const prompt = (
     <ConfirmDialog
+      // one key for every editor that raises it: the question is how often a
+      // dirty draft is thrown away, not which sheet it was thrown away from
+      name="discard-changes"
       open={asking}
       onOpenChange={setAsking}
       title={t("common.discardChanges")}

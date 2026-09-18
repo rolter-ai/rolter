@@ -326,6 +326,7 @@ function UpsertPriceDialog({
 
   return (
     <EditorSheet
+      name={existing ? "model-price-edit" : "model-price-create"}
       open={open}
       onOpenChange={onOpenChange}
       title={

@@ -275,6 +275,7 @@ export default function RoutingRules() {
       )}
 
       <ConfirmDialog
+        name="route-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.routing.confirm.title", { model: deleteTarget?.model })}
@@ -374,6 +375,7 @@ function AddRouteDialog({
 
   return (
     <EditorSheet
+      name="route-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.routing.emptyAction")}

@@ -197,6 +197,7 @@ function AlertChannelsScreen() {
       </div>
 
       <ConfirmDialog
+        name="alert-channel-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.alerting.confirm.channelTitle", { name: deleteTarget?.name })}
@@ -277,6 +278,7 @@ function AddChannelDialog({
 
   return (
     <EditorSheet
+      name="alert-channel-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.alerting.channels.sheetTitle")}
@@ -512,6 +514,7 @@ function AlertRulesScreen() {
       </div>
 
       <ConfirmDialog
+        name="alert-rule-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.alerting.confirm.ruleTitle", { name: deleteTarget?.name })}
@@ -626,6 +629,7 @@ function AddRuleDialog({
 
   return (
     <EditorSheet
+      name="alert-rule-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.alerting.rules.sheetTitle")}

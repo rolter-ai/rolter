@@ -358,6 +358,7 @@ function KeyCard({
           </Button>
         </div>
         <ConfirmDialog
+          name="account-key-rotate"
           open={rotateOpen}
           onOpenChange={setRotateOpen}
           title={t("account.keys.rotateConfirm.title", { name: keyLabel })}
@@ -425,6 +426,7 @@ function MintKeyDialog({
 
   return (
     <EditorSheet
+      name="account-key-mint"
       open={open}
       onOpenChange={onOpenChange}
       title={t("account.keys.mint.title")}
