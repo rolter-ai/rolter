@@ -209,7 +209,9 @@ export const CreatesAProfileWithRolesAndPolicy: Story = {
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support");
-    await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
+    // the roles are a request of their own, so the checkbox is not there the
+    // instant the sheet is (#1689)
+    await userEvent.click(await form.findByRole("checkbox", { name: /Support engineer/ }));
     await userEvent.type(form.getByLabelText("Allowed models"), "gpt-4o\nclaude-*");
     await userEvent.type(form.getByLabelText("Denied models"), "o1-preview");
     await userEvent.click(form.getByRole("button", { name: "Create profile" }));
@@ -258,7 +260,7 @@ export const CreateRejectedByTheServer: Story = {
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support");
-    await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
+    await userEvent.click(await form.findByRole("checkbox", { name: /Support engineer/ }));
     await userEvent.click(form.getByRole("button", { name: "Create profile" }));
 
     await expectToast(canvasElement, /already taken/, "error");
@@ -569,7 +571,7 @@ export const ComposesARoleAtTeamScope: Story = {
     // the scope is only a question once the role is actually composed, so an
     // unchecked role carries no picker to answer
     await expect(form.queryByLabelText("Where Support engineer applies")).not.toBeInTheDocument();
-    await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
+    await userEvent.click(await form.findByRole("checkbox", { name: /Support engineer/ }));
 
     const picker = await form.findByLabelText("Where Support engineer applies");
     // the org is the default, which is the scope the control plane would have
@@ -684,11 +686,17 @@ export const TogglingARoleOffLeavesTheDraftClean: Story = {
     await clickWhenEnabled(canvasElement, "+ Add profile");
 
     const form = within(sheet());
-    const role = form.getByRole("checkbox", { name: /Support engineer/ });
-    await userEvent.click(role);
+    // the role list is a request of its own (`/custom-roles`), fired as the
+    // sheet opens: `getByRole` does not retry, so this found a checkbox only
+    // while the stub answered inside the same tick (#1689). And it is looked up
+    // again for every act rather than held, since checking a role grows the
+    // scope row beside it and re-renders the list
+    const role = () => form.getByRole("checkbox", { name: /Support engineer/ });
+    await form.findByRole("checkbox", { name: /Support engineer/ });
+    await userEvent.click(role());
     await expect(await form.findByLabelText("Where Support engineer applies")).toBeVisible();
-    await userEvent.click(role);
-    await expect(role).not.toBeChecked();
+    await userEvent.click(role());
+    await waitFor(() => expect(role()).not.toBeChecked());
 
     await expectClosesWithoutPrompting();
   },
