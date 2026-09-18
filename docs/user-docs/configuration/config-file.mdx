@@ -138,6 +138,10 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
   [[providers.api_keys]]
   env = "OPENAI_API_KEY_SECONDARY"
   ```
+
+  <Note>
+    The Postgres-backed control plane stores one credential per provider. `rolter-seed --import` therefore keeps the **first** entry that names an `env` and logs a warning naming how many it dropped, and `rolter config export` writes that one back as `api_key_env`. Keep a multi-key pool in the file the gateway loads directly, not in a file you round-trip through the control plane.
+  </Note>
 </ParamField>
 
 <ParamField path="allow_custom_api_base" type="bool" default="false">

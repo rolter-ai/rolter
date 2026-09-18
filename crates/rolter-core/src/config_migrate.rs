@@ -34,15 +34,20 @@
 //! # What does not belong in a migration
 //!
 //! The provider fields `api_key`, `api_key_env` and `egress_proxy` have newer
-//! plural spellings (`api_keys`, `egress_proxies`) and look like obvious first
-//! migrations. They are not, and the reason is worth recording so nobody
-//! rediscovers it the expensive way: `rolter-control`'s seed, snapshot and
-//! config-export paths read those singular fields **directly** rather than
-//! through [`ProviderConfig::resolve_api_key`](crate::ProviderConfig::resolve_api_key)
-//! and [`egress_proxy_pool`](crate::ProviderConfig::egress_proxy_pool).
-//! Rewriting the document would leave those fields `None` and silently change
-//! what `rolter-seed --import` stores. Tracked in #1514; until every reader goes
-//! through the accessor, these stay deserialize-time shims.
+//! plural spellings (`api_keys`, `egress_proxies`). Normalising them used to be
+//! unsafe, and the reason is worth keeping on the record: `rolter-control`'s
+//! seed and config-export paths read the singular fields **directly**, so
+//! rewriting a document into the plural form would have left them `None` and
+//! silently changed what `rolter-seed --import` stored.
+//!
+//! That is fixed (#1514). Persistence now goes through
+//! [`ProviderConfig::api_key_env_name`](crate::ProviderConfig::api_key_env_name)
+//! and [`inline_api_key`](crate::ProviderConfig::inline_api_key), and the
+//! proxy paths always carried both spellings, so either form imports and
+//! exports identically. The normalising step itself is #1720 — one caveat
+//! survives into it: the control-plane store holds a single credential per
+//! provider, so a migration must not imply that a multi-key `api_keys` array
+//! round-trips through the database.
 //!
 //! A migration is safe here only when it is **behaviour-preserving**: the
 //! `GatewayConfig` parsed from the migrated document must equal the one parsed

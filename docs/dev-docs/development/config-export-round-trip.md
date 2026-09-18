@@ -66,3 +66,25 @@ pins that against the emitted bytes rather than by review.
 
 A provider with no `api_key_env` gets a comment where the credential would be,
 so the omission is visible in the artifact.
+
+### Both spellings, one column
+
+`ProviderConfig` accepts the credential as either `api_key`/`api_key_env` or the
+plural `api_keys` array. Every persistence path — the exporter, `rolter-seed
+--import` and the `[[providers.default]]` seed — goes through
+`ProviderConfig::api_key_env_name()` for the variable name and
+`inline_api_key()` for the literal, so the spelling a document happens to use
+makes no difference to what is stored or exported. Reading `api_key_env`
+directly is what made a plural-form provider import with no credential at all
+(#1514).
+
+The split between the two accessors is the safety property: `api_key_env_name()`
+returns a variable *name* and is the only one an exported document can reach,
+while `inline_api_key()` returns a secret and has exactly one caller, the seal
+into `provider_keys`.
+
+`providers.api_key_env` is a single column and `provider_keys` holds one sealed
+row per provider, so a multi-key provider is not representable in the store. The
+importer keeps the first entry naming an `env` and warns with the count it
+dropped rather than failing the import; #1720 covers normalising the spellings
+and must not imply that the array itself round-trips.
