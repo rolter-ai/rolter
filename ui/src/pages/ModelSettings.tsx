@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchModelDefaults,
@@ -186,9 +187,9 @@ function ModelSettingsScreen() {
         )}
       </section>
 
-      <Card
+      <SettingsPanel
         title={t("pages.modelSettings.sampling.title")}
-        desc={t("pages.modelSettings.sampling.desc")}
+        description={t("pages.modelSettings.sampling.desc")}
         dimmed={!form.enabled}
       >
         <Field label={t("pages.modelSettings.sampling.temperature")} hint="0 – 2">
@@ -218,11 +219,11 @@ function ModelSettingsScreen() {
             onChange={(e) => set({ maxTokens: e.target.value })}
           />
         </Field>
-      </Card>
+      </SettingsPanel>
 
-      <Card
+      <SettingsPanel
         title={t("pages.modelSettings.model.title")}
-        desc={t("pages.modelSettings.model.desc")}
+        description={t("pages.modelSettings.model.desc")}
         dimmed={!form.enabled}
       >
         <Field label={t("pages.modelSettings.model.defaultModel")} hint={t("pages.modelSettings.model.defaultModelHint")}>
@@ -234,7 +235,7 @@ function ModelSettingsScreen() {
             onChange={(e) => set({ defaultModel: e.target.value })}
           />
         </Field>
-      </Card>
+      </SettingsPanel>
 
       <p className="text-xs text-muted-foreground">
         <Trans
@@ -253,36 +254,6 @@ function ModelSettingsScreen() {
   );
 }
 
-// ui-primitives-allow: a settings panel — a titled section wrapping a disabled
-// fieldset — not `ui/card.tsx`'s Card, which is a bare bordered div with its own
-// Header/Title/Description parts. Same name, different component; unpicking the
-// collision is #1682
-function Card({
-  title,
-  desc,
-  dimmed = false,
-  children,
-}: {
-  title: string;
-  desc: string;
-  dimmed?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div>
-        <span className="text-sm font-medium">{title}</span>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
-      {/* a disabled fieldset rather than a dimmed div: every control inside
-          already carries `disabled`, and fading a live div drags its labels and
-          hints below 4.5:1 while telling assistive tech nothing (#1181) */}
-      <fieldset className="flex min-w-0 flex-wrap gap-4" disabled={dimmed} style={{ opacity: dimmed ? 0.55 : 1 }}>
-        {children}
-      </fieldset>
-    </section>
-  );
-}
 
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s

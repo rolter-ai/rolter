@@ -20,6 +20,7 @@ stories are grouped under **Forms/** in Storybook.
 | `LockButton` | `lock-button.tsx` | the padlock toggle beside a parameter or header |
 | `ChipGroup` | `chip-group.tsx` | a multi-select over a short, fully visible list |
 | `SwitchRow` | `switch-row.tsx` | a boolean as a full-width row: title, hint, switch |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block |
 
 ## Which one to reach for
 
@@ -35,6 +36,13 @@ stories are grouped under **Forms/** in Storybook.
 - A list long enough to need filtering is a `Combobox` too, not a `ChipGroup`.
   The chips exist because a handful of teams is faster to pick from when all of
   them are on screen.
+- A titled group of settings on a deployment-settings screen is a
+  `SettingsPanel`, not `Card`. The two are easy to confuse and used to be worse:
+  `ModelSettings` and `Performance` each declared a local component called
+  `Card` that had nothing to do with `ui/card.tsx`'s (#1682). `Card` is a bare
+  bordered surface with `CardHeader` / `CardTitle` / `CardDescription` /
+  `CardContent` parts you compose yourself; `SettingsPanel` is the settings
+  shape — title, one explanatory line, and a control row that dims as a unit.
 
 ## What they already guarantee
 
@@ -57,6 +65,10 @@ easy to lose when the shape is retyped in the next sheet:
 - `ChipGroup` is one named `group` of `aria-pressed` toggles, and says *none
   available* rather than rendering an empty row.
 - `SwitchRow` names its switch after the row title.
+- `SettingsPanel` groups its controls in a `<fieldset disabled>` rather than a
+  faded `<div>`. Fading a live div drags its labels and hints below 4.5:1 while
+  telling assistive tech nothing (#1181), and a reader who tabs into a group
+  that looks off should find it genuinely off.
 
 Every one of those is asserted in the primitive's own story, so a rewrite that
 drops one fails the story rather than shipping.
