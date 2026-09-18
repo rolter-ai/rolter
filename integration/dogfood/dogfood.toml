@@ -152,46 +152,62 @@ api_key_env = "DOGFOOD_TEI_EMBED_02"
 # `vllm-a100-fast` the subset without the slow card, and two providers sit in
 # both.
 #
-# groups only reach the gateway through the snapshot, which is the part worth
-# exercising: a group created through the dashboard never propagates at all
-# today (#1643), so seeding one from this file is currently the only way to put
-# a group in front of the data plane without restarting the gateway.
+# the explicit `readonly` tier, not the deprecated bare `[[provider_groups]]`
+# array (ADR-0022). `default` would be the nicer story — seeded to the DB once,
+# then editable from the dashboard — but it is unreachable from here: the
+# default tier is seeded by the *control plane* at boot from its own
+# ROLTER_CONFIG, and handing the control plane a config file switches its store
+# to MergedConfigStore, which drops db-created virtual keys from the snapshot
+# (#623) and 401s every key this stack mints. So the harness runs config-less,
+# exactly as the e2e stack does, and this file reaches the database through
+# `rolter-seed --import` instead. The importer reads the readonly tier and
+# writes those rows to the DB, where the dashboard can edit them — the tier
+# governs what the *gateway* treats as config-owned, not what the importer may
+# write.
+#
+# Seeding is also the only way to get a group in front of the data plane at all
+# right now: a group created through the dashboard never bumps config_version,
+# so it does not propagate until the gateway restarts (#1643). And once a group
+# does route, it does not yet fan out — every request lands on the first member
+# regardless of strategy or weights (#1655) — so the weights below describe the
+# intent rather than today's behaviour, and they are what the fix should be
+# measured against.
 
-[[provider_groups]]
+[[provider_groups.readonly]]
 name = "vLLM A100 rack"
 slug = "vllm-a100"
 strategy = "weighted"
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "vllm-a100-01"
 weight = 3
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "vllm-a100-02"
 weight = 1
 # the ~4x slower card. kept in the rack-wide group so the weights have something
 # visibly wrong to correct for
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "vllm-a100-03"
 weight = 1
 
 # the same rack minus the slow card. membership is many-to-many, so 01 and 02
 # are in both groups and a client picks the scope it wants
-[[provider_groups]]
+[[provider_groups.readonly]]
 name = "vLLM A100 fast"
 slug = "vllm-a100-fast"
 strategy = "round_robin"
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "vllm-a100-01"
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "vllm-a100-02"
 
 # the hosted-shaped edge as a pool of one: what an operator has after adding a
 # vendor and before adding a second region, and the case that proves group
 # addressing also works for a model name with no vendor prefix
-[[provider_groups]]
+[[provider_groups.readonly]]
 name = "OpenAI edge pool"
 slug = "openai-pool"
 strategy = "round_robin"
-[[provider_groups.members]]
+[[provider_groups.readonly.members]]
 provider = "openai-edge"
 
 # ── routes ───────────────────────────────────────────────────────────────────

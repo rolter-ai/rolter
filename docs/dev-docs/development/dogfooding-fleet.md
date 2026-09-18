@@ -61,11 +61,17 @@ chart on their own defaults.
   with a `204`, nothing is logged on either side, and the Cluster and Adaptive
   Routing screens stay empty forever. `just dogfood` sets it; a hand-rolled run
   must too. See #1644.
-- **Provider groups only propagate through a seed or a restart.** A group
-  created through the dashboard does not bump `config_version`, so the gateway
-  never learns about it and `group-slug/model` 404s until it restarts (#1643).
-  `dogfood.toml` seeds three groups for that reason, so group addressing is
-  exercisable today.
+- **Provider groups only propagate through a seed or a restart, and do not
+  fan out.** A group created through the dashboard does not bump
+  `config_version`, so the gateway never learns about it and `group-slug/model`
+  404s until it restarts (#1643). `dogfood.toml` seeds three groups for that
+  reason, so group addressing is exercisable today — but every request to a
+  group currently lands on its first member whatever the strategy and weights
+  say (#1655). Groups in this file are in the explicit `readonly` tier: the
+  `default` tier is seeded by the control plane from its own `ROLTER_CONFIG`,
+  and giving the control plane a config file switches it to `MergedConfigStore`,
+  which drops db-created virtual keys from the snapshot (#623) and 401s every
+  key this stack mints.
 - **`allow_custom_api_base` does not survive the database.** `dogfood.toml`
   sets it on the OpenRouter-shaped edge, but the column does not exist yet
   (#1133), so once the fleet is seeded the control plane omits that provider
