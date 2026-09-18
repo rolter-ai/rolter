@@ -69,6 +69,10 @@ ui/debug-storybook.log
 # `just dogfood`. the *fleet* keys in integration/dogfood/keys.env are checked
 # in on purpose — these two are not, because they are per-run state, not fixtures
 integration/dogfood/.kek
+# the admin/internal tokens and the two peppers, generated per machine by
+# `just dogfood` (#1649). peppers especially must never be shared: a checked-in
+# one would be the pepper of every developer's stack at once
+integration/dogfood/.tokens.env
 integration/dogfood/.virtual-key
 
 # test-run leftovers — #1300 committed seven playwright/storybook recordings

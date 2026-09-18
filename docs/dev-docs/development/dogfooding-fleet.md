@@ -54,6 +54,24 @@ chart on their own defaults.
 
 ## Things that are load-bearing and easy to miss
 
+- **The stack enforces RBAC, and that is the point.** `just dogfood` generates
+  `ROLTER_ADMIN_TOKEN`, `ROLTER_INTERNAL_TOKEN` and both peppers into
+  `integration/dogfood/.tokens.env` on first run and serves `/internal/*` on its
+  own port, `4002`, as the e2e stack does (#636). RBAC only enforces once the
+  control plane has an admin token, so a stack started without one runs with the
+  operator API wide open — and then cannot surface the one class of bug
+  dogfooding exists to catch: #942, where `/me/*` routes `401`ed while every
+  admin route passed, is invisible on a stack that never authenticates anything
+  (#1649). A hand-rolled run must set all four. Curl the operator API with
+  `-H "authorization: Bearer $ROLTER_ADMIN_TOKEN"`; `just dogfood-sheet` prints
+  every value.
+- **The two peppers must outlive a restart,** like the KEK. `ROLTER_KEY_PEPPER`
+  is mixed into a stored virtual-key digest and `ROLTER_SESSION_PEPPER` into a
+  session, so regenerating either invalidates every key and logs everyone out.
+  That is why they are written once to a gitignored file rather than being
+  checked in beside the other local credentials, and why the gateway is given
+  the *same* `ROLTER_KEY_PEPPER` as the control plane — the snapshot carries no
+  pepper, so a mismatch rejects every key with `401 invalid api key`.
 - **The gateway needs a node id.** Without `ROLTER_NODE_ID` (and without a
   `HOSTNAME`, which a shell-launched process does not have — a container gets
   one from the runtime) the gateway posts its cluster heartbeat and its
