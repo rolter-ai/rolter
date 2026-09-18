@@ -45,10 +45,16 @@ max_bytes = 32768
 redact_fields = ["authorization", "api_key", "password"]
 
 # ── the hosted-shaped half ───────────────────────────────────────────────────
+# every provider below is in the explicit `readonly` tier (ADR-0022): the bare
+# `[[providers]]` array is the deprecated spelling of the same thing, and this
+# file is what a new operator reads before writing their own (#1657). the
+# `default` tier is not an option here — a config file on the *control* plane
+# flips it onto MergedConfigStore, which drops db-created virtual keys from the
+# snapshot (#623) and 401s every key this stack mints (#1650)
 # named and keyed the way each vendor does it, so they can be added through the
 # dashboard as an OpenAI provider and an OpenRouter provider respectively
 
-[[providers]]
+[[providers.readonly]]
 name = "openai-edge"
 kind = "openai"
 api_base = "http://127.0.0.1:18001"
@@ -59,7 +65,7 @@ api_key_env = "DOGFOOD_OPENAI_KEY"
 # config edit cannot redirect a real key; `allow_custom_api_base` is the
 # deliberate opt-out from that pin (#925, ADR-0029), which is exactly what a
 # local fake needs. `rolter check` reports this provider, as intended.
-[[providers]]
+[[providers.readonly]]
 name = "openrouter-edge"
 kind = "openrouter"
 api_base = "http://127.0.0.1:18002"
@@ -70,76 +76,76 @@ allow_custom_api_base = true
 # one model per instance, like a real vllm deployment. roughly half sit behind
 # a key and half do not, which is what a mixed trusted/untrusted subnet gives
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-a100-01"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18003"
 api_key_env = "DOGFOOD_VLLM_A100_01"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-a100-02"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18004"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-a100-03"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18005"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-h100-01"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18006"
 api_key_env = "DOGFOOD_VLLM_H100_01"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-h100-02"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18007"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-h100-03"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18008"
 api_key_env = "DOGFOOD_VLLM_H100_03"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-l40s-01"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18009"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-l40s-02"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18010"
 api_key_env = "DOGFOOD_VLLM_L40S_02"
 
-[[providers]]
+[[providers.readonly]]
 name = "vllm-l40s-03"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18011"
 
 # 25% of this one's responses are 503s, so the health and breaker screens have
 # something other than green to show
-[[providers]]
+[[providers.readonly]]
 name = "vllm-spot-01"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18012"
 
 # ~1.4s to first token against ~200ms for its pair — the latency-aware
 # strategies should visibly avoid it
-[[providers]]
+[[providers.readonly]]
 name = "vllm-spot-02"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:18013"
 api_key_env = "DOGFOOD_VLLM_SPOT_02"
 
-[[providers]]
+[[providers.readonly]]
 name = "tei-embed-01"
 kind = "tei"
 api_base = "http://127.0.0.1:18014"
 
-[[providers]]
+[[providers.readonly]]
 name = "tei-embed-02"
 kind = "tei"
 api_base = "http://127.0.0.1:18015"

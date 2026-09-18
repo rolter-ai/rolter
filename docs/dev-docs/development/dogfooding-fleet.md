@@ -61,6 +61,16 @@ chart on their own defaults.
   with a `204`, nothing is logged on either side, and the Cluster and Adaptive
   Routing screens stay empty forever. `just dogfood` sets it; a hand-rolled run
   must too. See #1644.
+- **Everything in `dogfood.toml` is in the explicit `readonly` tier.** Providers
+  and groups alike are written `[[providers.readonly]]` / `[[provider_groups.readonly]]`
+  rather than as the deprecated bare arrays (ADR-0022), because this file is
+  what a new operator reads before writing their own (#1657, #1650). The
+  `default` tier is not an option for this stack: giving the *control* plane a
+  config file switches it to `MergedConfigStore`, which drops db-created virtual
+  keys from the snapshot (#623) and then 401s every key the stack mints. An
+  unknown tier name is not an error — the config lint reports it as an
+  unrecognised key and the entries are silently ignored, so a typo costs the
+  whole fleet.
 - **Provider groups only propagate through a seed or a restart, and do not
   fan out.** A group created through the dashboard does not bump
   `config_version`, so the gateway never learns about it and `group-slug/model`
