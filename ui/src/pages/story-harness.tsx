@@ -219,8 +219,15 @@ export async function clickWhenEnabled(
   name: RegExp | string,
 ): Promise<void> {
   const canvas = within(container);
-  const button = await canvas.findByRole("button", { name });
-  await waitFor(() => expect(button).toBeEnabled());
+  // re-queried on every poll for the same reason `expectRefused` is: a screen
+  // that re-renders between the lookup and the click leaves a captured
+  // reference detached, and clicking a node that is no longer in the document
+  // fires nothing (#1670)
+  const button = await waitFor(() => {
+    const found = canvas.getByRole("button", { name });
+    expect(found).toBeEnabled();
+    return found;
+  });
   await userEvent.click(button);
 }
 
@@ -271,14 +278,28 @@ export async function expectRefused(
   reason: string = NEEDS_ADMIN,
 ): Promise<void> {
   const canvas = within(canvasElement);
-  const button = await canvas.findByRole("button", { name });
-  // both in one wait: a control can already be disabled for a reason of its
-  // own — an unsaved draft that does not validate yet — so asserting the
+  // the control is looked up again on every poll rather than captured once
+  // (#1670). a screen re-renders while the gate is still in flight — the scope
+  // chain resolving re-keys the query behind it, which sends the screen back to
+  // its skeleton for a frame — and React builds a *new* button when it comes
+  // back. A captured reference then reports the detached node's attributes
+  // forever: `title` stays null however long the assertion waits, so the story
+  // fails identically at 50ms of latency and at 900ms, and reads as a gate that
+  // never resolved when the live control is refused exactly as it should be
+  //
+  // both flags in one wait: a control can already be disabled for a reason of
+  // its own — an unsaved draft that does not validate yet — so asserting the
   // disabled flag first would pass before the gate has answered and then read
   // a `title` that is still null
   await waitFor(() => {
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", reason);
+    // every match, not the first: a screen repeats its primary action in the
+    // empty state, and a gate that refused one of the two and not the other
+    // would be a gate that leaks
+    const buttons = canvas.getAllByRole("button", { name });
+    for (const button of buttons) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", reason);
+    }
   });
 }
 
