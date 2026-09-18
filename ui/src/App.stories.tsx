@@ -321,16 +321,22 @@ export const SkipLink: Story = {
     await expect(
       link.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    // …is out of the way until it is reached…
+    // …is clipped out of the way until it is reached…
     await expect(link.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    await expect(getComputedStyle(link).overflow).toBe("hidden");
 
-    // …and is the first thing the Tab key finds
+    // …and is the first thing the Tab key finds, revealed rather than merely
+    // focused: a skip link still clipped to a pixel is one nobody can read
     await userEvent.tab();
     await expect(link).toHaveFocus();
     await expect(link.getBoundingClientRect().width).toBeGreaterThan(1);
+    await expect(getComputedStyle(link).overflow).toBe("visible");
 
     const main = canvasElement.querySelector("main") as HTMLElement;
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(main).toHaveFocus());
+    // focus moved without the fragment landing: letting the default action
+    // through would rewrite the url out from under the router
+    await expect(window.location.hash).toBe("");
   },
 };

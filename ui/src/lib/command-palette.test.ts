@@ -52,6 +52,15 @@ describe("fuzzyScore", () => {
     expect(initials).toBeGreaterThan(scattered);
   });
 
+  it("scores a match on a word boundary above one inside a word", () => {
+    // both start at the head, so only the boundary rule separates them
+    expect(fuzzyScore("Audit Logs", "al")!).toBeGreaterThan(fuzzyScore("Analytics", "al")!);
+  });
+
+  it("scores an adjacent run above the same letters scattered", () => {
+    expect(fuzzyScore("Logs", "lo")!).toBeGreaterThan(fuzzyScore("Latency Overview", "lo")!);
+  });
+
   it("scores the shorter of two labels higher", () => {
     expect(fuzzyScore("Logs", "logs")!).toBeGreaterThan(fuzzyScore("Logs Settings", "logs")!);
   });
@@ -107,7 +116,15 @@ describe("recent screens", () => {
   });
 
   it("keeps at most RECENT_LIMIT screens", () => {
-    for (let i = 0; i < RECENT_LIMIT + 3; i += 1) rememberScreen(`screen-${i}`, store);
+    let last: string[] = [];
+    for (let i = 0; i < RECENT_LIMIT + 3; i += 1) last = rememberScreen(`screen-${i}`, store);
+    expect(last).toHaveLength(RECENT_LIMIT);
+    expect(readRecentScreens(store)).toHaveLength(RECENT_LIMIT);
+  });
+
+  it("caps a list an older version left over the limit", () => {
+    const many = Array.from({ length: RECENT_LIMIT + 4 }, (_, i) => `screen-${i}`);
+    store.setItem(RECENT_STORAGE_KEY, JSON.stringify(many));
     expect(readRecentScreens(store)).toHaveLength(RECENT_LIMIT);
   });
 
