@@ -8,6 +8,7 @@
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "test-storybook": "test-storybook",
+    "test:stories": "bun scripts/run-story-tests.ts",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "check:i18n": "bun scripts/check-i18n.ts",
