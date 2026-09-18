@@ -8,12 +8,12 @@ This is the one primitive those facts are built on instead.
 
 ## Two kinds, one table
 
-| | `custom` | `auto` |
-|---|---|---|
-| written by | an operator | a rolter subsystem |
-| means | whatever the operator needs — `eu-only`, `prod`, `owner:platform-team` | a fact rolter established |
-| provenance | none | `observed_at` and `observation` |
-| editable through the API | yes | no |
+|                          | `custom`                                                               | `auto`                          |
+| ------------------------ | ---------------------------------------------------------------------- | ------------------------------- |
+| written by               | an operator                                                            | a rolter subsystem              |
+| means                    | whatever the operator needs — `eu-only`, `prod`, `owner:platform-team` | a fact rolter established       |
+| provenance               | none                                                                   | `observed_at` and `observation` |
+| editable through the API | yes                                                                    | no                              |
 
 They share a table because they are rendered and filtered together, and a
 screen that showed only one of them would be answering half the question. They
@@ -39,8 +39,8 @@ that edits an observation.
 ## An auto label is a measurement, not a guarantee
 
 `observed_at` is the point at which the fact was established and `observation`
-is what established it. Both are shown to operators. An auto label says *this
-was true when we looked*; it can be stale, and the UI must never present one as
+is what established it. Both are shown to operators. An auto label says _this
+was true when we looked_; it can be stale, and the UI must never present one as
 a promise about the next request.
 
 The first producer is the pricing catalog: writing a `model_prices` row records
@@ -68,10 +68,10 @@ Tenancy comes from the subject too: the table has no `org_id`, so
 
 ## Scopes and the two API surfaces
 
-| Surface | Subjects | Capability |
-|---|---|---|
-| `/api/v1/orgs/{org_id}/labels` | providers, provider groups, routes | `label` — org-scoped, read `viewer`, write `admin` |
-| `/api/v1/model-labels` | models | `model_label` — deployment-wide, read any authenticated caller, write superadmin |
+| Surface                        | Subjects                           | Capability                                                                       |
+| ------------------------------ | ---------------------------------- | -------------------------------------------------------------------------------- |
+| `/api/v1/orgs/{org_id}/labels` | providers, provider groups, routes | `label` — org-scoped, read `viewer`, write `admin`                               |
+| `/api/v1/model-labels`         | models                             | `model_label` — deployment-wide, read any authenticated caller, write superadmin |
 
 The split follows where the subjects live. Providers, groups and routes belong
 to an org; models belong to the deployment-wide pricing catalog and to no org,
@@ -89,7 +89,7 @@ the gateway consumes, which is a change of shape rather than an addition. See
 [Stability markers](../development/stability-markers.md) for what that exempts
 labels from.
 
-Labels are not read by the data plane. A route cannot yet *select* on one — a
+Labels are not read by the data plane. A route cannot yet _select_ on one — a
 route that targeted `eu-only` would turn labels into config the gateway
 consumes, which is a materially larger change than displaying them.
 

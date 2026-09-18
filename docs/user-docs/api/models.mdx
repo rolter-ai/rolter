@@ -10,11 +10,11 @@ The `/v1/models` endpoint returns the public model names that are configured in 
 
 The response lists every model name this gateway accepts in a `model` field, in three forms:
 
-| Id | `owned_by` | What it is |
-| --- | --- | --- |
-| `gpt-4o` | `rolter` | a **route name** from your configuration. A route configured with `model = "gpt-4o"` that targets the upstream model `gpt-4o-2024-11-20` appears as `gpt-4o` — the upstream id stays an internal concern of the route |
-| `openai-edge/gpt-4o` | the provider's name | a **provider-pinned address**: this provider, this upstream model, no cross-provider fan-out |
-| `edge-fleet/gpt-4o` | the group's name | a **provider-group address**, balanced across the group's members |
+| Id                   | `owned_by`          | What it is                                                                                                                                                                                                            |
+| -------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gpt-4o`             | `rolter`            | a **route name** from your configuration. A route configured with `model = "gpt-4o"` that targets the upstream model `gpt-4o-2024-11-20` appears as `gpt-4o` — the upstream id stays an internal concern of the route |
+| `openai-edge/gpt-4o` | the provider's name | a **provider-pinned address**: this provider, this upstream model, no cross-provider fan-out                                                                                                                          |
+| `edge-fleet/gpt-4o`  | the group's name    | a **provider-group address**, balanced across the group's members                                                                                                                                                     |
 
 When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all of them.
 
@@ -122,6 +122,7 @@ for model in models:
     <ResponseField name="owned_by" type="string">
       `"rolter"` for a route name, otherwise the name of the provider or provider group the address pins — so a client can group the list by where each model comes from.
     </ResponseField>
+
   </Expandable>
 </ResponseField>
 

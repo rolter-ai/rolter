@@ -53,7 +53,7 @@ Every response is restored. Use this when the caller is your own application on 
 A response is restored only when the request carries `x-rolter-pii-restore: true`. The policy still decides — under `never`, that header changes nothing.
 </ParamField>
 
-Restoration only ever reverses placeholders the *request* leg introduced. Content the provider generated is never restored: reversing that would hand back the very data the response leg exists to remove.
+Restoration only ever reverses placeholders the _request_ leg introduced. Content the provider generated is never restored: reversing that would hand back the very data the response leg exists to remove.
 
 ### Streaming
 
@@ -71,7 +71,7 @@ A request-only setup (`direction = "request"`, `restoration = "never"`) has no r
 If the sanitizer is a compliance control rather than a best-effort improvement, use `fail_closed`. Under `fail_open` an outage silently sends untouched personal data to the provider.
 </Warning>
 
-A failure on the *response* leg never fails the request, in either mode: the upstream call already happened and was already billed, so refusing to deliver would spend the caller's money and return nothing. The `rolter_pii_sanitizer_errors_total` counter records it.
+A failure on the _response_ leg never fails the request, in either mode: the upstream call already happened and was already billed, so refusing to deliver would spend the caller's money and return nothing. The `rolter_pii_sanitizer_errors_total` counter records it.
 
 ## The service contract
 
@@ -114,13 +114,13 @@ A malformed reply is a failure, not a pass. Defaulting to "allow" here would for
 
 All six counters are cardinality-bounded and carry no content:
 
-| Metric | Meaning |
-|---|---|
-| `rolter_pii_entities_redacted_total` | entities replaced across both legs |
-| `rolter_pii_sanitizer_errors_total` | calls that failed (timeout, transport, non-2xx, malformed reply) |
-| `rolter_pii_sanitizer_blocks_total` | requests refused under `fail_closed` |
-| `rolter_pii_restorations_total` | successful restores |
-| `rolter_pii_restore_errors_total` | failed restores — the caller kept placeholders |
-| `rolter_pii_stream_rejections_total` | streamed requests refused under `streaming = "reject"` |
+| Metric                               | Meaning                                                          |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `rolter_pii_entities_redacted_total` | entities replaced across both legs                               |
+| `rolter_pii_sanitizer_errors_total`  | calls that failed (timeout, transport, non-2xx, malformed reply) |
+| `rolter_pii_sanitizer_blocks_total`  | requests refused under `fail_closed`                             |
+| `rolter_pii_restorations_total`      | successful restores                                              |
+| `rolter_pii_restore_errors_total`    | failed restores — the caller kept placeholders                   |
+| `rolter_pii_stream_rejections_total` | streamed requests refused under `streaming = "reject"`           |
 
 A rising `rolter_pii_sanitizer_errors_total` under `fail_open` is the alert that matters: it means unsanitized traffic is reaching providers.

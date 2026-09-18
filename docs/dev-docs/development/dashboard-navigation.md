@@ -17,11 +17,11 @@ lock that no class can supply. `ui/src/lib/use-media-query.ts` exports the two
 queries (`BELOW_MD`, `BELOW_LG`), which are tailwind's `md` and `lg` so the
 javascript and the classes cannot disagree.
 
-| Viewport | Shape | Behaviour |
-|---|---|---|
-| `< 768px` (below `md`) | off-canvas drawer | Hidden by default and out of the flow entirely — a closed drawer takes no width. Opened by the hamburger in `ScreenHeader`, which renders only at this width; drawn over a scrim, with labels; dismissed by Escape, a scrim click, or navigating. Focus, the Tab trap and the scroll lock come from `useModalA11y`, the same contract `Sheet` signs. |
-| `768px`–`1023px` (`md` to `lg`) | icon rail | On screen, folded to the 52px icon strip. The collapse toggle still works — this only picks the starting state. No splitter. |
-| `≥ 1024px` (`lg` and up) | full rail | The resizable, collapsible rail described below. The remembered width applies here and nowhere else. |
+| Viewport                        | Shape             | Behaviour                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `< 768px` (below `md`)          | off-canvas drawer | Hidden by default and out of the flow entirely — a closed drawer takes no width. Opened by the hamburger in `ScreenHeader`, which renders only at this width; drawn over a scrim, with labels; dismissed by Escape, a scrim click, or navigating. Focus, the Tab trap and the scroll lock come from `useModalA11y`, the same contract `Sheet` signs. |
+| `768px`–`1023px` (`md` to `lg`) | icon rail         | On screen, folded to the 52px icon strip. The collapse toggle still works — this only picks the starting state. No splitter.                                                                                                                                                                                                                         |
+| `≥ 1024px` (`lg` and up)        | full rail         | The resizable, collapsible rail described below. The remembered width applies here and nowhere else.                                                                                                                                                                                                                                                 |
 
 Below `md` the rail's persisted width is not read and not written: the drawer
 is sized by the viewport, and a width dragged on a desktop must not decide how
@@ -37,7 +37,7 @@ nothing.
 
 ## The assembled shell
 
-The three shapes above are the rail's. The shell is the rail *plus* the screen
+The three shapes above are the rail's. The shell is the rail _plus_ the screen
 header that opens it and the route that dismisses it, and until #1239 nothing
 mounted all three together: the drawer's open state is owned by `App`, its
 trigger lives in `ScreenHeader`, and the `useEffect` on `location.pathname`
@@ -116,11 +116,11 @@ and the reference sheet renders by mapping it, so neither side names a key of
 its own — a shortcut that works cannot be missing from the sheet, and a row in
 the sheet cannot name a keystroke nothing listens for.
 
-| Key | What it does | Where it lives |
-|---|---|---|
-| `⌘K` / `Ctrl-K` | toggles the command palette | `isPaletteShortcut` in `ui/src/lib/command-palette.ts` |
-| `/` | puts the caret in the rail's search box | `isNavSearchShortcut`, which focuses `NAV_SEARCH_ID` |
-| `?` | opens the keyboard shortcut reference | `isHelpShortcut`, which opens `ShortcutHelp` |
+| Key                            | What it does                                  | Where it lives                                                                     |
+| ------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `⌘K` / `Ctrl-K`                | toggles the command palette                   | `isPaletteShortcut` in `ui/src/lib/command-palette.ts`                             |
+| `/`                            | puts the caret in the rail's search box       | `isNavSearchShortcut`, which focuses `NAV_SEARCH_ID`                               |
+| `?`                            | opens the keyboard shortcut reference         | `isHelpShortcut`, which opens `ShortcutHelp`                                       |
 | `Tab` from the top of the page | reveals the skip link, which focuses `<main>` | the first child of the shell in `ui/src/App.tsx`; not a chord, so not in the table |
 
 **Adding one** is three edits in one file plus its copy: a `ShortcutId`, a row
@@ -134,7 +134,7 @@ left behind for a shortcut that has been removed.
 event target — or the characters would be unwritable in every field in the
 dashboard, model names and prompts included. The rule is duck-typed rather than
 an `instanceof HTMLElement` check so the unit tests can exercise it without a
-DOM. `?` rejects Meta, Control and Alt but *not* Shift: on most layouts Shift is
+DOM. `?` rejects Meta, Control and Alt but _not_ Shift: on most layouts Shift is
 how `?` is typed at all.
 
 The printed chord is the same table's data. `MOD` resolves to `⌘` on an Apple
@@ -142,7 +142,7 @@ keyboard and `Ctrl` elsewhere (`isApplePlatform` reads `userAgentData.platform`
 and the deprecated `navigator.platform`, and guesses `Ctrl` when it has
 neither), and `KbdChord` in `ui/src/components/ui/kbd.tsx` prints it — one
 `<kbd>` per key, with the whole group carrying `⌘K` as its accessible name.
-Getting the platform wrong only changes a label: the matchers accept Meta *and*
+Getting the platform wrong only changes a label: the matchers accept Meta _and_
 Control regardless. Stories pin `apple` rather than letting the runner's own
 platform decide what they assert.
 
@@ -295,7 +295,7 @@ chunk to ~374 kB and leaves the build warning-free without touching
 `chunkSizeWarningLimit`.
 
 Two screens stay statically imported on purpose: `Login` and `AcceptInvite`
-*are* the first paint for a signed-out reader, so deferring them would add a
+_are_ the first paint for a signed-out reader, so deferring them would add a
 round trip to the one screen that cannot spare one.
 
 The shell wraps the screen region in a `React.Suspense` whose fallback is a

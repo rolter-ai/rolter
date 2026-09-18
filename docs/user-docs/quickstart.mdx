@@ -17,6 +17,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     <Tip>
       Prefer a local binary? The [Installation page](/installation) covers `cargo install` and `uv tool install rolter` as alternatives.
     </Tip>
+
   </Step>
   <Step title="Start Rolter">
     Start the zero-config local stack.
@@ -47,6 +48,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     <Tip>
       Need Postgres, Redis, ClickHouse, and separate gateway/control processes? Use the full Compose deployment: `docker compose -f docker/docker-compose.yml up -d`.
     </Tip>
+
   </Step>
   <Step title="Send a chat completions request">
     With the gateway up, call the built-in `fake-llm` model. It needs no *provider* account and is intended for smoke tests and local development.
@@ -91,6 +93,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     <Info>
       Streaming works too. Add `"stream": true` to your request body and Rolter will forward the SSE stream from the upstream provider directly to your client.
     </Info>
+
   </Step>
   <Step title="Verify with the models endpoint">
     Confirm the gateway is healthy and listing its built-in route:
@@ -110,6 +113,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     <Note>
       A Prometheus-format metrics endpoint is available at `GET /metrics` for integration with Grafana, Datadog, or any other scraper.
     </Note>
+
   </Step>
 </Steps>
 

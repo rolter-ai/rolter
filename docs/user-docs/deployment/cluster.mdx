@@ -14,11 +14,11 @@ View the inventory under **Cluster Config** in the dashboard.
 
 A node identifies itself with three headers on its snapshot poll:
 
-| Header | Meaning |
-|---|---|
-| `x-rolter-node-id` | stable identity, max 128 chars |
-| `x-rolter-node-role` | `gateway` or `control`; anything else is recorded as `gateway` |
-| `x-rolter-node-build` | build version, max 64 chars |
+| Header                | Meaning                                                        |
+| --------------------- | -------------------------------------------------------------- |
+| `x-rolter-node-id`    | stable identity, max 128 chars                                 |
+| `x-rolter-node-role`  | `gateway` or `control`; anything else is recorded as `gateway` |
+| `x-rolter-node-build` | build version, max 64 chars                                    |
 
 Values are length-bounded and rejected if they contain control characters — they reach the database and the dashboard, so they are sanitized even though only a holder of the internal token can send them. A header that fails those checks is dropped rather than truncated into a new identity.
 

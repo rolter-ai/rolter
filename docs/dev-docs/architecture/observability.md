@@ -62,7 +62,7 @@ endpoint is configured:
 
 - **Extract.** `GatewayMakeSpan` (`rolter-gateway::trace`) is the `TraceLayer`'s
   span-maker: it builds the request span and makes the extracted inbound context
-  its *parent*. A B3-only caller is normalized into an equivalent `traceparent`
+  its _parent_. A B3-only caller is normalized into an equivalent `traceparent`
   first, so one W3C propagator serves both wire formats. Without this the
   gateway's spans were disconnected roots — the trace id reached the request log,
   but nothing joined the caller's trace.
@@ -72,7 +72,8 @@ endpoint is configured:
   the default `RUST_LOG=info` it is disabled, and setting a parent on a disabled
   span silently does nothing. With no pipeline installed it falls back to that
   stock DEBUG span, so the untraced path costs what it always did.
-- **Inject.** The context handed to the provider is injected from the *current*
+
+- **Inject.** The context handed to the provider is injected from the _current_
   span, inside the per-attempt `upstream.request` span, rather than copied from
   the caller. Copying it verbatim made the provider call a child of the caller's
   span and therefore a **sibling** of the gateway's own work, which silently
@@ -87,16 +88,16 @@ endpoint is configured:
 
 One span per stage, so a slow request is attributable rather than merely slow:
 
-| Span | Attributes |
-|---|---|
-| `auth` | — |
-| `guardrails.pre` | `redacted`, `webhook` |
-| `route.select` | `route`, `strategy`, `candidates` |
-| `cache.lookup` | `hit`, `kind` (`exact` / `semantic`) |
-| `queue.wait` | `provider` |
-| `upstream.request` | `attempt`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.id`, `http.response.status_code` (embeddings also carry `gen_ai.request.encoding_formats` and `gen_ai.embeddings.dimension.count`) |
-| `translate.request` | — |
-| `guardrails.post` | — |
+| Span                | Attributes                                                                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth`              | —                                                                                                                                                                                                       |
+| `guardrails.pre`    | `redacted`, `webhook`                                                                                                                                                                                   |
+| `route.select`      | `route`, `strategy`, `candidates`                                                                                                                                                                       |
+| `cache.lookup`      | `hit`, `kind` (`exact` / `semantic`)                                                                                                                                                                    |
+| `queue.wait`        | `provider`                                                                                                                                                                                              |
+| `upstream.request`  | `attempt`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.id`, `http.response.status_code` (embeddings also carry `gen_ai.request.encoding_formats` and `gen_ai.embeddings.dimension.count`) |
+| `translate.request` | —                                                                                                                                                                                                       |
+| `guardrails.post`   | —                                                                                                                                                                                                       |
 
 `queue.wait` spans enqueue→dequeue only: the span travels with the queued job and
 the worker closes it the moment it picks the job up, so it measures the wait and
@@ -118,14 +119,14 @@ The control plane runs the same pipelines as the gateway (`telemetry::init()`),
 but until #845 emitted no spans of its own — everything it did was invisible
 beyond what the HTTP layer produced by default.
 
-| Span | Attributes |
-|---|---|
-| `control.request` | `http.route`, `http.request.method`, `http.response.status_code` |
-| `snapshot.build` | `config_version`, `payload_bytes`, `outcome` |
-| `snapshot.sanitize` | — |
-| `snapshot.encode` | — |
+| Span                | Attributes                                                       |
+| ------------------- | ---------------------------------------------------------------- |
+| `control.request`   | `http.route`, `http.request.method`, `http.response.status_code` |
+| `snapshot.build`    | `config_version`, `payload_bytes`, `outcome`                     |
+| `snapshot.sanitize` | —                                                                |
+| `snapshot.encode`   | —                                                                |
 
-`http.route` is the *matched* template (`/api/v1/providers/{id}`), never the
+`http.route` is the _matched_ template (`/api/v1/providers/{id}`), never the
 concrete path. `control.request` comes from one middleware rather than an
 attribute on each of ~90 handlers, so a route added tomorrow is instrumented the
 moment it is mounted.
@@ -147,8 +148,8 @@ These exist so per-tenant telemetry destinations are routable. ADR-0026 decided
 that fan-out to tenant-owned backends belongs in an OpenTelemetry Collector
 rather than in-process exporters — one egress path in the gateway no matter how
 many tenants, and no data-plane process POSTing to operator-supplied URLs — and
-that rolter's job in that design is to *stamp the attribute the collector routes
-on*. Until this landed there was nothing to stamp: the request logs in
+that rolter's job in that design is to _stamp the attribute the collector routes
+on_. Until this landed there was nothing to stamp: the request logs in
 ClickHouse always carried tenant identity, but no exported span ever did, which
 made the routing half unimplementable.
 
@@ -184,13 +185,13 @@ container is unreachable from the gateway container.
 
 There are two, and they are mutually exclusive — both publish OTLP on 4317/4318.
 
-| | `docker-compose.observability.yml` (default) | `docker-compose.signoz.yml` |
-|---|---|---|
-| backend | Jaeger v2 | SigNoz |
-| signals | traces only | traces, metrics, logs |
-| containers | 2 | 5, incl. its own ClickHouse + Zookeeper |
-| storage | in memory, lost on restart | persistent |
-| use it for | reading a waterfall, fast iteration | aggregate views, dashboards, dogfooding over time |
+|            | `docker-compose.observability.yml` (default) | `docker-compose.signoz.yml`                       |
+| ---------- | -------------------------------------------- | ------------------------------------------------- |
+| backend    | Jaeger v2                                    | SigNoz                                            |
+| signals    | traces only                                  | traces, metrics, logs                             |
+| containers | 2                                            | 5, incl. its own ClickHouse + Zookeeper           |
+| storage    | in memory, lost on restart                   | persistent                                        |
+| use it for | reading a waterfall, fast iteration          | aggregate views, dashboards, dogfooding over time |
 
 ```
 docker compose -f docker/docker-compose.yml \
@@ -199,7 +200,7 @@ docker compose -f docker/docker-compose.yml \
 
 Jaeger is the default because it is two containers and starts in seconds, and
 because reading a correctly-parented waterfall is what the tracing work needed.
-Reach for SigNoz when "which stage is slow *across all requests*" matters, which
+Reach for SigNoz when "which stage is slow _across all requests_" matters, which
 Jaeger cannot answer.
 
 Nothing in the Rust differs between them: the gateway speaks vendor-neutral OTLP
@@ -215,7 +216,7 @@ against the local instance. Point an MCP client at that URL; the
 `signoz` server entry to fill in.
 
 It needs a SigNoz API key, which is created in the UI (**Settings → API Keys**,
-admin only) and supplied to the *server*, not the client:
+admin only) and supplied to the _server_, not the client:
 
 ```
 set -x SIGNOZ_API_KEY (pass show rolter/signoz-api-key)
@@ -265,23 +266,23 @@ place it measures itself (#845). They are real histograms — measurements taken
 as they happen — not observable instruments, because a duration cannot be
 reconstructed from a counter after the fact.
 
-| Metric | Unit | Attributes |
-|---|---|---|
-| `rolter_snapshot_build_ms` | ms | `outcome` (`ok` / `not_modified` / `error`) |
-| `rolter_snapshot_payload_bytes` | By | `outcome` |
-| `rolter_control_request_ms` | ms | `http.route`, `http.request.method`, `http.response.status_class` |
-| `rolter_db_pool_acquire_ms` | ms | `outcome` (`ok` / `timeout`) |
+| Metric                          | Unit | Attributes                                                        |
+| ------------------------------- | ---- | ----------------------------------------------------------------- |
+| `rolter_snapshot_build_ms`      | ms   | `outcome` (`ok` / `not_modified` / `error`)                       |
+| `rolter_snapshot_payload_bytes` | By   | `outcome`                                                         |
+| `rolter_control_request_ms`     | ms   | `http.route`, `http.request.method`, `http.response.status_class` |
+| `rolter_db_pool_acquire_ms`     | ms   | `outcome` (`ok` / `timeout`)                                      |
 
 And one counter, for the endpoint an unauthenticated attacker can reach (#1079):
 
-| Metric | Meaning | Attributes |
-|---|---|---|
+| Metric                          | Meaning                                 | Attributes                                                           |
+| ------------------------------- | --------------------------------------- | -------------------------------------------------------------------- |
 | `rolter_control_login_attempts` | resolved control-plane sign-in attempts | `outcome` (`success` / `invalid` / `throttled` / `locked` / `error`) |
 
 A counter rather than a histogram: the question it answers — "is somebody
 running a credential-stuffing run against this deployment" — is a rate, not a
 distribution. It carries no account or address label; either would be unbounded
-cardinality *and* would put the identity an attacker is guessing into the
+cardinality _and_ would put the identity an attacker is guessing into the
 metrics pipeline. A rising `invalid` with a rising `locked` behind it is the
 throttle working; a rising `invalid` with no `locked` means the run is spread
 thin enough to stay inside the per-account budget, and the per-address budget is
@@ -289,17 +290,17 @@ the one to tighten.
 
 And the connection pool, as observable gauges (#1052):
 
-| Metric | Meaning |
-|---|---|
-| `rolter_db_pool_connections` | connections the pool holds open |
-| `rolter_db_pool_idle` | how many of those are free right now |
-| `rolter_db_pool_max` | the configured ceiling |
+| Metric                       | Meaning                              |
+| ---------------------------- | ------------------------------------ |
+| `rolter_db_pool_connections` | connections the pool holds open      |
+| `rolter_db_pool_idle`        | how many of those are free right now |
+| `rolter_db_pool_max`         | the configured ceiling               |
 
 One pool serves `/internal/snapshot`, the whole CRUD surface and every RBAC
 membership lookup, so a ceiling that is too low presents as "the control plane
 got slow" with nothing to attribute it to. The three gauges together are what
 separate the two cases: **pool-bound** is `connections == max` while `idle` is
-zero *and* `rolter_db_pool_acquire_ms` shows waits; acquire waits without a
+zero _and_ `rolter_db_pool_acquire_ms` shows waits; acquire waits without a
 pinned pool mean the database itself is slow, and raising the ceiling there
 makes it worse.
 
@@ -317,7 +318,7 @@ observation in the first bucket.
 
 **Cardinality is bounded by construction.** `http.route` is the matched
 template, so a thousand providers are one series. Status is recorded as a
-*class*, not a code: twelve statuses across ninety routes would be over a
+_class_, not a code: twelve statuses across ninety routes would be over a
 thousand series to answer a question five buckets answer. `config_version` is
 unbounded — a new value on every config write — so it lives on the
 `snapshot.build` span and never on a metric.
@@ -380,7 +381,7 @@ It pairs directly with the `queue.wait` span. Alongside it are
 `tokio.runtime.workers`, `tokio.runtime.tasks.alive` and
 `tokio.runtime.worker.busy.time`.
 
-Busy *time* is exported, not a busy ratio: a ratio computed in-process would
+Busy _time_ is exported, not a busy ratio: a ratio computed in-process would
 average over whatever interval the SDK happens to use and would not re-aggregate
 across instances. As a monotonic counter the backend derives utilisation with
 `rate(tokio.runtime.worker.busy.time) / tokio.runtime.workers`, which does.
@@ -436,7 +437,7 @@ reported under an id that is discarded on arrival.
 
 ### Wrapping audit (#815)
 
-OpenTelemetry's [*Don't wrap OpenTelemetry*](https://opentelemetry.io/blog/2026/dont-wrap-opentelemetry/)
+OpenTelemetry's [_Don't wrap OpenTelemetry_](https://opentelemetry.io/blog/2026/dont-wrap-opentelemetry/)
 argues that a house abstraction over the instrumentation API costs performance,
 maintainability and developer education. Three anti-patterns are named: wrappers
 that force callers to allocate an attribute collection, wrappers that look an
@@ -452,12 +453,12 @@ Note up front that rolter instruments through `tracing` + `tracing-opentelemetry
 That is the ecosystem bridge, not a bespoke house wrapper, and it is not what the
 post argues against. This audit is not a proposal to remove `tracing`.
 
-| Item | Verdict | Why |
-|---|---|---|
-| `stage_span!` (`rolter-core/src/telemetry.rs`) | keep | code generation, not a runtime wrapper |
-| The scalar-metrics list (`Metrics::scalars()`) | keep | the by-name lookup is on the export path, not the request path |
-| `RequestHistograms::record` | keep | one unavoidable allocation; the alternative is the anti-pattern |
-| `GatewayMakeSpan` (`rolter-gateway/src/trace.rs`) | keep | SDK/layer configuration, explicitly out of scope |
+| Item                                              | Verdict | Why                                                             |
+| ------------------------------------------------- | ------- | --------------------------------------------------------------- |
+| `stage_span!` (`rolter-core/src/telemetry.rs`)    | keep    | code generation, not a runtime wrapper                          |
+| The scalar-metrics list (`Metrics::scalars()`)    | keep    | the by-name lookup is on the export path, not the request path  |
+| `RequestHistograms::record`                       | keep    | one unavoidable allocation; the alternative is the anti-pattern |
+| `GatewayMakeSpan` (`rolter-gateway/src/trace.rs`) | keep    | SDK/layer configuration, explicitly out of scope                |
 
 **`stage_span!`** expands to a direct `tracing::info_span!` call guarded by an
 `is_active()` check, so it is closer to the code generation the post recommends
@@ -470,7 +471,7 @@ nothing.
 **The scalar-metrics list** is the shape most at risk, since `install_metrics`
 registers one observable instrument per scalar and each instrument's callback
 calls `collect()` and finds its own entry by name. That is a by-name lookup, but
-it is not on a hot path: the instruments are *observable*, so the SDK invokes
+it is not on a hot path: the instruments are _observable_, so the SDK invokes
 those callbacks on its own export interval (`OTEL_METRIC_EXPORT_INTERVAL`,
 default 60s). The request path only ever does `fetch_add` on a named `AtomicU64`
 field — there is no map, no lookup and no lock between a request and its counter.
@@ -497,7 +498,7 @@ paid only when an OTLP endpoint is configured.
 
 **`GatewayMakeSpan`** is a `tower_http::trace::MakeSpan` implementation: layer
 configuration, which the post explicitly separates from instrumentation and calls
-*not* wrapping. Recorded here only so the audit is complete.
+_not_ wrapping. Recorded here only so the audit is complete.
 
 ### Turning telemetry off explicitly
 
@@ -506,7 +507,7 @@ the dashboard's browser tracing — regardless of which `OTEL_*` endpoints are s
 (#812). Unset means enabled, which changes nothing for an existing deployment:
 with no endpoint configured nothing is exported anyway.
 
-The switch can only *subtract*. It never turns export on by itself, and an
+The switch can only _subtract_. It never turns export on by itself, and an
 unrecognized value leaves export on rather than silently blinding a deployment;
 only `0`, `false`, `no` and `off` disable it.
 
@@ -589,7 +590,7 @@ is collector configuration.
 
 - Every proxied request is logged to **ClickHouse** (`request_logs`): identifiers, model, provider/target, status, token counts, `cost_usd`, latency, TTFT, cache flag, error.
 - **`ts` is the instant the request began** — the same instant `latency_ms` is measured from, and the one the passive health event derived from that request carries. It is reconstructed from the request's monotonic start (`Instant`), so a clock step during a long request cannot reorder rows, and it is written by the gateway as an RFC 3339 literal at the column's millisecond precision (the insert asks ClickHouse for `date_time_input_format=best_effort` so that literal parses into `DateTime64(3)`). Add `latency_ms` to `ts` for the completion time. The same rule applies to the matching `request_payloads` row, which copies its request's `ts`.
-- Gateways older than #1210 did **not** write `ts` at all and let the column's `default now64(3)` stamp it, which recorded the *batch flush* time: every row in one flush shared a single millisecond, bursts collapsed onto one point, timeseries buckets were skewed by the flush interval, and keyset paging by `(ts, request_id)` had no order within a batch. The column default is kept as a fallback for those writers, so historical rows and any pre-#1210 gateway still land — but on such rows `ts` means flush time, not request time.
+- Gateways older than #1210 did **not** write `ts` at all and let the column's `default now64(3)` stamp it, which recorded the _batch flush_ time: every row in one flush shared a single millisecond, bursts collapsed onto one point, timeseries buckets were skewed by the flush interval, and keyset paging by `(ts, request_id)` had no order within a batch. The column default is kept as a fallback for those writers, so historical rows and any pre-#1210 gateway still land — but on such rows `ts` means flush time, not request time.
 - **Retention** defaults to 90 days for metadata and seven days for captured payloads, set as the TTL in the ClickHouse schema. Both are admin-managed: `PUT /api/v1/logging-settings` accepts `retention_days` (1–3650) and `payload_retention_hours` (1–8760) and issues the matching `alter table … modify ttl` against ClickHouse, which then expires parts on its own schedule. Payload retention may not exceed metadata retention, so raw prompt bodies never outlive the row they belong to. A ClickHouse failure leaves the stored policy in place and is logged rather than failing the admin write — re-saving reapplies it.
 - **Payload capture** is disabled by default. Set `[logging.payload_capture] enabled = true` to write redacted request and response payloads to the separate `request_payloads` table, which has a seven-day TTL (versus 90 days for request metadata). `max_bytes` bounds each body; `redact_fields` adds recursively redacted JSON keys before storage. Optional `models` and `virtual_key_ids` allow-lists make the deployment-level switch route- or key-specific.
 - **Request id / trace continuation**: every request carries an `x-request-id` — the caller's when supplied, otherwise a generated UUID — which is echoed on the response and stored on the log row for end-to-end correlation. An inbound W3C `traceparent` or B3 (`b3` / `x-b3-traceid`) header is parsed and its trace id stored in `request_logs.trace_id`, so gateway logs join the caller's distributed trace instead of starting a disconnected one.
@@ -607,7 +608,7 @@ is collector configuration.
 - Counters `rolter_health_events_written_total` and `rolter_health_events_dropped_total` track the writer, mirroring the request-log counters.
 - This event stream feeds uptime %/MTTR rollups and the dashboard health panel.
 
-#### Passive events are per *attempt*, not per request
+#### Passive events are per _attempt_, not per request
 
 A `passive` event describes one **upstream attempt**, not one client request. A
 request that fails over makes several, and each one is an independent
@@ -616,16 +617,16 @@ observation of the target it went to.
 This used to be per request (#1646). The whole passive funnel — the health
 event, `rolter_target_requests_total{provider,target,outcome}` and
 `rolter_upstream_errors_total` — was derived from the request log row, whose
-`provider`/`target` are those of the attempt that finally *answered the
-caller*. So when a target 503'd a quarter of its requests and the gateway
+`provider`/`target` are those of the attempt that finally _answered the
+caller_. So when a target 503'd a quarter of its requests and the gateway
 failed over, the record read like this:
 
-| surface | what it said | what was true |
-|---|---|---|
-| `GET /api/v1/health/uptime` (target grain) | `ok=23 errors=0 uptime=1` | ~25% of attempts to that target failed |
-| `rolter_target_requests_total{provider="sick",…}` | *no series at all* | 4 failed attempts |
-| `rolter_upstream_errors_total` | `0` | 4 |
-| `GET /api/v1/analytics/summary` | `requests=374 errors=0` | correct — the clients really did get 200s |
+| surface                                           | what it said              | what was true                             |
+| ------------------------------------------------- | ------------------------- | ----------------------------------------- |
+| `GET /api/v1/health/uptime` (target grain)        | `ok=23 errors=0 uptime=1` | ~25% of attempts to that target failed    |
+| `rolter_target_requests_total{provider="sick",…}` | _no series at all_        | 4 failed attempts                         |
+| `rolter_upstream_errors_total`                    | `0`                       | 4                                         |
+| `GET /api/v1/analytics/summary`                   | `requests=374 errors=0`   | correct — the clients really did get 200s |
 
 Failover doing its job is exactly when an operator most needs to see that a
 target is sick, so a sick target was indistinguishable from a healthy one on
@@ -665,10 +666,10 @@ returns `sources`, the sorted distinct `source` values behind the row.
 
 Reading the numbers:
 
-- A `provider` row answers *"is this provider reachable at all, right now?"*.
+- A `provider` row answers _"is this provider reachable at all, right now?"_.
   Its instant is the last probe or status-page poll, and its denominator is the
   number of polls in the window.
-- A `target` row answers *"what did real traffic through this route see?"*.
+- A `target` row answers _"what did real traffic through this route see?"_.
   Its instant is the last request that used it, and its denominator is the
   number of requests in the window.
 

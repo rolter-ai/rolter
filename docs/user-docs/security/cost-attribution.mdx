@@ -7,7 +7,7 @@ description: "Roll teams up into business units and attribute spend to your own 
 Rolter attributes spend along two axes that sit beside the org/team/project hierarchy:
 
 - **Business units** roll teams up, so cost lands on the part of the organisation that incurred it.
-- **Customers** attribute usage to the people *you* serve, so it can be billed on or reported per account. A customer can optionally roll up into a business unit.
+- **Customers** attribute usage to the people _you_ serve, so it can be billed on or reported per account. A customer can optionally roll up into a business unit.
 
 Both live under **Governance** in the dashboard.
 
@@ -35,11 +35,11 @@ Delete removes the row outright. Use it for something created by mistake, not fo
 
 A customer's `business_unit_id` follows a three-state contract on update:
 
-| Value | Meaning |
-|---|---|
-| omitted | leave unchanged |
-| `null` | unassign |
-| a UUID | assign to that unit |
+| Value   | Meaning             |
+| ------- | ------------------- |
+| omitted | leave unchanged     |
+| `null`  | unassign            |
+| a UUID  | assign to that unit |
 
 The unit must belong to the same org as the customer; a cross-org assignment is rejected.
 
@@ -58,11 +58,11 @@ Two rules the editor enforces before you save, because the server rejects them a
 
 Both fields follow the same three-state contract customers use for `business_unit_id`:
 
-| Value | Meaning |
-|---|---|
-| omitted | leave unchanged |
-| `null` | clear the attribution |
-| a UUID | attribute to that unit or customer |
+| Value   | Meaning                            |
+| ------- | ---------------------------------- |
+| omitted | leave unchanged                    |
+| `null`  | clear the attribution              |
+| a UUID  | attribute to that unit or customer |
 
 The dashboard always sends both fields, so clearing one is something you can actually express.
 
@@ -97,10 +97,10 @@ curl -X PUT -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 `GET /api/v1/analytics/by-attribution` rolls `request_logs` up by one governance dimension over a time window:
 
-| Parameter | Meaning |
-|---|---|
-| `since` / `until` | window bounds; both default to the last 7 days |
-| `dimension` | `business_unit` or `customer` (defaults to `business_unit`) |
+| Parameter              | Meaning                                                              |
+| ---------------------- | -------------------------------------------------------------------- |
+| `since` / `until`      | window bounds; both default to the last 7 days                       |
+| `dimension`            | `business_unit` or `customer` (defaults to `business_unit`)          |
 | `include_unattributed` | include the bucket for keys that named neither (defaults to `false`) |
 
 ```bash
@@ -133,7 +133,7 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 Both accept a comma-separated set — `customer=<uuid>,<uuid>` — matching the filter rail, where several can be ticked at once. An id that nothing was attributed to matches nothing: a filter narrows, it never widens.
 
-Because the filtering happens in the database, `limit` and the page cursor mean what they say under a filter. Paging through a unit's requests pages through *that unit's* requests — see [paging the invocation log](/observability/logs-and-cost#paging-the-invocation-log).
+Because the filtering happens in the database, `limit` and the page cursor mean what they say under a filter. Paging through a unit's requests pages through _that unit's_ requests — see [paging the invocation log](/observability/logs-and-cost#paging-the-invocation-log).
 
 <Note>
 For a whole-window total rather than individual requests, `by-attribution` is still the cheaper question — it aggregates in ClickHouse instead of returning rows.

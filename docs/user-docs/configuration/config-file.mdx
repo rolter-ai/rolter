@@ -103,11 +103,12 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 <ParamField path="api_base" type="string" required>
   The provider's base URL with no trailing slash, e.g. `https://api.openai.com`.
 
-  **Whether to include `/v1` depends on the provider kind.** For openai-shaped kinds (`openai`, `openai_compatible`, `ollama`, `ollama_cloud`, `llama_cpp`, `anthropic`) Rolter appends the full `/v1/...` path itself, so the base must stop at the host: `https://api.openai.com`, not `https://api.openai.com/v1`. Including it produces `/v1/v1/chat/completions` and every request 404s.
+**Whether to include `/v1` depends on the provider kind.** For openai-shaped kinds (`openai`, `openai_compatible`, `ollama`, `ollama_cloud`, `llama_cpp`, `anthropic`) Rolter appends the full `/v1/...` path itself, so the base must stop at the host: `https://api.openai.com`, not `https://api.openai.com/v1`. Including it produces `/v1/v1/chat/completions` and every request 404s.
 
-  For the remaining kinds — `mistral`, `groq`, `openrouter`, `azure_openai` and the other hosted OpenAI-compatible clouds — Rolter strips the `/v1` it was asked for, so the base has to supply one: `https://api.mistral.ai/v1`.
+For the remaining kinds — `mistral`, `groq`, `openrouter`, `azure_openai` and the other hosted OpenAI-compatible clouds — Rolter strips the `/v1` it was asked for, so the base has to supply one: `https://api.mistral.ai/v1`.
 
-  A base that would double the prefix is rejected on write rather than stored. The dashboard states the rule for the selected kind and previews the resolved upstream URL as you type; `GET /api/v1/provider-kinds` returns the same rule per kind if you are automating provider creation.
+A base that would double the prefix is rejected on write rather than stored. The dashboard states the rule for the selected kind and previews the resolved upstream URL as you type; `GET /api/v1/provider-kinds` returns the same rule per kind if you are automating provider creation.
+
 </ParamField>
 
 <ParamField path="api_key_env" type="string">
@@ -125,19 +126,19 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 <ParamField path="api_keys" type="array of tables">
   Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key — the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
 
-  ```toml
-  [[providers]]
-  name = "openai"
-  kind = "openai"
-  api_base = "https://api.openai.com"
+```toml
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
 
-  [[providers.api_keys]]
-  env = "OPENAI_API_KEY_PRIMARY"
-  weight = 3
+[[providers.api_keys]]
+env = "OPENAI_API_KEY_PRIMARY"
+weight = 3
 
-  [[providers.api_keys]]
-  env = "OPENAI_API_KEY_SECONDARY"
-  ```
+[[providers.api_keys]]
+env = "OPENAI_API_KEY_SECONDARY"
+```
 
   <Note>
     The Postgres-backed control plane stores one credential per provider. `rolter-seed --import` therefore keeps the **first** entry that names an `env` and logs a warning naming how many it dropped, and `rolter config export` writes that one back as `api_key_env`. Keep a multi-key pool in the file the gateway loads directly, not in a file you round-trip through the control plane.
@@ -147,18 +148,19 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 <ParamField path="allow_custom_api_base" type="bool" default="false">
   Let this provider point at an `api_base` its kind would otherwise refuse. A hosted kind names one operator, so Rolter pins its base URL: an `openrouter` provider must be `https://openrouter.ai/api/v1`. That pin is what stops a config edit from sending an OpenRouter key to a host of the editor's choosing.
 
-  Set this when the endpoint really is somewhere else — a corporate egress proxy or internal gateway in front of the vendor, an endpoint that re-implements the vendor's API, or a local fake you use to exercise the dialect in tests. It relaxes the host pin and nothing else: the credential must still come from `api_key_env`, never an inline `api_key`.
+Set this when the endpoint really is somewhere else — a corporate egress proxy or internal gateway in front of the vendor, an endpoint that re-implements the vendor's API, or a local fake you use to exercise the dialect in tests. It relaxes the host pin and nothing else: the credential must still come from `api_key_env`, never an inline `api_key`.
 
-  `rolter check` reports every provider that sets it, and `rolter check --strict` fails on it, so the opt-out stays visible rather than becoming a copied default.
+`rolter check` reports every provider that sets it, and `rolter check --strict` fails on it, so the opt-out stays visible rather than becoming a copied default.
 
-  ```toml
-  [[providers]]
-  name = "openrouter-via-proxy"
-  kind = "openrouter"
-  api_base = "https://llm-egress.corp.example/openrouter/v1"
-  api_key_env = "OPENROUTER_API_KEY"
-  allow_custom_api_base = true
-  ```
+```toml
+[[providers]]
+name = "openrouter-via-proxy"
+kind = "openrouter"
+api_base = "https://llm-egress.corp.example/openrouter/v1"
+api_key_env = "OPENROUTER_API_KEY"
+allow_custom_api_base = true
+```
+
 </ParamField>
 
 <ParamField path="also_track_via_llm_call" type="bool" default="false">
@@ -201,15 +203,16 @@ Each `[[routes]]` block maps a public model name that clients request to one or 
 <ParamField path="strategy" default="round_robin" type="string">
   The load-balancing strategy used to pick a target. One of:
 
-  | Value | Behaviour |
-  | --- | --- |
-  | `round_robin` | Cycles through targets in order |
-  | `random` | Picks a target uniformly at random |
-  | `power_of_two` | Samples two targets and picks the one with fewer in-flight requests |
-  | `consistent_hash` | Routes the same request consistently to the same target |
-  | `cache_aware` | Steers toward the target most likely to have the request prefix cached |
-  | `weighted` | Smooth weighted round-robin proportional to each target's `weight` |
-  | `pipeline` | Composable scorer pipeline: combines static weight, in-flight load, and prefix-cache affinity |
+| Value             | Behaviour                                                                                     |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `round_robin`     | Cycles through targets in order                                                               |
+| `random`          | Picks a target uniformly at random                                                            |
+| `power_of_two`    | Samples two targets and picks the one with fewer in-flight requests                           |
+| `consistent_hash` | Routes the same request consistently to the same target                                       |
+| `cache_aware`     | Steers toward the target most likely to have the request prefix cached                        |
+| `weighted`        | Smooth weighted round-robin proportional to each target's `weight`                            |
+| `pipeline`        | Composable scorer pipeline: combines static weight, in-flight load, and prefix-cache affinity |
+
 </ParamField>
 
 #### \[\[routes.targets\]\]
@@ -230,7 +233,7 @@ Each `[[routes]]` block maps a public model name that clients request to one or 
 
 An optional table of admin-set default inference parameters injected into the request body. Any key accepted by the upstream provider is valid here (`temperature`, `max_tokens`, `stop`, etc.). A parameter you do not set here is passed through from the client untouched.
 
-#### \[routes.param\_policy\]
+#### \[routes.param_policy\]
 
 Controls whether clients may override the values set in `[routes.params]`.
 
@@ -316,7 +319,7 @@ model = "gpt-4o"
 
 ---
 
-### \[\[virtual\_keys\]\]
+### \[\[virtual_keys\]\]
 
 Virtual keys are the bearer tokens clients present to the gateway. Remove the entire `[[virtual_keys]]` section to run in open (unauthenticated) mode, which is suitable only for local development.
 
@@ -351,7 +354,7 @@ disabled = false
 
 ---
 
-### \[\[model\_prices\]\]
+### \[\[model_prices\]\]
 
 Define per-model token pricing so Rolter can compute a `cost_usd` value on every request log. Models without a price entry log a cost of `0`. Rates are in USD per million tokens, matching the convention used by major providers.
 
@@ -422,7 +425,7 @@ period = "monthly"
 
 ---
 
-### unpriced\_policy
+### unpriced_policy
 
 A top-level key deciding what happens to traffic the gateway cannot price. A model with no `[[model_prices]]` entry accrues zero spend, so it can never exhaust a budget however much is served — without this setting, budgets fail open on exactly the models you added most recently.
 
@@ -442,7 +445,7 @@ unpriced_policy = "block"
 
 ---
 
-### \[\[rate\_limits\]\]
+### \[\[rate_limits\]\]
 
 Throughput caps reject excess requests with HTTP `429` and a `Retry-After` header. Limits use a Redis sliding-window counter; without Redis they fail open. At least one of `rpm` or `tpm` must be set — a limit with neither never blocks anything.
 
@@ -634,7 +637,7 @@ open_secs = 30
 
 ---
 
-### \[metrics\_scrape\]
+### \[metrics_scrape\]
 
 When enabled, a background task periodically pulls each provider's Prometheus `/metrics` endpoint and extracts scheduler queue depth (vLLM `num_requests_waiting`, with SGLang/TGI fallbacks). That depth feeds into the balancer's in-flight load view so load-aware strategies (`power_of_two`, `pipeline`) steer away from backed-up engines. Disabled by default.
 
@@ -664,7 +667,7 @@ path = "/metrics"
 
 ---
 
-### \[usage\_recording\]
+### \[usage_recording\]
 
 After a response completes, Rolter adds the request's cost to its applicable budget counters and its tokens to its applicable rate-limit windows. Both write to Redis, so both run off the response path — through a **bounded** queue rather than one detached task per request, so a slow counter store sheds records instead of accumulating work without limit.
 

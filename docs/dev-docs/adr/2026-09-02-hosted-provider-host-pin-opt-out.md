@@ -41,7 +41,7 @@ becoming the shape everyone copies off a blog post.
    configuration, in the same diff as the base URL it enables.
 3. **Drop the pin and rely on the `api_key_env` rule alone.** That rule keeps
    the secret out of config files and database rows, but it does nothing about
-   where the secret is *sent* — which is the exfiltration path the pin closes.
+   where the secret is _sent_ — which is the exfiltration path the pin closes.
 
 ## Decision
 

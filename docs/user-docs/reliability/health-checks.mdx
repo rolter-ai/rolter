@@ -12,10 +12,10 @@ Rolter probes each provider with a lightweight `GET`. Any response that is **not
 
 By default (`path = "/"`), the probe targets each provider kind's **free, non-inference liveness endpoint** so a healthy result means the API itself is up, not merely that the host answers TCP — and it burns no tokens:
 
-| Provider kind | Probe |
-| --- | --- |
-| `openai`, `openai_compatible` | `GET {api_base}/v1/models` |
-| `anthropic` | `GET {api_base}/v1/models` with the required `anthropic-version` header |
+| Provider kind                 | Probe                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------- |
+| `openai`, `openai_compatible` | `GET {api_base}/v1/models`                                              |
+| `anthropic`                   | `GET {api_base}/v1/models` with the required `anthropic-version` header |
 
 Set an explicit `path` (e.g. `/healthz`) to override this for every provider and probe that exact route instead.
 
@@ -89,7 +89,7 @@ llm_probe_model = "gpt-4o-mini"
 
 ## Status-page signal (secondary)
 
-Set a provider's `status_page_url` to a statuspage.io-style `status.json` and rolter polls it on a slow cadence (`health.status_page_interval_secs`, default 60s). A non-operational indicator is recorded as a `status_page` event in `provider_health_events` and increments `rolter_status_page_degraded_total` — so a provider-wide incident surfaces on your dashboard *before* rolter's own probes start failing.
+Set a provider's `status_page_url` to a statuspage.io-style `status.json` and rolter polls it on a slow cadence (`health.status_page_interval_secs`, default 60s). A non-operational indicator is recorded as a `status_page` event in `provider_health_events` and increments `rolter_status_page_degraded_total` — so a provider-wide incident surfaces on your dashboard _before_ rolter's own probes start failing.
 
 <Info>
   This is a **secondary** signal only. It never marks a provider unhealthy or changes routing on its own — it exists to give early visibility. Transport or JSON-parse failures are logged and skipped, never counted as a provider error. The poller runs whenever any provider sets `status_page_url`, even with `health.enabled = false`.

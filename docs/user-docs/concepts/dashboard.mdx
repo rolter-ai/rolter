@@ -12,7 +12,7 @@ Open the control plane's address in a browser. You will see one of three things:
 
 - **A password form** — the deployment has local accounts. Use the e-mail and password an administrator created for you, or the ones you chose when accepting an invitation link.
 - **"Continue with …" buttons** — the organization registered an identity provider ([Single sign-on](/security/single-sign-on)). Password sign-in may be turned off alongside them.
-- **An e-mail-only prompt** — the control plane is running in *open mode* with no admin token and no accounts. Anything you enter opens the dashboard; there is no session to protect. This is meant for a first local run only.
+- **An e-mail-only prompt** — the control plane is running in _open mode_ with no admin token and no accounts. Anything you enter opens the dashboard; there is no session to protect. This is meant for a first local run only.
 
 Your session is re-checked every time the dashboard loads. If it has expired, you are returned to the sign-in screen with a note saying so rather than a page full of failed requests.
 
@@ -35,20 +35,20 @@ Each step is ticked from the deployment itself, not from a checklist kept in you
 
 Everything lives under one of these groups. Screens you cannot read with your role are hidden; superadmin-only screens are hidden for everyone else.
 
-| Group | What is inside |
-|---|---|
-| **Playground** | Send chat, embedding, image, audio or realtime requests through the gateway with one of your virtual keys. |
-| **Observability** | Dashboard (traffic, spend, latency, error rate), LLM Logs, MCP Logs, Connectors, Logs Settings. |
-| **Models** | Model Catalog, Providers, Provider Groups, Budgets & Limits, Routing Rules, Complexity Router, Circuit Breaker, Pricing Overrides, Model Settings. |
-| **MCP Gateway** | MCP Catalog, Library, Tool Groups, Auth Sessions, OAuth Grants, MCP Settings. |
-| **Plugins** | Webhook plugins in the request/response pipeline. |
-| **Alerting** | Channels, Rules, History. |
-| **Governance** | Virtual Keys, Users, Teams, Business Units, Customers, User Provisioning (SCIM), Single sign-on, Roles & Permissions, Access Profiles, Audit Logs. |
-| **Guardrails** | Rules and providers for content, PII and safety checks. |
-| **Cluster Config** | The gateways that poll this control plane. A gateway names itself from `ROLTER_NODE_ID`, else `HOSTNAME`, else the host's own name, and logs which one it used at boot. Set `ROLTER_NODE_ID` when several gateways share a host, or they all heartbeat as one node. |
-| **Adaptive Routing** | Live scores from gateways on the adaptive strategy, and its settings. |
-| **Prompt Repository**, **Skills Repository** | Versioned prompt templates and agent skills shared across the org. |
-| **Settings** | Client settings, compatibility, the effective config viewer, security, your own virtual keys, performance tuning, feature flags. |
+| Group                                        | What is inside                                                                                                                                                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Playground**                               | Send chat, embedding, image, audio or realtime requests through the gateway with one of your virtual keys.                                                                                                                                                          |
+| **Observability**                            | Dashboard (traffic, spend, latency, error rate), LLM Logs, MCP Logs, Connectors, Logs Settings.                                                                                                                                                                     |
+| **Models**                                   | Model Catalog, Providers, Provider Groups, Budgets & Limits, Routing Rules, Complexity Router, Circuit Breaker, Pricing Overrides, Model Settings.                                                                                                                  |
+| **MCP Gateway**                              | MCP Catalog, Library, Tool Groups, Auth Sessions, OAuth Grants, MCP Settings.                                                                                                                                                                                       |
+| **Plugins**                                  | Webhook plugins in the request/response pipeline.                                                                                                                                                                                                                   |
+| **Alerting**                                 | Channels, Rules, History.                                                                                                                                                                                                                                           |
+| **Governance**                               | Virtual Keys, Users, Teams, Business Units, Customers, User Provisioning (SCIM), Single sign-on, Roles & Permissions, Access Profiles, Audit Logs.                                                                                                                  |
+| **Guardrails**                               | Rules and providers for content, PII and safety checks.                                                                                                                                                                                                             |
+| **Cluster Config**                           | The gateways that poll this control plane. A gateway names itself from `ROLTER_NODE_ID`, else `HOSTNAME`, else the host's own name, and logs which one it used at boot. Set `ROLTER_NODE_ID` when several gateways share a host, or they all heartbeat as one node. |
+| **Adaptive Routing**                         | Live scores from gateways on the adaptive strategy, and its settings.                                                                                                                                                                                               |
+| **Prompt Repository**, **Skills Repository** | Versioned prompt templates and agent skills shared across the org.                                                                                                                                                                                                  |
+| **Settings**                                 | Client settings, compatibility, the effective config viewer, security, your own virtual keys, performance tuning, feature flags.                                                                                                                                    |
 
 The effective config viewer also exports the deployment's configuration as an importable `rolter.toml` — see [Config Export](/configuration/config-export).
 
@@ -62,12 +62,12 @@ The list comes from the running control plane, not from the browser, so it is al
 
 ## Keyboard shortcuts
 
-| Key | What it does |
-|---|---|
-| `⌘K` (`Ctrl-K` on Windows and Linux) | Opens the **command palette**. |
-| `/` | Puts the caret in the rail's search box. Ignored while you are typing in a field, so a slash in a model name or a prompt stays a slash. |
-| `?` | Opens **Keyboard shortcuts**, the list of everything on this table. Ignored while you are typing, for the same reason `/` is. |
-| `Tab`, from the top of the page | Reveals **Skip to content**, which jumps focus past the rail into the screen. |
+| Key                                  | What it does                                                                                                                            |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `⌘K` (`Ctrl-K` on Windows and Linux) | Opens the **command palette**.                                                                                                          |
+| `/`                                  | Puts the caret in the rail's search box. Ignored while you are typing in a field, so a slash in a model name or a prompt stays a slash. |
+| `?`                                  | Opens **Keyboard shortcuts**, the list of everything on this table. Ignored while you are typing, for the same reason `/` is.           |
+| `Tab`, from the top of the page      | Reveals **Skip to content**, which jumps focus past the rail into the screen.                                                           |
 
 You do not have to memorise the table: the palette prints `⌘K` beside its own
 search field, the rail's search box prints `/`, and `?` shows the whole list.
@@ -100,7 +100,7 @@ Screens that are deployment-wide (feature flags, security, performance, cluster)
 
 ## What a disabled control means
 
-A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the action needs (for example *Requires the Admin role*). The dashboard asks the control plane what your account may do and disables the rest up front, instead of letting you click and read a "forbidden" error afterwards. See [Roles and permissions](/security/rbac).
+A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the action needs (for example _Requires the Admin role_). The dashboard asks the control plane what your account may do and disables the rest up front, instead of letting you click and read a "forbidden" error afterwards. See [Roles and permissions](/security/rbac).
 
 ## Refresh and live data
 
@@ -125,7 +125,7 @@ The Playground authenticates to the gateway like any other client, with a virtua
 - It is scoped by the control plane to the models that project routes, so it can never reach a model you could not already reach.
 - It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it.
 - It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
-- It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled *Playground*, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
+- It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
 
 A project with no routes cannot mint one: there would be nothing for the key to address, so the screen says so instead. Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
 
@@ -139,10 +139,10 @@ Replies are never treated as markup. HTML tags in a reply show as the characters
 
 ## On a phone or a tablet
 
-| Screen width | Navigation |
-|---|---|
-| Below 768 px | The rail is a drawer. Open it with the **☰** button in the screen header; close it with the scrim, the Escape key, or by picking a screen. |
-| 768 – 1023 px | The rail starts folded to icons. Hover or focus an icon for its name; the collapse toggle expands it. |
-| 1024 px and up | The full rail, collapsible, and resizable by dragging its right edge. The width you choose is remembered. |
+| Screen width   | Navigation                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Below 768 px   | The rail is a drawer. Open it with the **☰** button in the screen header; close it with the scrim, the Escape key, or by picking a screen. |
+| 768 – 1023 px  | The rail starts folded to icons. Hover or focus an icon for its name; the collapse toggle expands it.                                       |
+| 1024 px and up | The full rail, collapsible, and resizable by dragging its right edge. The width you choose is remembered.                                   |
 
 Tables that are wider than the screen scroll inside their own frame, and forms that open as side sheets take the full width on a phone. The screen area below the header is a scroll region you can Tab to, so a long screen can be read with the keyboard alone.

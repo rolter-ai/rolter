@@ -20,7 +20,7 @@ that reasoning and states the tables must never grow such a trigger.
 
 The gateway, meanwhile, never sees a user. It authenticates a virtual key and
 knows only what the snapshot told it about that key. A policy is a property of
-a *person*; a request carries a *credential*. Something has to bridge the two.
+a _person_; a request carries a _credential_. Something has to bridge the two.
 
 ## Decision
 
@@ -47,7 +47,7 @@ Concretely:
 
 [#791](https://github.com/rolter-ai/rolter/issues/791) floated stamping the
 policy onto the key when it is minted. That is unsound: a profile edited after
-the mint would never reach keys already issued, so *revoking* a model would not
+the mint would never reach keys already issued, so _revoking_ a model would not
 revoke it. A policy change that fails to restrict is a security bug, and the
 failure is silent — the control plane would report the new policy on
 `/rbac/effective` while the gateway kept honouring the old one. Snapshot
@@ -56,8 +56,8 @@ window that the existing config-version machinery already closes.
 
 ### Why this does not contradict migration 0058
 
-`0058` says these tables must never bump the config version *because the data
-plane does not consume them*. This ADR changes that premise rather than
+`0058` says these tables must never bump the config version _because the data
+plane does not consume them_. This ADR changes that premise rather than
 overruling the rule: the gateway now consumes them, and the repository's
 standing convention is that any table the data plane reads must bump the
 version inside the write transaction. `0060` therefore applies the rule to the

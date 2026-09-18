@@ -15,13 +15,13 @@ The reasoning behind each decision is in
 
 ## The short version
 
-| Surface | What a major version guarantees |
-|---|---|
-| `/v1/*` gateway API | Fidelity to the OpenAI and Anthropic dialects, and Rolter's own additions (auth, addressing, errors) are held stable |
-| `/api/v1/*` control API | Additive only; nothing is removed without **two minor releases and 90 days** of notice |
-| `rolter.toml` and env vars | A config file accepted by `X.0.0` is accepted by every `X.y.z`, with the same meaning |
-| Database schema | Forward only. There is no downgrade; roll back by restoring a backup |
-| Rust crates on crates.io | **No promise.** They are internal implementation detail |
+| Surface                    | What a major version guarantees                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `/v1/*` gateway API        | Fidelity to the OpenAI and Anthropic dialects, and Rolter's own additions (auth, addressing, errors) are held stable |
+| `/api/v1/*` control API    | Additive only; nothing is removed without **two minor releases and 90 days** of notice                               |
+| `rolter.toml` and env vars | A config file accepted by `X.0.0` is accepted by every `X.y.z`, with the same meaning                                |
+| Database schema            | Forward only. There is no downgrade; roll back by restoring a backup                                                 |
+| Rust crates on crates.io   | **No promise.** They are internal implementation detail                                                              |
 
 Subsystems marked **experimental** are exempt from all of it — see
 [the exemption](#the-experimental-exemption) below.
@@ -91,11 +91,11 @@ are told about it in three places:
 
 After the window, the removal ships in an ordinary minor release.
 
-Why two minors *and* 90 days? A release count alone is meaningless when the
+Why two minors _and_ 90 days? A release count alone is meaningless when the
 release cadence is not fixed — two minor releases can be a fortnight. A time
 period alone can pass without a release, so nobody ever sees the notice.
 Together they mean the deprecation appears in at least two sets of release notes
-*and* survives a quarterly upgrade cycle, so a team that upgrades once a quarter
+_and_ survives a quarterly upgrade cycle, so a team that upgrades once a quarter
 meets the warning at least once before it bites.
 
 **One exception:** a change required to fix a security vulnerability may shorten
@@ -184,7 +184,7 @@ everything above: an experimental subsystem may change shape or be removed in a
 **minor** release, with no deprecation window.
 
 The exemption is deliberately narrow and deliberately visible. The dashboard
-puts an *Experimental* badge beside the affected nav entries, and
+puts an _Experimental_ badge beside the affected nav entries, and
 [`GET /api/v1/stability`](/api/stability) is the machine-readable list.
 Everything absent from that list is stable and carries the promises on this
 page.
@@ -206,5 +206,5 @@ It deliberately does **not** mean any of these:
 - Rolter tracking a change OpenAI or Anthropic made to their dialect;
 - a change to a subsystem carrying the experimental marker.
 
-The rule behind it: if a change *could* have been deprecated first, it must be —
+The rule behind it: if a change _could_ have been deprecated first, it must be —
 and then it is not breaking.

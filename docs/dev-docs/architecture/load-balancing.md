@@ -24,7 +24,7 @@ pub trait LoadBalancer: Send + Sync {
 - **precise_cache_aware** — consumes each target's vLLM ZMQ KV-event stream and scores the exact leading fraction of caller-supplied token blocks resident on that target. Missing token ids and stale, malformed, disconnected, or sequence-gapped streams stay neutral; least-load routing remains the fallback.
 - **lmcache_aware** — polls each target's configured LMCache controller signal and prefers available caches with free capacity (`1 - occupancy`). Empty, saturated, failed, and stale controllers stay neutral and fall back to least load.
 - **adaptive** — a weighted blend of observed latency, catalog cost and in-flight load, governed by the deployment-wide `[adaptive_routing]` policy. See below.
-- **predicted_latency** — rank targets by what *this* request is modelled to cost on each of them, from the queue it would join and its own prompt size, rather than by a per-target average. See below.
+- **predicted_latency** — rank targets by what _this_ request is modelled to cost on each of them, from the queue it would join and its own prompt size, rather than by a per-target average. See below.
 - **lora_aware** — LoRA-adapter affinity for a fleet serving many adapters over shared base weights: prefer a target that already holds the requested adapter resident, with prefix affinity and in-flight load behind it. See below.
 
 ## Balancer lifetime, and provider groups
@@ -44,7 +44,7 @@ different provider).
 
 A **provider group** address (`group-slug/model`, ADR-0017 addendum) is the case
 that is not free. A group has no configured route: `Snapshot::resolve_pinned`
-builds a *synthetic* one per request, because the model each member forwards
+builds a _synthetic_ one per request, because the model each member forwards
 depends on what the caller asked for. Only the target list is per request,
 though — the strategy and the member weights are fixed for the life of the
 snapshot, so the group's balancer is built once in `Snapshot::build`, stored in
@@ -59,7 +59,7 @@ address is never itself a priced model. A group whose members are all
 passthrough is therefore cost-neutral, which is the right answer for the
 homogeneous fleet a group exists to describe.
 
-A provider *slug* address pins a single provider, so its pool has one target and
+A provider _slug_ address pins a single provider, so its pool has one target and
 no selection state to keep; that balancer is still built per request.
 
 ## Adaptive routing
@@ -92,7 +92,7 @@ Once engaged, an `exploration_ratio` share of picks is made uniformly at random 
 
 The scores the blend ranks on live in the balancer, which lives in the gateway process, so the control plane cannot read them directly. Each gateway therefore **pushes** a sample every 15s to `POST /internal/adaptive-telemetry` on the control plane — the same internal token and the same `x-rolter-node-id` identity as the snapshot poll, so one node is one row here and in the cluster inventory (#543). Nothing is written on the request path: the sample is taken by a background task, and a pick costs two relaxed atomics for per-target attribution.
 
-Per route and target the sample carries the blended score, its latency/cost/load components, the raw signals behind them (smoothed latency in ms, catalog price, in-flight count), how many picks that target has served and how long ago the last one was — plus the decision split, and the *sanitized policy that node actually runs*, which can lag the stored policy until the node converges.
+Per route and target the sample carries the blended score, its latency/cost/load components, the raw signals behind them (smoothed latency in ms, catalog price, in-flight count), how many picks that target has served and how long ago the last one was — plus the decision split, and the _sanitized policy that node actually runs_, which can lag the stored policy until the node converges.
 
 The control plane keeps the newest sample per `(node, model)` in `adaptive_routing_telemetry` and serves `GET /api/v1/adaptive-routing-telemetry` (superadmin only), grouped by route with one entry per reporting node. Samples older than 60s are excluded as no longer current, and rows are pruned after an hour so a scaled-down node leaves the scoreboard.
 
@@ -105,11 +105,11 @@ request to a node that already holds the adapter is the same class of win as
 prefix-cache affinity (#853, borrowed from llm-d). `lora_aware` composes with
 the existing scorers rather than replacing them:
 
-| Scorer | Weight |
-| --- | --- |
-| adapter residency | 1.0 |
-| prefix affinity | 0.5 |
-| in-flight load | 0.25 |
+| Scorer            | Weight |
+| ----------------- | ------ |
+| adapter residency | 1.0    |
+| prefix affinity   | 0.5    |
+| in-flight load    | 0.25   |
 
 Adapter residency outranks prefix affinity because the costs are not
 comparable: missing a warm prefix recomputes some tokens, while missing a
@@ -130,7 +130,7 @@ adapters over shared base weights. The gateway only sets it when the request
 addresses something other than the route's own model — that is, a passthrough
 provider-group route (ADR-0017). On a single-model route the two are equal, no
 adapter is set, and the scorer is inert. This matters: adapter affinity
-deliberately *pins* rather than spreads, so treating a route's one model as an
+deliberately _pins_ rather than spreads, so treating a route's one model as an
 adapter would pin the entire route to whichever target happened to serve first.
 
 When no candidate holds the adapter — a cold adapter, or a request with none —
@@ -159,10 +159,10 @@ learned online from completed requests with normalized least mean squares — on
 multiply-add per feature per sample, no matrix, no allocation, no periodic
 refit.
 
-| Scorer | Weight |
-| --- | --- |
-| predicted latency | 1.0 |
-| in-flight load | 0.25 |
+| Scorer            | Weight |
+| ----------------- | ------ |
+| predicted latency | 1.0    |
+| in-flight load    | 0.25   |
 
 Load stays in the stack for two reasons: it carries the route while the models
 are cold, and once they are warm it is the tiebreaker between targets the model
@@ -177,7 +177,7 @@ and a linear model separates those. That is the honest ceiling for this vantage
 point.
 
 **A cold target predicts nothing.** Below 8 completed requests a target returns
-no prediction, and the scorer reads that as *unknown*, not as *slow*. A route
+no prediction, and the scorer reads that as _unknown_, not as _slow_. A route
 that switches to `predicted_latency` therefore behaves exactly like the
 least-load pipeline until the models have evidence, so the switch itself moves
 no traffic.
@@ -188,7 +188,7 @@ client that held a stream open for a week produces one bad sample rather than a
 permanently poisoned model.
 
 **Queue depth is read before the increment**, so the model learns the queue a
-request *joined*, not the one it created.
+request _joined_, not the one it created.
 
 **Models live in the load tracker, not the routing snapshot**, for the same
 reason the latency EWMA does: a config reload must not throw away what they
@@ -199,20 +199,20 @@ target with no evidence should not be ranked.
 
 ## Choosing a strategy
 
-| Use case | Strategy |
-| --- | --- |
-| Homogeneous pool, stateless | `round_robin` / `random` |
-| Variable request durations | `power_of_two` |
-| Multi-turn chat, sticky session | `consistent_hash` |
-| Shared system prompts / few-shot / RAG | `cache_aware` |
-| Blend cache + load + weight signals | `pipeline` |
-| vLLM fleet with KV event publishing | `precise_cache_aware` |
-| LMCache fleet with occupancy controller | `lmcache_aware` |
-| Mixed-price providers, minimize spend | `cheapest` |
-| Heterogeneous pool, minimize latency | `fastest` |
-| Mixed price *and* latency, let the gateway tune | `adaptive` |
-| Many LoRA adapters over shared base weights | `lora_aware` |
-| Heterogeneous pool, variable prompt sizes, deep queues | `predicted_latency` |
+| Use case                                               | Strategy                 |
+| ------------------------------------------------------ | ------------------------ |
+| Homogeneous pool, stateless                            | `round_robin` / `random` |
+| Variable request durations                             | `power_of_two`           |
+| Multi-turn chat, sticky session                        | `consistent_hash`        |
+| Shared system prompts / few-shot / RAG                 | `cache_aware`            |
+| Blend cache + load + weight signals                    | `pipeline`               |
+| vLLM fleet with KV event publishing                    | `precise_cache_aware`    |
+| LMCache fleet with occupancy controller                | `lmcache_aware`          |
+| Mixed-price providers, minimize spend                  | `cheapest`               |
+| Heterogeneous pool, minimize latency                   | `fastest`                |
+| Mixed price _and_ latency, let the gateway tune        | `adaptive`               |
+| Many LoRA adapters over shared base weights            | `lora_aware`             |
+| Heterogeneous pool, variable prompt sizes, deep queues | `predicted_latency`      |
 
 Both external strategies perform network I/O only in background tasks. The request hot path reads bounded in-process state and atomics.
 
@@ -220,4 +220,4 @@ Both external strategies perform network I/O only in background tasks. The reque
 
 The route and provider-group editors offer every strategy in this table except `adaptive`, which is governed by the deployment-wide `[adaptive_routing]` policy and has its own screen — a per-route dropdown would misrepresent how it is controlled. `precise_cache_aware` and `lmcache_aware` are offered with a hint that they need a telemetry source on the target providers, since without one they fall back to least-load silently rather than failing.
 
-A picker always renders the value the route or group already holds, even one it would not otherwise offer — including a strategy set from `rolter.toml` or the API, or one added to the backend allowlist ahead of the dashboard. A native `<select>` whose value matches no option displays the *first* option instead, so before #897 a group balanced by `adaptive` read as `round_robin`. Whatever the menu chooses to offer, editing must never rewrite a strategy the operator did not touch.
+A picker always renders the value the route or group already holds, even one it would not otherwise offer — including a strategy set from `rolter.toml` or the API, or one added to the backend allowlist ahead of the dashboard. A native `<select>` whose value matches no option displays the _first_ option instead, so before #897 a group balanced by `adaptive` read as `round_robin`. Whatever the menu chooses to offer, editing must never rewrite a strategy the operator did not touch.

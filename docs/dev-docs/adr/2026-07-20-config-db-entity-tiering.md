@@ -9,11 +9,11 @@ rolter bootstraps from a TOML config and (optionally) a Postgres store, merged a
 startup via `MergedConfigStore`. Today the three routable entity types treat the
 config/DB boundary inconsistently:
 
-| Entity | readonly (config-owned) | default (seed→DB, editable) | API/UI (DB) |
-| --- | --- | --- | --- |
-| **models** | `[[routes]]` + `[models.readonly]` | `[models.default]` (seeded once) | CRUD ✓ |
-| **providers** | `[[providers]]` | — (missing) | CRUD ✓ |
-| **provider groups** | `[[provider_groups]]` (ADR-0017 addendum) | — | — (no store) |
+| Entity              | readonly (config-owned)                   | default (seed→DB, editable)      | API/UI (DB)  |
+| ------------------- | ----------------------------------------- | -------------------------------- | ------------ |
+| **models**          | `[[routes]]` + `[models.readonly]`        | `[models.default]` (seeded once) | CRUD ✓       |
+| **providers**       | `[[providers]]`                           | — (missing)                      | CRUD ✓       |
+| **provider groups** | `[[provider_groups]]` (ADR-0017 addendum) | —                                | — (no store) |
 
 Three problems:
 
@@ -23,7 +23,7 @@ Three problems:
    credentials/base_url through the UI has no path.
 2. **Provider groups have no DB tier at all** — they exist only as read-only config
    (ADR-0017 addendum / #571), so they cannot be created via the API or UI.
-3. **The model shape is idiosyncratic** — top-level `[[routes]]` *and* a parallel
+3. **The model shape is idiosyncratic** — top-level `[[routes]]` _and_ a parallel
    `[models.readonly]` both mean "immutable config route", which is redundant and
    does not generalize to providers/groups.
 
@@ -108,5 +108,5 @@ against readonly routes).
    with providers, 409+suggestion on slug conflict) + `provider_groups.default`
    seed.
 5. **ui**: provider-group management screens (create/edit/membership/strategy),
-   surfaced alongside providers and models. *(separate issue — not in the initial
-   backend PRs)*
+   surfaced alongside providers and models. _(separate issue — not in the initial
+   backend PRs)_

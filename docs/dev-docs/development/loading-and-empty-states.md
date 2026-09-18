@@ -22,11 +22,11 @@ concrete:
 
 ## The three primitives
 
-| State | Component | Lives in |
-| --- | --- | --- |
-| in flight | `ListSkeleton`, `CardGridSkeleton`, `FormSkeleton`, `PanelSkeleton`, `TableSkeleton`, `StatGridSkeleton` | `ui/src/components/LoadingState.tsx` |
-| loaded, no rows | `EmptyState` | `ui/src/components/ui/empty-state.tsx` |
-| failed | `LoadError` | `ui/src/components/LoadError.tsx` |
+| State           | Component                                                                                                | Lives in                               |
+| --------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| in flight       | `ListSkeleton`, `CardGridSkeleton`, `FormSkeleton`, `PanelSkeleton`, `TableSkeleton`, `StatGridSkeleton` | `ui/src/components/LoadingState.tsx`   |
+| loaded, no rows | `EmptyState`                                                                                             | `ui/src/components/ui/empty-state.tsx` |
+| failed          | `LoadError`                                                                                              | `ui/src/components/LoadError.tsx`      |
 
 ### Loading: the shape of what is coming
 
@@ -38,7 +38,7 @@ nothing moves when the data arrives:
 {connectors.isLoading && <CardGridSkeleton cards={3} height={186} min={380} />}
 ```
 
-For a list inside a `ListTable`, put the skeleton *inside* the table, under the
+For a list inside a `ListTable`, put the skeleton _inside_ the table, under the
 header. The column headers are real information — they say what a row will
 carry — and taking them away to show a placeholder loses that.
 
@@ -81,7 +81,7 @@ Two rules the wording depends on:
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.
-  Where the action lives on *another* screen — a complexity policy needs a route
+  Where the action lives on _another_ screen — a complexity policy needs a route
   first — link there instead.
 
 `Table` takes an `empty` prop rendered in a full-width row, so the placeholder

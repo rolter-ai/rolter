@@ -5,14 +5,17 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 ## Schema
 
 ### `[server]`
+
 - `host` (string, default `0.0.0.0`)
 - `port` (u16, default `4000`)
 - `metrics_path` (string, default `/metrics`) — path the Prometheus metrics endpoint is served on; change it to avoid colliding with an upstream app or sidecar that already owns `/metrics`. Must be rooted (`/…`) and must not collide with a built-in route (`/healthz`, `/v1/*`).
 
 ### `[tls]`
+
 - `ca_bundles` (string[], default `[]`) — PEM CA-bundle files added to the normal public-root trust store for outbound upstream TLS. `ROLTER_CA_BUNDLE` replaces this global list with a single deployment-local path. Files are checked for missing, unreadable, empty, and malformed content while config is loaded.
 
 ### `[[providers]]`
+
 - `name` (string, unique) — referenced by route targets
 - `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon`)
 - `api_base` (string) — base URL, no trailing slash
@@ -164,6 +167,7 @@ api_key_env = "XAI_API_KEY"
 See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/Kubernetes mount examples.
 
 ### `[[routes]]`
+
 - `model` (string) — public model name clients request
 - `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline` | `cheapest` | `fastest` | `precise_cache_aware` | `lmcache_aware` | `adaptive` | `lora_aware` | `predicted_latency`, default `round_robin`)
 - `[[routes.targets]]`
@@ -187,21 +191,26 @@ See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/K
   - a name matching no configured rule fails validation rather than being ignored — a typo in `disable` would otherwise read as "this rule is off here" while the rule kept running
 
 ### `[[virtual_keys]]`
+
 - `key` (string) — the bearer token clients present
 - `name` (string, optional)
 - `models` (string[], default `[]`) — allow-list; empty = all
 
 ### `[adaptive_routing]`
+
 Deployment-wide policy for routes using the `adaptive` strategy. See [load balancing](../architecture/load-balancing.md#adaptive-routing).
+
 - `enabled` (bool, default `false`) — kill switch; while off, every `adaptive` route serves the `pipeline` stack
 - `latency_weight` (f32, default `1.0`), `cost_weight` (f32, default `0.5`), `load_weight` (f32, default `0.25`) — blend weights; negatives are clamped to `0`, and all-zero disables the blend
 - `exploration_ratio` (f32, default `0.05`) — share of picks made at random to keep latency samples fresh; clamped to `[0, 0.5]`
 - `min_samples` (u32, default `50`) — requests a route must serve before the blend engages
 
 ### `[logging]`
+
 - `clickhouse_url` (string, optional)
 
 ### `[health]`
+
 - `enabled` (bool, default `false`) — master switch for active upstream probing
 - `interval_secs` (u64, default `10`) — seconds between probe sweeps
 - `timeout_secs` (u64, default `2`) — per-probe timeout
@@ -216,7 +225,7 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 
 Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per gateway process; set a value to `0` to disable that limit.
 
-The `/v1/realtime` relay carries the `realtime` [stability marker](../development/stability-markers.md), so these keys may change shape in a minor release. They are also the *only* limits a realtime session meets: budgets, rate limits and usage recording sit on the HTTP request path and do not see it.
+The `/v1/realtime` relay carries the `realtime` [stability marker](../development/stability-markers.md), so these keys may change shape in a minor release. They are also the _only_ limits a realtime session meets: budgets, rate limits and usage recording sit on the HTTP request path and do not see it.
 
 - `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit

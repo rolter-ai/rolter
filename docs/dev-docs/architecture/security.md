@@ -64,11 +64,11 @@ Only the **policy** columns are selected. The dashboard credential ciphertext
 and nonce are not named by the query at all — the migration promised snapshots
 would never carry them, and a query that cannot see a column cannot leak it.
 
-| Setting | Effect on the gateway |
-| --- | --- |
-| `virtual_key_required` | an unauthenticated request is refused even where the gateway holds no keys |
-| `required_headers` | a request missing any name/value pair is refused at ingress, before routing and before auth |
-| `auth_bypass_routes` | the named paths answer without a key |
+| Setting                | Effect on the gateway                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| `virtual_key_required` | an unauthenticated request is refused even where the gateway holds no keys                  |
+| `required_headers`     | a request missing any name/value pair is refused at ingress, before routing and before auth |
+| `auth_bypass_routes`   | the named paths answer without a key                                                        |
 
 Load-bearing properties, each with a test that fails if it stops holding:
 
@@ -171,12 +171,12 @@ authentication step to fail. This is the zero-credential local-dev shape, and
 else. Before either listener is opened, it evaluates "is a token set" against
 every address about to be bound:
 
-| admin token | bind | outcome |
-|---|---|---|
-| set | any | `Closed` — RBAC enforced |
-| unset | all listeners loopback | `OpenLoopback` — allowed, warned |
-| unset | any non-loopback listener | **refuses to start** |
-| unset | non-loopback + `--allow-open-mode` | `OpenAcknowledged` — allowed, warned loudly |
+| admin token | bind                               | outcome                                     |
+| ----------- | ---------------------------------- | ------------------------------------------- |
+| set         | any                                | `Closed` — RBAC enforced                    |
+| unset       | all listeners loopback             | `OpenLoopback` — allowed, warned            |
+| unset       | any non-loopback listener          | **refuses to start**                        |
+| unset       | non-loopback + `--allow-open-mode` | `OpenAcknowledged` — allowed, warned loudly |
 
 `--internal-addr` counts as a listener here: an exposed credential channel is
 no better than an exposed API, so either one alone is enough to refuse.
@@ -238,7 +238,7 @@ The design property worth stating precisely: **the placeholder→plaintext mappi
 Consequences that fall out of that choice:
 
 - **`RestorationTicket` is not printable.** Its `Display` renders `<restoration token redacted>`, and the token is reachable only through `token_for(&scope)`, which returns `None` unless the caller's org/team/project/route match the scope the ticket was minted under. A token from one project cannot restore content in another.
-- **Restoration is opt-out, not opt-in-by-default.** `RestorationPolicy::Never` is the default; `CallerAuthorized` honours `x-rolter-pii-restore` only because the *policy* allows it, never because the caller asked.
+- **Restoration is opt-out, not opt-in-by-default.** `RestorationPolicy::Never` is the default; `CallerAuthorized` honours `x-rolter-pii-restore` only because the _policy_ allows it, never because the caller asked.
 - **The response leg never requests reversibility.** Restoring provider-generated content would return the very data that leg exists to remove.
 - **A streamed response with an active response leg is refused** (`pii_streaming_unsupported`, HTTP 400), mirroring `guardrails.streaming_post_call`. Correct streaming restoration would need either a network round trip per chunk — destroying TTFT — or the mapping held in-process, destroying the property above. `streaming = "passthrough"` waives the response leg instead.
 - **A malformed sanitizer reply is a failure**, unlike the guardrail webhook's decision parsing which defaults to allow. Defaulting would forward content the gateway believes is sanitized and is not.
@@ -263,14 +263,14 @@ Four properties are load-bearing:
   one, so the throttle does not undo the constant-cost verification in
   `LocalIdentityProvider::resolve` by becoming an enumeration oracle.
 - **A lock is a clock, not a state.** It is a TTL nobody clears by hand. A lock
-  an attacker could *set* would be a denial-of-service primitive against the
+  an attacker could _set_ would be a denial-of-service primitive against the
   operator — anyone who knows an email address could park the account. The worst
   case here is a bounded outage capped by `--login-max-lock-secs`.
 - **Two independent subjects.** The account budget stops guessing one password;
   the client-address budget stops spraying one guess across many accounts, which
   a per-account counter never sees. `X-Forwarded-For` names the client only when
   `--login-trust-forwarded-for` is set, because an unverified forwarded header
-  hands out unlimited budgets *and* lets one client spend another's.
+  hands out unlimited budgets _and_ lets one client spend another's.
 - **A backend outage degrades to absent, not to locked.** A redis error counts
   as zero failures. The alternative — treating an unreachable counter as a
   reason to refuse — would turn one redis blip into a fleet-wide lockout.
@@ -297,13 +297,13 @@ someone. Keeping them apart is a security property, not a documentation
 nicety — a provider key pasted into a client is a credential leak that no
 budget, allow-list or audit row constrains.
 
-| Credential | Shape | Held by | Checked by |
-| --- | --- | --- | --- |
-| virtual key | `sk-rolter-<48 hex>` | client applications | the gateway, on `/v1/*` |
-| provider key | the provider's own shape | rolter | nothing — it is presented upstream |
-| admin token | operator-chosen | operators, automation | the control plane |
+| Credential   | Shape                    | Held by               | Checked by                         |
+| ------------ | ------------------------ | --------------------- | ---------------------------------- |
+| virtual key  | `sk-rolter-<48 hex>`     | client applications   | the gateway, on `/v1/*`            |
+| provider key | the provider's own shape | rolter                | nothing — it is presented upstream |
+| admin token  | operator-chosen          | operators, automation | the control plane                  |
 
-The gateway therefore refuses a *provider-shaped* key with a message that names
+The gateway therefore refuses a _provider-shaped_ key with a message that names
 the mistake ("this looks like an Anthropic provider key…") rather than a bare
 `invalid api key`. `provider_key_vendor` in
 `crates/rolter-gateway/src/handlers.rs` does the shape match, and it never
@@ -313,7 +313,7 @@ the prefix — no lookup, no timing difference between a known and an unknown
 key, and the presented secret is never echoed back.
 
 The dashboard follows the same vocabulary: **Virtual Keys** and **My Virtual
-Keys** mint the client credential, the provider sheet says *Provider key*, and
+Keys** mint the client credential, the provider sheet says _Provider key_, and
 the Playground's key field says which one it wants. `docs/user-docs/security/which-key`
 is the user-facing version of this table.
 
@@ -323,7 +323,7 @@ through `POST /api/v1/me/projects/{id}/playground-key` (see
 and the dashboard holds the plaintext in a module variable in
 `ui/src/lib/gateway.ts` — never in `localStorage`, which is where it used to go
 and where a long-lived production key then sat until somebody cleared it
-(#944). The screen renders the key's *state*, never the secret: a badge, the
+(#944). The screen renders the key's _state_, never the secret: a badge, the
 expiry, and a **Renew key** button that asks for a fresh key rather than
 extending the one in hand. The paste field stays for testing one specific key
 on purpose, and a key pasted there carries no expiry, because the dashboard did

@@ -19,16 +19,16 @@ all three.
 
 ## The component
 
-| Prop | Default | Notes |
-|---|---|---|
-| `value` | — | the source, verbatim; also exactly what the copy button writes |
-| `language` | `"text"` | one of `CODE_LANGUAGES` in `ui/src/lib/code.ts` |
-| `label` | — | names the scroll region. Pass one wherever more than one block shares a screen, so the regions are told apart by name rather than by position |
-| `wrap` | `false` | soft-wrap instead of scrolling sideways. On in a narrow drawer, off for a snippet — a line broken mid-token reads worse than one that scrolls (#948) |
-| `maxHeight` | — | caps the scroll region; a bare number is pixels |
-| `lineNumbers` | `false` | a gutter drawn with a CSS counter |
-| `copy` | `true` | the copy button, off only where the caller already provides one |
-| `density` | `"default"` | `"compact"` is the tighter scale the log drawers use |
+| Prop          | Default     | Notes                                                                                                                                                |
+| ------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `value`       | —           | the source, verbatim; also exactly what the copy button writes                                                                                       |
+| `language`    | `"text"`    | one of `CODE_LANGUAGES` in `ui/src/lib/code.ts`                                                                                                      |
+| `label`       | —           | names the scroll region. Pass one wherever more than one block shares a screen, so the regions are told apart by name rather than by position        |
+| `wrap`        | `false`     | soft-wrap instead of scrolling sideways. On in a narrow drawer, off for a snippet — a line broken mid-token reads worse than one that scrolls (#948) |
+| `maxHeight`   | —           | caps the scroll region; a bare number is pixels                                                                                                      |
+| `lineNumbers` | `false`     | a gutter drawn with a CSS counter                                                                                                                    |
+| `copy`        | `true`      | the copy button, off only where the caller already provides one                                                                                      |
+| `density`     | `"default"` | `"compact"` is the tighter scale the log drawers use                                                                                                 |
 
 The gutter is a **CSS counter**, never a DOM node. Generated content is not part
 of the document text, so a selection dragged across a numbered block copies the
@@ -40,10 +40,10 @@ config section an operator is about to paste into a ticket.
 Both were measured as a browser bundle carrying the grammars the dashboard
 needs (`bun build --minify`, gzipped):
 
-| Candidate | Minified | Gzipped |
-|---|---|---|
-| `refractor` core + 7 grammars | 56.6 kB | **20.4 kB** |
-| `shiki/core` + JS engine + 6 grammars, no theme | 470 kB | 88.1 kB |
+| Candidate                                       | Minified | Gzipped     |
+| ----------------------------------------------- | -------- | ----------- |
+| `refractor` core + 7 grammars                   | 56.6 kB  | **20.4 kB** |
+| `shiki/core` + JS engine + 6 grammars, no theme | 470 kB   | 88.1 kB     |
 
 Shiki is 4.3× the size before a theme is added, and its accuracy advantage —
 TextMate grammars with full scope resolution — buys nothing here: the dashboard
@@ -77,16 +77,16 @@ gzipped) and `markdown-*.js` (~13 kB gzipped).
 `ui/src/index.css` defines a `--code-*` token per role, and every one of them
 resolves to a token that already exists:
 
-| Role | Token | Reads as |
-|---|---|---|
-| keyword, atrule, builtin, variable | `--code-keyword` | `--red-folk-text` |
-| string, url, attr-value | `--code-string` | `--status-success-text` |
-| number, boolean, constant | `--code-number` | `--status-warning-text` |
-| property, key, class-name | `--code-property` | `--status-info-text` |
-| comment, separator, null | `--code-comment` | `--text-subtle` |
-| punctuation, operator | `--code-punctuation` | `--text-muted` |
-| gutter | `--code-gutter` | `--text-subtle` |
-| log level error / warning / info | `--code-level-*` | the matching `--status-*-text` |
+| Role                               | Token                | Reads as                       |
+| ---------------------------------- | -------------------- | ------------------------------ |
+| keyword, atrule, builtin, variable | `--code-keyword`     | `--red-folk-text`              |
+| string, url, attr-value            | `--code-string`      | `--status-success-text`        |
+| number, boolean, constant          | `--code-number`      | `--status-warning-text`        |
+| property, key, class-name          | `--code-property`    | `--status-info-text`           |
+| comment, separator, null           | `--code-comment`     | `--text-subtle`                |
+| punctuation, operator              | `--code-punctuation` | `--text-muted`                 |
+| gutter                             | `--code-gutter`      | `--text-subtle`                |
+| log level error / warning / info   | `--code-level-*`     | the matching `--status-*-text` |
 
 Two consequences worth stating. A code block always sits on
 `--surface-subtle`, which is the surface those `-text` tokens were contrast-

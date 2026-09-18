@@ -35,7 +35,7 @@ livenessProbe:
 
 ## GET /readyz
 
-The readiness endpoint answers a different question: can *this* instance serve traffic right now? A failing readiness probe removes the pod from the Service and nothing more, so unlike `/healthz` it is free to check dependencies.
+The readiness endpoint answers a different question: can _this_ instance serve traffic right now? A failing readiness probe removes the pod from the Service and nothing more, so unlike `/healthz` it is free to check dependencies.
 
 <Tabs>
   <Tab title="Gateway">
@@ -46,6 +46,7 @@ The readiness endpoint answers a different question: can *this* instance serve t
     # → 200 OK
     # → ok
     ```
+
   </Tab>
   <Tab title="Control plane">
     Returns a JSON body naming each check, with `200` when ready and `503` otherwise:
@@ -68,6 +69,7 @@ The readiness endpoint answers a different question: can *this* instance serve t
     | `kek` | `ROLTER_KEK` parses when it is set (reported `not configured` when unset, which is not a failure) |
 
     Redis and ClickHouse are **not** checked. The control plane serves configuration without either, so their absence is degraded, not unready — removing every control pod from the Service because analytics is down would be a strictly worse outage.
+
   </Tab>
 </Tabs>
 
@@ -107,25 +109,25 @@ metrics_path = "/internal/metrics"
 
 The following metrics are included in the Prometheus output. All are counters or histograms scoped to the gateway process.
 
-| Metric | Type | Description |
-| --- | --- | --- |
-| `rolter_requests_total` | Counter | Total number of inference requests proxied by the gateway |
-| `rolter_request_latency_ms_bucket` | Histogram | End-to-end request latency in milliseconds, labelled by model route |
-| `rolter_request_ttft_ms_bucket` | Histogram | Time-to-first-token in milliseconds for streaming requests, labelled by model route |
-| `rolter_upstream_errors_total` | Counter | Number of requests that exhausted all retries and returned an upstream error |
-| `rolter_auth_failures_total` | Counter | Number of authentication failures (missing, invalid, expired, or revoked keys) |
-| `rolter_config_version` | Gauge | Monotonically increasing version of the active configuration snapshot; increments on each hot reload |
+| Metric                             | Type      | Description                                                                                          |
+| ---------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| `rolter_requests_total`            | Counter   | Total number of inference requests proxied by the gateway                                            |
+| `rolter_request_latency_ms_bucket` | Histogram | End-to-end request latency in milliseconds, labelled by model route                                  |
+| `rolter_request_ttft_ms_bucket`    | Histogram | Time-to-first-token in milliseconds for streaming requests, labelled by model route                  |
+| `rolter_upstream_errors_total`     | Counter   | Number of requests that exhausted all retries and returned an upstream error                         |
+| `rolter_auth_failures_total`       | Counter   | Number of authentication failures (missing, invalid, expired, or revoked keys)                       |
+| `rolter_config_version`            | Gauge     | Monotonically increasing version of the active configuration snapshot; increments on each hot reload |
 
 ### Additional counters
 
-| Metric | Description |
-| --- | --- |
-| `rolter_retries_total` | Total retry attempts triggered by transient upstream failures |
-| `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure |
-| `rolter_breaker_opened_total` | Number of times a circuit breaker tripped open |
-| `rolter_breaker_closed_total` | Number of times a circuit breaker closed after a successful probe |
-| `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits |
-| `rolter_budget_blocks_total` | Requests blocked due to an exceeded spend budget |
+| Metric                           | Description                                                       |
+| -------------------------------- | ----------------------------------------------------------------- |
+| `rolter_retries_total`           | Total retry attempts triggered by transient upstream failures     |
+| `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure   |
+| `rolter_breaker_opened_total`    | Number of times a circuit breaker tripped open                    |
+| `rolter_breaker_closed_total`    | Number of times a circuit breaker closed after a successful probe |
+| `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits                   |
+| `rolter_budget_blocks_total`     | Requests blocked due to an exceeded spend budget                  |
 
 ## Prometheus scrape config
 
@@ -156,10 +158,11 @@ scrape_configs:
 <Warning>
   Neither `/healthz` nor `/metrics` require authentication. In production, restrict access to `/metrics` at your reverse proxy layer to prevent leaking operational data. A typical nginx rule:
 
-  ```nginx
-  location /metrics {
-      allow 10.0.0.0/8;
-      deny all;
-  }
-  ```
+```nginx
+location /metrics {
+    allow 10.0.0.0/8;
+    deny all;
+}
+```
+
 </Warning>

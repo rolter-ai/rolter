@@ -31,14 +31,14 @@ named stage rather than merely slow. In SigNoz, open **Traces**, filter
 
 Read the waterfall top-down and ask which stage is wide:
 
-| Wide stage | What it usually means |
-|---|---|
-| `queue.wait` | you are at the concurrency limit — the upstream is fine, you are throttling yourself |
-| `upstream.request` | the provider is slow; check the retry attribute for a silent retry |
-| `guardrails.pre` / `guardrails.post` | a guardrail provider is in the request path and slow |
-| `route.select` | unusual — check candidate count; a large pool with health probing can drift |
-| `translate.*` | large payloads; correlate with token counts |
-| `cache.lookup` | cache backend latency, not a cache miss — a miss is fast |
+| Wide stage                           | What it usually means                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `queue.wait`                         | you are at the concurrency limit — the upstream is fine, you are throttling yourself |
+| `upstream.request`                   | the provider is slow; check the retry attribute for a silent retry                   |
+| `guardrails.pre` / `guardrails.post` | a guardrail provider is in the request path and slow                                 |
+| `route.select`                       | unusual — check candidate count; a large pool with health probing can drift          |
+| `translate.*`                        | large payloads; correlate with token counts                                          |
+| `cache.lookup`                       | cache backend latency, not a cache miss — a miss is fast                             |
 
 <Warning>
   If every gateway span looks like a disconnected root with no parent, the
@@ -75,7 +75,7 @@ will say which.
 ### Which screens are slow to become usable
 
 `time_to_interactive` is emitted when a screen's primary data lands, so this is
-time-to-*usable*, not time-to-first-paint.
+time-to-_usable_, not time-to-first-paint.
 
 ```sql
 SELECT
@@ -114,8 +114,8 @@ LIMIT 20;
 ```
 
 **How to read it:** a short dwell (under ~5s) with many back-outs is a
-*navigation* problem — people are landing somewhere they did not intend, so the
-route in is mislabelled. A long dwell is a *content* problem — they meant to be
+_navigation_ problem — people are landing somewhere they did not intend, so the
+route in is mislabelled. A long dwell is a _content_ problem — they meant to be
 there, tried, and gave up.
 
 ### Which forms get abandoned
@@ -137,8 +137,8 @@ HAVING submits + abandons > 10
 ORDER BY abandon_pct DESC;
 ```
 
-**How to read it:** high `abandon_pct` with a *short* dwell means the form was
-opened by mistake — usually an ambiguous button. High abandon with a *long*
+**How to read it:** high `abandon_pct` with a _short_ dwell means the form was
+opened by mistake — usually an ambiguous button. High abandon with a _long_
 dwell means people tried and could not finish, which is the one worth fixing.
 
 ### Which validation rules actually fire

@@ -138,12 +138,12 @@ is what makes a printed sheet safe to invalidate if it goes missing.
 `mfa_policy` sits on the per-org auth policy alongside the password and SSO
 switches, and takes one of four values:
 
-| Value | Meaning |
-|---|---|
-| `off` | the default; a factor is neither required nor advertised |
-| `optional` | members may enrol; nobody is required to |
-| `required_superadmin` | superadmins must have an armed factor to sign in |
-| `required_all` | every member must have an armed factor to sign in |
+| Value                 | Meaning                                                  |
+| --------------------- | -------------------------------------------------------- |
+| `off`                 | the default; a factor is neither required nor advertised |
+| `optional`            | members may enrol; nobody is required to                 |
+| `required_superadmin` | superadmins must have an armed factor to sign in         |
+| `required_all`        | every member must have an armed factor to sign in        |
 
 In the dashboard it is the **Second factor** control on **Single sign-on →
 Sign-in policy**, beside the password and SSO switches. Choosing either
@@ -203,17 +203,17 @@ second factor is a second factor that anyone holding a session can clear.
 
 ## What is audited
 
-| Action | When |
-|---|---|
-| `auth.mfa_enabled` | an enrolment is confirmed |
-| `auth.mfa_disabled` | a user removes their own factor |
-| `auth.mfa_confirm_failed` | a wrong code during enrolment |
-| `auth.mfa_disable_failed` | a wrong code when removing a factor |
-| `auth.mfa_failed` | a wrong code at sign-in, with the attempt number |
-| `auth.mfa_recovery_code_used` | a recovery code is spent, with the count left |
-| `auth.mfa_recovery_codes_regenerated` | a batch is replaced |
-| `auth.mfa_enrolment_required` | a policy refused an unenrolled account |
-| `auth.mfa_break_glass_reset` | `rolter mfa reset`, with the stated reason |
+| Action                                | When                                             |
+| ------------------------------------- | ------------------------------------------------ |
+| `auth.mfa_enabled`                    | an enrolment is confirmed                        |
+| `auth.mfa_disabled`                   | a user removes their own factor                  |
+| `auth.mfa_confirm_failed`             | a wrong code during enrolment                    |
+| `auth.mfa_disable_failed`             | a wrong code when removing a factor              |
+| `auth.mfa_failed`                     | a wrong code at sign-in, with the attempt number |
+| `auth.mfa_recovery_code_used`         | a recovery code is spent, with the count left    |
+| `auth.mfa_recovery_codes_regenerated` | a batch is replaced                              |
+| `auth.mfa_enrolment_required`         | a policy refused an unenrolled account           |
+| `auth.mfa_break_glass_reset`          | `rolter mfa reset`, with the stated reason       |
 
 ## Not covered
 

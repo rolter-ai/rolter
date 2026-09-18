@@ -51,11 +51,11 @@ engine's own sidechannel rather than through rolter.
 
 ## Comparison
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **1. Implement in rolter** | Full control over phase placement; phase-aware scoring composes with existing scorers | Requires carrying KV tensors over an engine-specific connector and transport such as NIXL/UCX; the data plane would hold per-request state across a handoff; couples rolter to one engine's internals and version cadence; duplicates work vLLM and llm-d already do |
-| **2. One upstream** | Preserves the ADR-0014 boundary; works today with no code; every engine's own disaggregation implementation is usable, including future ones | rolter cannot influence phase placement, so it cannot improve on the engine's own decisions |
-| **3. Hybrid** | Avoids moving KV through rolter; an engine-specific HTTP extension can coordinate a connector-managed transfer | Still needs rolter to know which workers are connector-compatible, emit version-specific control fields and metadata, issue two upstream calls, and keep per-request state across them; a mid-request failure has no clean recovery |
+| Option                     | Pros                                                                                                                                         | Cons                                                                                                                                                                                                                                                                 |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Implement in rolter** | Full control over phase placement; phase-aware scoring composes with existing scorers                                                        | Requires carrying KV tensors over an engine-specific connector and transport such as NIXL/UCX; the data plane would hold per-request state across a handoff; couples rolter to one engine's internals and version cadence; duplicates work vLLM and llm-d already do |
+| **2. One upstream**        | Preserves the ADR-0014 boundary; works today with no code; every engine's own disaggregation implementation is usable, including future ones | rolter cannot influence phase placement, so it cannot improve on the engine's own decisions                                                                                                                                                                          |
+| **3. Hybrid**              | Avoids moving KV through rolter; an engine-specific HTTP extension can coordinate a connector-managed transfer                               | Still needs rolter to know which workers are connector-compatible, emit version-specific control fields and metadata, issue two upstream calls, and keep per-request state across them; a mid-request failure has no clean recovery                                  |
 
 ## Decision
 
@@ -82,7 +82,7 @@ It would also be redundant. vLLM ships disaggregated serving with a connector
 API, and llm-d's router is co-designed with its engine and scheduler — it can
 assume things about worker topology and KV placement that a general-purpose
 gateway in front of heterogeneous providers cannot. rolter's value is that it
-sits in front of *many* engines and hosted APIs; a feature that only works for
+sits in front of _many_ engines and hosted APIs; a feature that only works for
 one engine, at one version, with one transport configured, is not a good trade
 against that.
 

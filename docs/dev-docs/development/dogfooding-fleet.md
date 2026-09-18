@@ -1,7 +1,7 @@
 # The dogfooding fleet
 
 A local rolter with a fleet that looks like a real one, for sitting down as an
-*operator* rather than as the person who wrote the screen (#924).
+_operator_ rather than as the person who wrote the screen (#924).
 
 The built-in `fake-llm` model answers "does the gateway work at all". It does
 not answer "what is it like to run this": one route with one target exercises
@@ -15,13 +15,13 @@ names.
 
 ## What it stands up
 
-| Piece | Where |
-|---|---|
-| fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015` | `integration/dogfood/fleet.ts` |
-| the matching rolter config — fifteen providers, three provider groups, eleven routes | `integration/dogfood/dogfood.toml` |
-| the keys those upstreams expect (fake, loopback-only, checked in on purpose) | `integration/dogfood/keys.env` |
-| the one local login every service shares | `integration/dogfood/creds.env` |
-| the SigNoz dashboards the session is read through | `integration/dogfood/signoz/dashboards/` |
+| Piece                                                                                | Where                                    |
+| ------------------------------------------------------------------------------------ | ---------------------------------------- |
+| fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  | `integration/dogfood/fleet.ts`           |
+| the matching rolter config — fifteen providers, three provider groups, eleven routes | `integration/dogfood/dogfood.toml`       |
+| the keys those upstreams expect (fake, loopback-only, checked in on purpose)         | `integration/dogfood/keys.env`           |
+| the one local login every service shares                                             | `integration/dogfood/creds.env`          |
+| the SigNoz dashboards the session is read through                                    | `integration/dogfood/signoz/dashboards/` |
 
 Three shapes of upstream, named the way each of them names things:
 
@@ -70,7 +70,7 @@ chart on their own defaults.
   session, so regenerating either invalidates every key and logs everyone out.
   That is why they are written once to a gitignored file rather than being
   checked in beside the other local credentials, and why the gateway is given
-  the *same* `ROLTER_KEY_PEPPER` as the control plane — the snapshot carries no
+  the _same_ `ROLTER_KEY_PEPPER` as the control plane — the snapshot carries no
   pepper, so a mismatch rejects every key with `401 invalid api key`.
 - **The gateway names itself, and says so.** `ROLTER_NODE_ID` still wins, but
   a gateway that has none now falls back to `HOSTNAME` and then to the
@@ -86,11 +86,12 @@ chart on their own defaults.
   screens stayed empty forever. The telemetry ingest now answers `400` to a
   report it cannot key on, which the gateway's reporter logs as
   `adaptive-routing telemetry report failed`. See #1644.
+
 - **Everything in `dogfood.toml` is in the explicit `readonly` tier.** Providers
   and groups alike are written `[[providers.readonly]]` / `[[provider_groups.readonly]]`
   rather than as the deprecated bare arrays (ADR-0022), because this file is
   what a new operator reads before writing their own (#1657, #1650). The
-  `default` tier is not an option for this stack: giving the *control* plane a
+  `default` tier is not an option for this stack: giving the _control_ plane a
   config file switches it to `MergedConfigStore`, which drops db-created virtual
   keys from the snapshot (#623) and then 401s every key the stack mints. An
   unknown tier name is not an error — the config lint reports it as an
@@ -114,7 +115,7 @@ chart on their own defaults.
   so on every reload and the dashboard shows it under config problems; it is
   expected until #1133 lands.
 - **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
-  control plane's `CLICKHOUSE_URL`. The control plane's only lets it *read* the
+  control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).
 
 ## Using it

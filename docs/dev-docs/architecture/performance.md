@@ -29,8 +29,8 @@ Three layers. Only the third is on the per-PR gate:
   `integration/engines/bench.py` against a real engine, measuring rolter's added
   latency directly and its behaviour under sustained concurrency.
 - **Allocation counting** (`cargo test -p rolter-gateway --test
-  hot_path_allocations`) — asserts that the per-attempt admission checks make
-  **zero** allocations. This one *is* a merge gate, because it measures a
+hot_path_allocations`) — asserts that the per-attempt admission checks make
+  **zero** allocations. This one _is_ a merge gate, because it measures a
   property rather than a duration.
 
 ### Why allocation counting is a test and not a benchmark
@@ -44,7 +44,7 @@ and `Cooldowns::is_parked` once built could come back without anything failing.
 
 `crates/rolter-gateway/tests/hot_path_allocations.rs` installs a counting
 `#[global_allocator]` and asserts an exact **zero** on the steady-state paths.
-Zero is deliberate: an allocation *budget* would be a portability trap across
+Zero is deliberate: an allocation _budget_ would be a portability trap across
 allocators and toolchains, whereas "this path does not allocate at all" is both
 stable and the property actually wanted. A count is exact and reproducible in a
 way a duration is not, so this can gate where the benches cannot.
@@ -97,19 +97,19 @@ where GuideLLM genuinely earns its footprint.
 
 `bench.py` drives the engine directly and through rolter in the same run:
 
-| Metric | Notes |
-|---|---|
-| `ttft_p50/p95_ms` | time to first byte |
-| `itl_p50/p95_ms` | inter-token latency, streaming only, needs `--max-tokens > 1` |
-| `latency_p50/p95/p99_ms` | end to end |
-| `requests_per_second` | achieved, not offered |
-| `error_rate` | non-2xx and transport failures, which is what saturation looks like |
-| `added_latency_p50_ms` | rolter minus direct — the headline overhead number |
+| Metric                   | Notes                                                               |
+| ------------------------ | ------------------------------------------------------------------- |
+| `ttft_p50/p95_ms`        | time to first byte                                                  |
+| `itl_p50/p95_ms`         | inter-token latency, streaming only, needs `--max-tokens > 1`       |
+| `latency_p50/p95/p99_ms` | end to end                                                          |
+| `requests_per_second`    | achieved, not offered                                               |
+| `error_rate`             | non-2xx and transport failures, which is what saturation looks like |
+| `added_latency_p50_ms`   | rolter minus direct — the headline overhead number                  |
 
 Profiles: `--concurrency` holds closed-loop steady state after a warmup, and
 `--sweep 1,2,4,8,16` walks concurrency upward — a ramp/burst profile — reporting
 **max sustainable RPS**: the highest achieved throughput whose p99 stayed inside
-`--knee-factor` (default 2×) of the lowest-concurrency baseline *and* which was
+`--knee-factor` (default 2×) of the lowest-concurrency baseline _and_ which was
 not erroring.
 
 That bound matters. Throughput usually keeps climbing well past the point where

@@ -1,7 +1,7 @@
 # Dashboard dropdowns: the Combobox primitive
 
 Every dropdown in the dashboard used to be a native `<select>`, wrapped by a
-`Select` primitive. That wrapper styled the *closed* control only; the open list
+`Select` primitive. That wrapper styled the _closed_ control only; the open list
 was drawn by the operating system, so it ignored the design tokens entirely —
 wrong font, wrong colours, no dark mode, no grouping, no secondary line. And a
 native select has no type-to-filter, only first-letter jumping, which makes a
@@ -26,16 +26,16 @@ const options: ComboboxOption[] = [
 </Field>;
 ```
 
-| Prop | What it is for |
-|---|---|
-| `options` | `{ value, label, description?, group?, disabled? }[]` |
-| `value` / `onChange` | controlled; `""` means nothing selected |
-| `placeholder` | shown while nothing is selected; defaults to `common.combobox.placeholder` |
-| `clearable` | adds an × that resets the selection — for an optional field |
-| `size` | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs` |
-| `className` | wrapper layout only (margins, width) — the control's own height comes from `size` |
-| `listClassName` | the popup, mainly to widen it past the control |
-| `title` | native tooltip, for a compact control whose label sits elsewhere |
+| Prop                 | What it is for                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `options`            | `{ value, label, description?, group?, disabled? }[]`                                             |
+| `value` / `onChange` | controlled; `""` means nothing selected                                                           |
+| `placeholder`        | shown while nothing is selected; defaults to `common.combobox.placeholder`                        |
+| `clearable`          | adds an × that resets the selection — for an optional field                                       |
+| `size`               | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs` |
+| `className`          | wrapper layout only (margins, width) — the control's own height comes from `size`                 |
+| `listClassName`      | the popup, mainly to widen it past the control                                                    |
+| `title`              | native tooltip, for a compact control whose label sits elsewhere                                  |
 
 `description` is the secondary line under the label. The Playground's model
 picker uses it for what `owned_by` says, which the native control could not
@@ -51,20 +51,20 @@ forwards all three to its input.
 
 ## What it owes the keyboard
 
-The pattern is the APG *editable combobox with list autocomplete*. The input
+The pattern is the APG _editable combobox with list autocomplete_. The input
 **is** the combobox: DOM focus never leaves it, and the active option is named
 with `aria-activedescendant` rather than by moving focus. That is what makes it
 safe inside a `Sheet` or a `Dialog` — the modal Tab trap in `lib/modal-a11y.ts`
 sees focus stay in the panel, because the popup never takes it.
 
-| Key | Behaviour |
-|---|---|
-| ↓ / ↑ | opens the popup; then moves the active option, wrapping, skipping disabled ones |
-| Home / End | first / last enabled option of the *filtered* list |
-| Enter | commits the active option; never submits the surrounding form |
-| Escape | closes the popup and restores the selected label, leaving the value alone — and stops there, so the Sheet around it stays open |
-| Tab | closes the popup and moves on without selecting |
-| typing | filters on substring, case- and diacritic-insensitive, over label, value and description |
+| Key        | Behaviour                                                                                                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| ↓ / ↑      | opens the popup; then moves the active option, wrapping, skipping disabled ones                                                |
+| Home / End | first / last enabled option of the _filtered_ list                                                                             |
+| Enter      | commits the active option; never submits the surrounding form                                                                  |
+| Escape     | closes the popup and restores the selected label, leaving the value alone — and stops there, so the Sheet around it stays open |
+| Tab        | closes the popup and moves on without selecting                                                                                |
+| typing     | filters on substring, case- and diacritic-insensitive, over label, value and description                                       |
 
 Opening empties the field so the next keystroke starts a filter rather than
 editing the selected label at wherever the caret landed; the selection stays
@@ -105,7 +105,7 @@ by its accessible name:
 await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
 ```
 
-To assert what is *offered* rather than pick one, `openOptions` opens the popup
+To assert what is _offered_ rather than pick one, `openOptions` opens the popup
 and hands back the listbox — the options are not inside the control, so
 `within(combobox).getAllByRole("option")` finds nothing:
 

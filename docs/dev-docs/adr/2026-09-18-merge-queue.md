@@ -23,7 +23,7 @@ was warned about:
   All three green, all three blind to each other, fixed forward in #1316 (#1318).
 
 The exposure is structural rather than accidental. This repository deliberately
-carries several tests that assert a *global* property of the tree — the OpenAPI
+carries several tests that assert a _global_ property of the tree — the OpenAPI
 operations table, `the_matrix_lists_every_capability_exactly_once` in
 `rbac_matrix.rs`, the i18n catalog checks, `SEALED_COLUMNS` in `kek_audit.rs`,
 the migration-number sequence. Every one of them is a guard that two independent
@@ -33,8 +33,8 @@ and two branches have already claimed migration `0071_` in the same week.
 
 [`merge-protection.md`](../development/merge-protection.md) recorded the decision
 to do nothing about this for now, and set an explicit condition for revisiting
-it: *if a semantic conflict reaches `master` twice more, turn the merge queue
-on.* The OpenAPI break is the second, and it was the second while the page was
+it: _if a semantic conflict reaches `master` twice more, turn the merge queue
+on._ The OpenAPI break is the second, and it was the second while the page was
 being written. The condition is met.
 
 ## Decision
@@ -44,7 +44,7 @@ being written. The condition is met.
 
 `ci.yml` gains a `merge_group:` trigger, so the queue builds a synthetic branch
 holding `master` plus every entry ahead of this one and runs the same `ci-ok`
-against *that* tree. A combination that fails is dequeued instead of landing.
+against _that_ tree. A combination that fails is dequeued instead of landing.
 
 `ci-ok` remains the single required status check. The queue asks for the
 repository's required checks by name, so there is nothing new to name and no
@@ -57,13 +57,13 @@ a one-trigger change.
 It is one checkbox, which is its only advantage. It is strictly worse than the
 queue on this repository:
 
-| | up-to-date requirement | merge queue |
-|---|---|---|
-| Who rebases | every author, by hand, every time anything lands | nobody |
-| Gate runs to land *n* ready PRs | *n* — one per PR, each invalidated by the next merge | one per batch, bounded by the batch size |
-| Behaviour when several land in a row | last-merge-wins thrash; a PR that finishes rebasing is already stale again | entries re-test only when something ahead of them fails |
-| Correctness | the gate ran on a tree containing current `master` at *some* point before the merge button was pressed | the gate ran on the exact tree that will exist |
-| Failure lands on | whoever was slowest | the PR that actually broke it |
+|                                      | up-to-date requirement                                                                                 | merge queue                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| Who rebases                          | every author, by hand, every time anything lands                                                       | nobody                                                  |
+| Gate runs to land _n_ ready PRs      | _n_ — one per PR, each invalidated by the next merge                                                   | one per batch, bounded by the batch size                |
+| Behaviour when several land in a row | last-merge-wins thrash; a PR that finishes rebasing is already stale again                             | entries re-test only when something ahead of them fails |
+| Correctness                          | the gate ran on a tree containing current `master` at _some_ point before the merge button was pressed | the gate ran on the exact tree that will exist          |
+| Failure lands on                     | whoever was slowest                                                                                    | the PR that actually broke it                           |
 
 The thrash is the decisive part. With several agent worktrees and dependabot in
 flight, `master` moves faster than a gate run takes, so an up-to-date requirement
@@ -83,7 +83,7 @@ by an admin bypass, or a queue misconfiguration — and it costs nothing to keep
 ## Consequences
 
 **Merging becomes asynchronous.** `gh pr merge` on a queue-protected branch
-*enqueues* rather than merges; the PR shows "queued" and lands minutes later when
+_enqueues_ rather than merges; the PR shows "queued" and lands minutes later when
 its merge-group run is green. An agent that merges and immediately reports done
 is now reporting on an intent rather than an outcome.
 

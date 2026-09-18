@@ -61,10 +61,10 @@ Carol  →  viewer  at  team: platform
 
 Rolter publishes its own permission table, so you never have to keep a copy in sync with the deployment:
 
-| Endpoint | Answers |
-| --- | --- |
-| `GET /api/v1/rbac/matrix` | For every resource, the minimum role each of read / create / update / delete takes — or that the action is reserved for a superadmin, open to any authenticated caller (`authenticated_only`), or does not exist. |
-| `GET /api/v1/rbac/effective?org_id=&team_id=&project_id=` | What *you* may do at that scope, resolved from your own memberships. |
+| Endpoint                                                  | Answers                                                                                                                                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/rbac/matrix`                                 | For every resource, the minimum role each of read / create / update / delete takes — or that the action is reserved for a superadmin, open to any authenticated caller (`authenticated_only`), or does not exist. |
+| `GET /api/v1/rbac/effective?org_id=&team_id=&project_id=` | What _you_ may do at that scope, resolved from your own memberships.                                                                                                                                              |
 
 Both read the same table the control plane enforces with, so the answer is never a guess: a request that `effective` says you cannot make returns `403` if you make it anyway.
 
@@ -76,13 +76,13 @@ A resource's sub-resources sit at the same bar as the resource itself. A route's
 
 Each cell carries four chips — read, create, update, delete — and each chip says one of four things:
 
-| Chip | Means |
-| --- | --- |
-| Filled | The role's rank clears the minimum, or the action needs no membership at all. |
-| Faded | Denied. The role exists at this scope but is not senior enough. |
-| Amber | Superadmin only. No org role reaches it, and no custom grant can either. |
-| `–` | The action does not exist for that resource — an audit log is append-only, an org has no update route. Nobody can perform it, including a superadmin, so it is not a denial. |
-| Blue | Granted explicitly by that custom role, on top of its base role. |
+| Chip   | Means                                                                                                                                                                        |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Filled | The role's rank clears the minimum, or the action needs no membership at all.                                                                                                |
+| Faded  | Denied. The role exists at this scope but is not senior enough.                                                                                                              |
+| Amber  | Superadmin only. No org role reaches it, and no custom grant can either.                                                                                                     |
+| `–`    | The action does not exist for that resource — an audit log is append-only, an org has no update route. Nobody can perform it, including a superadmin, so it is not a denial. |
+| Blue   | Granted explicitly by that custom role, on top of its base role.                                                                                                             |
 
 The rest of the dashboard asks `GET /api/v1/rbac/effective` for your own answer and shapes itself around it, so a control you may not use is not offered rather than refused after the click. A create button your role does not reach is disabled and names the role it would take; so is every per-row control beside it — the edit, delete, retire, revoke, drain and enabled toggles on each row of Providers, Virtual Keys, Routing Rules, Users, Alerting and the rest carry the same check, so a read-only account sees a list it can read rather than a list of buttons that all end in a refusal; a navigation group whose every screen you may not read is hidden instead of leading to a wall of refusals; and a deployment-wide settings screen tells a non-superadmin so immediately, without the pause of a request that was always going to be denied. This is presentation, not enforcement — the control plane still checks every request, so a refusal you route around by hand is still a `403`. When the dashboard cannot get an answer (an older control plane, a network blip) it shows every control as before and lets the server have the last word.
 
@@ -164,7 +164,8 @@ It is reported on `GET /api/v1/rbac/effective` as `model_policy`, and the gatewa
 <Note>
   A key's own model list and its creator's policy are both applied, and neither widens the other. A key that names `gpt-4o` still cannot reach it if its creator's profile denies it — and a profile that allows `gpt-4o` does not add it to a key scoped to something else.
 
-  Keys with no creator — those made by an admin on someone's behalf, or defined in the config file — carry no policy at all, since there is no person whose profiles could apply. Restrict those with the key's own model list.
+Keys with no creator — those made by an admin on someone's behalf, or defined in the config file — carry no policy at all, since there is no person whose profiles could apply. Restrict those with the key's own model list.
+
 </Note>
 
 Policy changes propagate to the gateway the same way provider and route changes do, on the next config refresh rather than instantly. Assigning or revoking a profile, editing its policy, and adding or removing someone from a team all trigger that refresh.
@@ -203,7 +204,7 @@ export ROLTER_ADMIN_TOKEN="$(openssl rand -hex 24)"
 ### Self-service endpoints do not work in open mode
 
 The `/api/v1/me/*` routes — the dashboard's **API Keys** screen — are per-user:
-they list the keys *you* minted and scope usage to *your* account. Open mode has
+they list the keys _you_ minted and scope usage to _your_ account. Open mode has
 no accounts, so there is no "you" and these endpoints cannot be served to
 anyone. They return `401` with `code: "open_mode_no_session"`, which the
 dashboard renders as an explanation of what to change rather than a load

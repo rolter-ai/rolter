@@ -50,9 +50,9 @@ A `block` from any plugin in the chain stops it immediately — later plugins in
 
 ## API
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET`, `POST` | `/api/v1/orgs/{org_id}/plugins` | List or install configurations |
-| `PUT`, `DELETE` | `/api/v1/plugins/{id}` | Update or remove a configuration |
+| Method          | Endpoint                        | Purpose                          |
+| --------------- | ------------------------------- | -------------------------------- |
+| `GET`, `POST`   | `/api/v1/orgs/{org_id}/plugins` | List or install configurations   |
+| `PUT`, `DELETE` | `/api/v1/plugins/{id}`          | Update or remove a configuration |
 
 Reads require viewer access at the organization. Mutations require admin access at the configuration's organization or project scope, and every mutation is written to the audit log.

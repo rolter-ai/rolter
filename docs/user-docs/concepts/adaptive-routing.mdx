@@ -22,11 +22,11 @@ older than 60 seconds so a stopped node cannot look healthy.
 
 Three signals are scored in `[0, 1]` and combined as a weighted sum:
 
-| Signal | What it measures |
-|---|---|
-| `latency_weight` | observed latency — how strongly it pulls traffic |
-| `cost_weight` | per-token cost — how strongly it pulls traffic |
-| `load_weight` | in-flight load — how strongly it pushes traffic away |
+| Signal           | What it measures                                     |
+| ---------------- | ---------------------------------------------------- |
+| `latency_weight` | observed latency — how strongly it pulls traffic     |
+| `cost_weight`    | per-token cost — how strongly it pulls traffic       |
+| `load_weight`    | in-flight load — how strongly it pushes traffic away |
 
 **Only the ratio between the weights matters.** Doubling all three changes nothing. Each is bounded to `0..=100`, not because the blend needs the range, but so a typo cannot make one signal numerically dominant. The dashboard shows each weight's share of the total alongside the raw number for exactly that reason.
 
@@ -100,7 +100,7 @@ The scores live in the gateway, so each gateway pushes a sample to the control p
 Notes worth knowing before you build on it:
 
 - It is **current state, not history**. Each report overwrites the last; nothing accumulates. A sample older than `fresh_window_secs` is left out rather than served as if it were live.
-- `policy` is what *that node* is running. It can lag the stored policy for a poll interval after a change, which is how you tell a node that has not converged from one that has.
+- `policy` is what _that node_ is running. It can lag the stored policy for a poll interval after a change, which is how you tell a node that has not converged from one that has.
 - A route missing from the response is a route no node is currently balancing adaptively.
 - `score` is the weighted sum of the components below it; a signal with zero weight scores `0`, while its raw value (`latency_ms`, `cost_per_mtok`, `in_flight`) is still reported so you can judge whether to give it weight.
 - Prometheus users get the same blended score as `rolter_adaptive_routing_target_score{model,target}` on the gateway's `/metrics`.

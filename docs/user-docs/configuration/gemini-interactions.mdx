@@ -6,11 +6,11 @@ description: "Configure the gemini_interactions provider kind, which maps OpenAI
 
 Google exposes Gemini through three different surfaces. Rolter has a provider kind for each:
 
-| Kind | Upstream surface | When to use it |
-| --- | --- | --- |
-| `gemini` | The hosted OpenAI-compatible shim | Simplest option; no translation at all |
-| `gemini_native` | `:generateContent` / `:streamGenerateContent` | Native features the shim does not expose |
-| `gemini_interactions` | `POST {api_base}/interactions` | Stateful, agentic threads with server-side history |
+| Kind                  | Upstream surface                              | When to use it                                     |
+| --------------------- | --------------------------------------------- | -------------------------------------------------- |
+| `gemini`              | The hosted OpenAI-compatible shim             | Simplest option; no translation at all             |
+| `gemini_native`       | `:generateContent` / `:streamGenerateContent` | Native features the shim does not expose           |
+| `gemini_interactions` | `POST {api_base}/interactions`                | Stateful, agentic threads with server-side history |
 
 This page covers `gemini_interactions`.
 
@@ -36,15 +36,15 @@ Clients keep speaking their usual dialect. `POST /v1/chat/completions`, `POST /v
 
 **Request**
 
-| Client field | Interactions field |
-| --- | --- |
-| `messages` / `input` turns | `input` items with `role` `user` / `model` and typed `content` parts |
-| `system` / `developer` messages, `instructions` | `system_instruction` |
-| assistant `tool_calls` | `function_call` input items (`call_id`, `name`, `arguments`) |
-| `tool` messages / `function_call_output` | `function_result` input items |
-| `temperature`, `top_p`, `max_tokens`, `stop`, `tool_choice` | `generation_config` |
-| `tools` | flat `tools` entries (`type: "function"`, `name`, `description`, `parameters`) |
-| `stream` | `stream` |
+| Client field                                                | Interactions field                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `messages` / `input` turns                                  | `input` items with `role` `user` / `model` and typed `content` parts           |
+| `system` / `developer` messages, `instructions`             | `system_instruction`                                                           |
+| assistant `tool_calls`                                      | `function_call` input items (`call_id`, `name`, `arguments`)                   |
+| `tool` messages / `function_call_output`                    | `function_result` input items                                                  |
+| `temperature`, `top_p`, `max_tokens`, `stop`, `tool_choice` | `generation_config`                                                            |
+| `tools`                                                     | flat `tools` entries (`type: "function"`, `name`, `description`, `parameters`) |
+| `stream`                                                    | `stream`                                                                       |
 
 **Response**
 

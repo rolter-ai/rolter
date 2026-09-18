@@ -11,7 +11,7 @@ and balancing across clusters. #613 needs a broad governance/routing E2E suite,
 and #614 is the harness every other scenario (RBAC matrix, balancing, key
 lifecycle, security) builds on.
 
-Two decisions had to be made: what *drives* the stack, and how the driver code
+Two decisions had to be made: what _drives_ the stack, and how the driver code
 is packaged.
 
 ## Options considered

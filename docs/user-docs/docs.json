@@ -131,10 +131,7 @@
           },
           {
             "group": "Project",
-            "pages": [
-              "community/versioning",
-              "community/brand"
-            ]
+            "pages": ["community/versioning", "community/brand"]
           }
         ]
       },

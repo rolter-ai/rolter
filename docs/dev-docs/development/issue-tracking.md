@@ -14,14 +14,14 @@ by whoever files the issue.
 
 ### Status
 
-| Value | Meaning |
-|---|---|
-| `Backlog` | Accepted but not scheduled. Nobody is expected to pick it up next. |
-| `Todo` | Scheduled and ready to start; scope and fields are settled. |
-| `In Progress` | Someone — or an agent worktree — is actively working on it. |
-| `In Review` | A pull request is open, waiting on review or on `ci-ok`. |
-| `Done` | Merged or otherwise resolved. |
-| `Canceled` | Deliberately not doing it; the reason is in the issue. |
+| Value         | Meaning                                                            |
+| ------------- | ------------------------------------------------------------------ |
+| `Backlog`     | Accepted but not scheduled. Nobody is expected to pick it up next. |
+| `Todo`        | Scheduled and ready to start; scope and fields are settled.        |
+| `In Progress` | Someone — or an agent worktree — is actively working on it.        |
+| `In Review`   | A pull request is open, waiting on review or on `ci-ok`.           |
+| `Done`        | Merged or otherwise resolved.                                      |
+| `Canceled`    | Deliberately not doing it; the reason is in the issue.             |
 
 New issues are seeded `Todo`, new pull requests `In Review`. `Done` and
 `Canceled` are applied by the board's built-in workflows when the item closes,
@@ -43,7 +43,7 @@ eventual PR title agree:
 `core` · `docs` · `ci` · `infra` · `cross-cutting`
 
 Labels already carry topic (`security`, `performance`, `tech-debt`); Area
-carries *location*, which is what makes "everything queued against the data
+carries _location_, which is what makes "everything queued against the data
 plane" or "how much UI work is left before 1.0" answerable in one grouping.
 
 Plenty of issues touch two areas — a migration plus a dashboard screen, a
@@ -68,14 +68,14 @@ across every i18n catalog; a "research this first" section is most of the cost.
 Every issue gets one. Propose a new milestone rather than forcing a bad match
 or leaving it empty.
 
-| Milestone | What belongs in it |
-|---|---|
-| Release 1.0.0 | Only work that blocks tagging 1.0.0. If you could ship 1.0.0 with it still open, it belongs somewhere else. |
-| Post-1.0 polish | Real, wanted work that does not block the tag: dashboard polish, internal refactors, extra providers, anything blocked on an upstream dependency. |
-| Release 2.0.0 | Post-1.0 capabilities that are their own body of work — subscription-backed provider auth, agent-CLI egress DLP, pluggable custom AI APIs, external secret backends. |
-| Maintenance, CI & DX | Repo hygiene, CI hardening, dependency triage, contributor experience. |
-| Research & inspiration | Spikes and prior-art surveys that inform the roadmap without shipping anything. |
-| Stretch | Optional or exploratory scope per `ROADMAP.md`. |
+| Milestone              | What belongs in it                                                                                                                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Release 1.0.0          | Only work that blocks tagging 1.0.0. If you could ship 1.0.0 with it still open, it belongs somewhere else.                                                          |
+| Post-1.0 polish        | Real, wanted work that does not block the tag: dashboard polish, internal refactors, extra providers, anything blocked on an upstream dependency.                    |
+| Release 2.0.0          | Post-1.0 capabilities that are their own body of work — subscription-backed provider auth, agent-CLI egress DLP, pluggable custom AI APIs, external secret backends. |
+| Maintenance, CI & DX   | Repo hygiene, CI hardening, dependency triage, contributor experience.                                                                                               |
+| Research & inspiration | Spikes and prior-art surveys that inform the roadmap without shipping anything.                                                                                      |
+| Stretch                | Optional or exploratory scope per `ROADMAP.md`.                                                                                                                      |
 
 The Release 1.0.0 description promises that everything in it blocks the
 release. Post-1.0 polish exists so that promise stays literally true — moving a
@@ -146,7 +146,7 @@ nothing is set".
 
 `updateProjectV2ItemFieldValue` takes no expected-value or version input: the
 Projects v2 API has **no compare-and-set**. So the check above is a
-read-then-write and is *not* atomic. A field set in the window between the
+read-then-write and is _not_ atomic. A field set in the window between the
 workflow's read and its write is still overwritten.
 
 What changed is the shape of the exposure, and that is worth being precise
@@ -179,7 +179,7 @@ and the field is cleared on every existing item in the project.
 
 `project-automation.yml` no longer pins any of those ids — it resolves both the
 field and the option by **name** on every run and fails with an `::error::`
-naming what it could not find (#1096). So an edit that keeps the option *names*
+naming what it could not find (#1096). So an edit that keeps the option _names_
 needs nothing from you here; only a rename does, and it announces itself the
 next time an issue is opened rather than silently dropping items into the
 untracked "no status" column.

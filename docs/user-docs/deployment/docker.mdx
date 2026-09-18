@@ -25,6 +25,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     <Note>
       Generate a strong master key with `openssl rand -hex 32`. This key is used for AES-256-GCM encryption of stored provider secrets — keep it safe and back it up separately.
     </Note>
+
   </Step>
   <Step title="Start the full stack">
     Bring up all five services in the background with a single command:
@@ -34,6 +35,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     ```
 
     Docker Compose starts the services in dependency order: PostgreSQL, Redis, and ClickHouse come up first, then the control plane, then the gateway. On first boot, database schemas are applied automatically from the migration files — no manual SQL is required.
+
   </Step>
   <Step title="Watch the gateway logs">
     Confirm the gateway started cleanly by tailing its logs:
@@ -43,6 +45,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     ```
 
     You should see the gateway announce which port it is listening on and confirm it has connected to Redis. Press `Ctrl+C` to stop following.
+
   </Step>
   <Step title="Verify the services are running">
     Once all containers are up, the stack exposes the following default ports:
@@ -57,6 +60,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     | **ClickHouse (native)** | `localhost:9000` | ClickHouse native protocol |
 
     Open `http://localhost:4001` in your browser to access the dashboard.
+
   </Step>
   <Step title="Send a test request">
     Confirm the gateway is healthy and accepting traffic:
@@ -71,6 +75,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     ```
 
     A `200 OK` from `/healthz` and a JSON model list from `/v1/models` confirm the gateway is fully operational.
+
   </Step>
 </Steps>
 

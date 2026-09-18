@@ -14,7 +14,7 @@ screen loaded, spun, and then rendered a failure that looked like an outage.
 **The server decides; the dashboard only repeats the answer early.** The guard
 in `crates/rolter-control/src/rbac.rs` still runs on every request, so nothing
 here has to be right for the deployment to be safe. This layer only has to be
-honest — which is why both uncertain cases fall *open*.
+honest — which is why both uncertain cases fall _open_.
 
 ```tsx
 <GatedButton gate="provider:create" onClick={() => setSheet({ mode: "add" })}>
@@ -30,11 +30,11 @@ spells it, so there is no second vocabulary to keep in step.
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:
 
-| answer | when | what the control does |
-| --- | --- | --- |
-| `true` | the pair is in `allowed`, or the caller is a superadmin | renders enabled |
-| `false` | the caller's role does not reach it | disabled, with the required role in the `title` |
-| `undefined` | the query is still in flight, there is no provider above, or the question could not be answered at all | renders **enabled** |
+| answer      | when                                                                                                   | what the control does                           |
+| ----------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `true`      | the pair is in `allowed`, or the caller is a superadmin                                                | renders enabled                                 |
+| `false`     | the caller's role does not reach it                                                                    | disabled, with the required role in the `title` |
+| `undefined` | the query is still in flight, there is no provider above, or the question could not be answered at all | renders **enabled**                             |
 
 A control that starts disabled and enables itself a request later reads as
 broken. And a control plane one version behind — one that 404s
@@ -145,7 +145,7 @@ hand has to do the same.
 
 A screen re-renders while its gate is still in flight: the org/team/project
 chain resolving re-keys the query behind the screen, which sends it back to its
-skeleton for a frame, and React builds a *new* button when it returns. A
+skeleton for a frame, and React builds a _new_ button when it returns. A
 reference taken before that frame is detached, and a detached node's attributes
 never change again — so the assertion waits out its whole budget and reports
 `title: null`, which reads as a gate that never resolved even though the live
@@ -154,7 +154,7 @@ control is refused correctly.
 That is what #1670 was: `Screens/Rbac › RefusedToAViewer` failed identically at
 50ms of injected latency and at 900ms, and raising the budget from 1s to 5s did
 nothing. `Harness/Gating` stages the ordering deliberately — the control is
-replaced *before* the answer it is waiting for arrives — so the two helpers
+replaced _before_ the answer it is waiting for arrives — so the two helpers
 cannot regress to a captured reference.
 
 ```tsx
@@ -176,12 +176,12 @@ enabled, and the accessible name decides whether a screen reader can tell it
 apart from the eleven identical buttons under it (#1214). So a row control
 carries an `aria-label` interpolated with the row's own name —
 `t("pages.routing.deleteRoute", { model })`, not `"Delete route"` — and the
-`title` falls back to that same sentence when the control is *allowed*, so the
+`title` falls back to that same sentence when the control is _allowed_, so the
 tooltip says what the button does rather than nothing at all.
 
 Naming it with a template literal would type-check and read correctly and still
 be wrong: `check:literals` only matches quoted strings, so an
-`` aria-label={`Delete route ${model}`} `` slips past the gate while staying
+``aria-label={`Delete route ${model}`}`` slips past the gate while staying
 untranslated forever. Route it through the catalogs.
 
 That is also what lets a story select the control it means:

@@ -9,6 +9,7 @@ is read literally, most often by an agent, and it manufactures duplicate work �
 harness shipped. Tick the box, and name the file, job or issue that proves it.
 
 ## Phase 0 — Scaffold & gateway MVP ✅
+
 - [x] Cargo workspace + shared dependency/profile config
 - [x] `rolter-core`: config model, errors, telemetry
 - [x] `rolter-balancer`: `LoadBalancer` trait + round_robin/random/power_of_two/consistent_hash/cache_aware + trie + tests
@@ -26,6 +27,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] `cargo build`/`test`/`clippy` green in CI (#223)
 
 ## Phase 1 — Persistence & control plane ✅
+
 - [x] `rolter-store` Postgres backend (`sqlx`) behind a `postgres` feature
 - [x] Migration runner (`sqlx migrate` / refinery) replacing initdb-only
 - [x] Repositories: orgs, teams, projects, providers, provider_keys, routes, route_targets, virtual_keys, budgets, rate_limits, model_prices
@@ -36,6 +38,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Config vs DB model split (LiteLLM-style): bootstrap toml merged read-only over DB models, `GET/DELETE /api/v1/models`, 409 on config-owned mutations
 
 ## Phase 2 — Reload-free config ✅
+
 - [x] Redis client + `PUBLISH`/`SUBSCRIBE` on `rolter.config` (control publishes on bump, gateway subscriber triggers instant refetch; polling stays as fallback)
 - [x] Bump/read `config_version` transactionally on writes (migration 0003 DB triggers on providers/routes/targets/virtual-keys; control publishes the post-commit version to Redis)
 - [x] Gateway watcher task: poll `/internal/snapshot?version=N` on an interval, `ArcSwap::store` on change (`--snapshot-url`)
@@ -43,6 +46,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Metrics for reload (`rolter_config_version`, `rolter_config_reloads_total`, `rolter_config_reload_failures_total`)
 
 ## Phase 3 — Auth & RBAC ✅
+
 - [x] Local accounts: argon2id hashing, login, sessions (postgres-backed opaque bearer tokens)
 - [x] RBAC middleware resolving most-specific membership per resource
 - [x] Enforce roles on every control mutation
@@ -54,6 +58,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
 ## Phase 4 — Cost, limits & pricing ✅
+
 - [x] ClickHouse client + async batched writer off the hot path
 - [x] Capture token usage (parse non-stream usage; accumulate for streams)
 - [x] Pricing catalog CRUD + per-request `cost_usd`
@@ -62,6 +67,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Usage/cost aggregation queries for the dashboard
 
 ## Phase 5 — Reliability ✅
+
 - [x] Retries (backoff + jitter) on 408/429/5xx, configurable
 - [x] Circuit breaker per target (closed/open/half-open)
 - [x] Cooldowns on rate-limited targets
@@ -73,6 +79,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] vLLM/SGLang compatibility contracts and direct-vs-gateway baselines (#442 — `integration/engines/`)
 
 ## Phase 6 — Caching v2 ✅
+
 - [x] Composable filter → weighted-score → argmax `Scorer` pipeline (foundation)
 - [x] Cache-aware trie eviction (LRU / max-nodes; per-trie eviction counter)
 - [x] Precise KV-event scorer (vLLM ZMQ, block hashing, resident-prefix fraction) (`precise_kv_cache` in `crates/rolter-balancer/src/scorer.rs`)
@@ -82,6 +89,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] `x-rolter-cache` + decision headers
 
 ## Phase 7 — Observability ✅
+
 - [x] OpenTelemetry OTLP export for traces (`OTEL_*` env); metrics remain on the Prometheus `/metrics` scrape path
 - [x] Inbound W3C `traceparent`/`b3` continuation; `request_id` end-to-end (`crates/rolter-gateway/src/trace.rs`)
 - [x] Outbound trace-context propagation to vLLM/SGLang/TGI (`crates/rolter-proxy` forwards the caller's trace context)
@@ -91,6 +99,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] OTel Collector example config in `infra/` (`infra/otel/collector.yaml`, `collector.compose.yaml`)
 
 ## Phase 8 — Providers & modalities
+
 - [x] Providers: Azure OpenAI, Bedrock, Vertex, Gemini, Mistral, Groq, OpenRouter (and ~40 more `ProviderKind` variants; see `docs/user-docs/configuration/`)
 - [x] OpenAI⇄Anthropic request/response translation (+ streaming)
 - [x] `/v1/embeddings` (OpenAI-compatible passthrough; built-in `fake-llm` serves deterministic vectors)
@@ -102,6 +111,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Served OpenAPI document (`GET /openapi.json`, hand-authored 3.1) + interactive Scalar reference (`GET /docs`, bundle embedded in the binary — air-gapped safe)
 
 ## Phase 9 — Packaging & release ✅
+
 - [x] Unified `rolter` CLI with `gateway`/`control` subcommands (one wheel ships both) (#277)
 - [x] cibuildwheel/maturin-action wheels → PyPI (`uv tool install rolter`) (`build-wheels` + `publish-pypi` in `release.yml`, PEP 740 attestations; `rolter` 0.0.11 is on PyPI)
 - [x] Publish crates to crates.io (#279)
@@ -111,7 +121,9 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] `cargo deny` + dependency/advisory scanning in CI (#283)
 
 ## Phase 10 — Control panel ✅
+
 Full-featured hostable web control panel, not a read-only dashboard.
+
 - [x] Zero-cred startup + runtime provider/model CRUD with encrypted keys (#454) (provider `api_key` via API sealed with `ROLTER_KEK`, `PUT /providers/{id}`, `ROLTER_ADMIN_TOKEN` guard on CRUD + snapshot, gateway `/admin/*` proxy)
 - [x] Auth screens (login, SSO): login page renders password form and/or provider buttons from `GET /api/v1/auth/methods`; `/invite/{token}` accept screen
 - [x] CRUD: providers, routes (+ targets/strategy), virtual keys, budgets, pricing (members CRUD blocked on Phase 3 accounts)
@@ -124,6 +136,7 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [x] `bun run lint`/build wired into CI (#289)
 
 ## Cross-cutting / tech debt
+
 - [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke` in `quality.yml`)
 - [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml`, `.github/scripts/coverage-ratchet.sh`)
 - [x] Document and enforce the `ci-ok` branch-protection policy (#448 — `docs/dev-docs/development/testing.md`)
@@ -138,15 +151,19 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [ ] A/B traffic mirroring (#296)
 
 ## MCP gateway
+
 Shipped, no longer a stretch item: `mcp_proxy.rs`, `mcp_oauth.rs`,
 `mcp_oauth_flow.rs` and `mcp_logs.rs` in the control plane, with catalog,
 library, logs and settings screens in the dashboard.
+
 - [x] Proxy MCP tool servers through rolter with per-key auth (Streamable HTTP/SSE with user-bound OAuth)
 - [ ] stdio and WebSocket MCP transports (#952 covers credential and transport configuration)
 - [ ] Connection status, tool discovery and a try-it surface in the dashboard (#951)
 
 ## Stretch
+
 Beyond the core phased roadmap.
+
 - [ ] Rust SDK: client library for rolter gateway + control API (#421)
 - [ ] Python SDK: client library for rolter gateway + control API (#422)
 - [ ] JS/TS SDK: client library for rolter gateway + control API (#851)

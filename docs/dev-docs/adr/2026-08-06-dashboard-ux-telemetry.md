@@ -7,7 +7,7 @@
 
 Browser tracing ([#807](https://github.com/rolter-ai/rolter/pull/807)) tells us
 how long a dashboard screen took and whether it threw. It does not tell us
-whether the screen was *usable*: which screens are slow to become interactive,
+whether the screen was _usable_: which screens are slow to become interactive,
 where people back out, which forms get abandoned, which error and empty states
 are actually reached. Those are the questions that decide what to build next,
 and spans cannot answer them.
@@ -27,7 +27,7 @@ provider API keys, virtual keys and prompts.
 ## Decision
 
 Collect UX events in-house, into a `ui_events` ClickHouse table beside
-`request_logs`, and make the *schema* the privacy guarantee.
+`request_logs`, and make the _schema_ the privacy guarantee.
 
 **Structural only.** Every column is a key, an enum, a duration or an id. There
 is deliberately no column a form value, prompt or free-text body could be

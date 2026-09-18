@@ -45,6 +45,7 @@ The `/v1/messages` endpoint is compatible with the Anthropic Messages API. Any A
     <ParamField body="content" type="string | array" required>
       The message content. Pass a plain string for simple text, or an array of content blocks for multi-modal input.
     </ParamField>
+
   </Expandable>
 </ParamField>
 
@@ -212,5 +213,6 @@ A successful non-streaming response follows the Anthropic Messages shape:
     <ResponseField name="output_tokens" type="integer">
       Tokens generated in the response.
     </ResponseField>
+
   </Expandable>
 </ResponseField>

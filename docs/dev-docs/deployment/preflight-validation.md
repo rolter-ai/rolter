@@ -8,7 +8,7 @@ built-in `fake-llm` model. It prompts for nothing, and `rolter check` does not
 change that.
 
 **Production** is guided and should be hard to misconfigure. `rolter check`
-validates a production deployment *before* the process starts, so a
+validates a production deployment _before_ the process starts, so a
 misconfiguration fails loudly instead of starting degraded.
 
 ```bash
@@ -53,21 +53,21 @@ that looks healthy while quietly not doing what it was configured to do.
 
 ## What it checks
 
-| Check | Severity | Why |
-|---|---|---|
-| `ROLTER_KEK` present | error | Without it provider credentials are stored unsealed, with only a warning |
-| `ROLTER_KEK` length ≥ 16 | error | The KEK is stretched through SHA-256, so a weak secret still yields a valid — and brute-forceable — key |
-| `ROLTER_ADMIN_TOKEN` present | error | Otherwise the management API and `/internal/snapshot` are unauthenticated |
-| `ROLTER_DATABASE_URL` present and `postgres://` | error | Otherwise the control plane falls back to an in-memory store and loses all config on restart |
-| No example values survive | error | The example database credentials and the e2e throwaway KEK are published in the repository |
-| `ROLTER_REDIS_URL` present | warning | Without it rate limits and budgets are enforced per replica, not per deployment |
-| Control plane not bound to `0.0.0.0` | warning | The management API should not be reachable on every interface |
-| `ROLTER_KEY_PEPPER` present | warning | Without it a leaked virtual-key digest is usable as-is against this deployment |
-| CORS does not allow `*` | error | The dashboard is served same-origin; a wildcard lets any page a logged-in operator visits drive the management API as them |
-| Datastores accept a connection (with `--connect`) | error / warning | A URL that parses but resolves to nothing fails at first use rather than at rollout |
-| `ROLTER_KEK` opens the store (with `--connect`, postgres builds) | error | Every other KEK rule reads the environment alone, so all of them pass on a database restored under a *different* KEK — a failure with no startup symptom at all |
-| Config file parses (with `--config`) | error | A config that fails to load leaves the gateway on whatever it last had |
-| Every key in the config file is recognised (with `--config`) | warning | An unknown key is ignored rather than rejected, so a typo is silence and a default rather than an error. Also logged as a `WARN` by every process that loads the file — see [below](#the-same-keys-are-reported-at-startup-1434) |
+| Check                                                            | Severity        | Why                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ROLTER_KEK` present                                             | error           | Without it provider credentials are stored unsealed, with only a warning                                                                                                                                                         |
+| `ROLTER_KEK` length ≥ 16                                         | error           | The KEK is stretched through SHA-256, so a weak secret still yields a valid — and brute-forceable — key                                                                                                                          |
+| `ROLTER_ADMIN_TOKEN` present                                     | error           | Otherwise the management API and `/internal/snapshot` are unauthenticated                                                                                                                                                        |
+| `ROLTER_DATABASE_URL` present and `postgres://`                  | error           | Otherwise the control plane falls back to an in-memory store and loses all config on restart                                                                                                                                     |
+| No example values survive                                        | error           | The example database credentials and the e2e throwaway KEK are published in the repository                                                                                                                                       |
+| `ROLTER_REDIS_URL` present                                       | warning         | Without it rate limits and budgets are enforced per replica, not per deployment                                                                                                                                                  |
+| Control plane not bound to `0.0.0.0`                             | warning         | The management API should not be reachable on every interface                                                                                                                                                                    |
+| `ROLTER_KEY_PEPPER` present                                      | warning         | Without it a leaked virtual-key digest is usable as-is against this deployment                                                                                                                                                   |
+| CORS does not allow `*`                                          | error           | The dashboard is served same-origin; a wildcard lets any page a logged-in operator visits drive the management API as them                                                                                                       |
+| Datastores accept a connection (with `--connect`)                | error / warning | A URL that parses but resolves to nothing fails at first use rather than at rollout                                                                                                                                              |
+| `ROLTER_KEK` opens the store (with `--connect`, postgres builds) | error           | Every other KEK rule reads the environment alone, so all of them pass on a database restored under a _different_ KEK — a failure with no startup symptom at all                                                                  |
+| Config file parses (with `--config`)                             | error           | A config that fails to load leaves the gateway on whatever it last had                                                                                                                                                           |
+| Every key in the config file is recognised (with `--config`)     | warning         | An unknown key is ignored rather than rejected, so a typo is silence and a default rather than an error. Also logged as a `WARN` by every process that loads the file — see [below](#the-same-keys-are-reported-at-startup-1434) |
 
 `--connect` is opt-in because a check that opens sockets cannot be the default
 for a command meant to run offline and without side effects. It is a TCP
@@ -97,7 +97,7 @@ output routinely lands in CI logs.
 
 None of rolter's config types carry serde's `deny_unknown_fields`, and that is a
 deliberate, load-bearing choice rather than an oversight. It is what makes the
-configuration file forward *and* backward compatible: a `rolter.toml` written
+configuration file forward _and_ backward compatible: a `rolter.toml` written
 against a newer build stays loadable by an older one, so rolling a release back
 does not turn into an outage over a key the previous binary has never heard of.
 Nothing in this section changes that — the gateway and the control plane still
@@ -205,11 +205,11 @@ mode after the fact leaves a window.
 
 ### What the profiles differ on
 
-| | `--profile production` (default) | `--profile local` |
-|---|---|---|
-| `ROLTER_CONTROL_HOST` | `127.0.0.1` — the management plane is an admin surface | `0.0.0.0` |
-| `[server] require_auth` | `true` — revoking the last key closes the data plane | unset, defers to the deployment shape |
-| Passes `rolter check` | yes, cleanly | no, and deliberately so |
+|                         | `--profile production` (default)                       | `--profile local`                     |
+| ----------------------- | ------------------------------------------------------ | ------------------------------------- |
+| `ROLTER_CONTROL_HOST`   | `127.0.0.1` — the management plane is an admin surface | `0.0.0.0`                             |
+| `[server] require_auth` | `true` — revoking the last key closes the data plane   | unset, defers to the deployment shape |
+| Passes `rolter check`   | yes, cleanly                                           | no, and deliberately so               |
 
 The data plane binds `0.0.0.0` under both: it is the public surface.
 
@@ -224,7 +224,7 @@ CMD ["sh", "-c", "rolter check --strict && rolter control"]
 
 ### Docker Compose
 
-The bundled `docker/docker-compose.yml` is the *local* stack and is
+The bundled `docker/docker-compose.yml` is the _local_ stack and is
 deliberately loose — example postgres credentials, no KEK, management plane wide
 open. Gating local bring-up on production rules would break the one path that is
 meant to have no friction, so the check lives behind a profile and never runs on

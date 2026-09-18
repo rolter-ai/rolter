@@ -74,6 +74,7 @@ presents to the server's authorization server. The dashboard does this on
     two URLs as an optional fallback; **Configure manually** never probes the
     server and makes both URLs required. Re-saving the form keeps whichever
     mode the server already has.
+
   </Step>
   <Step title="Pin the issuer (optional)">
     **Issuer** is the authorization server's issuer identifier. Pinning it
@@ -157,12 +158,12 @@ Reading the same endpoint back returns what the last successful discovery
 resolved, so a misconfigured authorization server is visible without digging
 through logs:
 
-| Field | Meaning |
-| --- | --- |
-| `discovered_issuer` | the issuer the metadata named |
-| `discovered_authorize_url`, `discovered_token_url` | the endpoints it named |
-| `discovered_iss_supported` | whether it advertised `authorization_response_iss_parameter_supported` |
-| `discovered_at` | when the cache was last filled, or absent if never |
+| Field                                              | Meaning                                                                |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `discovered_issuer`                                | the issuer the metadata named                                          |
+| `discovered_authorize_url`, `discovered_token_url` | the endpoints it named                                                 |
+| `discovered_iss_supported`                         | whether it advertised `authorization_response_iss_parameter_supported` |
+| `discovered_at`                                    | when the cache was last filled, or absent if never                     |
 
 `discovered_iss_supported` is the one worth knowing about: when it is `true`, a
 callback that arrives **without** an `iss` parameter is rejected rather than
@@ -205,6 +206,7 @@ what you see when something goes wrong:
     a renewal in between fails rather than reaching for the previous server.
     An edit that touches none of those three fields — rotating the client
     secret, say — leaves what was already discovered in place.
+
   </Accordion>
 
   <Accordion title="Every token is bound to one server">
@@ -217,6 +219,7 @@ what you see when something goes wrong:
     An authorization server that does not understand the parameter ignores it;
     one that does will bind the token. Rolter sends it either way, as the
     specification requires.
+
   </Accordion>
 
   <Accordion title="The response has to come back from where it was sent">
@@ -230,6 +233,7 @@ what you see when something goes wrong:
     against. If its authorization server returns an `iss`, consent fails with a
     message asking you to pin `issuer` — that is deliberate, since accepting an
     unverifiable issuer would be a check in name only.
+
   </Accordion>
 </AccordionGroup>
 
@@ -252,7 +256,7 @@ want to wait for the sweeper — after widening scopes upstream, say. Only a
 session that stored a refresh token can be renewed, so the action is disabled
 on the rest rather than failing.
 
-If the authorization server *refuses* the refresh with `invalid_grant` or
+If the authorization server _refuses_ the refresh with `invalid_grant` or
 `invalid_scope`, Rolter revokes the session instead of retrying — that answer
 means consent is gone, and the user simply consents again. A renew that fails
 in the dashboard usually means exactly this: the session is already gone, and

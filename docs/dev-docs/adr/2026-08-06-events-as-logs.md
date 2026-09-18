@@ -91,7 +91,7 @@ Concretely:
   the bridge. That is fine — the deprecation is phased and the data stays valid —
   but it means the GenAI work should not start early and improvise its own event
   channel.
-- Anything that wants a *new* event type before #809 has no correct home. The
+- Anything that wants a _new_ event type before #809 has no correct home. The
   answer is to wait rather than to add a span event that will have to be removed.
 
 ## Alternatives considered

@@ -42,14 +42,14 @@ purpose, and it needs a written migration note in the release.
 It does **not** apply to:
 
 - a removal that completed its deprecation window (two minor releases and 90
-  days for `/api/v1/*` and for config keys). The window *was* the notice; the
+  days for `/api/v1/*` and for config keys). The window _was_ the notice; the
   removal ships as an ordinary `feat`/`refactor` whose release notes name it;
 - a Rust API change in any crate — they are internal and carry no promise;
 - rolter tracking a change OpenAI or Anthropic made to their own dialect;
 - a subsystem carrying the `experimental`
   [stability marker](stability-markers.md), which is the documented exemption.
 
-The rule behind it: if the change *could* have been deprecated first, it must
+The rule behind it: if the change _could_ have been deprecated first, it must
 be, and then it is not breaking.
 
 ## Issues & PRs

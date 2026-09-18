@@ -42,10 +42,11 @@ Before budgets can track spend, Rolter needs to know the cost of each model's to
   `spend >= limit` test has an exact boundary rather than one that depends on
   the order requests happened to be summed in.
 
-  One caveat while this rolls out: the spend *counter* itself still accumulates
-  in Redis in floating point, so a long-running counter can still drift very
-  slightly from the exact sum of its requests. Making the accumulation exact too
-  is tracked in [#967](https://github.com/rolter-ai/rolter/issues/967).
+One caveat while this rolls out: the spend _counter_ itself still accumulates
+in Redis in floating point, so a long-running counter can still drift very
+slightly from the exact sum of its requests. Making the accumulation exact too
+is tracked in [#967](https://github.com/rolter-ai/rolter/issues/967).
+
 </Note>
 
 ```toml rolter.toml
@@ -86,7 +87,8 @@ A rate is how many base units one unit of that currency is worth. The base itsel
 <Warning>
   A model priced in a currency with no rate is a **config error**, not a warning: the gateway refuses to start and the dashboard refuses the write. Charging face value would bill the wrong number and charging zero would bill nothing, so neither is offered as a fallback.
 
-  Rates are operator-supplied and static, which is deliberate — Rolter must run air-gapped, so it never reaches out to an FX feed.
+Rates are operator-supplied and static, which is deliberate — Rolter must run air-gapped, so it never reaches out to an FX feed.
+
 </Warning>
 
 ### What the dashboard offers
@@ -162,11 +164,11 @@ A budget can only block spend it can see. A model with no `[[model_prices]]` ent
 unpriced_policy = "block"   # ignore (default) | warn | block
 ```
 
-| policy | behaviour |
-| --- | --- |
-| `ignore` | Serve it and accrue nothing. Budgets silently do not cover it. |
-| `warn` | Serve it, but log the model once per hour so an unenforceable budget names itself. |
-| `block` | Refuse at admission with **HTTP 402** and error code `model_unpriced`, naming the model. The check runs before the upstream call, so no tokens are spent on traffic no budget would ever have counted. |
+| policy   | behaviour                                                                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ignore` | Serve it and accrue nothing. Budgets silently do not cover it.                                                                                                                                         |
+| `warn`   | Serve it, but log the model once per hour so an unenforceable budget names itself.                                                                                                                     |
+| `block`  | Refuse at admission with **HTTP 402** and error code `model_unpriced`, naming the model. The check runs before the upstream call, so no tokens are spent on traffic no budget would ever have counted. |
 
 ```json
 {
@@ -204,8 +206,8 @@ period = "monthly"
 unpriced_policy = "block"   # this team refuses what it cannot account for
 ```
 
-In the dashboard the same field is on **Limits → Add budget**, as *Unpriced
-traffic*. Leaving it at *Inherit deployment setting* is what every budget does
+In the dashboard the same field is on **Limits → Add budget**, as _Unpriced
+traffic_. Leaving it at _Inherit deployment setting_ is what every budget does
 by default, and is how every budget created before this field existed behaves.
 
 Resolution is **most-restrictive-wins** (`ignore` < `warn` < `block`) across

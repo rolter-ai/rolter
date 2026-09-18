@@ -1,0 +1,27 @@
+# ui/ has its own prettier config, ignore file and `format:check` step; the
+# root run must not reach into it or the two would disagree on every file
+ui/
+
+# vendored, generated or machine-owned trees
+node_modules
+docs/dev-docs/book/
+target/
+.worktrees/
+
+# release-plz regenerates these on every release; formatting them once only
+# means fighting the generator forever
+crates/*/CHANGELOG.md
+
+# a symlink to AGENTS.md: prettier would format the same bytes twice
+CLAUDE.md
+
+# helm chart templates are go templates that happen to end in .yaml, and the
+# yaml parser cannot read `{{- if ... }}` at all
+charts/rolter/templates/
+
+# workflow yaml is asserted as *text* by scripts/check-release-handoff.sh, whose
+# invariants are line-oriented greps ("needs: [a, b, c]" on one line). prettier
+# reflowing that list into a block flow sequence breaks the check without
+# changing a thing the runner sees, and actionlint plus zizmor already own these
+# files. see #1723
+.github/workflows/

@@ -25,28 +25,29 @@ Logging is disabled when `clickhouse_url` is unset — there's no placeholder or
 
 Every proxied request writes one row to the `request_logs` table with the following fields:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `ts` | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from |
-| `request_id` | String | Unique request identifier, echoed in the `x-request-id` response header |
-| `model` | String | The public model name the client requested |
-| `provider` | String | The upstream provider that served the request |
-| `target` | String | The specific upstream target within the provider |
-| `status` | UInt16 | HTTP status code returned to the client |
-| `prompt_tokens` | UInt32 | Prompt / input token count reported by the upstream |
-| `completion_tokens` | UInt32 | Completion / output token count reported by the upstream |
-| `cost_usd` | Float64 | Computed cost in USD (see [Cost tracking](#cost-tracking)) |
-| `unpriced` | UInt8 | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic)) |
-| `latency_ms` | UInt32 | End-to-end request latency in milliseconds |
-| `ttft_ms` | UInt32 | Time-to-first-token in milliseconds (streaming requests) |
-| `cached` | Bool | Whether the response was served from the upstream's prompt cache |
-| `error` | String | Error message if the request failed; empty on success |
-| `variant` | String | Name of the A/B variant that served the request (blank when not using variants) |
+| Field               | Type          | Description                                                                                                                |
+| ------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                   |
+| `request_id`        | String        | Unique request identifier, echoed in the `x-request-id` response header                                                    |
+| `model`             | String        | The public model name the client requested                                                                                 |
+| `provider`          | String        | The upstream provider that served the request                                                                              |
+| `target`            | String        | The specific upstream target within the provider                                                                           |
+| `status`            | UInt16        | HTTP status code returned to the client                                                                                    |
+| `prompt_tokens`     | UInt32        | Prompt / input token count reported by the upstream                                                                        |
+| `completion_tokens` | UInt32        | Completion / output token count reported by the upstream                                                                   |
+| `cost_usd`          | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                 |
+| `unpriced`          | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic)) |
+| `latency_ms`        | UInt32        | End-to-end request latency in milliseconds                                                                                 |
+| `ttft_ms`           | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                   |
+| `cached`            | Bool          | Whether the response was served from the upstream's prompt cache                                                           |
+| `error`             | String        | Error message if the request failed; empty on success                                                                      |
+| `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                            |
 
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
 
-  `ts` is stored as `DateTime64(3)`, so requests that genuinely begin inside the same millisecond still share a timestamp. `GET /api/v1/analytics/invocations` therefore orders by `ts desc, request_id desc`: a tied pair keeps a stable, repeatable order, which is what stops a row appearing on two pages or on none.
+`ts` is stored as `DateTime64(3)`, so requests that genuinely begin inside the same millisecond still share a timestamp. `GET /api/v1/analytics/invocations` therefore orders by `ts desc, request_id desc`: a tied pair keeps a stable, repeatable order, which is what stops a row appearing on two pages or on none.
+
 </Note>
 
 ## Configuration reference
@@ -72,24 +73,28 @@ queue_capacity = 10000
     **Type:** String · **Default:** unset (logging disabled)
 
     Base URL of your ClickHouse HTTP interface, e.g. `http://clickhouse:8123`. Rolter uses the HTTP interface — not the native TCP protocol — so no special driver is required. Logging is disabled entirely when this is unset.
+
   </Accordion>
 
   <Accordion title="batch_max">
     **Type:** Integer · **Default:** `1000`
 
     Rolter accumulates log rows in an in-memory batch and flushes to ClickHouse once the batch reaches this size. Larger values reduce ClickHouse insert pressure but increase memory usage and the number of rows lost if the gateway crashes before a flush.
+
   </Accordion>
 
   <Accordion title="flush_ms">
     **Type:** Integer · **Default:** `1000`
 
     Maximum time in milliseconds between flushes. Even if `batch_max` hasn't been reached, a partial batch is flushed at least this often. At the default value of `1000`, log rows appear in ClickHouse within about a second of the request completing.
+
   </Accordion>
 
   <Accordion title="queue_capacity">
     **Type:** Integer · **Default:** `10000`
 
     The bounded in-memory queue between the request path and the background log writer. When the queue is full (e.g. ClickHouse is slow or unreachable), incoming rows are dropped rather than blocking the request. Dropped rows are counted by the `rolter_log_dropped_total` Prometheus counter so you can alert on them.
+
   </Accordion>
 </AccordionGroup>
 
@@ -157,11 +162,11 @@ Unpriced traffic accrues **no spend**, so it cannot exceed a budget no matter ho
 unpriced_policy = "block"   # ignore (default) | warn | block
 ```
 
-| policy | behaviour |
-| --- | --- |
-| `ignore` | Serve it and accrue nothing. Budgets silently do not cover it. |
-| `warn` | Serve it, but log the model once per hour and treat any budget covering the window as an incomplete accounting. |
-| `block` | Refuse at admission with `402` (`model_unpriced`), naming the model. Nothing is forwarded, so no upstream tokens are spent on traffic that would never have been counted. |
+| policy   | behaviour                                                                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ignore` | Serve it and accrue nothing. Budgets silently do not cover it.                                                                                                            |
+| `warn`   | Serve it, but log the model once per hour and treat any budget covering the window as an incomplete accounting.                                                           |
+| `block`  | Refuse at admission with `402` (`model_unpriced`), naming the model. Nothing is forwarded, so no upstream tokens are spent on traffic that would never have been counted. |
 
 `ignore` is the default so that upgrading cannot start refusing traffic for a deployment that has not priced its models yet — which, on a fresh install, is all of them. Once your price catalogue is complete, `block` costs nothing and closes the gap; the [unpriced-request count](#unpriced-traffic) above is how you tell when you are there.
 

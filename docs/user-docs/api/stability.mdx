@@ -7,7 +7,7 @@ description: "GET /api/v1/stability lists the subsystems this build marks experi
 Rolter ships a wide surface, and not all of it is equally settled. A handful of
 subsystems are still moving: their shape may change, or they may be withdrawn,
 in a **minor** release. `GET /api/v1/stability` is the list, and it is the same
-list the dashboard reads to put an *Experimental* marker beside a nav entry.
+list the dashboard reads to put an _Experimental_ marker beside a nav entry.
 
 Everything not in that list is stable and carries whatever compatibility promise
 the release makes. **Absence is the signal** — `"stability": "stable"` is never
@@ -43,12 +43,12 @@ anywhere: it describes the build, not a tenant's data. An anonymous request is
 ]
 ```
 
-| Field | Meaning |
-|---|---|
-| `id` | stable subsystem identifier, `snake_case`. Never renamed once published, so it is safe to key off |
-| `stability` | `experimental` today. `stable` exists in the vocabulary but is never sent |
-| `note` | one sentence naming what specifically is unfinished, in English. Written to be shown verbatim; the dashboard shows its own translation for the same `id` instead, in whichever language it is set to |
-| `nav_keys` | the dashboard screens this subsystem owns, if any. Empty is normal — a gateway surface or a cross-cutting concept has no screen of its own |
+| Field       | Meaning                                                                                                                                                                                              |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`        | stable subsystem identifier, `snake_case`. Never renamed once published, so it is safe to key off                                                                                                    |
+| `stability` | `experimental` today. `stable` exists in the vocabulary but is never sent                                                                                                                            |
+| `note`      | one sentence naming what specifically is unfinished, in English. Written to be shown verbatim; the dashboard shows its own translation for the same `id` instead, in whichever language it is set to |
+| `nav_keys`  | the dashboard screens this subsystem owns, if any. Empty is normal — a gateway surface or a cross-cutting concept has no screen of its own                                                           |
 
 An empty array is a healthy answer: it means this build marks nothing
 experimental.

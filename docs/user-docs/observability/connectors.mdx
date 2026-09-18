@@ -18,12 +18,12 @@ Connectors live under **Observability → Connectors** in the dashboard, and on
 
 ## Kinds
 
-| Kind | Status |
-|---|---|
-| `otlp_http` | Supported |
-| Datadog, Prometheus remote-write, Langfuse | Planned |
+| Kind                                       | Status    |
+| ------------------------------------------ | --------- |
+| `otlp_http`                                | Supported |
+| Datadog, Prometheus remote-write, Langfuse | Planned   |
 
-OTLP is first deliberately. Every other sink here can be reached *through* an
+OTLP is first deliberately. Every other sink here can be reached _through_ an
 OpenTelemetry Collector, so shipping OTLP makes the rest a collector
 configuration change rather than more code in Rolter — that is also where
 per-tenant routing belongs (see ADR-0026).
@@ -66,15 +66,15 @@ deliver nothing.
 
 ## Fields
 
-| Field | Meaning |
-|---|---|
-| `name` | Unique label for the connector |
-| `kind` | `otlp_http` |
-| `endpoint` | The `http(s)` URL telemetry is POSTed to |
-| `enabled` | Off by default; nothing is sent until this is on |
-| `sampling_rate` | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything |
-| `auth_secret_ref` | A reference into your external secret manager |
-| `managed_auth_secret` | Write-only bearer token, sealed before storage |
+| Field                 | Meaning                                                  |
+| --------------------- | -------------------------------------------------------- |
+| `name`                | Unique label for the connector                           |
+| `kind`                | `otlp_http`                                              |
+| `endpoint`            | The `http(s)` URL telemetry is POSTed to                 |
+| `enabled`             | Off by default; nothing is sent until this is on         |
+| `sampling_rate`       | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything |
+| `auth_secret_ref`     | A reference into your external secret manager            |
+| `managed_auth_secret` | Write-only bearer token, sealed before storage           |
 
 ### Credentials are write-only
 

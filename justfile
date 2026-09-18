@@ -19,6 +19,14 @@ test:
 fmt:
     cargo fmt --all
 
+# format the markdown, mdx, json and yaml outside ui/ (ui/ has `bun run format`)
+fmt-docs:
+    bash scripts/format-docs.sh --write
+
+# check that formatting, the way the prek hook and CI do
+fmt-docs-check:
+    bash scripts/format-docs.sh --check
+
 # lint with warnings as errors
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

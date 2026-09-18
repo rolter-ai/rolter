@@ -59,6 +59,7 @@ you ship Rolter.
     # copy rolter.tar into the enclave, then
     docker load -i rolter.tar
     ```
+
   </Tab>
   <Tab title="PyPI wheel">
     Install through a Nexus/Artifactory PyPI proxy:
@@ -76,6 +77,7 @@ you ship Rolter.
     # or
     pip install --no-index ./rolter-<version>-py3-none-any.whl
     ```
+
   </Tab>
   <Tab title="crates.io">
     Point Cargo at a registry mirror via `.cargo/config.toml`:
@@ -96,6 +98,7 @@ you ship Rolter.
     # copy vendor/ into the enclave, add the printed snippet to .cargo/config.toml
     cargo build --workspace --offline
     ```
+
   </Tab>
   <Tab title="From source (cargo + bun)">
     The Rust build follows the crates.io tab. The UI needs an internal npm mirror
@@ -111,6 +114,7 @@ you ship Rolter.
     cd ui && bun install && bun run build
     cargo build --workspace --release --offline
     ```
+
   </Tab>
 </Tabs>
 

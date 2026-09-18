@@ -58,11 +58,11 @@ flowchart LR
 
 ## Comparison
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **1. Re-selection** | No new state | Tenant isolation, provider and credential cannot be guaranteed; unsafe |
-| **2. Process-local registry** | Adds no network hop and no mandatory infrastructure to the data plane; the synchronous write is available as soon as the response completes | Requires sticky routing between replicas; entries are lost on restart |
-| **3. Redis registry** | Works across replicas and survives a gateway restart | Redis becomes mandatory for lifecycle; adds latency, a failure mode and a write race after SSE completion |
+| Option                        | Pros                                                                                                                                        | Cons                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **1. Re-selection**           | No new state                                                                                                                                | Tenant isolation, provider and credential cannot be guaranteed; unsafe                                    |
+| **2. Process-local registry** | Adds no network hop and no mandatory infrastructure to the data plane; the synchronous write is available as soon as the response completes | Requires sticky routing between replicas; entries are lost on restart                                     |
+| **3. Redis registry**         | Works across replicas and survives a gateway restart                                                                                        | Redis becomes mandatory for lifecycle; adds latency, a failure mode and a write race after SSE completion |
 
 ## Decision
 

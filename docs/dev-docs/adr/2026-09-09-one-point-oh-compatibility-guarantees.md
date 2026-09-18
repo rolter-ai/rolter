@@ -13,20 +13,20 @@ be answered. Cutting 1.0 answers it by default — badly — unless it is chosen
 rolter has four externally visible surfaces plus one that is visible only
 because of how it is distributed, and they do not have the same answer:
 
-| Surface | Who consumes it | Can rolter control its shape? |
-|---|---|---|
-| `/v1/*` gateway | OpenAI and Anthropic SDKs, any HTTP client | No — it mirrors two vendors |
-| `/api/v1/*` control API | the dashboard, and SDKs after #851/#421/#422 | Yes, entirely |
-| `rolter.toml` and env vars | operators, Helm values, compose files | Yes |
-| the Postgres schema | rolter itself; operators' backups | Yes |
-| eight crates on crates.io | anyone who runs `cargo add` | Yes |
+| Surface                    | Who consumes it                              | Can rolter control its shape? |
+| -------------------------- | -------------------------------------------- | ----------------------------- |
+| `/v1/*` gateway            | OpenAI and Anthropic SDKs, any HTTP client   | No — it mirrors two vendors   |
+| `/api/v1/*` control API    | the dashboard, and SDKs after #851/#421/#422 | Yes, entirely                 |
+| `rolter.toml` and env vars | operators, Helm values, compose files        | Yes                           |
+| the Postgres schema        | rolter itself; operators' backups            | Yes                           |
+| eight crates on crates.io  | anyone who runs `cargo add`                  | Yes                           |
 
 Two things already exist and constrain the answer rather than being free
 choices:
 
 - [`docs/dev-docs/development/api-stability.md`](../development/api-stability.md) (#1217)
   already scoped `cargo-semver-checks` to four crates against the previous
-  release tag, and it ends by *planning* to make that job blocking at 1.0 and to
+  release tag, and it ends by _planning_ to make that job blocking at 1.0 and to
   revisit the guarded list. That plan is a promise made in advance of this
   decision, and this ADR is what supersedes it.
 - [Stability markers](../development/stability-markers.md) (#1385) ship a
@@ -143,7 +143,7 @@ Within the `v1` prefix, for the whole of 1.x:
   by these, and clients are expected to ignore unknown fields.
 - **Removing or incompatibly changing anything published in
   [the control-plane OpenAPI document](2026-09-08-control-plane-openapi-document.md)
-  requires a deprecation period of at least two minor releases *and* at least 90
+  requires a deprecation period of at least two minor releases _and_ at least 90
   days, whichever ends later.** The clock starts at the release that publishes
   the deprecation. The deprecation is announced in the release notes, marked
   `deprecated: true` on the operation or schema in the control-plane OpenAPI
@@ -153,11 +153,11 @@ Within the `v1` prefix, for the whole of 1.x:
 - **`/api/v2/` is reserved for a wholesale reshaping**, served alongside `v1`,
   not spent on a single removed field.
 
-Why two minors *and* 90 days rather than one number. A pure release count is
+Why two minors _and_ 90 days rather than one number. A pure release count is
 worthless at an unfixed cadence — two minors can be a fortnight. A pure time
 period can pass with no release at all, so nobody ever sees the notice. Both
 bounds together mean the deprecation appears in at least two sets of release
-notes *and* survives a quarterly upgrade cycle, so a team that upgrades once a
+notes _and_ survives a quarterly upgrade cycle, so a team that upgrades once a
 quarter meets the warning at least once before it bites. Longer windows (180
 days, a year) sound generous and in practice freeze the API, which pushes work
 toward a premature `v2` — the outcome the window exists to avoid.
@@ -218,7 +218,7 @@ After 1.0:
   deprecation window.** That is the definition. It requires a written migration
   note in the release, and it takes rolter to the next major.
 - **Do not use it for a removal that completed its window.** The announcement
-  and the window *are* the compatibility mechanism; that is the whole value of
+  and the window _are_ the compatibility mechanism; that is the whole value of
   promising a window instead of promising permanence. The removal ships as a
   normal `feat`/`refactor` whose release notes name what went.
 - **Do not use it for a Rust API change** in any crate. They are internal
@@ -231,7 +231,7 @@ After 1.0:
   [Stability markers](../development/stability-markers.md); this ADR neither
   restates that table nor adds a second exemption mechanism beside it.
 
-The rule of thumb the trailer encodes: if the change *could* have been
+The rule of thumb the trailer encodes: if the change _could_ have been
 deprecated first, it must be, and then it is not breaking. `BREAKING CHANGE:` is
 for the changes that could not.
 
@@ -247,12 +247,12 @@ for the changes that could not.
 - release-plz stops running `cargo-semver-checks` at all, so the product version
   is driven only by commit types, which is what ADR-0012 always intended.
 - `/api/v1/*` acquires real obligations that do not exist today: `deprecated:
-  true` in the OpenAPI document, `Deprecation`/`Sunset` headers, and a
+true` in the OpenAPI document, `Deprecation`/`Sunset` headers, and a
   deprecations section in the release notes. None of that is implemented yet;
   it is filed as follow-up work and is a prerequisite for the first deprecation,
   not for 1.0 itself.
 - The `experimental` marker becomes load-bearing. A subsystem left marked is
-  exempt from all of the above, so *removing* a marker is now the expensive act
+  exempt from all of the above, so _removing_ a marker is now the expensive act
   and belongs in the PR that closes the gap the note describes — exactly as
   [Stability markers](../development/stability-markers.md) already requires.
 - The honest cost of rule 2 is that an operator's `/v1/*` compatibility is

@@ -10,21 +10,21 @@ Rolter sits between your application and one or more AI backends. You teach it w
 
 A provider is an upstream AI service that Rolter can forward requests to. Each provider entry names the service, tells Rolter which wire protocol it speaks (`kind`), and supplies the base URL and API key.
 
-| Field | Required | Description |
-| --- | --- | --- |
-| `name` | ✅ | Unique identifier referenced by routes and targets |
-| `kind` | ✅ | Wire protocol: `openai`, `anthropic`, or `openai_compatible` |
-| `api_base` | ✅ | Base URL without a trailing slash, e.g. `https://api.openai.com` |
-| `api_key_env` | — | Name of an env var holding the upstream API key (preferred over `api_key`) |
-| `api_key` | — | Inline API key — avoid in committed config files |
-| `egress_proxy` | — | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
+| Field          | Required | Description                                                                       |
+| -------------- | -------- | --------------------------------------------------------------------------------- |
+| `name`         | ✅       | Unique identifier referenced by routes and targets                                |
+| `kind`         | ✅       | Wire protocol: `openai`, `anthropic`, or `openai_compatible`                      |
+| `api_base`     | ✅       | Base URL without a trailing slash, e.g. `https://api.openai.com`                  |
+| `api_key_env`  | —        | Name of an env var holding the upstream API key (preferred over `api_key`)        |
+| `api_key`      | —        | Inline API key — avoid in committed config files                                  |
+| `egress_proxy` | —        | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
 
 ### Provider kinds
 
-| Kind | Use case |
-| --- | --- |
-| `openai` | OpenAI's native Chat Completions API |
-| `anthropic` | Anthropic's native Messages API |
+| Kind                | Use case                                                       |
+| ------------------- | -------------------------------------------------------------- |
+| `openai`            | OpenAI's native Chat Completions API                           |
+| `anthropic`         | Anthropic's native Messages API                                |
 | `openai_compatible` | Any OpenAI-compatible endpoint: vLLM, TGI, Ollama, and similar |
 
 <Note>
@@ -65,14 +65,14 @@ egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
 
 A route maps a **public model name** — what your application actually sends in the `"model"` field — to one or more upstream targets plus a load-balancing strategy. When a request arrives for `"gpt-4o"`, Rolter looks up the matching route and forwards it to the appropriate provider.
 
-| Field | Description |
-| --- | --- |
-| `model` | Public model name clients request (must be unique across routes) |
-| `strategy` | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing)) |
-| `[[routes.targets]]` | One or more upstream targets to balance across |
-| `targets[].provider` | Name of a declared provider |
-| `targets[].model` | Upstream model identifier; omit to forward the public name as-is |
-| `targets[].weight` | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`) |
+| Field                | Description                                                                    |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `model`              | Public model name clients request (must be unique across routes)               |
+| `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))       |
+| `[[routes.targets]]` | One or more upstream targets to balance across                                 |
+| `targets[].provider` | Name of a declared provider                                                    |
+| `targets[].model`    | Upstream model identifier; omit to forward the public name as-is               |
+| `targets[].weight`   | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`) |
 
 ### Basic route example
 
@@ -139,15 +139,15 @@ extra upstream headers, and catalog visibility. In the dashboard these are the
 "Limits & network", "Custom request headers" and "Access & permissions"
 sections of a model's sheet, and saving the sheet writes them back to the route.
 
-| Field | Notes |
-| --- | --- |
-| `base_url` | Absolute `http(s)` URL; overrides the provider endpoint for this model only |
-| `limits.rpm` / `limits.tpm` / `limits.concurrency` | Per-model ceilings; each is `1`–`10000000`. Leave blank to inherit the gateway and provider settings |
-| `limits.timeout_secs` / `limits.retries` | Whole seconds and whole attempts. The dashboard's timeout field is in milliseconds and rounds to the nearest second, never below one |
-| `limits.context_window` / `limits.output_tokens` | Advertised model geometry, same `1`–`10000000` range |
-| `headers` / `locked_headers` | Extra request headers, and which of them a caller may not replace. Credentials belong in the provider, not here |
-| `visibility.minimum_role` | Lowest role allowed to call the model |
-| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name |
+| Field                                                                  | Notes                                                                                                                                |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `base_url`                                                             | Absolute `http(s)` URL; overrides the provider endpoint for this model only                                                          |
+| `limits.rpm` / `limits.tpm` / `limits.concurrency`                     | Per-model ceilings; each is `1`–`10000000`. Leave blank to inherit the gateway and provider settings                                 |
+| `limits.timeout_secs` / `limits.retries`                               | Whole seconds and whole attempts. The dashboard's timeout field is in milliseconds and rounds to the nearest second, never below one |
+| `limits.context_window` / `limits.output_tokens`                       | Advertised model geometry, same `1`–`10000000` range                                                                                 |
+| `headers` / `locked_headers`                                           | Extra request headers, and which of them a caller may not replace. Credentials belong in the provider, not here                      |
+| `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                |
+| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                     |
 
 The control plane validates the whole block before storing it and refuses the
 save with the offending field named, so an out-of-range limit or a malformed

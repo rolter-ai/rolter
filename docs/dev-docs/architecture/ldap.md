@@ -11,7 +11,7 @@ two-phase bind:
 
 1. **Find.** Bind as a read-only service account and search `base_dn` for the
    entry matching `user_filter`, with `{login}` substituted.
-2. **Verify.** Bind a second time *as the entry that was found*, using the
+2. **Verify.** Bind a second time _as the entry that was found_, using the
    password the user submitted. That bind is the authentication.
 
 rolter never reads, compares or stores a password hash from the directory. It
@@ -40,19 +40,19 @@ copies a group from their directory's UI should not silently get no access.
 
 Every authentication failure returns the same generic rejection:
 
-| Situation | Result |
-|---|---|
-| No such user | `NotVerified` |
-| Wrong password | `NotVerified` |
-| User outside `base_dn` | `NotVerified` |
-| Authenticated, but in no mapped group | `NotVerified` |
-| Directory unreachable or misbehaving | `Provider("directory unavailable")` |
+| Situation                             | Result                              |
+| ------------------------------------- | ----------------------------------- |
+| No such user                          | `NotVerified`                       |
+| Wrong password                        | `NotVerified`                       |
+| User outside `base_dn`                | `NotVerified`                       |
+| Authenticated, but in no mapped group | `NotVerified`                       |
+| Directory unreachable or misbehaving  | `Provider("directory unavailable")` |
 
 The first four are deliberately indistinguishable. A login form that
 distinguishes "no such user" from "wrong password" is a user-enumeration oracle
 against the corporate directory, which is a worse leak than the login itself.
 
-A directory being *down* is distinguishable, because that is an operational
+A directory being _down_ is distinguishable, because that is an operational
 fact the operator needs and reveals nothing about any account. Distinguished
 names, filters, bind credentials and raw LDAP result codes are logged for the
 operator and never returned.

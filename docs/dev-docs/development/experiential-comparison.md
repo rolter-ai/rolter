@@ -1,7 +1,7 @@
 # Competitive study: an open-source gateway worth learning from
 
 A read-only study of [`experientiallabs/experiential`](https://github.com/experientiallabs/experiential)
-(Apache-2.0), carried out to find gaps in rolter. It is a *comparison*, not a plan
+(Apache-2.0), carried out to find gaps in rolter. It is a _comparison_, not a plan
 of record: the ideas it recommends are tracked as GitHub issues, and the ones it
 rejects are recorded here so they do not get re-proposed every quarter.
 
@@ -44,26 +44,26 @@ paste. rolter's adoption cost is reading a quickstart.
 
 ## Feature-by-feature
 
-| Area | Them | rolter | Verdict |
-|---|---|---|---|
-| OpenAI surface | Chat Completions, Responses (+WebSocket), Embeddings, Images, decisions | Chat Completions, Responses, Embeddings, Messages, audio, realtime, MCP | rolter ahead on breadth; they have the Codex WebSocket transport and `count_tokens` (tracked in #1016) |
-| Anthropic surface | Messages + `count_tokens` (estimated, with a disclosure header) | Messages | Gap: `count_tokens` (already in #1016) |
-| Provider kinds | OpenAI, Anthropic, Gemini, Azure, Bedrock, Vertex, Fireworks, OpenRouter, openai-compatible | Substantially more, plus self-hosted engines, TEI, llama.cpp, Ollama | rolter ahead |
-| BYOK | Keys stored in a user-data file outside the repo; catalog stays secret-free | KEK-sealed in Postgres, rotation and a restore audit, env-var indirection | rolter well ahead |
-| Model catalog | Secret-free `models.toml`; every alias declares capabilities and prices explicitly | Dashboard catalog, pricing overrides, model defaults | Comparable; price *import* still manual in rolter (#966) |
-| Routing | Ordered exact-model pools with per-rung conditional failover by failure class | Strategies (weighted, cache-aware, adaptive, complexity, disaggregated), circuit breakers, retries, cooldowns | rolter far ahead on live routing; **behind on conditional failover** |
-| Cost intelligence | Router fitted offline from real traffic, with held-out evaluation and a report | Adaptive blend uses live cost as a scoring signal; #1468 plans an evaluation harness | Gap: no offline "what would this have cost" analysis |
-| Model recommendation | Yes — the fitted router *is* the recommendation | No | Gap |
-| Trace ingest | Nine declared sources: OTLP, OTel GenAI, PostHog, Braintrust, Langfuse, LangSmith, Mastra, Phoenix, chat-json | None — rolter only sees traffic it served | Gap |
-| Observability | Content-free SQLite accounting, loopback usage view, OTLP in | ClickHouse request logs, MCP logs, cost attribution, alerting, tenant telemetry destinations, dashboards | rolter far ahead |
-| Guardrails | Identity-scoped, default-off, input+output chains, pluggable classifiers | Guardrail rules and guardrail providers as first-class resources | Comparable; rolter has the richer admin surface |
-| Budgets | Monthly integer nano-USD enforcement; a *cost preflight* that refuses an expensive operation before it dials a provider | Budgets, limits, cost attribution; reservations planned in #1464 | Comparable, converging |
-| AuthZ | Identities, grants, virtual keys | Full RBAC matrix, custom roles, access profiles, SSO/OIDC, SCIM, LDAP, TOTP, audit log | rolter far ahead |
-| Dashboard | Hosted platform only; local is a terminal UI | 60+ screens, i18n, Storybook, capability gating, loading/empty/error contracts | rolter far ahead |
-| Onboarding | Interactive first-run wizard, then agent-pasteable prompts and `llms.txt` | `easy-up`, `fake-llm`, a written quickstart; no wizard, no `llms.txt` | **Behind** |
-| Deployment | pip install, loopback, SQLite, or their hosted platform | Docker, Helm, Kubernetes, air-gapped, cluster mode, backup/restore/KEK rotation | rolter far ahead |
-| Docs | ~17 dense reference pages, very precise, contract-flavoured; no tutorials | mdBook developer docs + Mintlify user docs, 32 ADRs, nav gates in CI | rolter ahead on breadth and navigation; their per-page precision is worth imitating |
-| Marketplace | Hosted model marketplace with credits and instant signup | None, and none wanted | Out of scope by design |
+| Area                 | Them                                                                                                                    | rolter                                                                                                        | Verdict                                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| OpenAI surface       | Chat Completions, Responses (+WebSocket), Embeddings, Images, decisions                                                 | Chat Completions, Responses, Embeddings, Messages, audio, realtime, MCP                                       | rolter ahead on breadth; they have the Codex WebSocket transport and `count_tokens` (tracked in #1016) |
+| Anthropic surface    | Messages + `count_tokens` (estimated, with a disclosure header)                                                         | Messages                                                                                                      | Gap: `count_tokens` (already in #1016)                                                                 |
+| Provider kinds       | OpenAI, Anthropic, Gemini, Azure, Bedrock, Vertex, Fireworks, OpenRouter, openai-compatible                             | Substantially more, plus self-hosted engines, TEI, llama.cpp, Ollama                                          | rolter ahead                                                                                           |
+| BYOK                 | Keys stored in a user-data file outside the repo; catalog stays secret-free                                             | KEK-sealed in Postgres, rotation and a restore audit, env-var indirection                                     | rolter well ahead                                                                                      |
+| Model catalog        | Secret-free `models.toml`; every alias declares capabilities and prices explicitly                                      | Dashboard catalog, pricing overrides, model defaults                                                          | Comparable; price _import_ still manual in rolter (#966)                                               |
+| Routing              | Ordered exact-model pools with per-rung conditional failover by failure class                                           | Strategies (weighted, cache-aware, adaptive, complexity, disaggregated), circuit breakers, retries, cooldowns | rolter far ahead on live routing; **behind on conditional failover**                                   |
+| Cost intelligence    | Router fitted offline from real traffic, with held-out evaluation and a report                                          | Adaptive blend uses live cost as a scoring signal; #1468 plans an evaluation harness                          | Gap: no offline "what would this have cost" analysis                                                   |
+| Model recommendation | Yes — the fitted router _is_ the recommendation                                                                         | No                                                                                                            | Gap                                                                                                    |
+| Trace ingest         | Nine declared sources: OTLP, OTel GenAI, PostHog, Braintrust, Langfuse, LangSmith, Mastra, Phoenix, chat-json           | None — rolter only sees traffic it served                                                                     | Gap                                                                                                    |
+| Observability        | Content-free SQLite accounting, loopback usage view, OTLP in                                                            | ClickHouse request logs, MCP logs, cost attribution, alerting, tenant telemetry destinations, dashboards      | rolter far ahead                                                                                       |
+| Guardrails           | Identity-scoped, default-off, input+output chains, pluggable classifiers                                                | Guardrail rules and guardrail providers as first-class resources                                              | Comparable; rolter has the richer admin surface                                                        |
+| Budgets              | Monthly integer nano-USD enforcement; a _cost preflight_ that refuses an expensive operation before it dials a provider | Budgets, limits, cost attribution; reservations planned in #1464                                              | Comparable, converging                                                                                 |
+| AuthZ                | Identities, grants, virtual keys                                                                                        | Full RBAC matrix, custom roles, access profiles, SSO/OIDC, SCIM, LDAP, TOTP, audit log                        | rolter far ahead                                                                                       |
+| Dashboard            | Hosted platform only; local is a terminal UI                                                                            | 60+ screens, i18n, Storybook, capability gating, loading/empty/error contracts                                | rolter far ahead                                                                                       |
+| Onboarding           | Interactive first-run wizard, then agent-pasteable prompts and `llms.txt`                                               | `easy-up`, `fake-llm`, a written quickstart; no wizard, no `llms.txt`                                         | **Behind**                                                                                             |
+| Deployment           | pip install, loopback, SQLite, or their hosted platform                                                                 | Docker, Helm, Kubernetes, air-gapped, cluster mode, backup/restore/KEK rotation                               | rolter far ahead                                                                                       |
+| Docs                 | ~17 dense reference pages, very precise, contract-flavoured; no tutorials                                               | mdBook developer docs + Mintlify user docs, 32 ADRs, nav gates in CI                                          | rolter ahead on breadth and navigation; their per-page precision is worth imitating                    |
+| Marketplace          | Hosted model marketplace with credits and instant signup                                                                | None, and none wanted                                                                                         | Out of scope by design                                                                                 |
 
 ### Where rolter is plainly ahead
 
@@ -83,9 +83,9 @@ against effort.
 
 1. **A savings advisor over rolter's own request logs** (#1581). rolter already stores
    every invocation with model, tokens, latency and price. It has never turned
-   that into a sentence an operator can act on: *"38% of traffic on this route
+   that into a sentence an operator can act on: _"38% of traffic on this route
    was short, tool-free and single-turn; the same requests on the cheaper model
-   in the pool project to $X/month."* This is their central claim, achievable
+   in the pool project to $X/month."_ This is their central claim, achievable
    in rolter without any of their machinery, because rolter's logs are richer
    than the traces they have to import. Highest value, moderate effort.
 2. **`llms.txt` plus agent-pasteable setup prompts** (#1582). Make a coding agent able
@@ -97,8 +97,8 @@ against effort.
    single request has gone through rolter — which is exactly when a prospect is
    deciding. Depends on (1) to be worth anything.
 4. **Per-target conditional failover** (#1584). rolter's fallback order is positional and
-   its retry class is global. Letting a target declare *which failure classes it
-   may take over* (throttling only; refusals only; a named refusal category only)
+   its retry class is global. Letting a target declare _which failure classes it
+   may take over_ (throttling only; refusals only; a named refusal category only)
    turns a fallback pool into a policy, and is the one routing idea they have
    that rolter does not.
 5. **A first-run setup wizard in the dashboard** (#1585). Connect a provider, create a
