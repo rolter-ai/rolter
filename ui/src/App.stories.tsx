@@ -26,6 +26,9 @@ const OPEN_NAV = en.shell.openNav;
 const nav = en.nav as Record<string, string>;
 const screens = en.screens as Record<string, { title: string }>;
 const shortcuts = en.shell.shortcuts;
+// the rail footer's entry names itself with the chord it stands in for, so the
+// story interpolates the catalog rather than writing "Keyboard shortcuts (?)"
+const SHORTCUTS_FOOTER = shortcuts.open.replace("{{chord}}", chordText(shortcutChord("help")));
 
 // this is the one story file that mounts the whole page, so it is where the
 // three page-level axe rules the runner defaults off are actually gated —
@@ -405,5 +408,71 @@ export const SkipLink: Story = {
     // focus moved without the fragment landing: letting the default action
     // through would rewrite the url out from under the router
     await expect(window.location.hash).toBe("");
+  },
+};
+
+/**
+ * The mouse path to the same sheet (#1697): `?` only helps the reader who
+ * already knows there is something to press, so the rail footer carries an
+ * entry beside the palette's magnifier, named with the chord it stands in for.
+ */
+export const ShortcutReferenceFromRail: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const body = within(document.body);
+    const trigger = within(rail).getByRole("button", { name: SHORTCUTS_FOOTER });
+
+    // clicking it opens the reference `?` opens, listing the same table
+    await userEvent.click(trigger);
+    const dialog = await body.findByRole("dialog", { name: shortcuts.title });
+    const items = shortcuts.items as Record<string, string>;
+    for (const shortcut of SHORTCUTS) {
+      await expect(within(dialog).getByText(items[shortcut.id]!)).toBeVisible();
+    }
+
+    // and closing it hands focus back to the entry that opened it, rather than
+    // dropping the mouse user's caret at the top of the document
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+/**
+ * Folded to the icon strip the footer keeps both entries, so the width where
+ * the labels are gone is the one where an icon-only affordance has to carry
+ * its own name (#1697).
+ */
+export const ShortcutReferenceFromIconRail: Story = {
+  ...atTablet,
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const body = within(document.body);
+
+    await userEvent.click(within(rail).getByRole("button", { name: SHORTCUTS_FOOTER }));
+    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * And below `md`, where the rail is a drawer, the entry rides along with it —
+ * the width with no keyboard at all is the one that needs the mouse path most.
+ */
+export const ShortcutReferenceFromDrawer: Story = {
+  ...atMobile,
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+
+    await userEvent.click(await canvas.findByRole("button", { name: OPEN_NAV }));
+    const drawer = await canvas.findByRole("dialog", { name: NAV_LABEL });
+
+    await userEvent.click(await within(drawer).findByRole("button", { name: SHORTCUTS_FOOTER }));
+    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+    await expectNoHorizontalOverflow();
   },
 };

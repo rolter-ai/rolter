@@ -151,6 +151,15 @@ The hints beside the controls read their chord from the table too:
 `shortcutChord("navSearch")` in the rail's search box, where it gives way to the
 clear button once there is a query.
 
+A chord is not a discovery path on its own, so the reference has a mouse path
+as well (#1697): a `footerLinks` entry in `ui/src/App.tsx`, beside the
+magnifier that opens the palette, opening the same `ShortcutHelp`. Its title is
+`shell.shortcuts.open` interpolated with `chordText(shortcutChord("help"))`, so
+the entry names the key it stands in for and cannot drift from the table
+either. The footer rides the rail at every width, which is why
+`ShortcutReferenceFromRail`, `…FromIconRail` and `…FromDrawer` in
+`App.stories.tsx` cover all three.
+
 The skip link is an anchor whose `href` is the `<main>` id, but it calls
 `preventDefault` and focuses the element itself: letting the fragment land
 would rewrite the router's URL, and a fragment target only takes focus in some
