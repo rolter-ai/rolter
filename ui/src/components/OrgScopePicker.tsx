@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
+import { Pill } from "@/components/screen";
 import { Combobox } from "@/components/ui/combobox";
 import {
   fetchOrgProjects,
@@ -54,6 +56,21 @@ export function scopeTargetIds(target: ScopeTarget): {
   };
 }
 
+/**
+ * What a stored `team_id`/`project_id` turned out to name.
+ *
+ * `nameFor` collapses the last two cases into a string, which is fine for a
+ * control that renders its own `LoadError` underneath and useless for a
+ * read-only chip: a scope the account cannot resolve comes back as a uuid and
+ * is drawn as if that uuid were the scope's name (#1671).
+ */
+export type ResolvedScope =
+  /** neither id is set: the scope is the org itself */
+  | { kind: "org" }
+  | { kind: "named"; id: string; name: string }
+  /** the row is gone, invisible to this account, or its list failed to load */
+  | { kind: "unresolved"; id: string };
+
 export interface TeamProjects {
   team: TeamRow;
   projects: OrgProjectRow[];
@@ -79,6 +96,15 @@ export interface OrgScope {
     team_id?: string | null;
     project_id?: string | null;
   }) => string | undefined;
+  /**
+   * The same lookup, keeping "no scope stored" apart from "could not resolve
+   * it" — which is what a read-only surface needs to say so rather than print
+   * the id as a name (#1671).
+   */
+  resolve: (scope: {
+    team_id?: string | null;
+    project_id?: string | null;
+  }) => ResolvedScope;
 }
 
 // this key is `useScope()`'s as well, and a screen that mounts both gates its
@@ -132,20 +158,26 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
     projects: projectRows.filter((project) => project.team_id === team.id),
   }));
 
+  const resolve = (scope: {
+    team_id?: string | null;
+    project_id?: string | null;
+  }): ResolvedScope => {
+    // the most specific id wins, exactly as the mapping endpoints resolve it
+    const id = scope.project_id || scope.team_id;
+    if (!id) return { kind: "org" };
+    const name = scope.project_id
+      ? projectRows.find((p) => p.id === scope.project_id)?.name
+      : teamRows.find((team) => team.id === scope.team_id)?.name;
+    return name ? { kind: "named", id, name } : { kind: "unresolved", id };
+  };
+
   const nameFor = (scope: {
     team_id?: string | null;
     project_id?: string | null;
   }): string | undefined => {
-    if (scope.project_id) {
-      const project = projectRows.find((p) => p.id === scope.project_id);
-      return project?.name ?? scope.project_id;
-    }
-    if (scope.team_id) {
-      return (
-        teamRows.find((team) => team.id === scope.team_id)?.name ?? scope.team_id
-      );
-    }
-    return undefined;
+    const resolved = resolve(scope);
+    if (resolved.kind === "org") return undefined;
+    return resolved.kind === "named" ? resolved.name : resolved.id;
   };
 
   return {
@@ -158,7 +190,51 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
       projects.refetch();
     },
     nameFor,
+    resolve,
   };
+}
+
+/**
+ * The chip a read-only surface draws a stored scope as.
+ *
+ * Three surfaces read a mapping's or a profile's scope without a picker under
+ * them, so the picker's `LoadError` and its retry are nowhere in sight. Drawing
+ * an unresolved scope as its raw uuid there tells the operator nothing failed
+ * and reads exactly like a scope that happens to be named that, so the
+ * unresolved case gets its own copy and the warning tone, with the id kept in
+ * the tooltip for a support conversation to quote (#1671).
+ */
+export function OrgScopePill({
+  scope,
+  value,
+  className,
+}: {
+  scope: OrgScope;
+  value: { team_id?: string | null; project_id?: string | null };
+  className?: string;
+}) {
+  const { t } = useTranslation();
+  const resolved = scope.resolve(value);
+
+  if (resolved.kind === "unresolved") {
+    return (
+      <Pill
+        color="var(--status-warning-text)"
+        tint="var(--surface-card)"
+        className={className}
+        title={t("scope.picker.unresolvedTitle", { id: resolved.id })}
+      >
+        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+        {t("scope.picker.unresolved")}
+      </Pill>
+    );
+  }
+
+  return (
+    <Pill color="var(--text-secondary)" tint="var(--surface-card)" className={className}>
+      {resolved.kind === "named" ? resolved.name : t("scope.picker.org")}
+    </Pill>
+  );
 }
 
 /**

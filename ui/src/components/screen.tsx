@@ -59,16 +59,20 @@ export function Pill({
   tint,
   border,
   className,
+  title,
   children,
 }: {
   color: string;
   tint?: string;
   border?: string;
   className?: string;
+  /** hover text, for a pill whose label is shorter than what it stands for */
+  title?: string;
   children: React.ReactNode;
 }) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.03em]",
         className,
