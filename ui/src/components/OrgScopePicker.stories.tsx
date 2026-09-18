@@ -2,7 +2,12 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import { OrgScopePicker, type ScopeTarget } from "./OrgScopePicker";
+import {
+  OrgScopePicker,
+  OrgScopePill,
+  useOrgScope,
+  type ScopeTarget,
+} from "./OrgScopePicker";
 import { Harness, ORG, json, openOptions, type FetchStub } from "@/pages/story-harness";
 
 const NOW = "2026-01-01T00:00:00Z";
@@ -62,6 +67,16 @@ function Picker({ fetchStub }: { fetchStub: FetchStub }) {
       <p data-testid="picked">{value}</p>
     </Harness>
   );
+}
+
+// the read-only chip the mapping and profile rows draw a stored scope as. it
+// reads the same two queries the picker does, so it is mounted the same way
+function Chip({
+  value,
+}: {
+  value: { team_id?: string | null; project_id?: string | null };
+}) {
+  return <OrgScopePill scope={useOrgScope(ORG.id)} value={value} />;
 }
 
 // the wrapper is what the stories mount: `OrgScopePicker` is controlled, and a
@@ -157,5 +172,53 @@ export const ProjectsFailed: Story = {
     // the teams still loaded, so the picker keeps offering them
     const options = within(await openOptions(canvas.getByLabelText("Where the role applies")));
     await expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument();
+  },
+};
+
+/** A resolvable scope is named, the way the row that stores it means it. */
+export const ScopeChipNamesTheScope: Story = {
+  args: { fetchStub: chain() },
+  render: ({ fetchStub }) => (
+    <Harness fetchStub={fetchStub}>
+      <Chip value={{ team_id: "team-2" }} />
+      <Chip value={{ project_id: "project-3" }} />
+      <Chip value={{}} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Payments")).toBeVisible());
+    await expect(canvas.getByText("prod")).toBeVisible();
+    // neither id is stored: the scope is the org itself, not an unresolved one
+    await expect(canvas.getByText("Whole organization")).toBeVisible();
+  },
+};
+
+/**
+ * A scope that cannot be resolved says so instead of printing its uuid (#1671).
+ *
+ * The chip has no `LoadError` and no retry beside it — the surfaces that draw
+ * it are read-only — so a raw id there reads exactly like a team that happens
+ * to be called that, and tells the operator nothing failed.
+ */
+export const ScopeChipCannotResolve: Story = {
+  args: {
+    fetchStub: chain({
+      teams: () => json({ error: { message: "boom" } }, 500),
+      projects: () => json({ error: { message: "boom" } }, 500),
+    }),
+  },
+  render: ({ fetchStub }) => (
+    <Harness fetchStub={fetchStub}>
+      <Chip value={{ team_id: "team-2" }} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Unresolved scope")).toBeVisible());
+    await expect(canvas.queryByText("team-2")).toBeNull();
+    // the id stays quotable in a support conversation
+    const chip = canvas.getByTitle(/could not be matched/);
+    await expect(chip.getAttribute("title")).toContain("team-2");
   },
 };

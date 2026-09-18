@@ -318,6 +318,50 @@ export const GroupMappingsListed: Story = {
   },
 };
 
+/**
+ * A scope whose lists failed to load says so, rather than printing the uuid it
+ * could not name (#1671).
+ *
+ * The mapping row is read-only: there is no `LoadError` and no retry beside it,
+ * so a chip reading `0f3a1c8e-…` is indistinguishable from a team that happens
+ * to be called that, and the card quietly claims to answer "what does this
+ * grant" while the answer is an id.
+ */
+export const GroupMappingScopeUnresolved: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json(MAPPINGS),
+        {
+          teams: async () => json({ error: { message: "teams unavailable" } }, 500),
+          orgProjects: async () =>
+            json({ error: { message: "projects unavailable" } }, 500),
+        },
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = await waitFor(() => {
+      const li = canvas.getByText("sre-oncall").closest("li");
+      expect(li).not.toBeNull();
+      return li as HTMLElement;
+    });
+    // the chip names the failure instead of the id
+    await waitFor(() => expect(row).toHaveTextContent("Unresolved scope"));
+    await expect(row).not.toHaveTextContent("team-1");
+    // and the id is still quotable, in the tooltip
+    const chip = within(row).getByTitle(/could not be matched/);
+    await expect(chip).toHaveTextContent("Unresolved scope");
+    await expect(chip.getAttribute("title")).toContain("team-1");
+    // an org-wide mapping is untouched: it never had a scope to resolve
+    await expect(canvas.getByText("platform-engineering").closest("li")).toHaveTextContent(
+      "Whole organization",
+    );
+  },
+};
+
 // an org with tokens but no mappings is the trap the screen has to name: the
 // IdP syncs happily and everyone it provisions can still do nothing
 export const GroupMappingsEmpty: Story = {

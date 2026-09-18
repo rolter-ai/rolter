@@ -10,13 +10,13 @@ import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
 import {
   OrgScopePicker,
+  OrgScopePill,
   scopeTargetIds,
   useOrgScope,
-  type OrgScope,
   type ScopeTarget,
 } from "@/components/OrgScopePicker";
 import { CopyButton } from "@/components/CopyButton";
-import { PageBody, Pill, RowIconButton } from "@/components/screen";
+import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,18 +76,6 @@ function stamp(fmt: Formatters, iso: string | null): string {
 // newer control plane's role is shown rather than rendered as a missing key
 function roleLabel(t: TFunction, role: string): string {
   return t(`shell.roles.${role}`, { defaultValue: role });
-}
-
-// the scope a mapping grants at, as the reader knows it. the most specific
-// non-null id wins, exactly as `scim_groups.rs` resolves it, and the name is
-// looked up org-wide — a mapping onto a project in another team is named rather
-// than shown as a raw id (#1249)
-function scopeLabel(
-  t: TFunction,
-  scope: OrgScope,
-  mapping: ScimGroupMappingRow,
-): string {
-  return scope.nameFor(mapping) ?? t("scope.picker.org");
 }
 
 /**
@@ -207,9 +195,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                   {mapping.group_name}
                 </span>
-                <Pill color="var(--text-secondary)" tint="var(--surface-card)">
-                  {scopeLabel(t, scope, mapping)}
-                </Pill>
+                <OrgScopePill scope={scope} value={mapping} />
                 <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
                 <RowIconButton
                   danger
