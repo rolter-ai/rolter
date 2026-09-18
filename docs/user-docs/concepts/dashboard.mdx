@@ -118,6 +118,19 @@ Anywhere the dashboard shows a payload — a request or response body in LLM Log
 
 A very large payload is shown without colour rather than kept waiting for it.
 
+## The Playground's key
+
+The Playground authenticates to the gateway like any other client, with a virtual key — but you do not paste one. Opening the screen mints a **session key** for the project you have selected:
+
+- It is scoped by the control plane to the models that project routes, so it can never reach a model you could not already reach.
+- It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it.
+- It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
+- It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled *Playground*, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
+
+A project with no routes cannot mint one: there would be nothing for the key to address, so the screen says so instead. Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
+
+To test one particular key on purpose — a customer's, or one you are about to rotate — open **Use a specific key** and paste it. A pasted key is used exactly as given, with no expiry of rolter's choosing, until you replace it or renew the session key.
+
 ## Markdown in the Playground
 
 Model replies render as markdown: headings, lists, tables, inline code, and fenced code blocks highlighted per their language tag with a copy button of their own. Use the **¶** button in the column header to switch to raw output when the question is exactly what the model emitted, including stray delimiters and whitespace.

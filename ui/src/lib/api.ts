@@ -1441,6 +1441,10 @@ export interface VirtualKeyRow {
   business_unit_id: string | null;
   /// customer this key's spend rolls up to; null when unattributed
   customer_id: string | null;
+  /// what minted the key, when it was not a person filling in the mint form:
+  /// `playground` for one the Playground issued itself. null for every key an
+  /// operator created on purpose
+  purpose?: string | null;
   created_at: string;
 }
 
@@ -2517,6 +2521,9 @@ export interface OwnedKeyRow {
   models: string[];
   disabled: boolean;
   expires_at?: string | null;
+  /// see `VirtualKeyRow.purpose` — `playground` marks a self-expiring key the
+  /// Playground minted for one sitting
+  purpose?: string | null;
   created_at: string;
 }
 
@@ -2551,6 +2558,26 @@ export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
 
 export function mintMyKey(projectId: string, input: MintKeyInput): Promise<MintedKey> {
   return sendJson<MintedKey>("POST", `/api/v1/me/projects/${projectId}/virtual-keys`, input);
+}
+
+/**
+ * The `purpose` the control plane stamps on a key the Playground minted, so a
+ * row can say what it is instead of leaving a reader to infer it from a short
+ * expiry (`PLAYGROUND_PURPOSE` in crates/rolter-control/src/me.rs).
+ */
+export const PLAYGROUND_PURPOSE = "playground";
+
+/**
+ * Mint the Playground's own key for `projectId` (#944).
+ *
+ * Takes no input on purpose: the server scopes the key to the routes the
+ * project actually has and fixes its lifetime at half an hour, so the browser
+ * cannot ask for a wider or longer-lived key than the one it is handed. A
+ * project with no routes answers 400 rather than minting a key that reaches
+ * every model.
+ */
+export function mintPlaygroundKey(projectId: string): Promise<MintedKey> {
+  return sendJson<MintedKey>("POST", `/api/v1/me/projects/${projectId}/playground-key`);
 }
 
 export function rotateMyKey(id: string): Promise<MintedKey> {

@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tag } from "@/components/ui/tag";
 import {
+  PLAYGROUND_PURPOSE,
   deleteMyKey,
   fetchMyKeys,
   fetchProviders,
@@ -295,6 +296,13 @@ function KeyCard({
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-2">
           <span className="truncate">{keyLabel}</span>
+          {/* see Keys.tsx: a Playground-minted key says so, because it is the
+              one kind of key here nobody created on purpose (#944) */}
+          {keyRow.purpose === PLAYGROUND_PURPOSE && (
+            <Badge tone="info" title={t("account.keys.card.playgroundHint")}>
+              {t("account.keys.card.playground")}
+            </Badge>
+          )}
           <Badge tone={keyRow.disabled ? "danger" : "success"}>
             {keyRow.disabled ? t("account.keys.card.disabled") : t("account.keys.card.active")}
           </Badge>

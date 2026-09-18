@@ -155,6 +155,23 @@ const account = (
 
 const loaded = account(() => json(KEYS));
 
+/** the key the Playground minted for itself, which nobody here created (#944) */
+const PLAYGROUND_KEY: OwnedKeyRow = {
+  id: "vk-3",
+  project_id: "project-1",
+  project_name: "Gateway",
+  org_name: "Rolter",
+  key_prefix: "sk-rolter-play",
+  name: "Playground",
+  models: ["gpt-4o"],
+  disabled: false,
+  expires_at: "2026-07-01T00:30:00Z",
+  purpose: "playground",
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+const withPlaygroundKey = account(() => json([...KEYS, PLAYGROUND_KEY]));
+
 // rotation is destructive — the old secret dies the moment the new one exists —
 // so the confirmation is what stands between a stray click and a broken client
 const rotations = recording(
@@ -191,6 +208,30 @@ export const Loaded: Story = {
 // two panels load here, and the second-factor one had a skeleton first — so
 // this asserts the *keys* placeholder specifically, in the `role="status"`
 // region that makes it audible, rather than anything skeleton-shaped (#1589)
+/**
+ * A card for a key the Playground issued says so (#944).
+ *
+ * Every other card here is a key this account minted on purpose. This one
+ * arrived because somebody opened a screen, and it deletes itself — which the
+ * card has to say, or its half-hour life reads as a mistake.
+ */
+export const PlaygroundKeyIsLabelled: Story = {
+  render: () => (
+    <Harness fetchStub={withPlaygroundKey}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // by its explanation rather than its text: the control plane names the key
+    // "Playground" as well, so the word alone matches the card title too
+    const badge = await canvas.findByTitle(/expires on its own/);
+    await expect(badge).toHaveTextContent("Playground");
+    // only the key that carries the purpose is labelled
+    await expect(canvas.getAllByTitle(/expires on its own/)).toHaveLength(1);
+  },
+};
+
 export const Loading: Story = {
   render: () => (
     <Harness fetchStub={pending}>
