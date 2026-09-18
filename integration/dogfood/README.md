@@ -1,7 +1,9 @@
 # Dogfooding fleet
 
 A local rolter with a fleet that looks like a real one, for operator dogfooding
-(#924).
+(#924). The short version, and the gotchas worth reading before a session, are
+in [`docs/dev-docs/development/dogfooding-fleet.md`](../../docs/dev-docs/development/dogfooding-fleet.md);
+this file is the detail.
 
 The built-in `fake-llm` model answers "does the gateway work at all". It does
 not answer "what is it like to run this", because one route with one target
@@ -17,7 +19,7 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 | File | What it is |
 |---|---|
 | `fleet.ts` | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015` |
-| `dogfood.toml` | the matching rolter config — fifteen providers, eleven routes |
+| `dogfood.toml` | the matching rolter config — fifteen providers, three provider groups, eleven routes |
 | `keys.env` | the API keys the fleet expects (fake, loopback-only, checked in on purpose) |
 
 ## The fleet
@@ -53,8 +55,23 @@ cargo run -p rolter-control --features postgres --bin rolter-seed -- \
   --import integration/dogfood/dogfood.toml
 ```
 
-> `--import` only inserts. It will not update a provider that already exists
-> (#927), so drop the volume rather than re-importing over an edited file.
+> `--import` is desired state: re-importing an edited file updates the rows it
+> already created, so the database ends up matching the file.
+
+The three `[[provider_groups]]` in `dogfood.toml` are what makes `group-slug/model`
+addressing exercisable — `vllm-a100` is the whole rack, `vllm-a100-fast` the
+subset without the slow card (two providers are in both), and `openai-pool` is a
+pool of one with a model name that carries no vendor prefix. Seeding them is
+currently the *only* way to get a group in front of the gateway: a group created
+through the dashboard never bumps `config_version`, so it does not propagate
+until the gateway restarts (#1643).
+
+The gateway also needs `ROLTER_NODE_ID`. Without it, and without a `HOSTNAME`
+(a shell-launched process has none; a container gets one from the runtime), its
+cluster heartbeat and adaptive-routing telemetry are posted with no node header,
+dropped by the control plane with a `204`, and logged nowhere — leaving the
+Cluster and Adaptive Routing screens empty forever (#1644). `just dogfood` sets
+it.
 
 Run the control plane and the gateway, both exporting to the collector:
 
