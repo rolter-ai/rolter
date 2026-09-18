@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
-use rolter_store::postgres::repo::VirtualKeyRepo;
+use rolter_store::postgres::repo::{RouteRepo, VirtualKeyRepo};
 
 use crate::analytics::{client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
 use crate::auth::CurrentUser;
@@ -35,6 +35,10 @@ pub fn router() -> Router<ControlState> {
         .route(
             "/api/v1/me/projects/{project_id}/virtual-keys",
             post(mint_my_key),
+        )
+        .route(
+            "/api/v1/me/projects/{project_id}/playground-key",
+            post(mint_playground_key),
         )
         .route("/api/v1/me/virtual-keys/{id}/rotate", post(rotate_my_key))
         .route(
@@ -157,6 +161,81 @@ async fn mint_my_key(
             body.cache,
             Some(current.user.id),
             expires_at,
+            // minted by hand from the self-service panel
+            None,
+        )
+        .await?;
+    publish_config_change(&state).await?;
+    Ok(Json(MintedKey { row, key }))
+}
+
+/// how long a playground key lives.
+///
+/// Minutes rather than the mint path's days: this key exists for the length of
+/// one sitting at the Playground screen, it is held in the browser, and the
+/// dashboard asks for a fresh one rather than keeping this one. A key that
+/// outlives the tab that asked for it is a credential nobody is watching.
+pub(crate) const PLAYGROUND_KEY_TTL_MINUTES: i64 = 30;
+
+/// the `purpose` a playground-minted key carries, so the Keys screen can say
+/// what it is instead of leaving a reader to infer it from a short expiry
+pub(crate) const PLAYGROUND_PURPOSE: &str = "playground";
+
+/// Mint a short-lived key for the Playground, scoped by the server (#1640).
+///
+/// Deliberately takes **no body**. The mint endpoint above accepts `models`,
+/// `providers` and a TTL from the caller, which is right for a key an operator
+/// is configuring on purpose and wrong here: a key the client scopes is not a
+/// key that "cannot address a model the user could not already address", since
+/// the client can simply ask for everything. So the reach is computed here,
+/// from the routes configured in the project the caller is minting against,
+/// and the TTL is fixed.
+///
+/// An empty `models` list on a virtual key means *every* model, so a project
+/// with no routes cannot produce a playground key: minting one would hand out
+/// the widest key in the system to mean "nothing to address". That is a 400,
+/// not an empty list.
+async fn mint_playground_key(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    Path(project_id): Path<Uuid>,
+) -> ApiResult<Json<MintedKey>> {
+    let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+    let principal = Principal::User(current.user.clone());
+    // the same capability the self-service mint needs: this is a key the caller
+    // mints for themselves, with strictly less reach than one they could mint
+    // by hand, so it cannot be the thing that lets a viewer create credentials
+    authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
+
+    let models: Vec<String> = RouteRepo(pool(&state))
+        .list(project_id)
+        .await?
+        .into_iter()
+        .map(|route| route.model)
+        .collect();
+    if models.is_empty() {
+        return Err(bad_request(
+            "this project has no routes, so there is nothing a playground key could address",
+        ));
+    }
+
+    let expires_at = Utc::now() + chrono::Duration::minutes(PLAYGROUND_KEY_TTL_MINUTES);
+    let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
+    let row = VirtualKeyRepo(pool(&state))
+        .create(
+            project_id,
+            &key_hash,
+            &key_prefix,
+            Some("Playground"),
+            &models,
+            // no provider narrowing: the routes already decide which providers
+            // a model reaches, and pinning providers here would make the
+            // playground key behave unlike the traffic it is meant to imitate
+            &[],
+            None,
+            Some(current.user.id),
+            Some(expires_at),
+            Some(PLAYGROUND_PURPOSE),
         )
         .await?;
     publish_config_change(&state).await?;
@@ -196,6 +275,8 @@ async fn rotate_my_key(
             // a rotation replaces a secret, it does not renew a decision: the
             // fresh key expires exactly when the one it replaces would have
             old.expires_at,
+            // and it stays the same kind of key it was
+            old.purpose.as_deref(),
         )
         .await?;
     VirtualKeyRepo(pool(&state)).set_disabled(id, true).await?;

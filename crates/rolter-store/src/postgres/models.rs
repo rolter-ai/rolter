@@ -236,6 +236,10 @@ pub struct VirtualKey {
     pub business_unit_id: Option<Uuid>,
     /// customer this key's spend rolls up to; `NULL` when unattributed
     pub customer_id: Option<Uuid>,
+    /// why the key exists when a person did not mint it by hand: `playground`
+    /// for a short-lived key the dashboard minted for its own request, `NULL`
+    /// for every key an operator created deliberately (#1640)
+    pub purpose: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -254,6 +258,10 @@ pub struct OwnedVirtualKey {
     pub disabled: bool,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// `playground` for a key the dashboard minted for its own request, so the
+    /// Keys screen can say what it is rather than leaving a reader to infer it
+    /// from a short expiry (#1640)
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
