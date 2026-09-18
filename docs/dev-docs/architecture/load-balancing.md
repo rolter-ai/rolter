@@ -27,6 +27,41 @@ pub trait LoadBalancer: Send + Sync {
 - **predicted_latency** — rank targets by what *this* request is modelled to cost on each of them, from the queue it would join and its own prompt size, rather than by a per-target average. See below.
 - **lora_aware** — LoRA-adapter affinity for a fleet serving many adapters over shared base weights: prefer a target that already holds the requested adapter resident, with prefix affinity and in-flight load behind it. See below.
 
+## Balancer lifetime, and provider groups
+
+**A balancer belongs to the pool, not to the request.** Most strategies carry
+selection state — `round_robin`'s counter, `weighted`'s running weights,
+`cache_aware`'s trie, `adaptive`'s samples — and that state is exactly what
+makes them balance. A balancer built per request is not a balancer: a fresh
+`RoundRobin` always returns index `0`, and a fresh `WeightedRoundRobin` always
+returns the heaviest target, so every request lands on the same place.
+
+Configured routes get this for free: `Snapshot::build` constructs one balancer
+per route and hands out references to it for the snapshot's whole life, and a
+config reload builds a new snapshot (and so a new balancer, deliberately — a new
+snapshot may have different targets, and a carried-over index would name a
+different provider).
+
+A **provider group** address (`group-slug/model`, ADR-0017 addendum) is the case
+that is not free. A group has no configured route: `Snapshot::resolve_pinned`
+builds a *synthetic* one per request, because the model each member forwards
+depends on what the caller asked for. Only the target list is per request,
+though — the strategy and the member weights are fixed for the life of the
+snapshot, so the group's balancer is built once in `Snapshot::build`, stored in
+`Snapshot::group_balancers` keyed by slug, and shared by every synthetic entry
+built for that group. Before #1655 it was built inside `resolve_pinned`, and a
+whole fleet's traffic went to whichever member was listed first, whatever the
+group's strategy and weights said.
+
+Costs for a group's balancer come from each member's declared `upstream_model`,
+since the requested model is not known at build time and a `group-slug/model`
+address is never itself a priced model. A group whose members are all
+passthrough is therefore cost-neutral, which is the right answer for the
+homogeneous fleet a group exists to describe.
+
+A provider *slug* address pins a single provider, so its pool has one target and
+no selection state to keep; that balancer is still built per request.
+
 ## Adaptive routing
 
 `adaptive` is the only strategy whose behavior is owned by a global policy rather than the route:

@@ -4432,7 +4432,7 @@ mod tests {
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[]),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(1))],
             route: route.clone(),
         };
@@ -4440,7 +4440,7 @@ mod tests {
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[]),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(9))],
             route: route.clone(),
         };
@@ -4448,7 +4448,7 @@ mod tests {
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[]),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4518,7 +4518,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4574,7 +4574,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4618,7 +4618,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4662,7 +4662,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4761,7 +4761,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1]),
+            balancer: rolter_balancer::build(route.strategy, &[1]).into(),
             variant_balancers: Vec::new(),
             route,
         };
@@ -4813,7 +4813,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
-            balancer: rolter_balancer::build(route.strategy, &[1, 1]),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
         };

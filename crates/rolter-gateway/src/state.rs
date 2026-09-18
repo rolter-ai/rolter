@@ -23,7 +23,10 @@ use crate::rate_limits::RateLimiter;
 /// A resolved route plus its constructed balancer.
 pub struct RouteEntry {
     pub route: ModelRoute,
-    pub balancer: Box<dyn LoadBalancer>,
+    /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
+    /// is owned by the snapshot and handed to every synthetic entry built for
+    /// that group, so its rotation state outlives one request (#1655)
+    pub balancer: Arc<dyn LoadBalancer>,
     /// one balancer per variant (index-aligned with `route.variants`), built
     /// from the route's strategy and the variant's target weights so selection
     /// inside a variant honours the same strategy as the classic pool
@@ -116,6 +119,16 @@ pub struct Snapshot {
     /// whose slug collides with a provider slug is dropped so the provider wins
     /// deterministically
     pub groups_by_slug: HashMap<String, rolter_core::ProviderGroupConfig>,
+    /// one balancer per indexed group slug, built with the snapshot and shared
+    /// by every request that addresses the group.
+    ///
+    /// A group address resolves to a synthetic route built per request, so a
+    /// balancer built there would be new on every request — and a new
+    /// `RoundRobin` always returns index 0, which sent a whole fleet's traffic
+    /// to its first member (#1655). Balancer state is per pool, not per
+    /// request, so it belongs here with everything else a reload replaces
+    pub group_balancers: HashMap<String, Arc<dyn LoadBalancer>>,
+
     pub routes: HashMap<String, RouteEntry>,
     /// virtual keys indexed by their peppered digest ([`rolter_auth::hash_key`]),
     /// never by plaintext — merges config-defined and database-defined keys
@@ -278,6 +291,40 @@ impl Snapshot {
                 }
             })
             .collect();
+        // one balancer per group, built here rather than in `resolve_pinned`.
+        // a group address resolves to a synthetic route per request, so a
+        // balancer built there starts from scratch every time — and a fresh
+        // `RoundRobin` or `WeightedRoundRobin` always picks the heaviest/first
+        // target, which pinned a whole fleet on its first member (#1655).
+        //
+        // the balancer only needs the members' weights, which are fixed for the
+        // life of the snapshot; the per-request part (the model each member
+        // forwards) stays in `resolve_pinned`. costs come from the members'
+        // declared upstream models, since the requested model is not known yet
+        // and a group address is never itself a priced model
+        let mut group_balancers: HashMap<String, Arc<dyn LoadBalancer>> = HashMap::new();
+        for (slug, group) in &groups_by_slug {
+            let targets: Vec<Target> = group
+                .members
+                .iter()
+                .map(|m| Target {
+                    provider: m.provider.clone(),
+                    model: m.model.clone(),
+                    weight: m.weight,
+                })
+                .collect();
+            let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
+            let stats = TargetStats {
+                cost_per_mtok: target_costs(&targets, slug, &prices),
+                latency: None,
+                adaptive: config.adaptive_routing.clone(),
+                ..Default::default()
+            };
+            group_balancers.insert(
+                slug.clone(),
+                Arc::from(build_with_stats(group.strategy, &weights, &stats)),
+            );
+        }
         // compiled before the route loop so each route can resolve its
         // guardrail override into an index mask once (#590)
         let compiled_guardrails = Arc::new(rolter_core::CompiledGuardrails::from_config(
@@ -318,7 +365,8 @@ impl Snapshot {
                     .predictor(&route.model, weights.len())
                     .map(|p| p as Arc<dyn rolter_balancer::scorer::LatencyPredictionSource>),
             };
-            let balancer = build_with_stats(route.strategy, &weights, &stats);
+            let balancer: Arc<dyn LoadBalancer> =
+                Arc::from(build_with_stats(route.strategy, &weights, &stats));
             let variant_balancers = route
                 .variants
                 .iter()
@@ -430,6 +478,7 @@ impl Snapshot {
             providers,
             providers_by_slug,
             groups_by_slug,
+            group_balancers,
             routes,
             keys,
             mcp_servers,
@@ -485,7 +534,9 @@ impl Snapshot {
                 weight: 1,
             };
             let strategy = rolter_core::BalancingStrategy::default();
-            return Some(self.synthetic_route(model, strategy, vec![target]));
+            // a single target has nothing to balance between, so a per-request
+            // balancer is fine here
+            return Some(self.synthetic_route(model, strategy, vec![target], None));
         }
         if let Some(group) = self.groups_by_slug.get(slug) {
             // one target per member; each rewrites to its own upstream model
@@ -502,7 +553,14 @@ impl Snapshot {
             if targets.is_empty() {
                 return None;
             }
-            return Some(self.synthetic_route(model, group.strategy, targets));
+            // the group's own balancer, so the rotation advances across
+            // requests instead of restarting on each one (#1655)
+            return Some(self.synthetic_route(
+                model,
+                group.strategy,
+                targets,
+                self.group_balancers.get(slug).cloned(),
+            ));
         }
         None
     }
@@ -511,11 +569,15 @@ impl Snapshot {
     /// (`provider-slug/model` or `group-slug/model`). The pinned entry runs
     /// through the same classic-pool machinery — key pools, cooldowns, circuit
     /// breaker — as a configured route, but is not registered in `routes`.
+    /// `balancer` is the pool's shared balancer when one outlives the request
+    /// (a group's), or `None` to build a throwaway one for a pool of a single
+    /// target, where selection state cannot matter.
     fn synthetic_route(
         &self,
         model: &str,
         strategy: rolter_core::BalancingStrategy,
         targets: Vec<Target>,
+        balancer: Option<Arc<dyn LoadBalancer>>,
     ) -> RouteEntry {
         let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
@@ -524,7 +586,8 @@ impl Snapshot {
             adaptive: self.adaptive_routing.clone(),
             ..Default::default()
         };
-        let balancer = build_with_stats(strategy, &weights, &stats);
+        let balancer =
+            balancer.unwrap_or_else(|| Arc::from(build_with_stats(strategy, &weights, &stats)));
         let route = ModelRoute {
             model: model.to_string(),
             strategy,
@@ -1294,6 +1357,141 @@ mod tests {
         assert_eq!(
             entry.route.strategy,
             rolter_core::BalancingStrategy::Weighted
+        );
+    }
+
+    /// A fleet group with three members, weighted 3 : 1 : 1 — the shape #1655
+    /// was measured on.
+    fn fleet_snapshot(strategy: rolter_core::BalancingStrategy) -> Snapshot {
+        use rolter_core::{GroupMember, ProviderGroupConfig};
+        let mut config = GatewayConfig::default();
+        let members = (1..=3)
+            .map(|n| {
+                config
+                    .providers
+                    .push(provider_cfg(&format!("vllm-a100-0{n}"), None));
+                GroupMember {
+                    provider: format!("vllm-a100-0{n}"),
+                    model: None,
+                    weight: if n == 1 { 3 } else { 1 },
+                }
+            })
+            .collect();
+        config.provider_groups.push(ProviderGroupConfig {
+            name: "A100 fleet".to_string(),
+            slug: Some("vllm-a100".to_string()),
+            strategy,
+            members,
+        });
+        Snapshot::build(&config, &crate::load::LoadTracker::new())
+    }
+
+    /// How `n` successive requests to `address` are split across the group's
+    /// members, resolved the way a handler does it: once per request.
+    fn split(snap: &Snapshot, address: &str, n: usize) -> Vec<usize> {
+        let mut counts = vec![0usize; 3];
+        for _ in 0..n {
+            let entry = snap.resolve_pinned(address).expect("the group resolves");
+            let idx = entry
+                .balancer
+                .pick(&rolter_balancer::RouteContext::default(), &[])
+                .expect("a group with members always picks");
+            counts[idx] += 1;
+        }
+        counts
+    }
+
+    /// #1655: a group did not fan out. Every request to `group-slug/model`
+    /// landed on the group's first member whatever the strategy said, while a
+    /// plain route over the very same three providers split them evenly.
+    ///
+    /// The balancer was the state: `resolve_pinned` built a fresh one per
+    /// request, and a fresh `RoundRobin` always returns index 0 on its first
+    /// pick. Nothing in the snapshot, the members or the weights was wrong,
+    /// which is why the symptom looked like the group resolving to one member.
+    #[test]
+    fn a_round_robin_group_rotates_across_requests() {
+        let snap = fleet_snapshot(rolter_core::BalancingStrategy::RoundRobin);
+        let counts = split(&snap, "vllm-a100/meta-llama/Llama-3.1-8B-Instruct", 9);
+        assert_eq!(
+            counts,
+            vec![3, 3, 3],
+            "nine requests to a three-member round_robin group split {counts:?}: the fleet's \
+             whole traffic is concentrated on one box"
+        );
+    }
+
+    /// The same bug in its weighted form, and the one an operator notices last:
+    /// a fresh `WeightedRoundRobin` always picks the heaviest target first, so
+    /// the split is not merely unbalanced, it is 100% on member one — and the
+    /// weights the operator set in the dashboard do nothing at all.
+    #[test]
+    fn a_weighted_group_honours_member_weights_across_requests() {
+        let snap = fleet_snapshot(rolter_core::BalancingStrategy::Weighted);
+        let counts = split(&snap, "vllm-a100/meta-llama/Llama-3.1-8B-Instruct", 10);
+        assert_eq!(
+            counts,
+            vec![6, 2, 2],
+            "ten requests to a 3:1:1 weighted group split {counts:?}: the member weights are \
+             not being applied"
+        );
+    }
+
+    /// Two groups must not share rotation state, or one group's traffic skews
+    /// the other's and the split stops being a property of the group at all.
+    #[test]
+    fn each_group_keeps_its_own_rotation_state() {
+        use rolter_core::{GroupMember, ProviderGroupConfig};
+        let mut config = GatewayConfig::default();
+        for n in 1..=2 {
+            config
+                .providers
+                .push(provider_cfg(&format!("vllm-0{n}"), None));
+        }
+        for slug in ["fleet-a", "fleet-b"] {
+            config.provider_groups.push(ProviderGroupConfig {
+                name: slug.to_string(),
+                slug: Some(slug.to_string()),
+                strategy: rolter_core::BalancingStrategy::RoundRobin,
+                members: (1..=2)
+                    .map(|n| GroupMember {
+                        provider: format!("vllm-0{n}"),
+                        model: None,
+                        weight: 1,
+                    })
+                    .collect(),
+            });
+        }
+        let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());
+        let pick = |address: &str| {
+            snap.resolve_pinned(address)
+                .expect("resolves")
+                .balancer
+                .pick(&rolter_balancer::RouteContext::default(), &[])
+                .expect("picks")
+        };
+        // each group starts at its own first member, and advances alone
+        assert_eq!(pick("fleet-a/m"), 0);
+        assert_eq!(pick("fleet-a/m"), 1);
+        assert_eq!(
+            pick("fleet-b/m"),
+            0,
+            "fleet-b started mid-rotation: the groups share balancer state"
+        );
+    }
+
+    /// A reload has to reset the fan-out rather than inherit it: a new snapshot
+    /// may have different members, and an index carried over from the old one
+    /// would name a different provider.
+    #[test]
+    fn a_reload_rebuilds_the_group_balancer() {
+        let snap = fleet_snapshot(rolter_core::BalancingStrategy::RoundRobin);
+        let _ = split(&snap, "vllm-a100/m", 4);
+        let reloaded = fleet_snapshot(rolter_core::BalancingStrategy::RoundRobin);
+        assert_eq!(
+            split(&reloaded, "vllm-a100/m", 3),
+            vec![1, 1, 1],
+            "a rebuilt snapshot did not start its rotation from the first member"
         );
     }
 
