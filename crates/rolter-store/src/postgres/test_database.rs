@@ -17,9 +17,10 @@
 //! anything, which was the requirement — an isolation scheme that has to be
 //! opted into is one that is forgotten exactly when parallel worktrees are busy.
 //!
-//! The worktree path is recorded as the database's comment, so [`url`] can also
-//! drop the databases of worktrees that no longer exist. That is the whole
-//! cleanup story: nothing has to run when a worktree is removed.
+//! The worktree path is recorded as the database's comment, so
+//! [`url()`](crate::postgres::test_database::url) can also drop the databases of
+//! worktrees that no longer exist. That is the whole cleanup story: nothing has
+//! to run when a worktree is removed.
 //!
 //! Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
 //! exactly as given — for a throwaway database that is already private, or to
@@ -52,7 +53,8 @@ static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
 /// Whether a test database was configured at all, without connecting.
 ///
 /// Test modules guard on this before doing any work, so it has to stay cheap
-/// and synchronous; [`url`] is what actually resolves the database.
+/// and synchronous; [`url()`](crate::postgres::test_database::url) is what
+/// actually resolves the database.
 pub fn is_configured() -> bool {
     std::env::var(URL_ENV).is_ok_and(|url| !url.is_empty())
 }
