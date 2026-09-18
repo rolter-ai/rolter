@@ -5,8 +5,13 @@ import { describe, it, expect } from "bun:test";
 import {
   declaredStories,
   findFreePort,
+  foreignServer,
   indexedPaths,
+  isInsideDirectory,
+  listenersOn,
   missingFrom,
+  parseListeningPids,
+  parseWorkingDirectory,
   portIsFree,
   type StorybookIndex,
 } from "./run-story-tests";
@@ -114,6 +119,81 @@ describe("port probing", () => {
       expect(await findFreePort(port)).toBeGreaterThan(port);
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+});
+
+describe("who is serving the port", () => {
+  const ui = "/Users/dev/rolter/ui";
+
+  it("reads the pids lsof lists, once each", () => {
+    // one listener answering on both address families is printed twice, and
+    // asking lsof about the same pid twice only makes the error message repeat
+    expect(parseListeningPids("4821\n4821\n5190\n")).toEqual([4821, 5190]);
+  });
+
+  it("ignores what lsof prints when nothing is listening", () => {
+    expect(parseListeningPids("")).toEqual([]);
+  });
+
+  it("reads the cwd out of lsof's field output, spaces included", () => {
+    // the field format rather than the columns precisely because a worktree
+    // path can contain a space, which the column output makes unparsable
+    const output = ["p4821", "fcwd", "n/Users/dev/My Work/rolter/ui", ""].join("\n");
+    expect(parseWorkingDirectory(output)).toBe("/Users/dev/My Work/rolter/ui");
+  });
+
+  it("says nothing when lsof named no directory", () => {
+    expect(parseWorkingDirectory("p4821\nfcwd\n")).toBeNull();
+  });
+
+  it("does not read a sibling directory as being inside this one", () => {
+    // the comparison is on a separator: `…/ui-old` shares the prefix but is a
+    // different checkout, and letting it pass is the hole being closed
+    expect(isInsideDirectory("/Users/dev/rolter/ui-old", ui)).toBe(false);
+    expect(isInsideDirectory(ui, ui)).toBe(true);
+    expect(isInsideDirectory("/Users/dev/rolter/ui/.storybook", ui)).toBe(true);
+  });
+
+  it("accepts the storybook this worktree started", () => {
+    expect(foreignServer([{ pid: 4821, cwd: ui }], ui)).toBeNull();
+  });
+
+  it("catches another worktree of this same project — the #1693 false green", () => {
+    // what actually happened on port 6032: a sibling worktree's storybook held
+    // the port, and the index check passed because that build indexes the same
+    // story ids under the same import paths
+    const problem = foreignServer(
+      [{ pid: 4821, cwd: "/Users/dev/rolter/.worktrees/feat-1654-docs-link/ui" }],
+      ui,
+    );
+    expect(problem).toContain("not this worktree's");
+    expect(problem).toContain("feat-1654-docs-link");
+  });
+
+  it("catches a listener whose working directory lsof would not give up", () => {
+    // another user's squatter reads as unknown, and unknown is not this
+    // worktree — the guard refuses rather than assuming the friendly case
+    expect(foreignServer([{ pid: 4821, cwd: null }], ui)).toContain("unreadable");
+  });
+
+  it("refuses a port with no listener at all", () => {
+    expect(foreignServer([], ui)).toContain("nothing is listening");
+  });
+
+  it("finds the real process behind a real listening socket", async () => {
+    // the parsing above is only worth anything if lsof is actually being asked
+    // the right question: this process is listening, so it must come back with
+    // this process's pid and cwd
+    const port = await findFreePort(6600);
+    const squatter = Bun.serve({ port, fetch: () => new Response("busy") });
+    try {
+      const listeners = listenersOn(port);
+      expect(listeners).not.toBeNull();
+      expect(listeners!.map((listener) => listener.pid)).toContain(process.pid);
+      expect(foreignServer(listeners!, process.cwd())).toBeNull();
+    } finally {
+      squatter.stop(true);
     }
   });
 });

@@ -456,9 +456,18 @@ times the only thing that caught it was fetching `/index.json` by hand.
 - it starts `storybook dev --ci` and waits for `/index.json`
 - **it checks that index against the story files it was asked to run**: the file
   must be indexed under its own import path, and every `export const … : Story`
-  in it must be present. A Storybook from another worktree fails here even when
-  it is serving the same project, and so does a stale build of a file whose
-  newest story is missing
+  in it must be present. A Storybook that is not this project fails here, and so
+  does a stale build of a file whose newest story is missing
+- **it identifies the process holding the port.** The index check above compares
+  *content*, so another worktree of this same repository sails through it — its
+  build indexes the same story ids under the same import paths. That is the case
+  that actually happens here, and it did, on port 6032 (#1693). So the guard
+  reads the listening pid with `lsof -ti :<port>` and asks for its working
+  directory (`lsof -a -p <pid> -d cwd -Fn`): `storybook dev` is spawned with its
+  cwd in this worktree's `ui/`, so a listener rooted anywhere else — a sibling
+  worktree, or a process whose cwd lsof will not disclose — fails the run. On a
+  machine with no `lsof` the check is skipped with a warning rather than failing;
+  the index check still applies
 - only then does it run the tests, one file per invocation — the positional
   pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
   dies with a shell syntax error
