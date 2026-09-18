@@ -8,9 +8,11 @@ import {
   confirmDestructive,
   expectLoadError,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  json,
   recording,
   sheet,
   Toasted,
@@ -100,12 +102,6 @@ const CUSTOMER_SPEND: AttributionSpendRow[] = [
 ];
 
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // route by path so useScope's /api/v1/orgs call is served alongside the
 // screen's own collection
@@ -374,17 +370,33 @@ export const CustomersEmpty: Story = {
 
 // Retire and Delete sit one click apart on the same row, and only one of them
 // is reversible. The confirmation is what separates them (#1179).
+//
+// the roster shrinks once the DELETE lands, so the story can assert what the
+// delete left behind rather than that the request went out. A stub answering
+// the full list forever passes even when the mutation took its `onError` path,
+// which is how a 204 fixture that threw went unnoticed (#1260)
+let unitDeleted = false;
 const unitDeletes = recording(async (input, init) => {
-  if (init?.method === "DELETE") return json({}, 204);
-  return router({})(input, init);
+  if (init?.method === "DELETE") {
+    unitDeleted = true;
+    return json({}, 204);
+  }
+  return router({
+    units: () => json(unitDeleted ? UNITS.filter((row) => row.id !== UNITS[0].id) : UNITS),
+  })(input, init);
 });
 
 export const ConfirmsBeforeDeletingABusinessUnit: Story = {
-  render: () => (
-    <Harness fetchStub={unitDeletes.stub}>
-      <BusinessUnits />
-    </Harness>
-  ),
+  render: () => {
+    unitDeleted = false;
+    return (
+      <Harness fetchStub={unitDeletes.stub}>
+        <Toasted>
+          <BusinessUnits />
+        </Toasted>
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
@@ -399,26 +411,56 @@ export const ConfirmsBeforeDeletingABusinessUnit: Story = {
     // the copy points at the reversible alternative rather than only warning
     await confirmDestructive(/Platform Engineering/, "Delete");
     await unitDeletes.expectSent("DELETE", `/business-units/${UNITS[0].id}`);
+
+    // the outcome, not only the request: the confirmation closes, the queue
+    // announces it, and the card is gone from the roster
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Platform Engineering deleted/);
+    await waitFor(() =>
+      expect(canvas.queryByText("Platform Engineering")).not.toBeInTheDocument(),
+    );
   },
 };
 
+let customerDeleted = false;
 const customerDeletes = recording(async (input, init) => {
-  if (init?.method === "DELETE") return json({}, 204);
-  return router({})(input, init);
+  if (init?.method === "DELETE") {
+    customerDeleted = true;
+    return json({}, 204);
+  }
+  return router({
+    customers: () =>
+      json(
+        customerDeleted
+          ? CUSTOMERS.filter((row) => row.id !== CUSTOMERS[0].id)
+          : CUSTOMERS,
+      ),
+  })(input, init);
 });
 
 export const ConfirmsBeforeDeletingACustomer: Story = {
-  render: () => (
-    <Harness fetchStub={customerDeletes.stub}>
-      <Customers />
-    </Harness>
-  ),
+  render: () => {
+    customerDeleted = false;
+    return (
+      <Harness fetchStub={customerDeletes.stub}>
+        <Toasted>
+          <Customers />
+        </Toasted>
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Acme Corp")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Delete Acme Corp" }));
     await confirmDestructive(/Acme Corp/, "Delete");
     await customerDeletes.expectSent("DELETE", `/customers/${CUSTOMERS[0].id}`);
+
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Acme Corp deleted/);
+    await waitFor(() =>
+      expect(canvas.queryByText("Acme Corp")).not.toBeInTheDocument(),
+    );
   },
 };
 
