@@ -160,9 +160,7 @@ export const RejectedCredential: Story = {
   play: async () => {
     const canvas = screen();
     await press();
-    await waitFor(() =>
-      expect(canvas.getByText(/rejected the credential/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/rejected the credential/)).toBeVisible());
     // naming where the credential came from is what separates "wrong key" from
     // "no key configured"
     await expect(canvas.getByText(/resolved from: stored/)).toBeVisible();
@@ -259,9 +257,7 @@ export const Testing: Story = {
   play: async () => {
     const canvas = screen();
     await press();
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: /testing/i })).toBeDisabled(),
-    );
+    await waitFor(() => expect(canvas.getByRole("button", { name: /testing/i })).toBeDisabled());
   },
 };
 
@@ -391,9 +387,7 @@ export const SaveRejectedByTheServer: Story = {
     await userEvent.click(await screen().findByRole("button", { name: "Save provider" }));
     const canvas = within(canvasElement);
     const alert = await waitFor(() => canvas.getByRole("alert"));
-    await waitFor(() =>
-      expect(within(alert).getByText(/rejected upstream/)).toBeVisible(),
-    );
+    await waitFor(() => expect(within(alert).getByText(/rejected upstream/)).toBeVisible());
     // never asked to close, and the draft is still in the fields
     await expect(closeRequests).toEqual([]);
     await expect(screen().getByLabelText("Name")).toHaveValue("openai-primary");
@@ -410,7 +404,9 @@ export const DiscardGuardKeepsTheDraft: Story = {
   render: () => {
     const closes: boolean[] = [];
     closeRequests = closes;
-    return <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />;
+    return (
+      <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />
+    );
   },
   play: async () => {
     // the name is fixed once a provider exists, so the editable field is the
@@ -432,7 +428,9 @@ export const DiscardGuardThrowsItAway: Story = {
   render: () => {
     const closes: boolean[] = [];
     closeRequests = closes;
-    return <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />;
+    return (
+      <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />
+    );
   },
   play: async () => {
     await waitFor(() =>

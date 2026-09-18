@@ -26,9 +26,7 @@ interface FlagCopy {
 }
 
 const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
-  Object.fromEntries(
-    FEATURE_FLAG_KEYS.map((key) => [key, dto[key]]),
-  ) as FeatureFlagValues;
+  Object.fromEntries(FEATURE_FLAG_KEYS.map((key) => [key, dto[key]])) as FeatureFlagValues;
 
 // global feature flags, persisted via /api/v1/feature-flags (superadmin only).
 // the server also reports which flags have no working subsystem in this

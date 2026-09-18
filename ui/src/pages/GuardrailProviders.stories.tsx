@@ -87,7 +87,11 @@ function Harness({
   );
 }
 
-const meta = { title: "Screens/GuardrailProviders", component: GuardrailProviders, parameters: { layout: "fullscreen" } } satisfies Meta<typeof GuardrailProviders>;
+const meta = {
+  title: "Screens/GuardrailProviders",
+  component: GuardrailProviders,
+  parameters: { layout: "fullscreen" },
+} satisfies Meta<typeof GuardrailProviders>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -103,7 +107,9 @@ export const Empty: Story = {
   },
 };
 export const Error: Story = {
-  render: () => <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />,
+  render: () => (
+    <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />
+  ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return guardrail providers/);
   },
@@ -113,9 +119,7 @@ export const Error: Story = {
 // screen is refused to every non-superadmin, and a "try again" on a permission
 // suggests the refusal was transient
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
@@ -128,22 +132,22 @@ export const Forbidden: Story = {
 // fetch never connected, so there is no status to read: that one *is* worth
 // retrying, and the control plane's own message is still printed underneath
 export const Unreachable: Story = {
-  render: () => (
-    <Harness fetchStub={() => Promise.reject(new TypeError("Failed to fetch"))} />
-  ),
+  render: () => <Harness fetchStub={() => Promise.reject(new TypeError("Failed to fetch"))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/cannot reach the control plane/i),
-    ).toBeVisible();
-    await expect(
-      await canvas.findByRole("button", { name: /try again/i }),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/cannot reach the control plane/i)).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: /try again/i })).toBeVisible();
   },
 };
 
 export const RegistersProvider: Story = {
-  render: () => <Harness fetchStub={async (_input, init) => init?.method === "POST" ? json(PROVIDERS[0], 201) : json(PROVIDERS)} />,
+  render: () => (
+    <Harness
+      fetchStub={async (_input, init) =>
+        init?.method === "POST" ? json(PROVIDERS[0], 201) : json(PROVIDERS)
+      }
+    />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /add provider/i }));
@@ -152,7 +156,6 @@ export const RegistersProvider: Story = {
     await expect(within(dialog).getByRole("button", { name: "Save provider" })).toBeEnabled();
   },
 };
-
 
 /**
  * The provider is refused (#1607).
@@ -180,9 +183,7 @@ export const RegisterRejectedByTheServer: Story = {
     await userEvent.click(within(dialog).getByRole("button", { name: "Save provider" }));
 
     await expectToast(canvasElement, /health probe/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(dialog).getByLabelText("Provider name")).toHaveValue("Policy service");
   },
 };
@@ -228,9 +229,7 @@ export const ConfirmsBeforeDeletingAProvider: Story = {
     // announces it, and the row is gone from the list
     await expectSheetClosed();
     await expectToast(canvasElement, /Production LLM Guard deleted/);
-    await waitFor(() =>
-      expect(canvas.queryByText("Production LLM Guard")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(canvas.queryByText("Production LLM Guard")).not.toBeInTheDocument());
   },
 };
 
@@ -241,7 +240,9 @@ export const ExplainsFailOpen: Story = {
     await userEvent.click(
       await canvas.findByRole("button", { name: "Edit provider Staging evaluator" }),
     );
-    await waitFor(() => expect(within(document.body).getByText(/fail-open favors availability/i)).toBeVisible());
+    await waitFor(() =>
+      expect(within(document.body).getByText(/fail-open favors availability/i)).toBeVisible(),
+    );
   },
 };
 

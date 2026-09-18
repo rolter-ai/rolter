@@ -217,9 +217,7 @@ function PerformanceScreen() {
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">
-              {t("pages.performance.queue.title")}
-            </span>
+            <span className="text-sm font-medium">{t("pages.performance.queue.title")}</span>
             <p className="mt-1 text-sm text-muted-foreground">
               {t("pages.performance.queue.desc")}
             </p>
@@ -251,7 +249,10 @@ function PerformanceScreen() {
             onChange={(v) => set({ queueWorkers: v })}
           />
           <div className="flex min-w-[200px] flex-col gap-1.5">
-            <label htmlFor="perf-queue-backpressure" className="text-xs font-medium text-[color:var(--text-secondary)]">
+            <label
+              htmlFor="perf-queue-backpressure"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
               {t("pages.performance.queue.whenFull")}
             </label>
             <Combobox
@@ -259,9 +260,7 @@ function PerformanceScreen() {
               value={form.queueBackpressure}
               disabled={!queue}
               aria-label={t("pages.performance.queue.whenFull")}
-              onChange={(picked) =>
-                set({ queueBackpressure: picked as BackpressurePolicy })
-              }
+              onChange={(picked) => set({ queueBackpressure: picked as BackpressurePolicy })}
               options={BACKPRESSURE_POLICIES.map((p) => ({ value: p, label: p }))}
             />
             <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
@@ -278,18 +277,16 @@ function PerformanceScreen() {
       </section>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
-        <Button
-          disabled={save.isPending || localError !== null}
-          onClick={() => save.mutate(form)}
-        >
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        )}
+        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
     </div>
   );
 }
-
 
 function NumberField({
   label,

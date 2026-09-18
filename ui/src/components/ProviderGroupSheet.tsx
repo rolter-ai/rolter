@@ -91,7 +91,9 @@ function MemberEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium leading-none">{t("providerGroupSheet.members.title")}</span>
+        <span className="text-sm font-medium leading-none">
+          {t("providerGroupSheet.members.title")}
+        </span>
         <Button
           type="button"
           size="sm"
@@ -110,9 +112,7 @@ function MemberEditor({
         </p>
       )}
       {members.length === 0 && providers.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {t("providerGroupSheet.members.none")}
-        </p>
+        <p className="text-xs text-muted-foreground">{t("providerGroupSheet.members.none")}</p>
       )}
       {members.length > 0 && (
         <div
@@ -287,12 +287,7 @@ export function ProviderGroupSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
-      <SheetHeader
-        title={title}
-        subtitle={subtitle}
-        onClose={close}
-        closeDisabled={locked}
-      />
+      <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
           <Trans
@@ -343,7 +338,10 @@ export function ProviderGroupSheet({
                 className="font-mono"
               />
               {group && !draft.allowSlugChange && (
-                <CopyButton value={`${group.slug}/`} label={t("providerGroupSheet.fields.copyPrefix")} />
+                <CopyButton
+                  value={`${group.slug}/`}
+                  label={t("providerGroupSheet.fields.copyPrefix")}
+                />
               )}
             </div>
             <div className="flex items-center gap-2 pt-1.5">
@@ -352,7 +350,9 @@ export function ProviderGroupSheet({
                 aria-labelledby="provider-group-slug-toggle"
                 onCheckedChange={(v) => set({ allowSlugChange: v })}
               />
-              <span id="provider-group-slug-toggle" className="text-xs text-muted-foreground">{t("providerGroupSheet.fields.allowSlugChange")}</span>
+              <span id="provider-group-slug-toggle" className="text-xs text-muted-foreground">
+                {t("providerGroupSheet.fields.allowSlugChange")}
+              </span>
             </div>
           </Field>
         )}

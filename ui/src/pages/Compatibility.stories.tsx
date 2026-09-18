@@ -32,9 +32,9 @@ const BASE: CompatibilityPolicyDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <Compatibility />
-    </Toasted>
+      <Toasted>
+        <Compatibility />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -61,9 +61,7 @@ export const Loading: Story = {
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },
@@ -73,11 +71,7 @@ export const Forbidden: Story = {
 // non-empty without the screen knowing which fields are on it
 export const RestartRequired: Story = {
   render: () => (
-    <Harness
-      fetchStub={async () =>
-        json({ ...BASE, restart_required: ["anthropic_version"] })
-      }
-    />
+    <Harness fetchStub={async () => json({ ...BASE, restart_required: ["anthropic_version"] })} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

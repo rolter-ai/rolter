@@ -58,7 +58,10 @@ export function LoadError({
       role="alert"
       className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--red-tint)] px-4 py-3.5"
     >
-      <Icon aria-hidden className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-danger-text)]" />
+      <Icon
+        aria-hidden
+        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-danger-text)]"
+      />
       <div className="flex min-w-0 flex-col gap-2">
         <p className="text-sm font-medium text-foreground">
           {t(`errors.load.${kind}.title`, { resource })}

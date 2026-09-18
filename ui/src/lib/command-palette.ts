@@ -69,12 +69,7 @@ export function rankEntries<T extends PaletteEntry>(entries: T[], query: string)
   entries.forEach((entry, at) => {
     const direct = fuzzyScore(entry.label, query);
     const viaHint = entry.hint === undefined ? null : fuzzyScore(entry.hint, query);
-    const score =
-      direct !== null
-        ? direct
-        : viaHint !== null
-          ? viaHint - 100
-          : null;
+    const score = direct !== null ? direct : viaHint !== null ? viaHint - 100 : null;
     if (score !== null) scored.push({ entry, score, at });
   });
   // the original order breaks ties, so an equal-scoring pair keeps the order
@@ -145,11 +140,7 @@ export function rememberScreen(
 }
 
 /** does this keystroke mean "open the palette"? ⌘K on mac, Ctrl-K elsewhere */
-export function isPaletteShortcut(e: {
-  key: string;
-  metaKey: boolean;
-  ctrlKey: boolean;
-}): boolean {
+export function isPaletteShortcut(e: { key: string; metaKey: boolean; ctrlKey: boolean }): boolean {
   return (e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey);
 }
 

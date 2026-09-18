@@ -131,9 +131,7 @@ function CompatibilityScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">
-            {t("pages.compatibility.version.title")}
-          </span>
+          <span className="text-sm font-medium">{t("pages.compatibility.version.title")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.compatibility.version.desc"
@@ -152,9 +150,7 @@ function CompatibilityScreen() {
 
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">
-            {t("pages.compatibility.maxTokens.title")}
-          </span>
+          <span className="text-sm font-medium">{t("pages.compatibility.maxTokens.title")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.compatibility.maxTokens.desc"
@@ -185,11 +181,10 @@ function CompatibilityScreen() {
       )}
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
-        <Button
-          disabled={save.isPending || localError !== null}
-          onClick={() => save.mutate(form)}
-        >
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        )}
+        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

@@ -92,14 +92,14 @@ export const HtmlIsInert: Story = {
   play: async ({ canvasElement }) => {
     await parsed(canvasElement);
     // nothing ran
-    await expect(
-      (window as unknown as Record<string, unknown>).__rolter_pwned,
-    ).toBeUndefined();
+    await expect((window as unknown as Record<string, unknown>).__rolter_pwned).toBeUndefined();
     // nothing was even created
     await expect(canvasElement.querySelector("script")).toBeNull();
     await expect(canvasElement.querySelector("img")).toBeNull();
     // the operator still sees exactly what the model emitted
-    await expect(canvasElement.textContent).toContain("<script>window.__rolter_pwned = true</script>");
+    await expect(canvasElement.textContent).toContain(
+      "<script>window.__rolter_pwned = true</script>",
+    );
   },
 };
 
@@ -170,10 +170,9 @@ export const StreamsWithoutFlicker: Story = {
   play: async ({ canvasElement }) => {
     // there is never nothing on screen
     await expect(canvasElement.textContent?.length).toBeGreaterThan(0);
-    await waitFor(
-      () => expect(within(canvasElement).getByRole("table")).toBeVisible(),
-      { timeout: 5000 },
-    );
+    await waitFor(() => expect(within(canvasElement).getByRole("table")).toBeVisible(), {
+      timeout: 5000,
+    });
   },
 };
 

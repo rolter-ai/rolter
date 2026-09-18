@@ -24,9 +24,7 @@ export function OpenModeBanner({ open }: { open: boolean }) {
       />
       <p className="min-w-0 text-foreground">
         <span className="font-semibold">{t("shell.openMode.title")}</span>{" "}
-        <span className="text-muted-foreground">
-          {t("shell.openMode.body")}
-        </span>
+        <span className="text-muted-foreground">{t("shell.openMode.body")}</span>
       </p>
     </div>
   );

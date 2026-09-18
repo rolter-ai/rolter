@@ -4,14 +4,7 @@ import { expect, test } from "@playwright/test";
 // error, and the app shell (nav) stays put across navigation. uses the seeded
 // storageState from global-setup (default project in playwright.config).
 
-const SCREENS = [
-  "dashboard",
-  "model-catalog",
-  "providers",
-  "virtual-keys",
-  "logs",
-  "audit-logs",
-];
+const SCREENS = ["dashboard", "model-catalog", "providers", "virtual-keys", "logs", "audit-logs"];
 
 test("built screens mount without uncaught errors", async ({ page }) => {
   const pageErrors: string[] = [];

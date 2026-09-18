@@ -36,9 +36,9 @@ const BASE: FeatureFlagsDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <FeatureFlags />
-    </Toasted>
+      <Toasted>
+        <FeatureFlags />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -68,9 +68,7 @@ export const Loading: Story = {
 // a non-superadmin principal gets 403; the screen says why rather than
 // rendering switches it cannot save
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },

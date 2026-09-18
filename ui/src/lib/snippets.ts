@@ -117,11 +117,7 @@ ${call}`;
 }
 
 /** Render one request as runnable client code. */
-export function renderSnippet(
-  lang: SnippetLang,
-  req: SnippetRequest,
-  origin: string,
-): string {
+export function renderSnippet(lang: SnippetLang, req: SnippetRequest, origin: string): string {
   const base = snippetBaseUrl(origin);
   switch (lang) {
     case "curl":

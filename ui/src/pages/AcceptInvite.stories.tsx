@@ -21,11 +21,12 @@ const PREVIEW = {
  * screen has — so this is deliberately *not* the scoped harness stub: nothing
  * under `/api/v1/orgs` is reachable yet.
  */
-const invite = (
-  preview: () => Response | Promise<Response>,
-  accept: () => Response | Promise<Response> = () =>
-    json({ token: "session-token", user: { email: PREVIEW.email, is_superadmin: false } }),
-): FetchStub =>
+const invite =
+  (
+    preview: () => Response | Promise<Response>,
+    accept: () => Response | Promise<Response> = () =>
+      json({ token: "session-token", user: { email: PREVIEW.email, is_superadmin: false } }),
+  ): FetchStub =>
   async (input) =>
     String(input).endsWith("/accept") ? accept() : preview();
 
@@ -94,14 +95,10 @@ export const Loading: Story = {
  * three and says who to ask — the invitee cannot fix any of them alone.
  */
 export const InvalidLink: Story = {
-  render: () => (
-    <Stage stub={invite(() => json({ error: { message: "not found" } }, 404))} />
-  ),
+  render: () => <Stage stub={invite(() => json({ error: { message: "not found" } }, 404))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/This invitation link is not valid/),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/This invitation link is not valid/)).toBeVisible();
     await expect(canvas.queryByRole("button")).not.toBeInTheDocument();
   },
 };
@@ -136,10 +133,9 @@ export const Accepts: Story = {
     await userEvent.type(await canvas.findByLabelText(/^Password/), "correct-horse");
     await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-horse");
     await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
-    const body = (await calls.expectSentBody(
-      "POST",
-      `/invitations/accept/${TOKEN}/accept`,
-    )) as { password: string };
+    const body = (await calls.expectSentBody("POST", `/invitations/accept/${TOKEN}/accept`)) as {
+      password: string;
+    };
     await expect(body.password).toBe("correct-horse");
   },
 };
@@ -163,9 +159,7 @@ export const AcceptRejected: Story = {
     await userEvent.type(await canvas.findByLabelText(/^Password/), "correct-horse");
     await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-horse");
     await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
-    await waitFor(() =>
-      expect(canvas.getByText(/already been accepted/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/already been accepted/)).toBeVisible());
     // the form stays, because a different link can still be pasted into it
     await expect(canvas.getByLabelText(/^Password/)).toBeVisible();
   },

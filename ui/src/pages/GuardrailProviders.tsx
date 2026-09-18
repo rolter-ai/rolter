@@ -4,11 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import {
-  GuardrailEmpty,
-  GuardrailLoading,
-  PolicyCard,
-} from "@/components/GuardrailPanel";
+import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -64,14 +60,10 @@ function GuardrailProvidersScreen() {
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
   useErrorState(!!query.error, "guardrail-providers");
-  const [editing, setEditing] = React.useState<
-    GuardrailProviderRow | null | undefined
-  >();
+  const [editing, setEditing] = React.useState<GuardrailProviderRow | null | undefined>();
   const save = useMutation({
     mutationFn: (body: GuardrailProviderInput) =>
-      editing
-        ? updateGuardrailProvider(editing.id, body)
-        : createGuardrailProvider(body),
+      editing ? updateGuardrailProvider(editing.id, body) : createGuardrailProvider(body),
     onSuccess: (_result, body) => {
       void client.invalidateQueries({ queryKey: ["guardrail-providers"] });
       // the dialog closes on success, so the outcome is announced somewhere
@@ -97,13 +89,11 @@ function GuardrailProvidersScreen() {
   });
   const remove = useMutation({
     mutationFn: deleteGuardrailProvider,
-    onSuccess: () =>
-      void client.invalidateQueries({ queryKey: ["guardrail-providers"] }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["guardrail-providers"] }),
   });
   // was a bare window.confirm; an external enforcement point going away is
   // exactly the kind of change that deserves a styled, translated dialog (#1179)
-  const [deleteTarget, setDeleteTarget] =
-    React.useState<GuardrailProviderRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<GuardrailProviderRow | null>(null);
   const startDelete = (provider: GuardrailProviderRow) => {
     remove.reset();
     setDeleteTarget(provider);
@@ -133,10 +123,7 @@ function GuardrailProvidersScreen() {
 
       {active && (
         <section className="flex items-center gap-3 rounded-[10px] border border-[color:var(--status-success)]/30 bg-[color:var(--status-success)]/5 p-4">
-          <PlugZap
-            className="h-5 w-5 text-[color:var(--status-success-text)]"
-            aria-hidden
-          />
+          <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />
           <div>
             <p className="text-sm font-medium">
               {t("pages.guardrailProviders.activeBanner", { name: active.name })}
@@ -181,21 +168,11 @@ function GuardrailProvidersScreen() {
               enabled={provider.enabled}
               badges={
                 <>
-                  <Badge
-                    tone={
-                      provider.failure_mode === "fail_closed"
-                        ? "danger"
-                        : "warning"
-                    }
-                  >
+                  <Badge tone={provider.failure_mode === "fail_closed" ? "danger" : "warning"}>
                     {provider.failure_mode.replace("_", "-")}
                   </Badge>
-                  <Badge tone="outline">
-                    {provider.stage.replace("_", "-")}
-                  </Badge>
-                  <Badge tone="info">
-                    {provider.auth_kind.replace("_", " ")}
-                  </Badge>
+                  <Badge tone="outline">{provider.stage.replace("_", "-")}</Badge>
+                  <Badge tone="info">{provider.auth_kind.replace("_", " ")}</Badge>
                 </>
               }
               details={t("pages.guardrailProviders.detailLine", {
@@ -212,9 +189,7 @@ function GuardrailProvidersScreen() {
                       name: provider.name,
                     })}
                     onClick={() => startDelete(provider)}
-                    disabled={
-                      remove.isPending && remove.variables === provider.id
-                    }
+                    disabled={remove.isPending && remove.variables === provider.id}
                   >
                     {remove.isPending && remove.variables === provider.id && (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -296,9 +271,7 @@ function ProviderDialog({
   onSave: (body: GuardrailProviderInput) => void;
 }) {
   const { t } = useTranslation();
-  const [form, setForm] = React.useState<GuardrailProviderInput>(
-    initial ?? EMPTY,
-  );
+  const [form, setForm] = React.useState<GuardrailProviderInput>(initial ?? EMPTY);
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
   const valid =
@@ -311,11 +284,11 @@ function ProviderDialog({
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
         <DialogTitle>
-          {initial ? t("pages.guardrailProviders.dialogEditTitle") : t("pages.guardrailProviders.dialogAddTitle")}
+          {initial
+            ? t("pages.guardrailProviders.dialogEditTitle")
+            : t("pages.guardrailProviders.dialogAddTitle")}
         </DialogTitle>
-        <DialogDescription>
-          {t("pages.guardrailProviders.dialogBody")}
-        </DialogDescription>
+        <DialogDescription>{t("pages.guardrailProviders.dialogBody")}</DialogDescription>
       </DialogHeader>
       <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
         <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
@@ -376,9 +349,7 @@ function ProviderDialog({
               type="number"
               min={1}
               value={form.timeout_ms}
-              onChange={(event) =>
-                set({ timeout_ms: Number(event.target.value) })
-              }
+              onChange={(event) => set({ timeout_ms: Number(event.target.value) })}
             />
           </Field>
           <Field label={t("pages.guardrailProviders.fieldRetries")} htmlFor="provider-retries">
@@ -387,9 +358,7 @@ function ProviderDialog({
               type="number"
               min={0}
               value={form.max_retries}
-              onChange={(event) =>
-                set({ max_retries: Number(event.target.value) })
-              }
+              onChange={(event) => set({ max_retries: Number(event.target.value) })}
             />
           </Field>
           <Field label={t("pages.guardrailProviders.fieldBodyCap")} htmlFor="provider-cap">
@@ -398,9 +367,7 @@ function ProviderDialog({
               type="number"
               min={1}
               value={form.max_body_bytes}
-              onChange={(event) =>
-                set({ max_body_bytes: Number(event.target.value) })
-              }
+              onChange={(event) => set({ max_body_bytes: Number(event.target.value) })}
             />
           </Field>
         </div>
@@ -433,9 +400,7 @@ function ProviderDialog({
               className="font-mono"
               placeholder="ROLTER_GUARDRAIL_TOKEN"
               value={form.auth_env ?? ""}
-              onChange={(event) =>
-                set({ auth_env: event.target.value || null })
-              }
+              onChange={(event) => set({ auth_env: event.target.value || null })}
             />
           </Field>
         )}

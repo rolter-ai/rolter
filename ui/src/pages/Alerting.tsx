@@ -10,7 +10,15 @@ import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
-import { ListHeader, ListRow, ListTable, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import {
+  ListHeader,
+  ListRow,
+  ListTable,
+  PageBody,
+  Pill,
+  StatusDot,
+  Toolbar,
+} from "@/components/screen";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -53,7 +61,11 @@ function AlertChannelsScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const channels = useQuery({ queryKey: ["alert-channels"], queryFn: fetchAlertChannels, retry: false });
+  const channels = useQuery({
+    queryKey: ["alert-channels"],
+    queryFn: fetchAlertChannels,
+    retry: false,
+  });
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!channels.isLoading);
@@ -96,7 +108,11 @@ function AlertChannelsScreen() {
             count: channels.data?.length ?? 0,
           })}
         </span>
-        <GatedButton gate="alert_channel:create" className="ml-auto" onClick={() => setAddOpen(true)}>
+        <GatedButton
+          gate="alert_channel:create"
+          className="ml-auto"
+          onClick={() => setAddOpen(true)}
+        >
           + Add channel
         </GatedButton>
       </Toolbar>
@@ -115,7 +131,11 @@ function AlertChannelsScreen() {
           icon={<Megaphone />}
           title={t("pages.alerting.channels.emptyTitle")}
           description={t("pages.alerting.channels.emptyBody")}
-          actions={<GatedButton gate="alert_channel:create" onClick={() => setAddOpen(true)}>{t("pages.alerting.channels.add")}</GatedButton>}
+          actions={
+            <GatedButton gate="alert_channel:create" onClick={() => setAddOpen(true)}>
+              {t("pages.alerting.channels.add")}
+            </GatedButton>
+          }
         />
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
@@ -160,8 +180,7 @@ function AlertChannelsScreen() {
                 }
                 aria-label={t("pages.alerting.channels.deleteAria", { name: c.name })}
                 disabled={
-                  channelDeleteGate.denied ||
-                  (remove.isPending && remove.variables === c.id)
+                  channelDeleteGate.denied || (remove.isPending && remove.variables === c.id)
                 }
                 onClick={() => startDelete(c)}
                 className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
@@ -307,11 +326,14 @@ function AlertRulesScreen() {
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!rules.isLoading);
   useErrorState(!!rules.error, "alert-rules");
-  const channels = useQuery({ queryKey: ["alert-channels"], queryFn: fetchAlertChannels, retry: false });
+  const channels = useQuery({
+    queryKey: ["alert-channels"],
+    queryFn: fetchAlertChannels,
+    retry: false,
+  });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["alert-rules"] });
 
-  const channelName = (id: string | null) =>
-    channels.data?.find((c) => c.id === id)?.name ?? "—";
+  const channelName = (id: string | null) => channels.data?.find((c) => c.id === id)?.name ?? "—";
   // the evaluate action is fired by id, and the toast names the rule
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id;
 
@@ -391,7 +413,11 @@ function AlertRulesScreen() {
               ? t("pages.alerting.rules.emptyBodyNoChannel")
               : t("pages.alerting.rules.emptyBody")
           }
-          actions={<GatedButton gate="alert_rule:create" onClick={() => setAddOpen(true)}>{t("pages.alerting.rules.add")}</GatedButton>}
+          actions={
+            <GatedButton gate="alert_rule:create" onClick={() => setAddOpen(true)}>
+              {t("pages.alerting.rules.add")}
+            </GatedButton>
+          }
         />
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
@@ -419,8 +445,14 @@ function AlertRulesScreen() {
               </div>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                 <RuleStat label={t("pages.alerting.rules.statSignal")} value={r.signal} />
-                <RuleStat label={t("pages.alerting.rules.statThreshold")} value={String(r.threshold)} />
-                <RuleStat label={t("pages.alerting.rules.statWindow")} value={`${r.window_secs}s`} />
+                <RuleStat
+                  label={t("pages.alerting.rules.statThreshold")}
+                  value={String(r.threshold)}
+                />
+                <RuleStat
+                  label={t("pages.alerting.rules.statWindow")}
+                  value={`${r.window_secs}s`}
+                />
                 <RuleStat
                   label={t("pages.alerting.rules.statLastValue")}
                   value={r.last_value === null ? "—" : String(r.last_value)}
@@ -433,7 +465,10 @@ function AlertRulesScreen() {
                       : t("pages.alerting.rules.statNever")
                   }
                 />
-                <RuleStat label={t("pages.alerting.rules.statChannel")} value={channelName(r.channel_id)} />
+                <RuleStat
+                  label={t("pages.alerting.rules.statChannel")}
+                  value={channelName(r.channel_id)}
+                />
               </div>
               {r.last_error && (
                 <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
@@ -455,13 +490,11 @@ function AlertRulesScreen() {
                 <button
                   type="button"
                   title={
-                    ruleDeleteGate.reason ??
-                    t("pages.alerting.rules.deleteAria", { name: r.name })
+                    ruleDeleteGate.reason ?? t("pages.alerting.rules.deleteAria", { name: r.name })
                   }
                   aria-label={t("pages.alerting.rules.deleteAria", { name: r.name })}
                   disabled={
-                    ruleDeleteGate.denied ||
-                    (remove.isPending && remove.variables === r.id)
+                    ruleDeleteGate.denied || (remove.isPending && remove.variables === r.id)
                   }
                   onClick={() => startDelete(r)}
                   className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
@@ -606,7 +639,11 @@ function AddRuleDialog({
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.rules.fieldName")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pages.alerting.rules.namePlaceholder")} />
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("pages.alerting.rules.namePlaceholder")}
+          />
         </Field>
         <Field label={t("pages.alerting.rules.fieldSignal")}>
           <Combobox

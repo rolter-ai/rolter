@@ -126,9 +126,7 @@ export const ReportsTimeToInteractiveOnce: Story = {
     const canvas = within(canvasElement);
     await expect(lines(canvasElement)).toEqual([]);
     await userEvent.click(canvas.getByRole("button", { name: "finish loading" }));
-    await waitFor(() =>
-      expect(lines(canvasElement)).toEqual(["time_to_interactive:providers"]),
-    );
+    await waitFor(() => expect(lines(canvasElement)).toEqual(["time_to_interactive:providers"]));
     await userEvent.click(canvas.getByRole("button", { name: "finish loading" }));
     await expect(lines(canvasElement)).toEqual(["time_to_interactive:providers"]);
   },
@@ -158,9 +156,7 @@ export const ReportsAnAbandonedForm: Story = {
     // opening on its own says nothing: the dwell is only known at the close
     await expect(lines(canvasElement).filter((l) => l.includes("form"))).toHaveLength(0);
     await userEvent.click(canvas.getByRole("button", { name: "close the sheet" }));
-    await waitFor(() =>
-      expect(lines(canvasElement)).toContain("form_abandon:providers:provider"),
-    );
+    await waitFor(() => expect(lines(canvasElement)).toContain("form_abandon:providers:provider"));
   },
 };
 

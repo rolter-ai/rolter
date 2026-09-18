@@ -92,7 +92,10 @@ type Story = StoryObj<typeof meta>;
  */
 export const GatewayModels: Story = {
   render: () => (
-    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+    <Harness
+      playgroundKey="rolter-test-key"
+      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
+    />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -126,9 +129,7 @@ export const GatewayModels: Story = {
  * smaller list is what made a provider group look like it did not exist.
  */
 export const NoKeySaysWhatIsMissing: Story = {
-  render: () => (
-    <Harness playgroundKey="" fetchStub={stubFor(async () => json({ data: [] }))} />
-  ),
+  render: () => <Harness playgroundKey="" fetchStub={stubFor(async () => json({ data: [] }))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/Showing configured routes/)).toBeVisible());
@@ -137,9 +138,7 @@ export const NoKeySaysWhatIsMissing: Story = {
     // the picker stays usable rather than emptying out
     await expect(within(listbox).getByRole("option", { name: "fake-llm" })).toBeTruthy();
     // and the gateway-only addresses are genuinely absent, as the notice says
-    await expect(
-      within(listbox).queryByRole("option", { name: "abc/minicpm5-1b" }),
-    ).toBeNull();
+    await expect(within(listbox).queryByRole("option", { name: "abc/minicpm5-1b" })).toBeNull();
     await userEvent.keyboard("{Escape}");
   },
 };
@@ -168,7 +167,10 @@ export const RejectedKeySaysSo: Story = {
 export const Mobile: Story = {
   ...atMobile,
   render: () => (
-    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+    <Harness
+      playgroundKey="rolter-test-key"
+      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
+    />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -196,7 +198,10 @@ function withDocsBase(base: string | undefined) {
 export const KeyHintLinksToTheDocs: Story = {
   beforeEach: withDocsBase("https://docs.example.com"),
   render: () => (
-    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+    <Harness
+      playgroundKey="rolter-test-key"
+      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
+    />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -209,7 +214,10 @@ export const KeyHintLinksToTheDocs: Story = {
 export const KeyHintHasNoLinkWithoutADocsHost: Story = {
   beforeEach: withDocsBase(undefined),
   render: () => (
-    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+    <Harness
+      playgroundKey="rolter-test-key"
+      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
+    />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

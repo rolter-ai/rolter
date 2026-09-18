@@ -26,7 +26,9 @@ test("provider create → edit → delete", async ({ page }) => {
     .click();
   const sheet = page.getByRole("dialog");
   await sheet.getByLabel(t("providerSheet.fields.name"), { exact: true }).fill(name);
-  await sheet.getByLabel(t("providerSheet.fields.apiBase"), { exact: true }).fill("http://sim-a:8000");
+  await sheet
+    .getByLabel(t("providerSheet.fields.apiBase"), { exact: true })
+    .fill("http://sim-a:8000");
   await sheet.getByRole("button", { name: t("providerSheet.cta.create"), exact: true }).click();
   await expect(sheet).toHaveCount(0);
 

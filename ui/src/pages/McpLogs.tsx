@@ -47,7 +47,8 @@ const STATUS_TONE: Record<string, [string, string]> = {
   transport_error: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
 };
 
-const statusTone = (s: string) => STATUS_TONE[s] ?? ["var(--text-secondary)", "var(--surface-subtle)"];
+const statusTone = (s: string) =>
+  STATUS_TONE[s] ?? ["var(--text-secondary)", "var(--surface-subtle)"];
 
 const GRID = "150px 1.1fr 1.3fr 130px 110px 90px";
 
@@ -68,7 +69,6 @@ function McpLogsScreen() {
     queryFn: () => fetchMcpSummary({ since: new Date(Date.now() - 86_400_000).toISOString() }),
     retry: false,
   });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -134,8 +134,14 @@ function McpLogsScreen() {
           label={t("pages.mcpLogs.failures")}
           value={summary.isSuccess ? String(summary.data?.failures ?? 0) : "—"}
         />
-        <McpStat label={t("pages.mcpLogs.avgLatency")} value={latencyStat(summary.data?.avg_latency_ms, ms)} />
-        <McpStat label={t("pages.mcpLogs.p95Latency")} value={latencyStat(summary.data?.p95_latency_ms, ms)} />
+        <McpStat
+          label={t("pages.mcpLogs.avgLatency")}
+          value={latencyStat(summary.data?.avg_latency_ms, ms)}
+        />
+        <McpStat
+          label={t("pages.mcpLogs.p95Latency")}
+          value={latencyStat(summary.data?.p95_latency_ms, ms)}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
@@ -324,7 +330,10 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DrawerStat label={t("pages.mcpLogs.status")} value={d.status} />
-            <DrawerStat label={t("pages.mcpLogs.latency")} value={t("analytics.ms", { value: fmt.number(Math.round(d.latency_ms)) })} />
+            <DrawerStat
+              label={t("pages.mcpLogs.latency")}
+              value={t("analytics.ms", { value: fmt.number(Math.round(d.latency_ms)) })}
+            />
             <DrawerStat label={t("pages.mcpLogs.transport")} value={d.transport} />
             <DrawerStat label={t("pages.mcpLogs.time")} value={fmt.dateTime(d.ts)} />
             <DrawerStat label={t("pages.mcpLogs.request")} value={d.request_id || "—"} />
@@ -415,13 +424,7 @@ function DrawerBlock({
       {/* tool arguments and results are JSON almost always and opaque text
           occasionally; the shared block colours the first and leaves the
           second alone (#949) */}
-      <CodeBlock
-        value={body}
-        language={language}
-        label={label}
-        maxHeight={220}
-        density="compact"
-      />
+      <CodeBlock value={body} language={language} label={label} maxHeight={220} density="compact" />
     </div>
   );
 }

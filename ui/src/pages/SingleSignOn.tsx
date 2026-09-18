@@ -65,15 +65,7 @@ function roleLabel(t: TFunction, role: string): string {
 }
 
 // a labelled line inside a provider card: mono value, optionally copyable
-function Detail({
-  label,
-  value,
-  copyLabel,
-}: {
-  label: string;
-  value: string;
-  copyLabel?: string;
-}) {
+function Detail({ label, value, copyLabel }: { label: string; value: string; copyLabel?: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="w-[104px] flex-none text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
@@ -133,13 +125,7 @@ const MFA_DOCS_URL =
  * session to any member who has not armed a factor yet — so it is the one
  * that confirms first, and the confirmation names the way back in.
  */
-function SignInPolicyCard({
-  orgId,
-  policy,
-}: {
-  orgId: string;
-  policy: OrgAuthPolicy;
-}) {
+function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPolicy }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -205,12 +191,8 @@ function SignInPolicyCard({
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
-        <h2 className="text-sm font-medium text-foreground">
-          {t("pages.sso.policy.title")}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("pages.sso.policy.subtitle")}
-        </p>
+        <h2 className="text-sm font-medium text-foreground">{t("pages.sso.policy.title")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.subtitle")}</p>
       </header>
       <div className="flex flex-col gap-4 px-4 py-4">
         <div className="flex items-start justify-between gap-4">
@@ -230,12 +212,8 @@ function SignInPolicyCard({
         </div>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
-              {t("pages.sso.policy.ssoLabel")}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.sso.policy.ssoHint")}
-            </p>
+            <p className="text-sm font-medium text-foreground">{t("pages.sso.policy.ssoLabel")}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.ssoHint")}</p>
           </div>
           <Switch
             checked={sso}
@@ -344,8 +322,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
     retry: false,
   });
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [MAPPINGS_KEY, provider.id] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: [MAPPINGS_KEY, provider.id] });
 
   const [group, setGroup] = React.useState("");
   const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
@@ -380,9 +357,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
 
   // a mapping is what puts people in a role, so removing one takes access away
   // from everyone in that group — named and confirmed first (#1179)
-  const [removeTarget, setRemoveTarget] = React.useState<SsoGroupMappingRow | null>(
-    null,
-  );
+  const [removeTarget, setRemoveTarget] = React.useState<SsoGroupMappingRow | null>(null);
   const startRemove = (mapping: SsoGroupMappingRow) => {
     remove.reset();
     setRemoveTarget(mapping);
@@ -637,10 +612,7 @@ function ProviderCard({
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
         <Detail label={t("pages.sso.providers.issuer")} value={provider.issuer} />
-        <Detail
-          label={t("pages.sso.providers.clientId")}
-          value={provider.client_id}
-        />
+        <Detail label={t("pages.sso.providers.clientId")} value={provider.client_id} />
         <Detail
           label={t("pages.sso.providers.clientSecret")}
           value={
@@ -654,14 +626,8 @@ function ProviderCard({
           value={startUrl}
           copyLabel={t("pages.sso.providers.copyStartUrl")}
         />
-        <Detail
-          label={t("pages.sso.providers.groupClaim")}
-          value={provider.group_claim}
-        />
-        <Detail
-          label={t("pages.sso.providers.scopes")}
-          value={provider.scopes.join(" ")}
-        />
+        <Detail label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
+        <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
       </div>
 
       <GroupMappings provider={provider} />
@@ -728,10 +694,7 @@ function ProviderSheet({
   const { t } = useTranslation();
   const toast = useToast();
   const editing = !!provider;
-  const initial = React.useMemo(
-    () => (provider ? draftFrom(provider) : EMPTY_DRAFT),
-    [provider],
-  );
+  const initial = React.useMemo(() => (provider ? draftFrom(provider) : EMPTY_DRAFT), [provider]);
   const [draft, setDraft] = React.useState<Draft>(initial);
 
   React.useEffect(() => {
@@ -740,7 +703,10 @@ function ProviderSheet({
 
   const scopeList = () =>
     draft.scopes.trim()
-      ? draft.scopes.trim().split(/[\s,]+/).filter(Boolean)
+      ? draft.scopes
+          .trim()
+          .split(/[\s,]+/)
+          .filter(Boolean)
       : undefined;
 
   const save = useMutation({
@@ -779,12 +745,8 @@ function ProviderSheet({
       // that outlives it (#1197)
       toast.push({
         tone: "success",
-        title: editing
-          ? t("toast.saved")
-          : t("toast.created", { what: draft.name.trim() }),
-        detail: editing
-          ? t("toast.savedDetail", { what: draft.name.trim() })
-          : undefined,
+        title: editing ? t("toast.saved") : t("toast.created", { what: draft.name.trim() }),
+        detail: editing ? t("toast.savedDetail", { what: draft.name.trim() }) : undefined,
       });
       onSaved();
       onOpenChange(false);
@@ -813,9 +775,7 @@ function ProviderSheet({
       open={open}
       onOpenChange={onOpenChange}
       title={editing ? t("pages.sso.edit.title") : t("pages.sso.create.title")}
-      subtitle={
-        editing ? t("pages.sso.edit.subtitle") : t("pages.sso.create.subtitle")
-      }
+      subtitle={editing ? t("pages.sso.edit.subtitle") : t("pages.sso.create.subtitle")}
       dirty={dirty}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={editing ? t("pages.sso.edit.save") : t("pages.sso.create.save")}
@@ -823,10 +783,7 @@ function ProviderSheet({
       saving={save.isPending}
       onSave={() => save.mutate()}
     >
-      <Field
-        label={t("pages.sso.create.name")}
-        hint={t("pages.sso.create.nameHint")}
-      >
+      <Field label={t("pages.sso.create.name")} hint={t("pages.sso.create.nameHint")}>
         <Input
           value={draft.name}
           onChange={(e) => set({ name: e.target.value })}
@@ -835,11 +792,7 @@ function ProviderSheet({
       </Field>
       <Field
         label={t("pages.sso.create.slug")}
-        hint={
-          editing
-            ? t("pages.sso.edit.slugImmutable")
-            : t("pages.sso.create.slugHint")
-        }
+        hint={editing ? t("pages.sso.edit.slugImmutable") : t("pages.sso.create.slugHint")}
       >
         <Input
           value={draft.slug}
@@ -848,20 +801,14 @@ function ProviderSheet({
           placeholder={t("pages.sso.create.slugPlaceholder")}
         />
       </Field>
-      <Field
-        label={t("pages.sso.create.issuer")}
-        hint={t("pages.sso.create.issuerHint")}
-      >
+      <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")}>
         <Input
           value={draft.issuer}
           onChange={(e) => set({ issuer: e.target.value })}
           placeholder={t("pages.sso.create.issuerPlaceholder")}
         />
       </Field>
-      <Field
-        label={t("pages.sso.create.clientId")}
-        hint={t("pages.sso.create.clientIdHint")}
-      >
+      <Field label={t("pages.sso.create.clientId")} hint={t("pages.sso.create.clientIdHint")}>
         <Input
           value={draft.clientId}
           onChange={(e) => set({ clientId: e.target.value })}
@@ -871,9 +818,7 @@ function ProviderSheet({
       <Field
         label={t("pages.sso.create.clientSecret")}
         hint={
-          editing
-            ? t("pages.sso.edit.clientSecretHint")
-            : t("pages.sso.create.clientSecretHint")
+          editing ? t("pages.sso.edit.clientSecretHint") : t("pages.sso.create.clientSecretHint")
         }
       >
         <Input
@@ -885,30 +830,21 @@ function ProviderSheet({
       <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
         {t("pages.sso.create.secretWriteOnly")}
       </p>
-      <Field
-        label={t("pages.sso.create.scopes")}
-        hint={t("pages.sso.create.scopesHint")}
-      >
+      <Field label={t("pages.sso.create.scopes")} hint={t("pages.sso.create.scopesHint")}>
         <Input
           value={draft.scopes}
           onChange={(e) => set({ scopes: e.target.value })}
           placeholder={t("pages.sso.create.scopesPlaceholder")}
         />
       </Field>
-      <Field
-        label={t("pages.sso.create.groupClaim")}
-        hint={t("pages.sso.create.groupClaimHint")}
-      >
+      <Field label={t("pages.sso.create.groupClaim")} hint={t("pages.sso.create.groupClaimHint")}>
         <Input
           value={draft.groupClaim}
           onChange={(e) => set({ groupClaim: e.target.value })}
           placeholder={t("pages.sso.create.groupClaimPlaceholder")}
         />
       </Field>
-      <Field
-        label={t("pages.sso.create.defaultRole")}
-        hint={t("pages.sso.create.defaultRoleHint")}
-      >
+      <Field label={t("pages.sso.create.defaultRole")} hint={t("pages.sso.create.defaultRoleHint")}>
         <Combobox
           value={draft.defaultRole}
           onChange={(defaultRole) => set({ defaultRole })}
@@ -955,8 +891,7 @@ export default function SingleSignOn() {
   useScreenReady(!providers.isLoading);
   useErrorState(!!providers.error, "sso");
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY, orgId] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY, orgId] });
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteSsoProvider(id),
@@ -966,13 +901,7 @@ export default function SingleSignOn() {
   // the switch on a card sends the row back unchanged except for `enabled`,
   // and omits `client_secret` so the sealed one is left alone (#1233)
   const toggle = useMutation({
-    mutationFn: ({
-      provider,
-      enabled,
-    }: {
-      provider: SsoProviderRow;
-      enabled: boolean;
-    }) =>
+    mutationFn: ({ provider, enabled }: { provider: SsoProviderRow; enabled: boolean }) =>
       updateSsoProvider(provider.id, {
         name: provider.name,
         issuer: provider.issuer,
@@ -1030,16 +959,12 @@ export default function SingleSignOn() {
     setEditing(provider);
     setSheetOpen(true);
   };
-  const [deleteTarget, setDeleteTarget] = React.useState<SsoProviderRow | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = React.useState<SsoProviderRow | null>(null);
   const startDelete = (provider: SsoProviderRow) => {
     remove.reset();
     setDeleteTarget(provider);
   };
-  const [secretTarget, setSecretTarget] = React.useState<SsoProviderRow | null>(
-    null,
-  );
+  const [secretTarget, setSecretTarget] = React.useState<SsoProviderRow | null>(null);
   const startClearSecret = (provider: SsoProviderRow) => {
     clearSecret.reset();
     setSecretTarget(provider);
@@ -1069,14 +994,10 @@ export default function SingleSignOn() {
           onRetry={() => policy.refetch()}
         />
       )}
-      {policy.data && orgId && (
-        <SignInPolicyCard orgId={orgId} policy={policy.data} />
-      )}
+      {policy.data && orgId && <SignInPolicyCard orgId={orgId} policy={policy.data} />}
 
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-sm font-medium text-foreground">
-          {t("pages.sso.providers.title")}
-        </h2>
+        <h2 className="text-sm font-medium text-foreground">{t("pages.sso.providers.title")}</h2>
         <span className="text-sm text-muted-foreground">
           {t("pages.sso.providers.count", { count: rows.length })}
         </span>
@@ -1119,19 +1040,13 @@ export default function SingleSignOn() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
-                clearingSecret={
-                  clearSecret.isPending && clearSecret.variables?.id === provider.id
-                }
+                clearingSecret={clearSecret.isPending && clearSecret.variables?.id === provider.id}
                 deleting={remove.isPending && remove.variables === provider.id}
-                toggling={
-                  toggle.isPending && toggle.variables?.provider.id === provider.id
-                }
+                toggling={toggle.isPending && toggle.variables?.provider.id === provider.id}
                 onClearSecret={startClearSecret}
                 onDelete={startDelete}
                 onEdit={openEdit}
-                onToggle={(target, enabled) =>
-                  toggle.mutate({ provider: target, enabled })
-                }
+                onToggle={(target, enabled) => toggle.mutate({ provider: target, enabled })}
               />
             ))}
           </div>

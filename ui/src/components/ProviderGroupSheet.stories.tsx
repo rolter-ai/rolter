@@ -26,10 +26,7 @@ const provider = (id: string, name: string): ProviderRow => ({
   created_at: "2026-01-01T00:00:00Z",
 });
 
-const PROVIDERS: ProviderRow[] = [
-  provider("prov-1", "vllm-a"),
-  provider("prov-2", "vllm-b"),
-];
+const PROVIDERS: ProviderRow[] = [provider("prov-1", "vllm-a"), provider("prov-2", "vllm-b")];
 
 const GROUP: ProviderGroupRow = {
   id: "grp-1",
@@ -155,10 +152,10 @@ export const CreatesAGroup: Story = {
     await userEvent.type(dialog.getByLabelText("Name"), "vllm-cluster");
     await userEvent.click(dialog.getByRole("button", { name: /add member/i }));
     await userEvent.click(dialog.getByRole("button", { name: "Create group" }));
-    const body = (await calls.expectSentBody(
-      "POST",
-      `/orgs/${ORG.id}/provider-groups`,
-    )) as { name: string; members: { provider_id: string; weight: number }[] };
+    const body = (await calls.expectSentBody("POST", `/orgs/${ORG.id}/provider-groups`)) as {
+      name: string;
+      members: { provider_id: string; weight: number }[];
+    };
     await expect(body.name).toBe("vllm-cluster");
     // a member added with the defaults still carries a usable weight
     await expect(body.members).toEqual([{ provider_id: "prov-1", weight: 1 }]);

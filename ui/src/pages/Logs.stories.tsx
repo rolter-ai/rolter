@@ -14,11 +14,7 @@ import {
   scoped,
   type FetchStub,
 } from "./story-harness";
-import type {
-  BusinessUnitRow,
-  CustomerRow,
-  InvocationRow,
-} from "@/lib/api";
+import type { BusinessUnitRow, CustomerRow, InvocationRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -120,8 +116,7 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       );
       return json({ data });
     }
-    if (url.pathname === "/api/v1/currency")
-      return json({ base, codes: [base], rates: {} });
+    if (url.pathname === "/api/v1/currency") return json({ base, codes: [base], rates: {} });
     if (url.pathname === "/api/v1/models") return json([]);
     if (url.pathname.includes("/business-units")) return json([UNIT]);
     if (url.pathname.includes("/customers")) return json([CUSTOMER]);
@@ -195,8 +190,9 @@ export const EveryRowShowsItsOwnTimestamp: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(fmt.dateTimeMs(BURST[0].ts));
-    const stamps = Array.from(canvasElement.querySelectorAll("tbody tr"), (tr) =>
-      tr.querySelector("td")?.textContent ?? "",
+    const stamps = Array.from(
+      canvasElement.querySelectorAll("tbody tr"),
+      (tr) => tr.querySelector("td")?.textContent ?? "",
     );
     await expect(stamps).toEqual(BURST.map((r) => fmt.dateTimeMs(r.ts)));
     // four distinct instants, milliseconds included, and the tie kept both rows
@@ -232,11 +228,7 @@ export const UnpricedRequestsAreNotFree: Story = {
  */
 export const AZeroCostThatIsNotUnpricedReadsAsFree: Story = {
   render: () => (
-    <Harness
-      fetchStub={withLogs([
-        row({ request_id: "req-free", cost_usd: 0, unpriced: 0 }),
-      ])}
-    >
+    <Harness fetchStub={withLogs([row({ request_id: "req-free", cost_usd: 0, unpriced: 0 })])}>
       <Logs />
     </Harness>
   ),
@@ -362,12 +354,8 @@ export const FiltersByBusinessUnit: Story = {
     await expect(await canvas.findByText("internal-llama")).toBeInTheDocument();
 
     await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Business unit" }),
-    );
-    await userEvent.click(
-      await canvas.findByRole("checkbox", { name: "Platform Engineering" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Business unit" }));
+    await userEvent.click(await canvas.findByRole("checkbox", { name: "Platform Engineering" }));
 
     // only the attributed row survives; the unattributed one is not "cheap",
     // it is charged to nobody, and a business-unit report must not include it
@@ -411,17 +399,11 @@ export const TheAttributionFilterIsSentToTheServer: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("internal-llama");
     await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Business unit" }),
-    );
-    await userEvent.click(
-      await canvas.findByRole("checkbox", { name: "Platform Engineering" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Business unit" }));
+    await userEvent.click(await canvas.findByRole("checkbox", { name: "Platform Engineering" }));
 
     await waitFor(() => {
-      const asked = filtered.calls.find((c) =>
-        c.url.includes("business_unit=unit-1"),
-      );
+      const asked = filtered.calls.find((c) => c.url.includes("business_unit=unit-1"));
       expect(asked).toBeDefined();
     });
 
@@ -523,12 +505,9 @@ const cursorPaged = (rows: InvocationRow[], failAfterFirst = false): FetchStub =
     const url = new URL(String(input), "http://localhost");
     if (url.pathname === "/api/v1/analytics/invocations") {
       const cursor = url.searchParams.get("cursor");
-      if (cursor && failAfterFirst)
-        return json({ error: { message: "clickhouse refused" } }, 500);
+      if (cursor && failAfterFirst) return json({ error: { message: "clickhouse refused" } }, 500);
       const limit = Number(url.searchParams.get("limit") ?? 50);
-      const from = cursor
-        ? rows.findIndex((r) => `${r.ts}|${r.request_id}` === cursor) + 1
-        : 0;
+      const from = cursor ? rows.findIndex((r) => `${r.ts}|${r.request_id}` === cursor) + 1 : 0;
       const data = rows.slice(from, from + limit);
       const last = data[data.length - 1];
       return json({ data, next_cursor: last ? `${last.ts}|${last.request_id}` : null });
@@ -562,9 +541,7 @@ export const PagesOnTheCursor: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
     // the second page starts at the 51st row and holds the ten that are left
     await canvas.findByText(fmt.dateTimeMs(SIXTY[50].ts));
-    await waitFor(() =>
-      expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(10),
-    );
+    await waitFor(() => expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(10));
     const sent = paged.calls.filter((c) => c.url.includes("/analytics/invocations"));
     const cursor = `${SIXTY[49].ts}|${SIXTY[49].request_id}`;
     await expect(

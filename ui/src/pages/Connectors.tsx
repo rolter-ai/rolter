@@ -91,9 +91,7 @@ function CollectorConfigDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogHeader>
         <DialogTitle>{t("pages.connectors.collectorConfig.title")}</DialogTitle>
-        <DialogDescription>
-          {t("pages.connectors.collectorConfig.where")}
-        </DialogDescription>
+        <DialogDescription>{t("pages.connectors.collectorConfig.where")}</DialogDescription>
       </DialogHeader>
 
       {/* no connectors means no exporters and no pipelines: the document is
@@ -329,19 +327,17 @@ function ConnectorsScreen() {
                 )}
                 <button
                   type="button"
-                  title={
-                    deleteGate.reason ??
-                    t("pages.connectors.deleteAria", { name: c.name })
-                  }
+                  title={deleteGate.reason ?? t("pages.connectors.deleteAria", { name: c.name })}
                   aria-label={t("pages.connectors.deleteAria", { name: c.name })}
-                  disabled={
-                    deleteGate.denied ||
-                    (remove.isPending && remove.variables === c.id)
-                  }
+                  disabled={deleteGate.denied || (remove.isPending && remove.variables === c.id)}
                   onClick={() => startDelete(c)}
                   className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {remove.isPending && remove.variables === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  {remove.isPending && remove.variables === c.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
                 </button>
               </div>
             </div>

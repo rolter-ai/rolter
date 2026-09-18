@@ -37,9 +37,9 @@ const BASE: LoggingSettingsDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <LogsSettings />
-    </Toasted>
+      <Toasted>
+        <LogsSettings />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -83,9 +83,7 @@ export const TheCaptureSwitchStatesWhatItStores: Story = {
 // and the metadata stream is untouched
 export const TheCaptureSwitchStatesWhatItDoesNotStore: Story = {
   render: () => (
-    <Harness
-      fetchStub={async () => json({ ...BASE, payload_capture_enabled: false })}
-    />
+    <Harness fetchStub={async () => json({ ...BASE, payload_capture_enabled: false })} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -99,15 +97,11 @@ export const TheCaptureSwitchStatesWhatItDoesNotStore: Story = {
 // only narrow a capture that is not happening
 export const CaptureDisabled: Story = {
   render: () => (
-    <Harness
-      fetchStub={async () => json({ ...BASE, payload_capture_enabled: false })}
-    />
+    <Harness fetchStub={async () => json({ ...BASE, payload_capture_enabled: false })} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByLabelText("Max bytes per payload")).toBeDisabled(),
-    );
+    await waitFor(() => expect(canvas.getByLabelText("Max bytes per payload")).toBeDisabled());
     await expect(canvas.getByLabelText("Redacted Fields")).toBeDisabled();
     // retention is not capture-scoped, so it stays editable
     await expect(canvas.getByLabelText("Retention days")).toBeEnabled();
@@ -124,9 +118,7 @@ export const Loading: Story = {
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },
@@ -142,9 +134,7 @@ export const PayloadRetentionCannotOutliveLogs: Story = {
     await userEvent.clear(days);
     await userEvent.type(days, "1");
     await waitFor(() =>
-      expect(
-        canvas.getByText("Payload retention cannot outlive log retention."),
-      ).toBeVisible(),
+      expect(canvas.getByText("Payload retention cannot outlive log retention.")).toBeVisible(),
     );
     await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
   },
@@ -201,9 +191,7 @@ export const SaveRejectedByTheServer: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
 
     await expectToast(canvasElement, /collector rejected the sample rate/, "error");
-    await waitFor(() =>
-      expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10"),
-    );
+    await waitFor(() => expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10"));
   },
 };
 

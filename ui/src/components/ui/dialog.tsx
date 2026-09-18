@@ -104,7 +104,5 @@ export function DialogDescription({
 }
 
 export function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div className={cn("mt-6 flex justify-end gap-2", className)} {...props} />
-  );
+  return <div className={cn("mt-6 flex justify-end gap-2", className)} {...props} />;
 }

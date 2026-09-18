@@ -42,9 +42,9 @@ const CONFIGURED: ModelDefaultsDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <ModelSettings />
-    </Toasted>
+      <Toasted>
+        <ModelSettings />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -85,9 +85,7 @@ export const Loading: Story = {
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>

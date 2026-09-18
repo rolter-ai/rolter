@@ -22,7 +22,12 @@ function rand(prefix: string): string {
   return `${prefix}-${randomUUID().slice(0, 6)}`;
 }
 
-async function api<T>(method: string, path: string, body?: unknown, token = ADMIN_TOKEN): Promise<T> {
+async function api<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  token = ADMIN_TOKEN,
+): Promise<T> {
   const res = await fetch(`${CONTROL_URL}${path}`, {
     method,
     headers: {
@@ -45,7 +50,9 @@ type WithId = { id: string };
 export async function seedTenant(): Promise<SeededTenant> {
   const slug = rand("e2e");
   const org = await api<WithId>("POST", "/api/v1/orgs", { name: rand("e2e-org"), slug });
-  const team = await api<WithId>("POST", `/api/v1/orgs/${org.id}/teams`, { name: rand("e2e-team") });
+  const team = await api<WithId>("POST", `/api/v1/orgs/${org.id}/teams`, {
+    name: rand("e2e-team"),
+  });
   const project = await api<WithId>("POST", `/api/v1/teams/${team.id}/projects`, {
     name: rand("e2e-proj"),
   });
@@ -55,12 +62,7 @@ export async function seedTenant(): Promise<SeededTenant> {
   await api("POST", `/api/v1/orgs/${org.id}/users`, { email, password, role: "admin" });
 
   // real login → session token (no admin token; this is the user's own session)
-  const auth = await api<{ token: string }>(
-    "POST",
-    "/api/v1/auth/login",
-    { email, password },
-    "",
-  );
+  const auth = await api<{ token: string }>("POST", "/api/v1/auth/login", { email, password }, "");
 
   return {
     orgId: org.id,

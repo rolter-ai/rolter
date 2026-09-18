@@ -24,11 +24,7 @@
 // placed anywhere but inside a `parameters` object.
 
 /** The three page-level axe rules `.storybook/test-runner.ts` turns off by default. */
-export const PAGE_A11Y_RULE_IDS = [
-  "region",
-  "landmark-one-main",
-  "page-has-heading-one",
-] as const;
+export const PAGE_A11Y_RULE_IDS = ["region", "landmark-one-main", "page-has-heading-one"] as const;
 
 // the runner checks these two story families by id rather than trusting the
 // parameter it is handed: a fixture that carries `parameters` can be dropped

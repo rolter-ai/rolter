@@ -50,7 +50,9 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
   React.useEffect(() => {
     if (!open) return;
     const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
-    const current = Array.from(items ?? []).find((el) => el.getAttribute("aria-checked") === "true");
+    const current = Array.from(items ?? []).find(
+      (el) => el.getAttribute("aria-checked") === "true",
+    );
     (current ?? items?.[0])?.focus();
   }, [open]);
   const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -113,7 +115,10 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
               >
                 <span className="min-w-0 flex-1 truncate">{LOCALE_NAMES[locale]}</span>
                 {selected && (
-                  <Check aria-hidden className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
+                  <Check
+                    aria-hidden
+                    className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]"
+                  />
                 )}
               </button>
             );

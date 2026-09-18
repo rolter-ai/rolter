@@ -21,13 +21,7 @@ import { cn } from "@/lib/utils";
  * before the chunk lands and re-flows into the formatted version, rather than
  * flickering between two empty states.
  */
-export function Markdown({
-  source,
-  className,
-}: {
-  source: string;
-  className?: string;
-}) {
+export function Markdown({ source, className }: { source: string; className?: string }) {
   const [blocks, setBlocks] = React.useState<MdBlock[] | null>(null);
 
   React.useEffect(() => {
@@ -45,9 +39,7 @@ export function Markdown({
   }, [source]);
 
   if (!blocks) {
-    return (
-      <div className={cn("whitespace-pre-wrap break-words", className)}>{source}</div>
-    );
+    return <div className={cn("whitespace-pre-wrap break-words", className)}>{source}</div>;
   }
 
   return (
@@ -122,7 +114,12 @@ function Block({ block }: { block: MdBlock }) {
       );
     case "table":
       return (
-        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={t("markdown.table")}>
+        <div
+          className="overflow-x-auto"
+          tabIndex={0}
+          role="region"
+          aria-label={t("markdown.table")}
+        >
           <table className="w-full border-collapse text-left">
             <thead>
               <tr>

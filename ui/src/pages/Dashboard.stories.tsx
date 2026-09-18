@@ -3,7 +3,15 @@ import { MemoryRouter } from "react-router";
 import { expect, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
-import { Harness, expectSkeleton, json, pending, routes, scoped, type FetchStub } from "./story-harness";
+import {
+  Harness,
+  expectSkeleton,
+  json,
+  pending,
+  routes,
+  scoped,
+  type FetchStub,
+} from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -216,9 +224,7 @@ export const NoAnalyticsStore: Story = {
     ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/Analytics are not configured/i),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/Analytics are not configured/i)).toBeVisible();
     await expect(canvas.getByText(/CLICKHOUSE_URL/)).toBeVisible();
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
   },

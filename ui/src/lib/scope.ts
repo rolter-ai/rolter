@@ -77,19 +77,14 @@ export function useScope(): ScopeResult {
   // the first org this account is actually a member of, from /auth/me (#1196).
   // optional because scope is also read outside a session — and outside the
   // provider entirely, in stories
-  const memberOrgId = useOptionalAuth()?.memberships.find((m) => m.org_id)
-    ?.org_id;
+  const memberOrgId = useOptionalAuth()?.memberships.find((m) => m.org_id)?.org_id;
   // prefer the stored id if it still exists in the fetched list, then the org
   // the account belongs to, and only then the first org the control plane
   // happened to return — this also self-heals a stale stored id (e.g. the org
   // was deleted from another session)
   const orgId =
-    (stored.orgId && orgs.data?.some((o) => o.id === stored.orgId)
-      ? stored.orgId
-      : undefined) ??
-    (memberOrgId && orgs.data?.some((o) => o.id === memberOrgId)
-      ? memberOrgId
-      : undefined) ??
+    (stored.orgId && orgs.data?.some((o) => o.id === stored.orgId) ? stored.orgId : undefined) ??
+    (memberOrgId && orgs.data?.some((o) => o.id === memberOrgId) ? memberOrgId : undefined) ??
     orgs.data?.[0]?.id;
 
   const teams = useQuery({

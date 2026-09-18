@@ -106,8 +106,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
 
   const rows = mappings.data ?? [];
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [MAPPINGS_QUERY_KEY, orgId] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: [MAPPINGS_QUERY_KEY, orgId] });
 
   const [group, setGroup] = React.useState("");
   const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
@@ -149,8 +148,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
 
   // a mapping is what puts people in a role, so removing one takes access away
   // from everyone in that group — named and confirmed first (#1179)
-  const [removeTarget, setRemoveTarget] =
-    React.useState<ScimGroupMappingRow | null>(null);
+  const [removeTarget, setRemoveTarget] = React.useState<ScimGroupMappingRow | null>(null);
   const startRemove = (mapping: ScimGroupMappingRow) => {
     remove.reset();
     setRemoveTarget(mapping);
@@ -243,9 +241,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
             disabled={!canManage || !group.trim() || create.isPending}
             onClick={() => create.mutate()}
           >
-            {create.isPending && (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            )}
+            {create.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
             {t("pages.userProvisioning.mappings.add")}
           </GatedButton>
         </div>
@@ -297,7 +293,6 @@ export default function UserProvisioning() {
     enabled: !!orgId,
     retry: false,
   });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -409,7 +404,11 @@ export default function UserProvisioning() {
           />
         </span>
         <div className="ml-auto">
-          <GatedButton gate="scim_token:create" disabled={!canManage} onClick={() => setIssueOpen(true)}>
+          <GatedButton
+            gate="scim_token:create"
+            disabled={!canManage}
+            onClick={() => setIssueOpen(true)}
+          >
             <Plus className="h-4 w-4" />
             {t("pages.userProvisioning.issueToken")}
           </GatedButton>
@@ -417,9 +416,7 @@ export default function UserProvisioning() {
       </div>
 
       {forbidden && (
-        <p className="text-sm text-muted-foreground">
-          {t("pages.userProvisioning.forbidden")}
-        </p>
+        <p className="text-sm text-muted-foreground">{t("pages.userProvisioning.forbidden")}</p>
       )}
       {tokens.isError && !forbidden && (
         <LoadError
@@ -429,7 +426,9 @@ export default function UserProvisioning() {
         />
       )}
       {revoke.isError && (
-        <p className="text-sm text-[color:var(--status-danger-text)]">{(revoke.error as Error).message}</p>
+        <p className="text-sm text-[color:var(--status-danger-text)]">
+          {(revoke.error as Error).message}
+        </p>
       )}
 
       {!forbidden && (
@@ -444,7 +443,11 @@ export default function UserProvisioning() {
               title={t("pages.userProvisioning.emptyTitle")}
               description={t("pages.userProvisioning.emptyBody")}
               actions={
-                <GatedButton gate="scim_token:create" disabled={!canManage} onClick={() => setIssueOpen(true)}>
+                <GatedButton
+                  gate="scim_token:create"
+                  disabled={!canManage}
+                  onClick={() => setIssueOpen(true)}
+                >
                   {t("pages.userProvisioning.emptyAction")}
                 </GatedButton>
               }
@@ -455,9 +458,7 @@ export default function UserProvisioning() {
 
       {/* the second half of provisioning: who exists comes from /scim/v2/Users,
           what they may do comes from a mapping written here (#1186) */}
-      {orgId && !forbidden && (
-        <GroupMappings orgId={orgId} canManage={canManage} />
-      )}
+      {orgId && !forbidden && <GroupMappings orgId={orgId} canManage={canManage} />}
 
       {orgId && (
         <IssueTokenSheet
@@ -468,10 +469,7 @@ export default function UserProvisioning() {
         />
       )}
 
-      <Dialog
-        open={!!revokeTarget}
-        onOpenChange={(open) => !open && setRevokeTarget(null)}
-      >
+      <Dialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <DialogHeader>
           <DialogTitle>{t("pages.userProvisioning.revokeTitle")}</DialogTitle>
           <DialogDescription>
@@ -573,10 +571,7 @@ function IssueTokenSheet({
                 >
                   {issued.secret}
                 </code>
-                <CopyButton
-                  value={issued.secret}
-                  label={t("pages.userProvisioning.copyToken")}
-                />
+                <CopyButton value={issued.secret} label={t("pages.userProvisioning.copyToken")} />
               </div>
             </div>
             <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
@@ -621,13 +616,8 @@ function IssueTokenSheet({
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 {t("common.cancel")}
               </Button>
-              <Button
-                disabled={!name.trim() || create.isPending}
-                onClick={() => create.mutate()}
-              >
-                {create.isPending && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                )}
+              <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
+                {create.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {t("pages.userProvisioning.issueToken")}
               </Button>
             </>

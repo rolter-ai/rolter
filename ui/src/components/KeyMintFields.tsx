@@ -177,9 +177,7 @@ export function KeyModelsField({
   const offered = [...options, ...custom];
 
   const toggle = (model: string) =>
-    onChange(
-      value.includes(model) ? value.filter((m) => m !== model) : [...value, model],
-    );
+    onChange(value.includes(model) ? value.filter((m) => m !== model) : [...value, model]);
 
   // a paste of the old comma-separated form still lands as several entries,
   // so nothing an operator already has written down stops working

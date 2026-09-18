@@ -28,13 +28,7 @@ import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogDescription,
@@ -97,9 +91,7 @@ export default function Account() {
 
   const [mintOpen, setMintOpen] = React.useState(false);
   const [minted, setMinted] = React.useState<MintedKey | null>(null);
-  const [deleteTarget, setDeleteTarget] = React.useState<OwnedKeyRow | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = React.useState<OwnedKeyRow | null>(null);
 
   // usage rows keyed by virtual_key_id, for merging into each key card
   const usageByKey = React.useMemo(() => {
@@ -148,9 +140,7 @@ export default function Account() {
           // did; offering the button would just move the dead end one click
           // later (#942)
           disabled={!scope.projectId || selfServiceUnavailable}
-          title={
-            scope.projectId ? undefined : t("account.keys.selectProject")
-          }
+          title={scope.projectId ? undefined : t("account.keys.selectProject")}
         >
           <Plus className="h-4 w-4" />
           {t("account.keys.generate")}
@@ -181,16 +171,10 @@ export default function Account() {
           title={t("account.keys.emptyTitle")}
           // without a project the mint dialog has nowhere to post, so the
           // placeholder says what to do instead of offering a dead button
-          description={
-            scope.projectId
-              ? t("account.keys.empty")
-              : t("account.keys.selectProject")
-          }
+          description={scope.projectId ? t("account.keys.empty") : t("account.keys.selectProject")}
           actions={
             scope.projectId && !selfServiceUnavailable ? (
-              <Button onClick={() => setMintOpen(true)}>
-                {t("account.keys.generate")}
-              </Button>
+              <Button onClick={() => setMintOpen(true)}>{t("account.keys.generate")}</Button>
             ) : undefined
           }
         />
@@ -225,9 +209,7 @@ export default function Account() {
           open={mintOpen}
           onOpenChange={setMintOpen}
           projectId={scope.projectId}
-          projectLabel={
-            scope.projects.find((p) => p.id === scope.projectId)?.name
-          }
+          projectLabel={scope.projects.find((p) => p.id === scope.projectId)?.name}
           providers={providers.data ?? []}
           onMinted={(m) => {
             invalidate();
@@ -236,10 +218,7 @@ export default function Account() {
         />
       )}
 
-      <Dialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
           <DialogTitle>{t("account.keys.delete.title")}</DialogTitle>
           <DialogDescription>
@@ -282,10 +261,7 @@ export default function Account() {
         </DialogFooter>
       </Dialog>
 
-      <RevealedKeyDialog
-        minted={minted}
-        onOpenChange={(open) => !open && setMinted(null)}
-      />
+      <RevealedKeyDialog minted={minted} onOpenChange={(open) => !open && setMinted(null)} />
     </PageBody>
   );
 }
@@ -320,14 +296,10 @@ function KeyCard({
         <CardTitle className="flex items-center justify-between gap-2">
           <span className="truncate">{keyLabel}</span>
           <Badge tone={keyRow.disabled ? "danger" : "success"}>
-            {keyRow.disabled
-              ? t("account.keys.card.disabled")
-              : t("account.keys.card.active")}
+            {keyRow.disabled ? t("account.keys.card.disabled") : t("account.keys.card.active")}
           </Badge>
         </CardTitle>
-        <CardDescription className="font-mono">
-          {keyRow.key_prefix}…
-        </CardDescription>
+        <CardDescription className="font-mono">{keyRow.key_prefix}…</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
@@ -468,17 +440,8 @@ function MintKeyDialog({
           error={routes.error}
           onRetry={routes.retry}
         />
-        <KeyProvidersField
-          providers={providers}
-          selected={providerSel}
-          onChange={setProviderSel}
-        />
-        <KeyReachSummary
-          project={project}
-          models={models}
-          providers={providerSel}
-          ttl={ttl}
-        />
+        <KeyProvidersField providers={providers} selected={providerSel} onChange={setProviderSel} />
+        <KeyReachSummary project={project} models={models} providers={providerSel} ttl={ttl} />
       </div>
     </EditorSheet>
   );
@@ -513,9 +476,7 @@ function RevealedKeyDialog({
     <Dialog open={!!minted} onOpenChange={onOpenChange}>
       <DialogHeader>
         <DialogTitle>{t("account.keys.revealed.title")}</DialogTitle>
-        <DialogDescription>
-          {t("account.keys.revealed.body")}
-        </DialogDescription>
+        <DialogDescription>{t("account.keys.revealed.body")}</DialogDescription>
       </DialogHeader>
       <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
         <div className="flex items-center justify-between gap-2">
@@ -527,18 +488,12 @@ function RevealedKeyDialog({
             aria-label={copied ? t("common.copied") : t("common.copy")}
             title={copied ? t("common.copied") : t("common.copy")}
           >
-            {copied ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           </Button>
         </div>
       </div>
       <DialogFooter>
-        <Button onClick={() => onOpenChange(false)}>
-          {t("account.keys.revealed.done")}
-        </Button>
+        <Button onClick={() => onOpenChange(false)}>{t("account.keys.revealed.done")}</Button>
       </DialogFooter>
     </Dialog>
   );

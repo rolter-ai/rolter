@@ -68,9 +68,7 @@ export interface GatewayModel {
  * Needs a virtual key, because it is a gateway call like any other; callers
  * fall back to the control-plane list when there is no key to use.
  */
-export async function fetchGatewayModels(
-  signal?: AbortSignal,
-): Promise<GatewayModel[]> {
+export async function fetchGatewayModels(signal?: AbortSignal): Promise<GatewayModel[]> {
   const res = await fetch(`${GW_BASE}/v1/models`, {
     headers: authHeaders(false),
     signal,
@@ -85,10 +83,7 @@ export interface ChatMessage {
   // string, or OpenAI multimodal content parts (text + image_url)
   content:
     | string
-    | Array<
-        | { type: "text"; text: string }
-        | { type: "image_url"; image_url: { url: string } }
-      >;
+    | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 }
 
 export async function chatCompletion(
@@ -171,11 +166,7 @@ export async function synthesizeSpeech(
 }
 
 // speech → text: multipart upload of an audio file
-export async function transcribe(
-  model: string,
-  file: File,
-  signal?: AbortSignal,
-): Promise<string> {
+export async function transcribe(model: string, file: File, signal?: AbortSignal): Promise<string> {
   const form = new FormData();
   form.append("model", model);
   form.append("file", file);

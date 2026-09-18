@@ -115,7 +115,14 @@ export function ScatterPlot({
           const v = (ym / ticks) * (ticks - i);
           return (
             <g key={"y" + i}>
-              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="var(--border-subtle)" strokeWidth="1" />
+              <line
+                x1={padL}
+                y1={y}
+                x2={W - padR}
+                y2={y}
+                stroke="var(--border-subtle)"
+                strokeWidth="1"
+              />
               <text
                 x={padL - 8}
                 y={y + 3}
@@ -175,7 +182,13 @@ export function ScatterPlot({
           );
         })}
         {xLabel && (
-          <text x={padL + iw / 2} y={H - 2} textAnchor="middle" fontSize="10" fill="var(--text-muted)">
+          <text
+            x={padL + iw / 2}
+            y={H - 2}
+            textAnchor="middle"
+            fontSize="10"
+            fill="var(--text-muted)"
+          >
             {xLabel}
           </text>
         )}
@@ -221,7 +234,13 @@ export function ScatterPlot({
               }}
             >
               <span
-                style={{ width: 8, height: 8, borderRadius: "50%", background: hover.c, flex: "none" }}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: hover.c,
+                  flex: "none",
+                }}
               />
               {hover.p.label}
             </div>
@@ -245,7 +264,12 @@ export function ScatterPlot({
           {groups.map((g, i) => (
             <span key={i} style={legendItem}>
               <span
-                style={{ width: 8, height: 8, borderRadius: "50%", background: PALETTE[i % PALETTE.length] }}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: PALETTE[i % PALETTE.length],
+                }}
               />
               {g}
             </span>

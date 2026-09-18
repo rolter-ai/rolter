@@ -289,9 +289,7 @@ export const UsageFailed: Story = {
 export const MintsAKey: Story = {
   render: () => (
     <Harness
-      fetchStub={account((init) =>
-        init?.method === "POST" ? json(MINTED, 201) : json(KEYS),
-      )}
+      fetchStub={account((init) => (init?.method === "POST" ? json(MINTED, 201) : json(KEYS)))}
     >
       <Account />
     </Harness>
@@ -303,9 +301,7 @@ export const MintsAKey: Story = {
     await userEvent.click(within(form).getByRole("button", { name: "Mint" }));
     // the plaintext is shown exactly once, right here; losing this dialog means
     // the user never gets the secret they just created
-    await waitFor(() =>
-      expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument());
     await userEvent.click(within(document.body).getByRole("button", { name: "Done" }));
     await waitFor(() =>
       expect(within(document.body).queryByText(MINTED.key)).not.toBeInTheDocument(),
@@ -320,9 +316,7 @@ export const MintsAKey: Story = {
  */
 export const RotatingAKeyRevealsTheNewSecret: Story = {
   render: () => (
-    <Harness
-      fetchStub={account((init) => (init?.method === "POST" ? json(MINTED) : json(KEYS)))}
-    >
+    <Harness fetchStub={account((init) => (init?.method === "POST" ? json(MINTED) : json(KEYS)))}>
       <Account />
     </Harness>
   ),
@@ -333,9 +327,7 @@ export const RotatingAKeyRevealsTheNewSecret: Story = {
     // rotation kills the old secret the instant the new one is issued, so it
     // now asks first, naming the key it is about to invalidate (#1179)
     await confirmDestructive(/my laptop/, /rotate key/i);
-    await waitFor(() =>
-      expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument());
   },
 };
 
@@ -435,7 +427,8 @@ export const NeverExpiringIsADeliberateChoice: Story = {
         // the body is what the assertion is really about: no TTL at all,
         // rather than a zero or an empty string the server would reject
         const body = JSON.parse(String(init.body));
-        if (body.expires_in_days !== undefined) return json({ error: { message: "sent a ttl" } }, 400);
+        if (body.expires_in_days !== undefined)
+          return json({ error: { message: "sent a ttl" } }, 400);
         if (!body.name) return json({ error: { message: "sent no name" } }, 400);
         return json(MINTED, 201);
       })}
@@ -451,9 +444,7 @@ export const NeverExpiringIsADeliberateChoice: Story = {
     await expect(within(form).getByText(/until someone revokes it/i)).toBeInTheDocument();
     await expect(within(form).getByText(/forever, until revoked/i)).toBeInTheDocument();
     await userEvent.click(within(form).getByRole("button", { name: "Mint" }));
-    await waitFor(() =>
-      expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument());
   },
 };
 

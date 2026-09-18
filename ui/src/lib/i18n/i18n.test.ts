@@ -88,8 +88,16 @@ describe("catalogs", () => {
   test("no orphaned nav label", () => {
     // a nav entry with no matching NavDef is copy nothing renders
     const known = new Set<string>(leafKeys());
-    const parents = new Set(["observability", "models", "mcp", "alerting", "governance",
-      "guardrails", "adaptive-routing", "settings"]);
+    const parents = new Set([
+      "observability",
+      "models",
+      "mcp",
+      "alerting",
+      "governance",
+      "guardrails",
+      "adaptive-routing",
+      "settings",
+    ]);
     for (const key of Object.keys((en as Catalog).nav as Catalog)) {
       expect(known.has(key) || parents.has(key), `nav.${key} matches no nav entry`).toBe(true);
     }
@@ -168,9 +176,9 @@ describe("setLocale", () => {
     await setLocale("ru");
     // the role is interpolated too since #1196: the badge says what the server
     // said about the account, so "Admin" is no longer baked into the sentence
-    expect(
-      i18n.t("shell.roleWithOrg", { role: i18n.t("shell.roles.admin"), org: "Acme" }),
-    ).toBe("Администратор · Acme");
+    expect(i18n.t("shell.roleWithOrg", { role: i18n.t("shell.roles.admin"), org: "Acme" })).toBe(
+      "Администратор · Acme",
+    );
   });
 
   test("the choice is persisted for the next visit", async () => {

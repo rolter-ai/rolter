@@ -67,8 +67,7 @@ export function LabelChip({ label }: { label: LabelRow }) {
       // says when and what rather than presenting it as a standing fact
       title={
         auto
-          ? [label.observation, observed].filter(Boolean).join(" · ") ||
-            t("labels.autoTitle")
+          ? [label.observation, observed].filter(Boolean).join(" · ") || t("labels.autoTitle")
           : undefined
       }
       aria-label={t(auto ? "labels.autoChipAria" : "labels.customChipAria", {
@@ -110,8 +109,7 @@ export type LabelSubject = "provider" | "provider_group" | "route" | "model";
 function endpoints(subjectType: LabelSubject, orgId: string) {
   const model = subjectType === "model";
   return {
-    list: (filter: LabelFilter) =>
-      model ? fetchModelLabels(filter) : fetchLabels(orgId, filter),
+    list: (filter: LabelFilter) => (model ? fetchModelLabels(filter) : fetchLabels(orgId, filter)),
     create: (subjectId: string, key: string, value?: string) =>
       model
         ? createModelLabel({ model: subjectId, key, value })

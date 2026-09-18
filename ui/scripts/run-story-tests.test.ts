@@ -14,9 +14,7 @@ import {
 /** An index as Storybook serves it, of the fields the guard reads. */
 function index(entries: [string, string][]): StorybookIndex {
   return {
-    entries: Object.fromEntries(
-      entries.map(([id, importPath]) => [id, { id, importPath }]),
-    ),
+    entries: Object.fromEntries(entries.map(([id, importPath]) => [id, { id, importPath }])),
   };
 }
 
@@ -81,7 +79,9 @@ describe("missingFrom", () => {
     const problems = missingFrom(served, [
       { path: "src/pages/Keys.stories.tsx", stories: ["Empty", "AddedSinceThatBuild"] },
     ]);
-    expect(problems).toEqual(["src/pages/Keys.stories.tsx: story 'AddedSinceThatBuild' is not in the served index"]);
+    expect(problems).toEqual([
+      "src/pages/Keys.stories.tsx: story 'AddedSinceThatBuild' is not in the served index",
+    ]);
   });
 });
 

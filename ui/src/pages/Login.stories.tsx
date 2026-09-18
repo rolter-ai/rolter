@@ -33,25 +33,18 @@ type Story = StoryObj<typeof Login>;
 const METHODS = { password: true, sso: [] };
 
 /** Password login answers `methods`, then `login` fails with `code`. */
-function loginFails(
-  status: number,
-  code: string,
-  extra: { retryAfter?: string } = {},
-): FetchStub {
+function loginFails(status: number, code: string, extra: { retryAfter?: string } = {}): FetchStub {
   return async (input) => {
     const url = String(input);
     if (url.includes("/auth/methods")) return json(METHODS);
     if (url.includes("/auth/login")) {
-      return new Response(
-        JSON.stringify({ error: { message: "refused", code } }),
-        {
-          status,
-          headers: {
-            "Content-Type": "application/json",
-            ...(extra.retryAfter ? { "Retry-After": extra.retryAfter } : {}),
-          },
+      return new Response(JSON.stringify({ error: { message: "refused", code } }), {
+        status,
+        headers: {
+          "Content-Type": "application/json",
+          ...(extra.retryAfter ? { "Retry-After": extra.retryAfter } : {}),
         },
-      );
+      });
     }
     return json({});
   };
@@ -77,9 +70,7 @@ export const WrongPassword: Story = {
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("alert")).toHaveTextContent(
-      /do not match an account/i,
-    );
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/do not match an account/i);
     // and crucially: the form is still on screen. the old code would have
     // navigated away, having "signed in" with no session
     await expect(canvas.getByRole("button", { name: /sign in/i })).toBeVisible();
@@ -96,17 +87,15 @@ export const OrgRequiresSso: Story = {
   ),
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
-    await expect(
-      await within(canvasElement).findByRole("alert"),
-    ).toHaveTextContent(/single sign-on/i);
+    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(
+      /single sign-on/i,
+    );
   },
 };
 
 export const LockedOut: Story = {
   render: () => (
-    <Harness
-      fetchStub={loginFails(429, "too_many_attempts", { retryAfter: "90" })}
-    >
+    <Harness fetchStub={loginFails(429, "too_many_attempts", { retryAfter: "90" })}>
       <AuthProvider>
         <Login />
       </AuthProvider>
@@ -115,9 +104,7 @@ export const LockedOut: Story = {
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
     // the lock is a clock: the wait it carries is rendered, not swallowed
-    await expect(
-      await within(canvasElement).findByRole("alert"),
-    ).toHaveTextContent(/90 seconds/i);
+    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(/90 seconds/i);
   },
 };
 
@@ -136,9 +123,9 @@ export const ControlPlaneUnreachable: Story = {
   ),
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
-    await expect(
-      await within(canvasElement).findByRole("alert"),
-    ).toHaveTextContent(/could not be reached/i);
+    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(
+      /could not be reached/i,
+    );
   },
 };
 
@@ -196,10 +183,7 @@ export const ExpiredNoticeYieldsToLoginError: Story = {
           );
         }
         if (url.includes("/auth/login")) {
-          return json(
-            { error: { message: "refused", code: "invalid_credentials" } },
-            401,
-          );
+          return json({ error: { message: "refused", code: "invalid_credentials" } }, 401);
         }
         return json({});
       }}
@@ -213,9 +197,7 @@ export const ExpiredNoticeYieldsToLoginError: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/session expired/i)).toBeVisible();
     await signIn(canvasElement);
-    await expect(await canvas.findByRole("alert")).toHaveTextContent(
-      /do not match an account/i,
-    );
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/do not match an account/i);
     await expect(canvas.queryByRole("status")).toBeNull();
   },
 };

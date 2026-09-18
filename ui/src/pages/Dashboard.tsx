@@ -5,21 +5,11 @@ import { PageBody } from "@/components/screen";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { LoadError } from "@/components/LoadError";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ListSkeleton,
-  LoadingRegion,
-  StatGridSkeleton,
-} from "@/components/LoadingState";
+import { ListSkeleton, LoadingRegion, StatGridSkeleton } from "@/components/LoadingState";
 import { StatCard } from "@/components/ui/stat-card";
 import { Table } from "@/components/ui/table";
 import {
@@ -42,12 +32,7 @@ const WINDOW = {
 };
 
 // the shared categorical sequence (#1245), not a fifth hand-written list
-const BAR_PALETTE = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-];
+const BAR_PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"];
 
 function isUnavailable(err: unknown): boolean {
   return err instanceof AnalyticsUnavailableError;
@@ -91,8 +76,7 @@ export default function Dashboard() {
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
   // yet" about a control plane that was never asked to record anything (#1236)
-  const unavailable =
-    [summary.error, series.error, byModel.error].find(isUnavailable) ?? null;
+  const unavailable = [summary.error, series.error, byModel.error].find(isUnavailable) ?? null;
 
   if (unavailable) {
     return (
@@ -130,9 +114,7 @@ export default function Dashboard() {
   const errorRate = requests > 0 ? (errors / requests) * 100 : 0;
 
   const spendPoints = (series.data ?? []).map((p) => num(p.cost_usd));
-  const spendLabels = (series.data ?? []).map(
-    (p) => fmt.timeShort(p.bucket) || p.bucket,
-  );
+  const spendLabels = (series.data ?? []).map((p) => fmt.timeShort(p.bucket) || p.bucket);
   // buckets exist but every one of them is zero: the window had traffic that
   // was never priced, which is not the same as spend that happened to be zero
   const anySpend = spendPoints.some((v) => v > 0);
@@ -173,33 +155,23 @@ export default function Dashboard() {
         <StatGridSkeleton cards={4} />
       ) : (
         <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard label={t("pages.dashboard.statRequests")} value={fmt.number(requests)} />
+          <StatCard label={t("pages.dashboard.statSpend")} value={money(num(s?.cost_usd))} />
           <StatCard
-              label={t("pages.dashboard.statRequests")}
-              value={fmt.number(requests)}
-            />
-            <StatCard
-              label={t("pages.dashboard.statSpend")}
-              value={money(num(s?.cost_usd))}
-            />
-            <StatCard
-              label={t("pages.dashboard.statAvgLatency")}
-              value={fmt.number(Math.round(num(s?.avg_latency_ms)))}
-              unit={t("pages.dashboard.colMs")}
-            />
-            <StatCard
-              label={t("pages.dashboard.statErrorRate")}
-              value={fmt.number(errorRate, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}
-              unit="%"
-              trend={errorRate > 1 ? "up" : "flat"}
-              // russian needs four plural forms here where english needs two
-              delta={
-                errors > 0
-                  ? t("pages.dashboard.errors", { count: errors })
-                  : undefined
-              }
+            label={t("pages.dashboard.statAvgLatency")}
+            value={fmt.number(Math.round(num(s?.avg_latency_ms)))}
+            unit={t("pages.dashboard.colMs")}
+          />
+          <StatCard
+            label={t("pages.dashboard.statErrorRate")}
+            value={fmt.number(errorRate, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+            unit="%"
+            trend={errorRate > 1 ? "up" : "flat"}
+            // russian needs four plural forms here where english needs two
+            delta={errors > 0 ? t("pages.dashboard.errors", { count: errors }) : undefined}
           />
         </div>
       )}
@@ -215,9 +187,7 @@ export default function Dashboard() {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">
-              {t("pages.dashboard.spendTitle")}
-            </CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.spendTitle")}</CardTitle>
             <CardDescription>{t("pages.dashboard.spendSub")}</CardDescription>
           </CardHeader>
           <CardContent>
@@ -245,9 +215,7 @@ export default function Dashboard() {
                 label={t("pages.dashboard.spendChartAria")}
                 formatValue={(v) => money(v)}
                 emptyState={
-                  <p className="text-sm text-muted-foreground">
-                    {t("analytics.noRowsYet")}
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t("analytics.noRowsYet")}</p>
                 }
               />
             )}
@@ -258,9 +226,7 @@ export default function Dashboard() {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">
-              {t("pages.dashboard.trafficTitle")}
-            </CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.trafficTitle")}</CardTitle>
             <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
           </CardHeader>
           <CardContent>
@@ -290,9 +256,7 @@ export default function Dashboard() {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">
-              {t("pages.dashboard.byModelTitle")}
-            </CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.byModelTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 px-0.5 py-1">
             {bars.length === 0 && (
@@ -323,9 +287,7 @@ export default function Dashboard() {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.live")}
             </CardDescription>
-            <CardTitle className="text-base">
-              {t("pages.dashboard.recentTitle")}
-            </CardTitle>
+            <CardTitle className="text-base">{t("pages.dashboard.recentTitle")}</CardTitle>
           </CardHeader>
           <CardContent>
             {recent.isLoading ? (

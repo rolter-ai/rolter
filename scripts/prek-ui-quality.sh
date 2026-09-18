@@ -8,4 +8,5 @@ fi
 
 cd ui
 bun run lint
+bun run format:check
 bun run build

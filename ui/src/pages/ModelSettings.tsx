@@ -11,11 +11,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
-import {
-  fetchModelDefaults,
-  updateModelDefaults,
-  type ModelDefaultsDto,
-} from "@/lib/api";
+import { fetchModelDefaults, updateModelDefaults, type ModelDefaultsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -161,13 +157,12 @@ function ModelSettingsScreen() {
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">
-                {t("pages.modelSettings.applyDefaults")}
-              </span>
-              <Badge tone={active ? "success" : "neutral"} className="font-mono text-[10px] uppercase">
-                {active
-                  ? t("pages.modelSettings.active")
-                  : t("pages.modelSettings.inactive")}
+              <span className="text-sm font-medium">{t("pages.modelSettings.applyDefaults")}</span>
+              <Badge
+                tone={active ? "success" : "neutral"}
+                className="font-mono text-[10px] uppercase"
+              >
+                {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
               </Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -210,7 +205,10 @@ function ModelSettingsScreen() {
             onChange={(e) => set({ topP: e.target.value })}
           />
         </Field>
-        <Field label={t("pages.modelSettings.sampling.maxTokens")} hint={t("pages.modelSettings.sampling.maxTokensHint")}>
+        <Field
+          label={t("pages.modelSettings.sampling.maxTokens")}
+          hint={t("pages.modelSettings.sampling.maxTokensHint")}
+        >
           <Input
             className="max-w-[160px]"
             placeholder={t("pages.modelSettings.providerDefault")}
@@ -226,7 +224,10 @@ function ModelSettingsScreen() {
         description={t("pages.modelSettings.model.desc")}
         dimmed={!form.enabled}
       >
-        <Field label={t("pages.modelSettings.model.defaultModel")} hint={t("pages.modelSettings.model.defaultModelHint")}>
+        <Field
+          label={t("pages.modelSettings.model.defaultModel")}
+          hint={t("pages.modelSettings.model.defaultModelHint")}
+        >
           <Input
             className="min-w-[320px]"
             placeholder={t("pages.modelSettings.providerDefault")}
@@ -245,7 +246,9 @@ function ModelSettingsScreen() {
       </p>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        )}
         <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
@@ -253,7 +256,6 @@ function ModelSettingsScreen() {
     </div>
   );
 }
-
 
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s

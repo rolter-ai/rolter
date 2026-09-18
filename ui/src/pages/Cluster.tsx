@@ -69,12 +69,10 @@ function ClusterScreen() {
     return () => clearInterval(t);
   }, []);
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
 
   const drain = useMutation({
-    mutationFn: (v: { id: string; draining: boolean }) =>
-      setClusterNodeDrain(v.id, v.draining),
+    mutationFn: (v: { id: string; draining: boolean }) => setClusterNodeDrain(v.id, v.draining),
     onSuccess: (_result, v) => {
       invalidate();
       toast.push({
@@ -99,9 +97,7 @@ function ClusterScreen() {
   // forgetting drops the node's history from the inventory, so it is confirmed
   // by id — and the dialog repeats the one thing that surprises people, that a
   // still-running node comes straight back (#1179)
-  const [forgetTarget, setForgetTarget] = React.useState<ClusterNodeRow | null>(
-    null,
-  );
+  const [forgetTarget, setForgetTarget] = React.useState<ClusterNodeRow | null>(null);
   const startForget = (node: ClusterNodeRow) => {
     forget.reset();
     setForgetTarget(node);
@@ -132,9 +128,7 @@ function ClusterScreen() {
       header: t("pages.cluster.columns.lastSeen"),
       align: "right",
       render: (_v, row) => (
-        <span title={fmt.dateTime(row.last_seen_at)}>
-          {fmt.relative(row.last_seen_at, now)}
-        </span>
+        <span title={fmt.dateTime(row.last_seen_at)}>{fmt.relative(row.last_seen_at, now)}</span>
       ),
     },
     {
@@ -153,14 +147,15 @@ function ClusterScreen() {
               gate="cluster_node:update"
               variant="outline"
               size="sm"
-              aria-label={t(
-                draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria",
-                { node: row.id },
-              )}
+              aria-label={t(draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria", {
+                node: row.id,
+              })}
               disabled={drain.isPending}
               onClick={() => drain.mutate({ id: row.id, draining: !draining })}
             >
-              {drain.isPending && drain.variables?.id === row.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {drain.isPending && drain.variables?.id === row.id && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
               {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
             </GatedButton>
             {/* a node that is still running reappears on its next poll, so
@@ -171,14 +166,12 @@ function ClusterScreen() {
               size="sm"
               aria-label={t("pages.cluster.forgetAria", { node: row.id })}
               disabled={row.live || forget.isPending}
-              title={
-                row.live
-                  ? t("pages.cluster.stillPolling")
-                  : undefined
-              }
+              title={row.live ? t("pages.cluster.stillPolling") : undefined}
               onClick={() => startForget(row)}
             >
-              {forget.isPending && forget.variables === row.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {forget.isPending && forget.variables === row.id && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
               Forget
             </GatedButton>
           </div>

@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  renderSnippet,
-  snippetBaseUrl,
-  SNIPPET_LANGS,
-  type SnippetRequest,
-} from "./snippets";
+import { renderSnippet, snippetBaseUrl, SNIPPET_LANGS, type SnippetRequest } from "./snippets";
 
 const REQ: SnippetRequest = { model: "llama-3.1-8b", prompt: "hello there" };
 const ORIGIN = "https://rolter.localhost";
@@ -16,9 +11,7 @@ describe("snippetBaseUrl", () => {
   });
 
   test("does not double the slash when the origin carries one", () => {
-    expect(snippetBaseUrl("https://rolter.localhost/")).toBe(
-      "https://rolter.localhost/gw/v1",
-    );
+    expect(snippetBaseUrl("https://rolter.localhost/")).toBe("https://rolter.localhost/gw/v1");
   });
 });
 
@@ -67,9 +60,7 @@ describe("renderSnippet", () => {
   });
 
   test("non-streaming reads the message rather than a delta", () => {
-    expect(renderSnippet("python", REQ, ORIGIN)).toContain(
-      "response.choices[0].message.content",
-    );
+    expect(renderSnippet("python", REQ, ORIGIN)).toContain("response.choices[0].message.content");
     expect(renderSnippet("javascript", REQ, ORIGIN)).toContain(
       "response.choices[0].message.content",
     );

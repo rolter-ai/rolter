@@ -2,13 +2,7 @@ import { Bug, KeyRound, LogOut, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import {
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-} from "react-router";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 
 import { CommandPalette } from "@/components/CommandPalette";
 import { ForbiddenScreen } from "@/components/ForbiddenScreen";
@@ -30,13 +24,7 @@ import {
   readRecentScreens,
   rememberScreen,
 } from "@/lib/command-palette";
-import {
-  findLeaf,
-  leafKeys,
-  useScreenMeta,
-  visibleNav,
-  type NavDef,
-} from "@/lib/nav";
+import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/lib/nav";
 import { logout, ROLES, type MeMembership } from "@/lib/api";
 import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
@@ -49,11 +37,7 @@ import {
   type ExperimentalNavKeys,
 } from "@/lib/version";
 import { isOpenMode } from "@/lib/telemetry";
-import {
-  UxScreenProvider,
-  useRouteTelemetry,
-  useUxContext,
-} from "@/lib/ux-react";
+import { UxScreenProvider, useRouteTelemetry, useUxContext } from "@/lib/ux-react";
 import Account from "@/pages/Account";
 import { AlertChannels, AlertHistory, AlertRules } from "@/pages/Alerting";
 import AdaptiveDashboard from "@/pages/AdaptiveDashboard";
@@ -263,8 +247,7 @@ function roleLabel(
   orgId: string | undefined,
 ): string {
   if (user && !user.is_superadmin) {
-    const membership =
-      memberships.find((m) => m.org_id && m.org_id === orgId) ?? memberships[0];
+    const membership = memberships.find((m) => m.org_id && m.org_id === orgId) ?? memberships[0];
     // an unknown role string from a newer control plane has no label here, so
     // it falls through rather than rendering a raw key
     if (membership && (ROLES as readonly string[]).includes(membership.role)) {
@@ -302,11 +285,7 @@ function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }
           aria-label={title}
           className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
         >
-          {forbidden ? (
-            <ForbiddenScreen resource={t(`nav.${screen}`)} />
-          ) : (
-            SCREENS[screen]
-          )}
+          {forbidden ? <ForbiddenScreen resource={t(`nav.${screen}`)} /> : SCREENS[screen]}
         </div>
       </div>
     </UxScreenProvider>
@@ -428,13 +407,9 @@ function Shell() {
   const redirect = LEGACY[key];
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const visible = visibleNav(can);
-  const navGroups: NavGroup[] = [
-    { items: visible.map((def) => toNavItem(def, t, experimental)) },
-  ];
+  const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
-  const role = orgName
-    ? t("shell.roleWithOrg", { role: roleName, org: orgName })
-    : roleName;
+  const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
   const initials = (email.trim()[0] ?? "?").toUpperCase();
 
   return (
@@ -519,12 +494,8 @@ function Shell() {
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">
-                    {email}
-                  </p>
-                  <p className="truncate text-[0.6875rem] text-muted-foreground">
-                    {role}
-                  </p>
+                  <p className="truncate text-xs font-medium text-foreground">{email}</p>
+                  <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
                 </div>
               </div>
               <div className="border-t border-[color:var(--border-subtle)] py-1.5">

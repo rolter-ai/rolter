@@ -171,9 +171,7 @@ function Editor({
               type="checkbox"
               aria-label={t("pages.costAttribution.editor.allowSlugChange")}
               checked={form.allowSlugChange}
-              onChange={(e) =>
-                setForm({ ...form, allowSlugChange: e.target.checked })
-              }
+              onChange={(e) => setForm({ ...form, allowSlugChange: e.target.checked })}
             />
             <Trans
               i18nKey="pages.costAttribution.editor.renameSlug"
@@ -210,10 +208,7 @@ function Editor({
           <Button variant="outline" onClick={onClose}>
             {t("common.cancel")}
           </Button>
-          <Button
-            disabled={!form.name.trim() || !!slugError || pending}
-            onClick={onSubmit}
-          >
+          <Button disabled={!form.name.trim() || !!slugError || pending} onClick={onSubmit}>
             {form.id ? t("common.save") : t("common.create")}
           </Button>
         </div>
@@ -290,24 +285,14 @@ function SpendStrip({
   );
 }
 
-function SpendFigure({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  note?: string;
-}) {
+function SpendFigure({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
         {label}
       </span>
       <span className="font-mono text-lg leading-none text-foreground">{value}</span>
-      {note && (
-        <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{note}</span>
-      )}
+      {note && <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{note}</span>}
     </div>
   );
 }
@@ -414,9 +399,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
       slug: row.slug,
       allowSlugChange: false,
       businessUnitId:
-        "business_unit_id" in row && row.business_unit_id
-          ? row.business_unit_id
-          : UNASSIGNED,
+        "business_unit_id" in row && row.business_unit_id ? row.business_unit_id : UNASSIGNED,
     });
     setOpen(true);
   };
@@ -424,24 +407,16 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   // a noun cannot be interpolated into a sentence frame and still decline, so
   // each kind names its own key (docs/dev-docs/development/i18n.md)
   const summaryKey =
-    kind === "unit"
-      ? "pages.costAttribution.unitSummary"
-      : "pages.costAttribution.customerSummary";
+    kind === "unit" ? "pages.costAttribution.unitSummary" : "pages.costAttribution.customerSummary";
   const createKey =
-    kind === "unit"
-      ? "pages.costAttribution.newUnit"
-      : "pages.costAttribution.newCustomer";
+    kind === "unit" ? "pages.costAttribution.newUnit" : "pages.costAttribution.newCustomer";
   // one screen serves two resources, so the capability it gates on follows the
   // kind rather than the file (#1183)
-  const gate: Capability =
-    kind === "unit" ? "business_unit:create" : "customer:create";
+  const gate: Capability = kind === "unit" ? "business_unit:create" : "customer:create";
   // the row controls follow the same resource the create button does (#1258)
-  const updateGate: Capability =
-    kind === "unit" ? "business_unit:update" : "customer:update";
-  const deleteGate: Capability =
-    kind === "unit" ? "business_unit:delete" : "customer:delete";
-  const unitName = (id: string | null) =>
-    units.find((u) => u.id === id)?.name ?? null;
+  const updateGate: Capability = kind === "unit" ? "business_unit:update" : "customer:update";
+  const deleteGate: Capability = kind === "unit" ? "business_unit:delete" : "customer:delete";
+  const unitName = (id: string | null) => units.find((u) => u.id === id)?.name ?? null;
   const spendById = new Map(spend.map((row) => [row.id, row]));
 
   if (isLoading) {
@@ -457,9 +432,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         <LoadError
           error={error}
           resource={
-            kind === "unit"
-              ? t("errors.resources.businessUnits")
-              : t("errors.resources.customers")
+            kind === "unit" ? t("errors.resources.businessUnits") : t("errors.resources.customers")
           }
           onRetry={onRetry}
         />
@@ -478,19 +451,16 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         {/* the confirmation carries the delete's own failure, so the banner
             stands down while it is open rather than saying it twice */}
         {mutationError && !deleteTarget && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{mutationError.message}</span>
+          <span className="text-xs text-[color:var(--status-danger-text)]">
+            {mutationError.message}
+          </span>
         )}
         <GatedButton gate={gate} className="ml-auto" disabled={disabled} onClick={startCreate}>
           + {t(createKey)}
         </GatedButton>
       </div>
 
-      <SpendStrip
-        rows={spend}
-        loading={spendLoading}
-        error={spendError}
-        onRetry={onRetrySpend}
-      />
+      <SpendStrip rows={spend} loading={spendLoading} error={spendError} onRetry={onRetrySpend} />
 
       {rows.length === 0 ? (
         <EmptyState
@@ -515,8 +485,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
       ) : (
         <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))]">
           {rows.map((row) => {
-            const assigned =
-              "business_unit_id" in row ? unitName(row.business_unit_id) : null;
+            const assigned = "business_unit_id" in row ? unitName(row.business_unit_id) : null;
             return (
               <div
                 key={row.id}
@@ -609,9 +578,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         confirmLabel={t("common.delete")}
         pending={deleting}
         error={deleteError}
-        onConfirm={() =>
-          deleteTarget && onDelete(deleteTarget, () => setDeleteTarget(null))
-        }
+        onConfirm={() => deleteTarget && onDelete(deleteTarget, () => setDeleteTarget(null))}
       />
 
       <Sheet open={open} onOpenChange={setOpen}>
@@ -660,14 +627,12 @@ export function BusinessUnits() {
     retry: false,
   });
 
-
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
 
   useScreenReady(!units.isLoading);
 
   useErrorState(!!units.error, "business-units");
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["business-units", orgId] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["business-units", orgId] });
 
   const create = useMutation({
     mutationFn: (f: EditorState) =>
@@ -754,13 +719,9 @@ export function BusinessUnits() {
       error={units.error as Error | undefined}
       onRetry={() => void units.refetch()}
       disabled={!orgId}
-      mutating={
-        create.isPending || update.isPending || retire.isPending || remove.isPending
-      }
+      mutating={create.isPending || update.isPending || retire.isPending || remove.isPending}
       mutationError={
-        (create.error ?? update.error ?? retire.error ?? remove.error) as
-          | Error
-          | undefined
+        (create.error ?? update.error ?? retire.error ?? remove.error) as Error | undefined
       }
       onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
       onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}
@@ -797,7 +758,6 @@ export function Customers() {
     retry: false,
   });
 
-
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
 
   useScreenReady(!customers.isLoading);
@@ -810,16 +770,14 @@ export function Customers() {
     enabled: !!orgId,
     retry: false,
   });
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["customers", orgId] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["customers", orgId] });
 
   const create = useMutation({
     mutationFn: (f: EditorState) =>
       createCustomer(orgId as string, {
         name: f.name.trim(),
         slug: f.slug.trim() || undefined,
-        business_unit_id:
-          f.businessUnitId === UNASSIGNED ? null : f.businessUnitId,
+        business_unit_id: f.businessUnitId === UNASSIGNED ? null : f.businessUnitId,
       }),
     onSuccess: (_result, f) => {
       invalidate();
@@ -841,8 +799,7 @@ export function Customers() {
         allow_slug_change: form.allowSlugChange,
         // null unassigns; the server treats an omitted field as unchanged, so
         // the editor always sends its current selection
-        business_unit_id:
-          form.businessUnitId === UNASSIGNED ? null : form.businessUnitId,
+        business_unit_id: form.businessUnitId === UNASSIGNED ? null : form.businessUnitId,
       }),
     onSuccess: (_result, { form }) => {
       invalidate();
@@ -904,13 +861,9 @@ export function Customers() {
       error={customers.error as Error | undefined}
       onRetry={() => void customers.refetch()}
       disabled={!orgId}
-      mutating={
-        create.isPending || update.isPending || retire.isPending || remove.isPending
-      }
+      mutating={create.isPending || update.isPending || retire.isPending || remove.isPending}
       mutationError={
-        (create.error ?? update.error ?? retire.error ?? remove.error) as
-          | Error
-          | undefined
+        (create.error ?? update.error ?? retire.error ?? remove.error) as Error | undefined
       }
       onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
       onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}

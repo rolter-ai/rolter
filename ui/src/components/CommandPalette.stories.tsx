@@ -201,9 +201,7 @@ export const FuzzyQuery: Story = {
   render: () => <Palette />,
   play: async () => {
     await userEvent.type(await input(), "rr");
-    await waitFor(() =>
-      expect(options()[0].textContent).toContain(nav["routing-rules"]),
-    );
+    await waitFor(() => expect(options()[0].textContent).toContain(nav["routing-rules"]));
     await selected(nav["routing-rules"]);
     // and the entries that do not match are gone, not merely ranked lower
     await expect(
@@ -226,9 +224,7 @@ export const KeyboardSelection: Story = {
 
     await userEvent.keyboard("{ArrowDown}");
     const second = options()[1];
-    await waitFor(() =>
-      expect(field).toHaveAttribute("aria-activedescendant", second.id),
-    );
+    await waitFor(() => expect(field).toHaveAttribute("aria-activedescendant", second.id));
     await expect(second).toHaveAttribute("aria-selected", "true");
     await expect(first).toHaveAttribute("aria-selected", "false");
     // focus never left the field it is being typed into
@@ -236,9 +232,7 @@ export const KeyboardSelection: Story = {
 
     // ArrowUp comes back, and Enter opens the entry that is selected
     await userEvent.keyboard("{ArrowUp}{Enter}");
-    await waitFor(() =>
-      expect(canvas.getByTestId("went")).toHaveTextContent("playground"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("went")).toHaveTextContent("playground"));
     // opening a screen closes the palette behind it
     await waitFor(() => expect(document.body.querySelector('[role="listbox"]')).toBeNull());
   },
@@ -257,9 +251,7 @@ export const EscapeCloses: Story = {
     await expect(await focused()).toHaveFocus();
 
     await userEvent.keyboard("{Escape}");
-    await waitFor(() =>
-      expect(body().queryByRole("listbox", { name: palette.label })).toBeNull(),
-    );
+    await waitFor(() => expect(body().queryByRole("listbox", { name: palette.label })).toBeNull());
     await waitFor(() => expect(opener).toHaveFocus());
   },
 };
@@ -277,9 +269,7 @@ export const RecordsFound: Story = {
     const hit = await within(group).findByRole("option", { name: /acme-production/i });
     await expect(hit).toHaveTextContent(palette.kinds.virtualKey);
     await userEvent.click(hit);
-    await waitFor(() =>
-      expect(canvas.getByTestId("went")).toHaveTextContent("virtual-keys"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("went")).toHaveTextContent("virtual-keys"));
   },
 };
 

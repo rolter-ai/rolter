@@ -9,11 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  fetchLoggingSettings,
-  updateLoggingSettings,
-  type LoggingSettingsDto,
-} from "@/lib/api";
+import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -176,7 +172,9 @@ function LogsSettingsScreen() {
             value={form.samplePercent}
             onChange={(e) => set({ samplePercent: e.target.value })}
           />
-          <span className="text-sm text-muted-foreground">{t("pages.logsSettings.percentOfRequests")}</span>
+          <span className="text-sm text-muted-foreground">
+            {t("pages.logsSettings.percentOfRequests")}
+          </span>
         </div>
       </section>
 
@@ -206,7 +204,8 @@ function LogsSettingsScreen() {
             ? t("pages.logsSettings.captureOnSummary", {
                 bytes: form.maxBytes || "0",
                 hours: form.payloadRetentionHours || "0",
-                redacted: splitList(form.redactFields).join(", ") || t("pages.logsSettings.nothing"),
+                redacted:
+                  splitList(form.redactFields).join(", ") || t("pages.logsSettings.nothing"),
                 models: splitList(form.models).join(", ") || t("pages.logsSettings.everyModel"),
               })
             : t("pages.logsSettings.captureOffSummary")}
@@ -219,7 +218,10 @@ function LogsSettingsScreen() {
           disabled={!capture}
           style={{ opacity: capture ? 1 : 0.55 }}
         >
-          <label htmlFor="logs-max-bytes" className="text-xs font-medium text-[color:var(--text-secondary)]">
+          <label
+            htmlFor="logs-max-bytes"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
             {t("pages.logsSettings.maxBytes")}
           </label>
           <Input
@@ -271,7 +273,10 @@ function LogsSettingsScreen() {
         </div>
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="logs-retention-days" className="text-xs font-medium text-[color:var(--text-secondary)]">
+            <label
+              htmlFor="logs-retention-days"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
               {t("pages.logsSettings.retentionDays")}
             </label>
             <Input
@@ -284,7 +289,10 @@ function LogsSettingsScreen() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="logs-payload-retention-hours" className="text-xs font-medium text-[color:var(--text-secondary)]">
+            <label
+              htmlFor="logs-payload-retention-hours"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
               {t("pages.logsSettings.payloadRetentionHours")}
             </label>
             <Input
@@ -303,10 +311,7 @@ function LogsSettingsScreen() {
         {localError && (
           <span className="text-xs text-[color:var(--status-danger-text)]">{t(localError)}</span>
         )}
-        <Button
-          disabled={save.isPending || localError !== null}
-          onClick={() => save.mutate(form)}
-        >
+        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

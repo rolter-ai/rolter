@@ -4,7 +4,17 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
-import { Toasted, expectInStatusRegion, expectEmptyState, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import {
+  Toasted,
+  expectInStatusRegion,
+  expectEmptyState,
+  expectLoadError,
+  expectRefused,
+  expectSkeleton,
+  expectToast,
+  withCapabilities,
+  type StoryRole,
+} from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 
@@ -30,7 +40,8 @@ const versions: SkillVersionRow[] = [
   {
     skill_id: SKILL,
     version: 2,
-    content: "---\nname: incident-coordinator\ndescription: Coordinate incidents\n---\n\n# Workflow\n\n1. Collect evidence.\n2. Assign severity.\n3. Record the handoff.\n",
+    content:
+      "---\nname: incident-coordinator\ndescription: Coordinate incidents\n---\n\n# Workflow\n\n1. Collect evidence.\n2. Assign severity.\n3. Record the handoff.\n",
     content_ref: null,
     metadata: { runtime: "agent", capabilities: ["logs", "handoff"] },
     created_at: "2026-07-30T12:15:00Z",
@@ -60,13 +71,29 @@ function loadedStub(): FetchStub {
   let deleted = false;
   return async (input, init) => {
     const url = String(input);
-    if (url === "/api/v1/orgs") return json([{ id: ORG, name: "Northstar", slug: "northstar", created_at: "2026-01-01T00:00:00Z" }]);
-    if (url.endsWith(`/orgs/${ORG}/teams`)) return json([{ id: TEAM, org_id: ORG, name: "Platform", created_at: "2026-01-01T00:00:00Z" }]);
-    if (url.endsWith(`/teams/${TEAM}/projects`)) return json([{ id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" }]);
+    if (url === "/api/v1/orgs")
+      return json([
+        { id: ORG, name: "Northstar", slug: "northstar", created_at: "2026-01-01T00:00:00Z" },
+      ]);
+    if (url.endsWith(`/orgs/${ORG}/teams`))
+      return json([
+        { id: TEAM, org_id: ORG, name: "Platform", created_at: "2026-01-01T00:00:00Z" },
+      ]);
+    if (url.endsWith(`/teams/${TEAM}/projects`))
+      return json([
+        { id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" },
+      ]);
     if (url.endsWith(`/orgs/${ORG}/skills`)) return json(deleted ? [] : [currentSkill]);
     if (url.endsWith(`/skills/${SKILL}/versions`) && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Partial<SkillVersionRow>;
-      const created: SkillVersionRow = { skill_id: SKILL, version: 3, content: body.content ?? null, content_ref: body.content_ref ?? null, metadata: body.metadata ?? {}, created_at: "2026-08-02T08:00:00Z" };
+      const created: SkillVersionRow = {
+        skill_id: SKILL,
+        version: 3,
+        content: body.content ?? null,
+        content_ref: body.content_ref ?? null,
+        metadata: body.metadata ?? {},
+        created_at: "2026-08-02T08:00:00Z",
+      };
       currentVersions = [created, ...currentVersions];
       return json(created);
     }
@@ -85,7 +112,11 @@ function loadedStub(): FetchStub {
     }
     if (url.endsWith(`/skills/${SKILL}`) && init?.method === "PUT") {
       const body = JSON.parse(String(init.body));
-      currentSkill = { ...currentSkill, ...body, retired_at: body.retired ? "2026-08-02T08:30:00Z" : null };
+      currentSkill = {
+        ...currentSkill,
+        ...body,
+        retired_at: body.retired ? "2026-08-02T08:30:00Z" : null,
+      };
       return json(currentSkill);
     }
     return json({ error: { message: `unhandled story request: ${url}` } }, 500);
@@ -96,15 +127,28 @@ function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
-    globalThis.fetch = (role ? withCapabilities(role, fetchStub) : fetchStub) as typeof globalThis.fetch;
+    globalThis.fetch = (
+      role ? withCapabilities(role, fetchStub) : fetchStub
+    ) as typeof globalThis.fetch;
     localStorage.removeItem("rolter.scope");
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub, role]);
-  React.useEffect(() => () => {
-    if (original.current) globalThis.fetch = original.current;
-  }, []);
-  const screen = <div className="h-screen bg-[color:var(--surface-app)]"><SkillsRepository /></div>;
-  return <QueryClientProvider client={client}><Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted></QueryClientProvider>;
+  React.useEffect(
+    () => () => {
+      if (original.current) globalThis.fetch = original.current;
+    },
+    [],
+  );
+  const screen = (
+    <div className="h-screen bg-[color:var(--surface-app)]">
+      <SkillsRepository />
+    </div>
+  );
+  return (
+    <QueryClientProvider client={client}>
+      <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
+    </QueryClientProvider>
+  );
 }
 
 const meta = {
@@ -121,7 +165,13 @@ export const Loaded: Story = { render: () => <Harness fetchStub={loadedStub()} /
 export const Empty: Story = {
   render: () => {
     const stub = loadedStub();
-    return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/skills`) ? json([]) : stub(input, init)} />;
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/orgs/${ORG}/skills`) ? json([]) : stub(input, init)
+        }
+      />
+    );
   },
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No skills yet/, /Create skill/);
@@ -136,7 +186,15 @@ export const Loading: Story = {
 export const Error: Story = {
   render: () => {
     const stub = loadedStub();
-    return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/skills`) ? json({ error: { message: "database is unavailable" } }, 503) : stub(input, init)} />;
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/orgs/${ORG}/skills`)
+            ? json({ error: { message: "database is unavailable" } }, 503)
+            : stub(input, init)
+        }
+      />
+    );
   },
   play: async ({ canvasElement }) => expectLoadError(canvasElement, /skills/i),
 };
@@ -234,9 +292,7 @@ export const SaveVersionRejectedByTheServer: Story = {
           .some((node) => node.getAttribute("role") === "alert" && node.tagName === "SPAN"),
       ).toBe(true),
     );
-    await expect((content as HTMLTextAreaElement).value).toContain(
-      "4. Schedule the follow-up.",
-    );
+    await expect((content as HTMLTextAreaElement).value).toContain("4. Schedule the follow-up.");
   },
 };
 
@@ -276,10 +332,14 @@ export const ConfirmsRollback: Story = {
 export const RequiresSlugToDeleteSkill: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvas, canvasElement }) => {
-    await userEvent.click(await canvas.findByRole("button", { name: "Delete Incident coordinator" }));
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Delete Incident coordinator" }),
+    );
     const page = within(canvasElement.ownerDocument.body);
     const dialog = within(await page.findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Delete Incident coordinator?" })).toBeVisible();
+    await expect(
+      dialog.getByRole("heading", { name: "Delete Incident coordinator?" }),
+    ).toBeVisible();
     // retiring is offered as the reversible alternative
     await expect(dialog.getByText(/Retire it instead/)).toBeVisible();
     const confirm = dialog.getByRole("button", { name: "Delete skill" });

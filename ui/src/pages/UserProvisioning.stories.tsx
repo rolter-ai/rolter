@@ -64,7 +64,10 @@ const TEAMS = [
   { id: "team-2", org_id: ORG.id, name: "payments", created_at: NOW },
 ];
 
-const PROJECTS: Record<string, { id: string; team_id: string; name: string; created_at: string }[]> = {
+const PROJECTS: Record<
+  string,
+  { id: string; team_id: string; name: string; created_at: string }[]
+> = {
   "team-1": [{ id: "proj-1", team_id: "team-1", name: "prod", created_at: NOW }],
   "team-2": [{ id: "proj-2", team_id: "team-2", name: "checkout", created_at: NOW }],
 };
@@ -117,7 +120,7 @@ function scoped(
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <UserProvisioning />
+      <UserProvisioning />
     </ScreenHarness>
   );
 }
@@ -153,9 +156,7 @@ export const Empty: Story = {
   render: () => <Harness fetchStub={scoped(async () => json([]))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No provisioning tokens yet")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No provisioning tokens yet")).toBeVisible());
   },
 };
 
@@ -163,17 +164,11 @@ export const Empty: Story = {
 // gets a calm explanation and no mint button rather than a red error
 export const Forbidden: Story = {
   render: () => (
-    <Harness
-      fetchStub={scoped(async () => json({ error: { message: "forbidden" } }, 403))}
-    />
+    <Harness fetchStub={scoped(async () => json({ error: { message: "forbidden" } }, 403))} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(
-        canvas.getByText(/visible to org admins only/),
-      ).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/visible to org admins only/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Issue token/ })).toBeDisabled();
   },
 };
@@ -184,7 +179,10 @@ export const IssueRevealsTheSecretOnce: Story = {
   render: () => {
     const stub = scoped(async (init) => {
       if (init?.method === "POST") {
-        return json({ ...token({ id: "tok-new", name: "Okta production" }), secret: "rolter_scim_deadbeef" });
+        return json({
+          ...token({ id: "tok-new", name: "Okta production" }),
+          secret: "rolter_scim_deadbeef",
+        });
       }
       return json([]);
     });
@@ -193,26 +191,17 @@ export const IssueRevealsTheSecretOnce: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // the empty placeholder repeats the toolbar action, so both are on screen
-    await userEvent.click(
-      (await canvas.findAllByRole("button", { name: /Issue token/ }))[0],
-    );
+    await userEvent.click((await canvas.findAllByRole("button", { name: /Issue token/ }))[0]);
     // sheets portal to document.body, so the panel is not under the canvas root
     const sheet = within(await within(document.body).findByRole("dialog"));
-    await userEvent.type(
-      sheet.getByPlaceholderText("Okta production"),
-      "Okta production",
-    );
+    await userEvent.type(sheet.getByPlaceholderText("Okta production"), "Okta production");
     await userEvent.click(sheet.getByRole("button", { name: /Issue token/ }));
     await waitFor(() =>
-      expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent(
-        "rolter_scim_deadbeef",
-      ),
+      expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent("rolter_scim_deadbeef"),
     );
     await expect(sheet.getByText(/only time this token is shown/)).toBeVisible();
     // and it is copyable, because it can never be read back
-    await expect(
-      sheet.getByRole("button", { name: /Copy provisioning token/ }),
-    ).toBeVisible();
+    await expect(sheet.getByRole("button", { name: /Copy provisioning token/ })).toBeVisible();
   },
 };
 
@@ -238,9 +227,7 @@ export const IssueRejectedByTheServer: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      (await canvas.findAllByRole("button", { name: /Issue token/ }))[0],
-    );
+    await userEvent.click((await canvas.findAllByRole("button", { name: /Issue token/ }))[0]);
     const panel = within(await within(document.body).findByRole("dialog"));
     const name = panel.getByPlaceholderText("Okta production");
     await userEvent.type(name, "Okta production");
@@ -277,9 +264,7 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
       }),
     );
     const modal = within(await within(document.body).findByRole("dialog"));
-    await expect(
-      modal.getByText(/nobody is deactivated or logged out/),
-    ).toBeVisible();
+    await expect(modal.getByText(/nobody is deactivated or logged out/)).toBeVisible();
     await userEvent.click(modal.getByRole("button", { name: "Revoke" }));
     // the DELETE itself, not just the badge: the row re-renders off a fixture
     // this story controls, so "REVOKED" on screen would pass a screen that
@@ -303,9 +288,7 @@ export const GroupMappingsListed: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("platform-engineering")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("platform-engineering")).toBeVisible());
     // asserted per row rather than per string: the add form's own selects carry
     // the same scope and role labels as options
     await expect(canvas.getByText("platform-engineering").closest("li")).toHaveTextContent(
@@ -335,8 +318,7 @@ export const GroupMappingScopeUnresolved: Story = {
         async () => json(MAPPINGS),
         {
           teams: async () => json({ error: { message: "teams unavailable" } }, 500),
-          orgProjects: async () =>
-            json({ error: { message: "projects unavailable" } }, 500),
+          orgProjects: async () => json({ error: { message: "projects unavailable" } }, 500),
         },
       )}
     />
@@ -369,9 +351,7 @@ export const GroupMappingsEmpty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
-      expect(
-        canvas.getByText(/every provisioned account joins as a viewer/),
-      ).toBeVisible(),
+      expect(canvas.getByText(/every provisioned account joins as a viewer/)).toBeVisible(),
     );
   },
 };
@@ -390,9 +370,7 @@ export const MapGroupPostsTheScopedRole: Story = {
       async (init) => {
         if (init?.method === "POST") {
           postedMappings.push(JSON.parse(String(init.body)));
-          return json(
-            mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" }),
-          );
+          return json(mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" }));
         }
         return json(
           postedMappings.length
@@ -485,9 +463,7 @@ export const RemoveMappingConfirmsFirst: Story = {
     await expect(modal.getByText(/loses Member straight away/)).toBeVisible();
     await userEvent.click(modal.getByRole("button", { name: "Remove mapping" }));
     await waitFor(() => expect(deletedMappings).toHaveLength(1));
-    await waitFor(() =>
-      expect(canvas.queryByText("platform-engineering")).toBeNull(),
-    );
+    await waitFor(() => expect(canvas.queryByText("platform-engineering")).toBeNull());
   },
 };
 
@@ -551,9 +527,7 @@ export const MapGroupToAProjectInAnotherTeam: Story = {
     });
     // and the listed mapping names that project, not its raw id
     await waitFor(() =>
-      expect(canvas.getByText("checkout-oncall").closest("li")).toHaveTextContent(
-        "checkout",
-      ),
+      expect(canvas.getByText("checkout-oncall").closest("li")).toHaveTextContent("checkout"),
     );
   },
 };
@@ -572,9 +546,7 @@ export const ScopePickerHasNoTeams: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText(/no teams yet/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/no teams yet/)).toBeVisible());
   },
 };
 

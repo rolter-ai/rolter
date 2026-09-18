@@ -44,9 +44,9 @@ const CONFIGURED: ClientSettingsDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <ClientSettings />
-    </Toasted>
+      <Toasted>
+        <ClientSettings />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -76,9 +76,7 @@ export const Configured: Story = {
     await expect(await canvas.findByLabelText("Public base URL")).toHaveValue(
       "https://gateway.example.com",
     );
-    await expect(canvas.getByLabelText("Injected header name 1")).toHaveValue(
-      "x-partner-id",
-    );
+    await expect(canvas.getByLabelText("Injected header name 1")).toHaveValue("x-partner-id");
   },
 };
 
@@ -91,9 +89,7 @@ export const Loading: Story = {
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
@@ -124,9 +120,7 @@ export const RejectsANonHttpBaseUrl: Story = {
     const url = await canvas.findByLabelText("Public base URL");
     await userEvent.type(url, "gateway.example.com");
     await waitFor(() =>
-      expect(
-        canvas.getByText("Base URL must start with http:// or https://."),
-      ).toBeVisible(),
+      expect(canvas.getByText("Base URL must start with http:// or https://.")).toBeVisible(),
     );
   },
 };
@@ -145,10 +139,7 @@ export const SavesChanges: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Add header" }));
-    await userEvent.type(
-      canvas.getByLabelText("Injected header name 1"),
-      "x-partner-id",
-    );
+    await userEvent.type(canvas.getByLabelText("Injected header name 1"), "x-partner-id");
     await userEvent.type(canvas.getByLabelText("Injected header value 1"), "acme");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await expectToast(canvasElement, /client settings updated/i);

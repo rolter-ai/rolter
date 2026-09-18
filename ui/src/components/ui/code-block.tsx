@@ -2,12 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { CopyButton } from "@/components/CopyButton";
-import {
-  HIGHLIGHT_CHAR_LIMIT,
-  splitLines,
-  type CodeLanguage,
-  type CodeNode,
-} from "@/lib/code";
+import { HIGHLIGHT_CHAR_LIMIT, splitLines, type CodeLanguage, type CodeNode } from "@/lib/code";
 import { cn } from "@/lib/utils";
 
 /**
@@ -104,10 +99,7 @@ export function CodeBlock({
   // the un-highlighted value is a valid tree of one text node, so streaming
   // output and the pre-load frame take exactly the same render path
   const tree = React.useMemo<CodeNode[]>(() => nodes ?? [value], [nodes, value]);
-  const lines = React.useMemo(
-    () => (lineNumbers ? splitLines(tree) : null),
-    [lineNumbers, tree],
-  );
+  const lines = React.useMemo(() => (lineNumbers ? splitLines(tree) : null), [lineNumbers, tree]);
 
   const languageName =
     language === "text" || language === "log"
@@ -145,17 +137,19 @@ export function CodeBlock({
         )}
       >
         <code className={`language-${language}`}>
-          {lines
-            ? lines.map((line, i) => (
-                <span key={i} className="rl-code-line">
-                  <Nodes nodes={line} />
-                  {/* the newline lives inside the line, not between the
+          {lines ? (
+            lines.map((line, i) => (
+              <span key={i} className="rl-code-line">
+                <Nodes nodes={line} />
+                {/* the newline lives inside the line, not between the
                       elements: it keeps the block's text identical to the
                       source, so a selection copies what the payload says */}
-                  {i < lines.length - 1 ? "\n" : null}
-                </span>
-              ))
-            : <Nodes nodes={tree} />}
+                {i < lines.length - 1 ? "\n" : null}
+              </span>
+            ))
+          ) : (
+            <Nodes nodes={tree} />
+          )}
         </code>
       </pre>
     </div>

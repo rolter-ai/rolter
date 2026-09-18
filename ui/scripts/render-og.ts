@@ -27,8 +27,14 @@ const outputs = [
 // the latin subsets only: the image carries no cyrillic or vietnamese glyphs,
 // and shipping the whole family would triple the inlined payload
 const faces = [
-  { family: "Geist Variable", file: "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2" },
-  { family: "Geist Mono Variable", file: "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2" },
+  {
+    family: "Geist Variable",
+    file: "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",
+  },
+  {
+    family: "Geist Mono Variable",
+    file: "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2",
+  },
 ];
 
 function fontFace({ family, file }: { family: string; file: string }): string {

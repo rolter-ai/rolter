@@ -234,9 +234,30 @@ const READS_AS_LABEL = /^(?=.*[A-Za-z]{2})(?:.*\s|[A-Z])/s;
  * rule; this one only has to know when to stand down.
  */
 const NOT_A_TABLE_KEY = new Set([
-  "id", "key", "name", "kind", "type", "value", "className", "class", "style",
-  "href", "src", "url", "path", "to", "role", "variant", "size", "color",
-  "icon", "testId", "method", "slug", "field", "column",
+  "id",
+  "key",
+  "name",
+  "kind",
+  "type",
+  "value",
+  "className",
+  "class",
+  "style",
+  "href",
+  "src",
+  "url",
+  "path",
+  "to",
+  "role",
+  "variant",
+  "size",
+  "color",
+  "icon",
+  "testId",
+  "method",
+  "slug",
+  "field",
+  "column",
 ]);
 
 /**
@@ -262,7 +283,8 @@ function codeMapLabels(inner: string, base: number): Candidate[] | null {
     if (!/^[\s,]*$/.test(inner.slice(at, m.index))) return null;
     at = m.index + m[0].length;
     const text = normalize(m[4]);
-    if (READS_AS_LABEL.test(text)) out.push({ index: base + m.index + m[0].lastIndexOf(m[4]), text });
+    if (READS_AS_LABEL.test(text))
+      out.push({ index: base + m.index + m[0].lastIndexOf(m[4]), text });
   }
   if (!/^[\s,]*$/.test(inner.slice(at))) return null;
   return members > 1 ? out : null;
@@ -294,7 +316,10 @@ function skipString(s: string, i: number): number {
  * `Other ({rest.length})` in JSX record the same way. The interpolations are
  * returned too: a `${n === 1 ? "key" : "keys"}` holds copy of its own.
  */
-function readTemplate(s: string, i: number): { end: number; text: string; holes: [number, number][] } {
+function readTemplate(
+  s: string,
+  i: number,
+): { end: number; text: string; holes: [number, number][] } {
   let text = "";
   const holes: [number, number][] = [];
   let j = i + 1;
@@ -327,10 +352,10 @@ function skipExpression(s: string, i: number, stops: string): number {
     const ch = s[j];
     if (ch === '"' || ch === "'") j = skipString(s, j);
     else if (ch === "`") j = readTemplate(s, j).end;
-    else if ("([{".includes(ch)) depth++, j++;
+    else if ("([{".includes(ch)) (depth++, j++);
     else if (")]}".includes(ch)) {
       if (depth === 0) return j;
-      depth--, j++;
+      (depth--, j++);
     } else if (depth === 0 && stops.includes(ch)) return j;
     else j++;
   }
@@ -359,7 +384,8 @@ function stringsIn(expr: string, base: number): Candidate[] {
     } else if (ch === "`") {
       const { end, text, holes } = readTemplate(expr, j);
       const prose = normalize(text.split(PLACEHOLDER).join(" "));
-      if (TEMPLATE_READS_AS_COPY.test(prose) && !isNotCopy(prose)) out.push({ index: base + j, text });
+      if (TEMPLATE_READS_AS_COPY.test(prose) && !isNotCopy(prose))
+        out.push({ index: base + j, text });
       for (const [from, to] of holes) out.push(...stringsIn(expr.slice(from, to), base + from));
       j = end;
     } else {
@@ -391,7 +417,8 @@ function isNotCopy(text: string): boolean {
   if (/^[\d.,\s%-]+$/.test(t)) return true;
   // svg path data: a move command and then nothing but commands and numbers.
   // `M12 19V5M5 12l7-7 7 7` is an arrow, not a sentence (#1599)
-  if (/^[Mm][\d\s.,-]/.test(t) && /^[A-Za-z\d\s.,-]+$/.test(t) && !/[A-Za-z]{2}/.test(t)) return true;
+  if (/^[Mm][\d\s.,-]/.test(t) && /^[A-Za-z\d\s.,-]+$/.test(t) && !/[A-Za-z]{2}/.test(t))
+    return true;
   // a tailwind class list or a css value: lowercase, no sentence punctuation,
   // and every token a utility. the character set alone is not enough —
   // `request failed: {…}` and `no events yet` fit it too, and were dropped
@@ -399,7 +426,10 @@ function isNotCopy(text: string): boolean {
   // among the tokens makes it prose. `_`, `+` and `,` belong to arbitrary
   // values (`grid-cols-[1fr_2fr]`, `bottom-[calc(100%+6px)]`) and to css
   // functions (`color-mix(in srgb, …)`), which sat in the baseline as copy (#958)
-  if (/^[a-z0-9:[\]()\-./%_+,]+( [a-z0-9:[\]()\-./%_+,]+)+$/.test(t) && t.split(" ").every(isUtilityToken)) {
+  if (
+    /^[a-z0-9:[\]()\-./%_+,]+( [a-z0-9:[\]()\-./%_+,]+)+$/.test(t) &&
+    t.split(" ").every(isUtilityToken)
+  ) {
     return true;
   }
   return false;
@@ -423,19 +453,67 @@ function isUtilityToken(token: string): boolean {
 // English (`block`, `none`) costs nothing beside real prose
 const BARE_UTILITIES = new Set([
   // display, position and visibility
-  "flex", "grid", "block", "inline", "hidden", "contents", "table",
-  "relative", "absolute", "fixed", "sticky", "static", "isolate",
-  "visible", "invisible", "collapse",
+  "flex",
+  "grid",
+  "block",
+  "inline",
+  "hidden",
+  "contents",
+  "table",
+  "relative",
+  "absolute",
+  "fixed",
+  "sticky",
+  "static",
+  "isolate",
+  "visible",
+  "invisible",
+  "collapse",
   // type
-  "truncate", "italic", "uppercase", "lowercase", "capitalize", "underline",
-  "antialiased", "ordinal", "grow", "shrink",
+  "truncate",
+  "italic",
+  "uppercase",
+  "lowercase",
+  "capitalize",
+  "underline",
+  "antialiased",
+  "ordinal",
+  "grow",
+  "shrink",
   // borders, effects and state markers
-  "border", "rounded", "shadow", "ring", "outline", "transition", "transform",
-  "filter", "blur", "resize", "container", "group", "peer", "prose", "dark",
+  "border",
+  "rounded",
+  "shadow",
+  "ring",
+  "outline",
+  "transition",
+  "transform",
+  "filter",
+  "blur",
+  "resize",
+  "container",
+  "group",
+  "peer",
+  "prose",
+  "dark",
   // css values
-  "auto", "none", "solid", "dashed", "dotted", "transparent", "inherit",
-  "currentcolor", "normal", "bold", "nowrap", "pointer", "center", "ease",
-  "linear", "infinite", "srgb",
+  "auto",
+  "none",
+  "solid",
+  "dashed",
+  "dotted",
+  "transparent",
+  "inherit",
+  "currentcolor",
+  "normal",
+  "bold",
+  "nowrap",
+  "pointer",
+  "center",
+  "ease",
+  "linear",
+  "infinite",
+  "srgb",
 ]);
 
 // values that read as capitalised words but are wire codes the browser or the
@@ -443,9 +521,23 @@ const BARE_UTILITIES = new Set([
 const CODE_WORDS = new Set([
   // "Delete" and "Home" are left out on purpose: they are also button labels,
   // and a missed key check costs less than a missed destructive-button label
-  "Escape", "Enter", "Tab", "Backspace", "Space", "End",
-  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
-  "Authorization", "Bearer", "Content-Type", "Accept", "Retry-After",
+  "Escape",
+  "Enter",
+  "Tab",
+  "Backspace",
+  "Space",
+  "End",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "PageUp",
+  "PageDown",
+  "Authorization",
+  "Bearer",
+  "Content-Type",
+  "Accept",
+  "Retry-After",
 ]);
 
 /** Normalize for allow-list comparison: collapse whitespace so a reflow of the
@@ -485,7 +577,25 @@ interface Masked {
  * `{x}</Foo>`, and reading a closing tag as a regex would swallow the rest of
  * the component. A division misread as a regex costs real findings; a regex
  * misread as division costs nothing here, because a regex body is never copy. */
-const REGEX_CONTEXT = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "+", "-", "*", "%", "^", "~", ";"]);
+const REGEX_CONTEXT = new Set([
+  "",
+  "(",
+  ",",
+  "=",
+  ":",
+  "[",
+  "!",
+  "&",
+  "|",
+  "?",
+  "+",
+  "-",
+  "*",
+  "%",
+  "^",
+  "~",
+  ";",
+]);
 
 const WHITESPACE = /\s/;
 
@@ -596,8 +706,8 @@ export function maskSource(source: string): Masked {
       let inClass = false;
       while (i < source.length && source[i] !== "\n") {
         if (source[i] === "\\") i += 2;
-        else if (source[i] === "[") (inClass = true), i++;
-        else if (source[i] === "]") (inClass = false), i++;
+        else if (source[i] === "[") ((inClass = true), i++);
+        else if (source[i] === "]") ((inClass = false), i++);
         else if (source[i] === "/" && !inClass) break;
         else i++;
       }
@@ -813,7 +923,8 @@ export function findLiterals(source: string, file: string): Literal[] {
   }
   // a lookup table's labels, which no prop name can reach (#1599)
   for (const m of scanned.matchAll(FLAT_OBJECT)) {
-    for (const c of codeMapLabels(m[0].slice(1, -1), m.index + 1) ?? []) push(c.index, c.text, "prop");
+    for (const c of codeMapLabels(m[0].slice(1, -1), m.index + 1) ?? [])
+      push(c.index, c.text, "prop");
   }
   for (const m of scanned.matchAll(TEXT)) {
     if (!tagEnds.has(m.index)) continue;

@@ -28,8 +28,7 @@ void initTelemetry();
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount, error) =>
-        isRetryable(classifyLoadError(error)) && failureCount < 3,
+      retry: (failureCount, error) => isRetryable(classifyLoadError(error)) && failureCount < 3,
       // the org/team/project scope is read by every screen; without a stale
       // window it was refetched on every navigation before the screen's own
       // data could even start loading. mutations invalidate explicitly

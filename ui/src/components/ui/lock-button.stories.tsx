@@ -17,7 +17,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-function Controlled({ initial = false, disabled = false }: { initial?: boolean; disabled?: boolean }) {
+function Controlled({
+  initial = false,
+  disabled = false,
+}: {
+  initial?: boolean;
+  disabled?: boolean;
+}) {
   const [locked, setLocked] = React.useState(initial);
   return (
     <div className="flex items-center gap-2 text-sm">

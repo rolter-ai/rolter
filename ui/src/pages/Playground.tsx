@@ -20,13 +20,7 @@ import { DocsLink } from "@/components/DocsLink";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { ScatterPlot, type ScatterPoint } from "@/components/ui/scatter-plot";
@@ -91,11 +85,7 @@ function useModelCatalog(): { options: ModelOption[]; source: ModelSource } {
     retry: false,
   });
 
-  const source: ModelSource = gateway.data
-    ? "gateway"
-    : key
-      ? "unreachable"
-      : "no-key";
+  const source: ModelSource = gateway.data ? "gateway" : key ? "unreachable" : "no-key";
 
   const options: ModelOption[] = gateway.data
     ? gateway.data.map((m) => ({ id: m.id, ownedBy: m.owned_by }))
@@ -289,9 +279,7 @@ function ChatColumn({
     try {
       const reply = await chatCompletion(model, [{ role: "user", content }]);
       setMsgs((m) =>
-        m.map((msg, i) =>
-          i === m.length - 1 ? { role: "assistant", text: reply } : msg,
-        ),
+        m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
       );
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
@@ -366,9 +354,7 @@ function ChatColumn({
                * markdown. prose with its newlines kept, not a payload: it wraps
                * rather than scrolling sideways, and `CodeBlock`'s copy button and
                * highlighting would both be answering a question nobody asked */
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs">
-                {m.text}
-              </pre>
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs">{m.text}</pre>
             ) : (
               <Markdown source={m.text} />
             )}
@@ -379,8 +365,7 @@ function ChatColumn({
         <div className="px-3 pb-1">
           {image && (
             <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-[0.625rem] text-muted-foreground">
-              <ImageIcon className="h-3 w-3" />{" "}
-              {t("pages.playground.imageAttached")}
+              <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               <button
                 onClick={() => setImage(null)}
                 aria-label={t("pages.playground.removeAttachment")}
@@ -428,11 +413,7 @@ function ChatColumn({
           disabled={busy}
           aria-label={t("pages.playground.send")}
         >
-          {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
       </div>
     </div>
@@ -441,9 +422,7 @@ function ChatColumn({
 
 function ChatMode({ models }: { models: ModelOption[] }) {
   const { t } = useTranslation();
-  const [cols, setCols] = React.useState<{ model: string }[]>([
-    { model: FAKE },
-  ]);
+  const [cols, setCols] = React.useState<{ model: string }[]>([{ model: FAKE }]);
   const [multimodal, setMultimodal] = React.useState(false);
   // the list arrives after the first render. until the operator picks
   // something, the first real route beats the built-in placeholder: a
@@ -452,21 +431,14 @@ function ChatMode({ models }: { models: ModelOption[] }) {
   React.useEffect(() => {
     if (touched.current) return;
     const real = models.find((m) => m.id !== FAKE && !m.id.includes("/"));
-    if (real)
-      setCols((c) =>
-        c.length === 1 && c[0].model === FAKE ? [{ model: real.id }] : c,
-      );
+    if (real) setCols((c) => (c.length === 1 && c[0].model === FAKE ? [{ model: real.id }] : c));
   }, [models]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
     setCols((c) => c.map((col, j) => (j === i ? { model: v } : col)));
   };
-  const add = () =>
-    setCols((c) => [
-      ...c,
-      { model: models[c.length % models.length]?.id ?? FAKE },
-    ]);
+  const add = () => setCols((c) => [...c, { model: models[c.length % models.length]?.id ?? FAKE }]);
   const remove = (i: number) => setCols((c) => c.filter((_, j) => j !== i));
 
   return (
@@ -478,9 +450,7 @@ function ChatMode({ models }: { models: ModelOption[] }) {
             aria-labelledby="playground-multimodal-label"
             onCheckedChange={setMultimodal}
           />
-          <span id="playground-multimodal-label">
-            {t("pages.playground.multimodal")}
-          </span>
+          <span id="playground-multimodal-label">{t("pages.playground.multimodal")}</span>
         </label>
         <span className="text-xs text-[color:var(--text-subtle)]">
           {t("pages.playground.attachHint")}
@@ -492,8 +462,7 @@ function ChatMode({ models }: { models: ModelOption[] }) {
               : t("pages.playground.single")}
           </Badge>
           <Button size="sm" variant="outline" onClick={add}>
-            <GitCompare className="h-3.5 w-3.5" />{" "}
-            {t("pages.playground.addModel")}
+            <GitCompare className="h-3.5 w-3.5" /> {t("pages.playground.addModel")}
           </Button>
         </span>
       </div>
@@ -534,8 +503,7 @@ function pca2(vectors: number[][]): { x: number; y: number }[] {
   const X = vectors.map((v) => v.map((x, j) => x - mean[j]));
   const cov = Array.from({ length: d }, () => Array(d).fill(0));
   X.forEach((v) => {
-    for (let a = 0; a < d; a++)
-      for (let b = 0; b < d; b++) cov[a][b] += (v[a] * v[b]) / n;
+    for (let a = 0; a < d; a++) for (let b = 0; b < d; b++) cov[a][b] += (v[a] * v[b]) / n;
   });
   const norm = (v: number[]) => {
     const l = Math.hypot(...v) || 1;
@@ -578,8 +546,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  const setText = (i: number, v: string) =>
-    setTexts((a) => a.map((t, j) => (j === i ? v : t)));
+  const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
   const addField = () => setTexts((a) => [...a, ""]);
   const removeField = (i: number) =>
     setTexts((a) => (a.length > 1 ? a.filter((_, j) => j !== i) : a));
@@ -598,14 +565,10 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
       const xs = proj.map((p) => p.x);
       const ys = proj.map((p) => p.y);
       const nx = (v: number) =>
-        ((v - Math.min(...xs)) / (Math.max(...xs) - Math.min(...xs) || 1)) *
-        100;
+        ((v - Math.min(...xs)) / (Math.max(...xs) - Math.min(...xs) || 1)) * 100;
       const ny = (v: number) =>
-        ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) *
-        100;
-      setPoints(
-        proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })),
-      );
+        ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) * 100;
+      setPoints(proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -616,12 +579,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   return (
     <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
       <div className="flex flex-col">
-        <ModelSelect
-          models={models}
-          value={model}
-          onChange={setModel}
-          className="mb-2.5"
-        />
+        <ModelSelect models={models} value={model} onChange={setModel} className="mb-2.5" />
         <div className="flex max-h-[280px] flex-col gap-1.5 overflow-y-auto pr-1">
           {texts.map((row, i) => (
             <div key={i} className="flex items-center gap-1.5">
@@ -755,26 +713,25 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           {t("pages.playground.outputCount", { count: images.length })}
         </p>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          {(images.length ? images : Array.from({ length: n }, () => null)).map(
-            (img, i) => (
-              <div
-                key={i}
-                className="flex aspect-square items-center justify-center overflow-hidden rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]"
-              >
-                {img ? (
-                  <img
-                    src={img.url}
-                    alt={t("pages.playground.sampleLabel", { n: i + 1 })}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[color:var(--text-subtle)]">
-                    <ImageIcon className="h-4 w-4" /> {t("pages.playground.sampleLabel", { n: i + 1 })}
-                  </span>
-                )}
-              </div>
-            ),
-          )}
+          {(images.length ? images : Array.from({ length: n }, () => null)).map((img, i) => (
+            <div
+              key={i}
+              className="flex aspect-square items-center justify-center overflow-hidden rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]"
+            >
+              {img ? (
+                <img
+                  src={img.url}
+                  alt={t("pages.playground.sampleLabel", { n: i + 1 })}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[color:var(--text-subtle)]">
+                  <ImageIcon className="h-4 w-4" />{" "}
+                  {t("pages.playground.sampleLabel", { n: i + 1 })}
+                </span>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -849,7 +806,10 @@ function AudioMode({ models }: { models: ModelOption[] }) {
                 options={[
                   { value: "nova", label: t("pages.playground.voiceOption", { voice: "nova" }) },
                   { value: "onyx", label: t("pages.playground.voiceOption", { voice: "onyx" }) },
-                  { value: "shimmer", label: t("pages.playground.voiceOption", { voice: "shimmer" }) },
+                  {
+                    value: "shimmer",
+                    label: t("pages.playground.voiceOption", { voice: "shimmer" }),
+                  },
                 ]}
               />
               <Button size="sm" onClick={speak} disabled={busy}>
@@ -885,9 +845,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
               type="file"
               accept="audio/*"
               hidden
-              onChange={(e) =>
-                e.target.files?.[0] && doTranscribe(e.target.files[0])
-              }
+              onChange={(e) => e.target.files?.[0] && doTranscribe(e.target.files[0])}
             />
             <Button
               size="sm"
@@ -950,8 +908,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
         append("● connected");
       };
       ws.onmessage = (ev) => append("← " + String(ev.data).slice(0, 200));
-      ws.onerror = () =>
-        append("✕ socket error — realtime needs a realtime-capable upstream");
+      ws.onerror = () => append("✕ socket error — realtime needs a realtime-capable upstream");
       ws.onclose = () => {
         setLive(false);
         append("○ closed");
@@ -981,51 +938,33 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
             onClick={live ? stop : start}
           >
             <Mic className="h-3.5 w-3.5" />{" "}
-            {live
-              ? t("pages.playground.stopSession")
-              : t("pages.playground.startSession")}
+            {live ? t("pages.playground.stopSession") : t("pages.playground.startSession")}
           </Button>
         </span>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">
-              {t("pages.playground.sessionTitle")}
-            </CardTitle>
-            <CardDescription>
-              {t("pages.playground.sessionSubtitle")}
-            </CardDescription>
+            <CardTitle className="text-base">{t("pages.playground.sessionTitle")}</CardTitle>
+            <CardDescription>{t("pages.playground.sessionSubtitle")}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-1">
             <StatusRow
               status={live ? "success" : "idle"}
               chevron={false}
-              label={
-                live
-                  ? t("pages.playground.connected")
-                  : t("pages.playground.idle")
-              }
+              label={live ? t("pages.playground.connected") : t("pages.playground.idle")}
             />
             <StatusRow
               status={live ? "running" : "idle"}
               chevron={false}
-              label={
-                live
-                  ? t("pages.playground.channelOpen")
-                  : t("pages.playground.noSession")
-              }
+              label={live ? t("pages.playground.channelOpen") : t("pages.playground.noSession")}
             />
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">
-              {t("pages.playground.eventLog")}
-            </CardTitle>
-            <CardDescription>
-              {t("pages.playground.eventLogSubtitle")}
-            </CardDescription>
+            <CardTitle className="text-base">{t("pages.playground.eventLog")}</CardTitle>
+            <CardDescription>{t("pages.playground.eventLogSubtitle")}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="mb-2.5 flex h-[140px] flex-col gap-1 overflow-auto font-mono text-[0.6875rem] text-[color:var(--text-secondary)]">

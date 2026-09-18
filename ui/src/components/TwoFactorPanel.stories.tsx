@@ -52,10 +52,11 @@ const CODES = Array.from({ length: 10 }, (_, i) => `4KJH2Q${String(i).padStart(2
  * assert that the panel went from "off" to "on" rather than that a fixture
  * changed under it.
  */
-const mfa = (
-  status: () => Response,
-  { enroll = () => json(SECRET), confirm = () => json({ recovery_codes: CODES }) } = {},
-): FetchStub =>
+const mfa =
+  (
+    status: () => Response,
+    { enroll = () => json(SECRET), confirm = () => json({ recovery_codes: CODES }) } = {},
+  ): FetchStub =>
   async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -101,19 +102,13 @@ export const NotEnrolled: Story = {
  */
 export const NotEnrolledButRequired: Story = {
   render: () => (
-    <Harness
-      fetchStub={mfa(() =>
-        json({ ...OFF, policy: "required_all", required: true }),
-      )}
-    >
+    <Harness fetchStub={mfa(() => json({ ...OFF, policy: "required_all", required: true }))}>
       <TwoFactorPanel />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/your next sign-in is refused/i),
-    ).toBeInTheDocument();
+    await expect(await canvas.findByText(/your next sign-in is refused/i)).toBeInTheDocument();
   },
 };
 
@@ -164,9 +159,7 @@ export const NoRecoveryCodesLeft: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/No recovery codes left/),
-    ).toBeInTheDocument();
+    await expect(await canvas.findByText(/No recovery codes left/)).toBeInTheDocument();
   },
 };
 
@@ -177,9 +170,7 @@ export const NoRecoveryCodesLeft: Story = {
  */
 export const RemovalRefusedByPolicy: Story = {
   render: () => (
-    <Harness
-      fetchStub={mfa(() => json({ ...ON, policy: "required_all", required: true }))}
-    >
+    <Harness fetchStub={mfa(() => json({ ...ON, policy: "required_all", required: true }))}>
       <TwoFactorPanel />
     </Harness>
   ),
@@ -206,15 +197,12 @@ export const EnrolsAndShowsRecoveryCodes: Story = {
     let armed = false;
     return (
       <Harness
-        fetchStub={mfa(
-          () => json(armed ? ON : OFF),
-          {
-            confirm: () => {
-              armed = true;
-              return json({ recovery_codes: CODES });
-            },
+        fetchStub={mfa(() => json(armed ? ON : OFF), {
+          confirm: () => {
+            armed = true;
+            return json({ recovery_codes: CODES });
           },
-        )}
+        })}
       >
         <Toasted>
           <TwoFactorPanel />
@@ -224,15 +212,15 @@ export const EnrolsAndShowsRecoveryCodes: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /set up two-factor/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /set up two-factor/i }));
     const dialog = await within(document.body).findByRole("dialog");
     // the secret is offered as text as well as as a QR: a user on a desktop
     // authenticator, or without a camera, has no other way through this step
     await expect(within(dialog).getByText(SECRET.secret)).toBeInTheDocument();
     // and the spent-code rule is said before it bites, not after
-    await expect(within(dialog).getByText(/next sign-in needs the following one/i)).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/next sign-in needs the following one/i),
+    ).toBeInTheDocument();
 
     await userEvent.type(within(dialog).getByLabelText(/code from the app/i), "123456");
     await userEvent.click(within(dialog).getByRole("button", { name: "Turn on" }));
@@ -259,8 +247,7 @@ export const AWrongEnrolmentCodeIsReported: Story = {
           json(
             {
               error: {
-                message:
-                  "that code did not match; check the clock on the device and try again",
+                message: "that code did not match; check the clock on the device and try again",
               },
             },
             400,
@@ -272,9 +259,7 @@ export const AWrongEnrolmentCodeIsReported: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /set up two-factor/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /set up two-factor/i }));
     const dialog = await within(document.body).findByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText(/code from the app/i), "000000");
     await userEvent.click(within(dialog).getByRole("button", { name: "Turn on" }));
@@ -334,9 +319,7 @@ export const RemovingTheFactorNeedsACode: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /remove second factor/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /remove second factor/i }));
     const dialog = await within(document.body).findByRole("dialog");
     await expect(within(dialog).getByRole("button", { name: "Remove" })).toBeDisabled();
     await userEvent.type(

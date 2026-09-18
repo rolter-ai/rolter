@@ -26,7 +26,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-function Controlled({ disabled = false, labelled = false }: { disabled?: boolean; labelled?: boolean }) {
+function Controlled({
+  disabled = false,
+  labelled = false,
+}: {
+  disabled?: boolean;
+  labelled?: boolean;
+}) {
   const [value, setValue] = React.useState("lockAll");
   return (
     <div className="space-y-1.5">

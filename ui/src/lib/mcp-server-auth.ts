@@ -63,7 +63,10 @@ export function authDraftValid(draft: AuthDraft, server: McpServerRow | null): b
  * untouched server must stay editable on a deployment without one. The
  * credential is only sent when typed: an empty input means "keep it".
  */
-export function authInput(draft: AuthDraft, server: McpServerRow | null): McpServerAuthInput | null {
+export function authInput(
+  draft: AuthDraft,
+  server: McpServerRow | null,
+): McpServerAuthInput | null {
   const headerName = draft.headerName.trim();
   const current = server?.auth_kind ?? "none";
   const changed =
@@ -126,7 +129,10 @@ export const overridesValid = (draft: OverrideDraft): boolean =>
  * drops it back to inheriting. Sending every field would make "leave it"
  * unsayable.
  */
-export function overridesPatch(draft: OverrideDraft, server: McpServerRow | null): McpTransportOverridesPatch {
+export function overridesPatch(
+  draft: OverrideDraft,
+  server: McpServerRow | null,
+): McpTransportOverridesPatch {
   const patch: McpTransportOverridesPatch = {};
   for (const key of OVERRIDE_KEYS) {
     const next = parseOverride(key, draft[key]);

@@ -83,10 +83,7 @@ describe("rankEntries", () => {
   });
 
   it("matches the hint too, but never above a label match", () => {
-    const all = [
-      entry("record", "acme-key", "Virtual keys"),
-      entry("screen", "Virtual keys"),
-    ];
+    const all = [entry("record", "acme-key", "Virtual keys"), entry("screen", "Virtual keys")];
     expect(rankEntries(all, "virtual").map((e) => e.id)).toEqual(["screen", "record"]);
   });
 

@@ -199,16 +199,12 @@ export const DeleteRejectedByTheServer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Delete model gpt-4o" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete model gpt-4o" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
 
     await expectToast(canvasElement, /referenced by 2 virtual keys/, "error");
-    await waitFor(() =>
-      expect(dialog.getByText(/referenced by 2 virtual keys/)).toBeVisible(),
-    );
+    await waitFor(() => expect(dialog.getByText(/referenced by 2 virtual keys/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };
@@ -242,9 +238,7 @@ export const DeleteRefusedToAnAdmin: Story = {
     const canvas = within(canvasElement);
     await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
     // the route half of the screen is still theirs
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Edit gpt-4o" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Edit gpt-4o" })).toBeEnabled());
   },
 };
 

@@ -54,9 +54,9 @@ const FLEET: ClusterNodeRow[] = [
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <Cluster />
-    </Toasted>
+      <Toasted>
+        <Cluster />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -93,17 +93,13 @@ export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json([])} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No nodes have reported in")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No nodes have reported in")).toBeVisible());
   },
 };
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },
@@ -132,9 +128,7 @@ export const RefusesDrainingTheLastGateway: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // by name, not by index: each row control names its own node (#1214)
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Drain node gw-1" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Drain node gw-1" }));
     // the refusal used to sit in a line beside the node count; it is an
     // assertive toast now, carrying the control plane's own words (#1197)
     await expectToast(canvasElement, /only live gateway still serving/, "error");
@@ -154,9 +148,7 @@ export const DrainsANode: Story = {
   render: () => <Harness fetchStub={drains.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Drain node gw-1" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Drain node gw-1" }));
     const body = await drains.expectSentBody<{ draining: boolean }>(
       "PUT",
       "/cluster/nodes/gw-1/drain",
@@ -172,19 +164,13 @@ export const DrainsANode: Story = {
 // next snapshot poll — so the action is only offered once it has gone stale
 export const ForgetOnlyOfferedForStaleNodes: Story = {
   render: () => (
-    <Harness
-      fetchStub={async () => json([node(), node({ id: "gw-old", live: false })])}
-    />
+    <Harness fetchStub={async () => json([node(), node({ id: "gw-old", live: false })])} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // the live node's Forget is refused, the stale one's is offered
-    await expect(
-      await canvas.findByRole("button", { name: "Forget node gw-1" }),
-    ).toBeDisabled();
-    await expect(
-      canvas.getByRole("button", { name: "Forget node gw-old" }),
-    ).toBeEnabled();
+    await expect(await canvas.findByRole("button", { name: "Forget node gw-1" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Forget node gw-old" })).toBeEnabled();
   },
 };
 
@@ -202,8 +188,7 @@ export const ConfirmsBeforeForgettingANode: Story = {
   render: () => <Harness fetchStub={forgets.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const stale = async () =>
-      canvas.findByRole("button", { name: "Forget node gw-old" });
+    const stale = async () => canvas.findByRole("button", { name: "Forget node gw-old" });
 
     await userEvent.click(await stale());
     await cancelConfirmation();
@@ -257,13 +242,9 @@ export const ForgetRejectedByTheServer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Forget node gw-old" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Forget node gw-old" }));
     await confirmDestructive(/gw-old/, /forget node/i);
     await expectToast(canvasElement, /reported in while you were deciding/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
   },
 };

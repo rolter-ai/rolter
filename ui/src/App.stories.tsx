@@ -2,11 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import App from "./App";
-import {
-  AppShell,
-  EXPERIMENTAL_SUBSYSTEM,
-  shellStubWithStability,
-} from "./pages/shell-harness";
+import { AppShell, EXPERIMENTAL_SUBSYSTEM, shellStubWithStability } from "./pages/shell-harness";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { withPageA11y } from "@/lib/story-a11y";
@@ -57,17 +53,16 @@ export const Desktop: Story = {
 
     // labels, not icons: this is the full rail, not the tablet strip
     await expect(within(rail).getByText("rolter")).toBeVisible();
-    await expect(
-      within(rail).getByRole("button", { name: nav.playground }),
-    ).toBeVisible();
+    await expect(within(rail).getByRole("button", { name: nav.playground })).toBeVisible();
     // the splitter belongs to this width and only this width
     await expect(
       within(rail).getByRole("separator", { name: en.shell.resizeSidebar }),
     ).toBeInTheDocument();
     // the shell knows which route it is on, and the screen agrees
-    await expect(
-      within(rail).getByRole("button", { name: nav.dashboard }),
-    ).toHaveAttribute("aria-current", "page");
+    await expect(within(rail).getByRole("button", { name: nav.dashboard })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     await expect(
       canvas.getByRole("heading", { level: 1, name: screens.dashboard.title }),
     ).toBeVisible();
@@ -119,9 +114,7 @@ export const Mobile: Story = {
 
     // a top-level leaf, so the assertion is about the drawer and not about
     // expanding a parent on the way to a child
-    await userEvent.click(
-      await within(drawer).findByRole("button", { name: nav.playground }),
-    );
+    await userEvent.click(await within(drawer).findByRole("button", { name: nav.playground }));
 
     // navigated…
     await waitFor(() =>
@@ -147,10 +140,7 @@ export const Mobile: Story = {
  */
 export const ExperimentalMarker: Story = {
   render: () => (
-    <AppShell
-      route="/dashboard"
-      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
-    />
+    <AppShell route="/dashboard" fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])} />
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
@@ -167,9 +157,7 @@ export const ExperimentalMarker: Story = {
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
     const plain = within(rail).getByRole("button", { name: nav.playground });
-    await expect(
-      within(plain).queryByText(en.shell.experimental),
-    ).toBeNull();
+    await expect(within(plain).queryByText(en.shell.experimental)).toBeNull();
   },
 };
 
@@ -182,10 +170,7 @@ export const ExperimentalMarker: Story = {
 export const ExperimentalMarkerTranslated: Story = {
   globals: { locale: "ru" },
   render: () => (
-    <AppShell
-      route="/dashboard"
-      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
-    />
+    <AppShell route="/dashboard" fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])} />
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
@@ -207,9 +192,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
   render: () => (
     <AppShell
       route="/dashboard"
-      fetchStub={shellStubWithStability([
-        { ...EXPERIMENTAL_SUBSYSTEM, id: "not_in_this_build" },
-      ])}
+      fetchStub={shellStubWithStability([{ ...EXPERIMENTAL_SUBSYSTEM, id: "not_in_this_build" }])}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -231,10 +214,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
 export const ExperimentalMarkerOnIconRail: Story = {
   ...atTablet,
   render: () => (
-    <AppShell
-      route="/dashboard"
-      fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])}
-    />
+    <AppShell route="/dashboard" fetchStub={shellStubWithStability([EXPERIMENTAL_SUBSYSTEM])} />
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);

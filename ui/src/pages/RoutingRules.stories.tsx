@@ -251,9 +251,7 @@ export const DeleteFails: Story = {
 
     const dialog = within(document.body).getByRole("dialog");
     await waitFor(() =>
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(
-        /referenced by 2 virtual keys/,
-      ),
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(/referenced by 2 virtual keys/),
     );
   },
 };

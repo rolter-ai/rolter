@@ -19,12 +19,8 @@ export function SelfServiceUnavailable() {
         className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-danger-text)]"
       />
       <div className="min-w-0 space-y-1">
-        <p className="text-sm font-medium text-foreground">
-          {t("account.openMode.title")}
-        </p>
-        <p className="text-sm text-muted-foreground">
-          {t("account.openMode.body")}
-        </p>
+        <p className="text-sm font-medium text-foreground">{t("account.openMode.title")}</p>
+        <p className="text-sm text-muted-foreground">{t("account.openMode.body")}</p>
       </div>
     </div>
   );

@@ -238,10 +238,14 @@ async function main() {
     for (const file of files) {
       // one file per invocation: the positional pattern is passed through
       // /bin/sh, so a combined regex with ( | ) dies as a shell syntax error
-      const run = spawnSync("bunx", ["test-storybook", "--url", `http://127.0.0.1:${port}`, file.path], {
-        cwd: UI_DIR,
-        stdio: "inherit",
-      });
+      const run = spawnSync(
+        "bunx",
+        ["test-storybook", "--url", `http://127.0.0.1:${port}`, file.path],
+        {
+          cwd: UI_DIR,
+          stdio: "inherit",
+        },
+      );
       if (run.status !== 0) failed = true;
     }
   } finally {

@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  CODE_LANGUAGES,
-  nodeText,
-  resolveLanguage,
-  splitLines,
-  type CodeNode,
-} from "./code";
+import { CODE_LANGUAGES, nodeText, resolveLanguage, splitLines, type CodeNode } from "./code";
 import { highlight } from "./code-highlight";
 
 describe("resolveLanguage", () => {
@@ -26,7 +20,7 @@ describe("resolveLanguage", () => {
   });
 
   test("ignores metadata after the tag", () => {
-    expect(resolveLanguage("ts title=\"server.ts\"")).toBe("typescript");
+    expect(resolveLanguage('ts title="server.ts"')).toBe("typescript");
     expect(resolveLanguage("json,copy")).toBe("json");
   });
 
@@ -63,7 +57,7 @@ describe("splitLines", () => {
   });
 
   test("round-trips to the source text", () => {
-    const source = "{\n  \"a\": 1\n}\n";
+    const source = '{\n  "a": 1\n}\n';
     const split = splitLines(highlight(source, "json"));
     expect(split.map(nodeText).join("\n")).toBe(source);
   });

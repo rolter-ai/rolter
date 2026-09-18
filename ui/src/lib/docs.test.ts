@@ -52,15 +52,17 @@ describe("docsBaseUrl", () => {
   });
 
   it("lets the runtime block override the build", () => {
-    expect(docsBaseUrl({ docsBaseUrl: "https://mirror.internal" }, "https://built.example.com")).toBe(
-      "https://mirror.internal",
-    );
+    expect(
+      docsBaseUrl({ docsBaseUrl: "https://mirror.internal" }, "https://built.example.com"),
+    ).toBe("https://mirror.internal");
   });
 
   // a deployment that set a broken override meant to replace the build-time
   // host; silently linking to the host it replaced would be worse than nothing
   it("does not fall back to the build when the override is unusable", () => {
-    expect(docsBaseUrl({ docsBaseUrl: "javascript:alert(1)" }, "https://built.example.com")).toBe("");
+    expect(docsBaseUrl({ docsBaseUrl: "javascript:alert(1)" }, "https://built.example.com")).toBe(
+      "",
+    );
   });
 });
 

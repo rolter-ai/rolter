@@ -56,7 +56,11 @@ export interface Divergence {
 
 export function isClean(d: Divergence): boolean {
   return (
-    d.missing.length + d.orphaned.length + d.plural.length + d.placeholder.length + d.empty.length ===
+    d.missing.length +
+      d.orphaned.length +
+      d.plural.length +
+      d.placeholder.length +
+      d.empty.length ===
     0
   );
 }

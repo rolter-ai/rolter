@@ -195,7 +195,14 @@ function blankDraft(providerId: string): ModelDraft {
     paramMode: "manual",
     params: paramDefs("chat", false),
     caps: defaultCaps("chat"),
-    price: { input: "", output: "", cacheWrite: "", cacheRead: "", perRequest: "", currency: "USD" },
+    price: {
+      input: "",
+      output: "",
+      cacheWrite: "",
+      cacheRead: "",
+      perRequest: "",
+      currency: "USD",
+    },
     net: {
       insecureTls: false,
       rpm: "",
@@ -270,13 +277,14 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
   }));
   // "every header locked" and "none locked" are the two the sheet can round-trip
   // exactly; anything in between is the manual mode it already has for that
-  draft.headerMode = draft.headers.length === 0
-    ? "manual"
-    : draft.headers.every((h) => h.locked)
-      ? "lockAll"
-      : draft.headers.some((h) => h.locked)
-        ? "manual"
-        : "unlockAll";
+  draft.headerMode =
+    draft.headers.length === 0
+      ? "manual"
+      : draft.headers.every((h) => h.locked)
+        ? "lockAll"
+        : draft.headers.some((h) => h.locked)
+          ? "manual"
+          : "unlockAll";
 
   const visibility = obj(advanced.visibility);
   draft.rbac.minRole = str(visibility.minimum_role) || draft.rbac.minRole;
@@ -303,9 +311,7 @@ function advancedToApi(
   stored: Record<string, unknown>,
 ): Record<string, unknown> {
   const obj = (v: unknown): Record<string, unknown> =>
-    v && typeof v === "object" && !Array.isArray(v)
-      ? { ...(v as Record<string, unknown>) }
-      : {};
+    v && typeof v === "object" && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
   // a limit of 0 is refused by `validate_advanced`; blank and 0 both read as
   // "inherit the gateway/provider setting", so neither is sent
   const limit = (v: string) => {
@@ -394,8 +400,7 @@ function seedParams(
   const deny = Array.isArray(policy.deny)
     ? policy.deny.filter((x): x is string => typeof x === "string")
     : [];
-  draft.paramMode =
-    policy.mode === "deny" ? "lockAll" : deny.length > 0 ? "manual" : "unlockAll";
+  draft.paramMode = policy.mode === "deny" ? "lockAll" : deny.length > 0 ? "manual" : "unlockAll";
   const lockedKeys = new Set(deny);
   const byKey = new Map(draft.params.map((p) => [p.key, p]));
   for (const [key, value] of Object.entries(params)) {
@@ -466,11 +471,7 @@ function paramsToApi(draft: ModelDraft): {
  * confirmation of fields the sheet then dropped (#1189). Every key below is a
  * body the save actually puts on the wire.
  */
-function buildPreview(
-  draft: ModelDraft,
-  providerName: string,
-  advanced: Record<string, unknown>,
-) {
+function buildPreview(draft: ModelDraft, providerName: string, advanced: Record<string, unknown>) {
   const { params, paramPolicy } = paramsToApi(draft);
   const upstream = draft.upstreamName.trim();
   const publicName = draft.alias.trim() || upstream;
@@ -659,7 +660,8 @@ export function ModelSheet({
     );
   }, [open, mode, route, configModel, providers, targets.data, prices.data, editLoading]);
 
-  const dirty = !readonly && initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
+  const dirty =
+    !readonly && initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
   const toast = useToast();
 
@@ -699,14 +701,9 @@ export function ModelSheet({
 
   // -- validation (verbose, blocks save) ------------------------------------
   const publicName = draft.alias.trim() || draft.upstreamName.trim();
-  const errProvider =
-    !readonly && !draft.providerId
-      ? t("modelSheet.errors.provider")
-      : "";
+  const errProvider = !readonly && !draft.providerId ? t("modelSheet.errors.provider") : "";
   const errUpstream =
-    !readonly && !draft.upstreamName.trim()
-      ? t("modelSheet.errors.upstream")
-      : "";
+    !readonly && !draft.upstreamName.trim() ? t("modelSheet.errors.upstream") : "";
   const nameConflict =
     !readonly &&
     publicName !== "" &&
@@ -715,9 +712,7 @@ export function ModelSheet({
         m.model.toLowerCase() === publicName.toLowerCase() &&
         (mode !== "edit" || m.model !== route?.model),
     );
-  const errAlias = nameConflict
-    ? t("modelSheet.errors.alias", { name: publicName })
-    : "";
+  const errAlias = nameConflict ? t("modelSheet.errors.alias", { name: publicName }) : "";
   const errBaseUrl =
     draft.baseUrl.trim() !== "" && !/^https?:\/\//i.test(draft.baseUrl.trim())
       ? t("modelSheet.errors.baseUrl")
@@ -726,12 +721,8 @@ export function ModelSheet({
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
   const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
     h.value.trim() !== "" && h.key.trim() === "";
-  const errParam = draft.params.some(paramRowInvalid)
-    ? t("modelSheet.errors.param")
-    : "";
-  const errHeader = draft.headers.some(headerRowInvalid)
-    ? t("modelSheet.errors.header")
-    : "";
+  const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
+  const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
   const errors = [errProvider, errUpstream, errAlias, errBaseUrl, errParam, errHeader].filter(
     Boolean,
   );
@@ -980,12 +971,7 @@ export function ModelSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
-      <SheetHeader
-        title={title}
-        subtitle={subtitle}
-        onClose={close}
-        closeDisabled={locked}
-      />
+      <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>
         {readonly && (
           <div className="flex items-start gap-2.5 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-3 py-2.5">
@@ -1195,9 +1181,7 @@ export function ModelSheet({
                     onChange={(e) => setParamAt(i, { key: e.target.value })}
                   />
                 ) : (
-                  <span className="min-w-0 flex-[1.1] truncate font-mono text-sm">
-                    {p.key}
-                  </span>
+                  <span className="min-w-0 flex-[1.1] truncate font-mono text-sm">{p.key}</span>
                 )}
                 {p.type === "enum" ? (
                   <Combobox
@@ -1355,14 +1339,8 @@ export function ModelSheet({
             {draft.modality === "chat" && (
               <>
                 {priceInput("output", t("modelSheet.pricing.output", { currency: cur }))}
-                {priceInput(
-                  "cacheWrite",
-                  t("modelSheet.pricing.cacheWrite", { currency: cur }),
-                )}
-                {priceInput(
-                  "cacheRead",
-                  t("modelSheet.pricing.cacheRead", { currency: cur }),
-                )}
+                {priceInput("cacheWrite", t("modelSheet.pricing.cacheWrite", { currency: cur }))}
+                {priceInput("cacheRead", t("modelSheet.pricing.cacheRead", { currency: cur }))}
               </>
             )}
           </div>
@@ -1446,12 +1424,7 @@ export function ModelSheet({
             )}
             {numInput("timeoutMs", t("modelSheet.net.timeout"), "30000")}
             {numInput("retries", t("modelSheet.net.retries"), "2")}
-            {numInput(
-              "weight",
-              t("modelSheet.net.weight"),
-              "100",
-              t("modelSheet.net.weightInfo"),
-            )}
+            {numInput("weight", t("modelSheet.net.weight"), "100", t("modelSheet.net.weightInfo"))}
             {numInput("context", t("modelSheet.net.context"), "128000")}
             {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384")}
           </div>

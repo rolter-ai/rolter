@@ -22,9 +22,24 @@ import { ToastProvider } from "@/lib/toast";
 
 export type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export const ORG = { id: "org-1", name: "Rolter", slug: "rolter", created_at: "2026-01-01T00:00:00Z" };
-export const TEAM = { id: "team-1", org_id: "org-1", name: "Platform", created_at: "2026-01-01T00:00:00Z" };
-export const PROJECT = { id: "project-1", team_id: "team-1", name: "Gateway", created_at: "2026-01-01T00:00:00Z" };
+export const ORG = {
+  id: "org-1",
+  name: "Rolter",
+  slug: "rolter",
+  created_at: "2026-01-01T00:00:00Z",
+};
+export const TEAM = {
+  id: "team-1",
+  org_id: "org-1",
+  name: "Platform",
+  created_at: "2026-01-01T00:00:00Z",
+};
+export const PROJECT = {
+  id: "project-1",
+  team_id: "team-1",
+  name: "Gateway",
+  created_at: "2026-01-01T00:00:00Z",
+};
 
 // 204/205/304 may not carry a body: the Response constructor rejects one
 // outright, and a stub that throws turns a story's success path into its
@@ -102,7 +117,9 @@ export function Harness({
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
     localStorage.removeItem("rolter.scope");
-    globalThis.fetch = (role ? withCapabilities(role, fetchStub) : fetchStub) as typeof globalThis.fetch;
+    globalThis.fetch = (
+      role ? withCapabilities(role, fetchStub) : fetchStub
+    ) as typeof globalThis.fetch;
     // no retries: a story asserting an error state should not wait out a
     // backoff schedule before the screen admits the request failed
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -306,9 +323,7 @@ export async function expectRefused(
 /** Assert the screen is standing in a skeleton for content it does not have yet. */
 export async function expectSkeleton(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
-  await waitFor(() =>
-    expect(canvas.getAllByLabelText(LOADING_LABEL).length).toBeGreaterThan(0),
-  );
+  await waitFor(() => expect(canvas.getAllByLabelText(LOADING_LABEL).length).toBeGreaterThan(0));
 }
 
 /**
@@ -337,19 +352,14 @@ export async function expectInStatusRegion(
  * a failed mutation, a warning banner — and the story should not become
  * order-dependent on that.
  */
-export async function expectLoadError(
-  canvasElement: HTMLElement,
-  says: RegExp,
-): Promise<void> {
+export async function expectLoadError(canvasElement: HTMLElement, says: RegExp): Promise<void> {
   const canvas = within(canvasElement);
   // a screen whose query retries before it gives up needs longer than the
   // shared budget in `.storybook/preview.ts` — Logs runs its own retry policy
   // over the shared one
   await waitFor(
     () =>
-      expect(
-        canvas.getAllByRole("alert").some((a) => says.test(a.textContent ?? "")),
-      ).toBe(true),
+      expect(canvas.getAllByRole("alert").some((a) => says.test(a.textContent ?? ""))).toBe(true),
     { timeout: 6000 },
   );
 }
@@ -526,9 +536,7 @@ export async function expectToast(
   const canvas = within(canvasElement);
   const role = tone === "error" ? "alert" : "status";
   const region = await waitFor(() => {
-    const found = canvas
-      .getAllByRole(role)
-      .find((node) => says.test(node.textContent ?? ""));
+    const found = canvas.getAllByRole(role).find((node) => says.test(node.textContent ?? ""));
     expect(found).toBeDefined();
     return found as HTMLElement;
   });
@@ -543,10 +551,7 @@ export async function expectToast(
  * opens it and clicks the row. `option` is matched on the row's accessible
  * name, which is its label plus any secondary line.
  */
-export async function pickOption(
-  combobox: HTMLElement,
-  option: string | RegExp,
-): Promise<void> {
+export async function pickOption(combobox: HTMLElement, option: string | RegExp): Promise<void> {
   const listbox = await openOptions(combobox);
   await userEvent.click(within(listbox).getByRole("option", { name: option }));
 }

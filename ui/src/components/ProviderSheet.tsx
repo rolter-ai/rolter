@@ -87,9 +87,7 @@ function TestOutcome({ result }: { result: ProviderTestResult }) {
       </div>
       {result.error && <p className="mt-1 text-muted-foreground">{result.error}</p>}
       {result.probed_url && (
-        <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-          {result.probed_url}
-        </p>
+        <p className="mt-1 font-mono text-[11px] text-muted-foreground">{result.probed_url}</p>
       )}
     </div>
   );
@@ -179,17 +177,12 @@ export function ProviderSheet({
   // the fallback for a control plane that cannot answer, and the current draft
   // kind is always offered so editing a provider never silently rewrites it
   const kindOptions = React.useMemo(() => {
-    const known = kinds.data?.length
-      ? kinds.data.map((k) => k.kind)
-      : [...PROVIDER_KINDS];
-    return known.includes(draft.kind) || !draft.kind
-      ? known
-      : [draft.kind, ...known];
+    const known = kinds.data?.length ? kinds.data.map((k) => k.kind) : [...PROVIDER_KINDS];
+    return known.includes(draft.kind) || !draft.kind ? known : [draft.kind, ...known];
   }, [kinds.data, draft.kind]);
   // default to the openai-shaped rule: it is the default kind, and it is the
   // one the old static ".../v1" placeholder got wrong
-  const baseIncludesV1 =
-    kinds.data?.find((k) => k.kind === draft.kind)?.base_includes_v1 ?? false;
+  const baseIncludesV1 = kinds.data?.find((k) => k.kind === draft.kind)?.base_includes_v1 ?? false;
   const resolvedUrl = resolveUpstreamUrl(draft.apiBase, baseIncludesV1);
   const baseDoublesV1 = apiBaseDoublesV1(draft.apiBase, baseIncludesV1);
 
@@ -232,8 +225,7 @@ export function ProviderSheet({
         api_base: draft.apiBase !== p.api_base ? draft.apiBase : undefined,
         api_key: draft.apiKey ? draft.apiKey : undefined,
         api_key_env: draft.apiKeyEnv !== (p.api_key_env ?? "") ? draft.apiKeyEnv : undefined,
-        egress_proxy:
-          draft.egressProxy !== (p.egress_proxy ?? "") ? draft.egressProxy : undefined,
+        egress_proxy: draft.egressProxy !== (p.egress_proxy ?? "") ? draft.egressProxy : undefined,
       });
     },
     onSuccess: (created) => {
@@ -267,9 +259,7 @@ export function ProviderSheet({
       ? t("providerSheet.title.add")
       : t("providerSheet.title.edit", { name: provider?.name ?? "" });
   const subtitle =
-    mode === "add"
-      ? t("providerSheet.subtitle.add")
-      : `${draft.slug || "—"} · ${draft.kind}`;
+    mode === "add" ? t("providerSheet.subtitle.add") : `${draft.slug || "—"} · ${draft.kind}`;
   // the sheet's own dismissal paths (Escape, scrim, close, Cancel) all run
   // through the shared discard prompt (#1463)
   const { guard, close, locked, prompt } = useDiscardGuard({
@@ -280,22 +270,17 @@ export function ProviderSheet({
 
   const cta = mode === "add" ? t("providerSheet.cta.create") : t("providerSheet.cta.save");
   const canSave =
-    !!draft.name.trim() && !!draft.apiBase.trim() && !save.isPending &&
+    !!draft.name.trim() &&
+    !!draft.apiBase.trim() &&
+    !save.isPending &&
     (mode === "add" ? !!orgId : true);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
-      <SheetHeader
-        title={title}
-        subtitle={subtitle}
-        onClose={close}
-        closeDisabled={locked}
-      />
+      <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
-          {mode === "add"
-            ? t("providerSheet.fields.add")
-            : t("providerSheet.fields.edit")}
+          {mode === "add" ? t("providerSheet.fields.add") : t("providerSheet.fields.edit")}
         </p>
 
         <Field label={t("providerSheet.fields.name")}>
@@ -328,8 +313,19 @@ export function ProviderSheet({
             htmlFor="provider-slug"
           >
             <div className="flex items-center gap-2">
-              <Input id="provider-slug" value={draft.slug} readOnly disabled className="font-mono" />
-              {provider && <CopyButton value={`${provider.slug}/`} label={t("providerSheet.fields.copyPrefix")} />}
+              <Input
+                id="provider-slug"
+                value={draft.slug}
+                readOnly
+                disabled
+                className="font-mono"
+              />
+              {provider && (
+                <CopyButton
+                  value={`${provider.slug}/`}
+                  label={t("providerSheet.fields.copyPrefix")}
+                />
+              )}
             </div>
           </Field>
         )}
@@ -361,9 +357,7 @@ export function ProviderSheet({
             id="provider-api-base"
             value={draft.apiBase}
             onChange={(e) => set({ apiBase: e.target.value })}
-            placeholder={
-              baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com"
-            }
+            placeholder={baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com"}
           />
           {resolvedUrl && (
             <p

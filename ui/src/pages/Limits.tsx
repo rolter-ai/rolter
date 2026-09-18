@@ -9,13 +9,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -65,7 +59,6 @@ export default function Limits() {
     }
   }, [scopeType, scope.projectId, scopeId]);
 
-
   const virtualKeys = useQuery({
     queryKey: ["virtual-keys", scope.projectId],
     queryFn: () => fetchVirtualKeys(scope.projectId as string),
@@ -87,16 +80,11 @@ export default function Limits() {
     enabled: scopeType === "customer" && !!scope.orgId,
   });
 
-
-
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
-
 
   // `virtualKeys` is the query the user is actually waiting on for this screen
 
-
   useScreenReady(!virtualKeys.isLoading);
-
 
   useErrorState(!!virtualKeys.error, "limits");
 
@@ -168,7 +156,6 @@ export default function Limits() {
 
   return (
     <PageBody className="gap-[22px]">
-
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
           {t("pages.limits.scopeBlocked", { detail: scopeMessage })}
@@ -186,7 +173,7 @@ export default function Limits() {
               value={scopeType}
               onChange={(picked) => {
                 setScopeType(picked);
-                setScopeId(picked === "project" ? scope.projectId ?? "" : "");
+                setScopeId(picked === "project" ? (scope.projectId ?? "") : "");
               }}
               options={SCOPE_TYPES.map((type) => ({
                 value: type,
@@ -226,7 +213,10 @@ export default function Limits() {
                 value={scopeId}
                 onChange={setScopeId}
                 placeholder={t("pages.limits.selectVirtualKey")}
-                options={virtualKeys.data.map((k) => ({ value: k.id, label: k.name || k.key_prefix }))}
+                options={virtualKeys.data.map((k) => ({
+                  value: k.id,
+                  label: k.name || k.key_prefix,
+                }))}
               />
             ) : scopeType === "business_unit" &&
               businessUnits.data &&
@@ -260,9 +250,7 @@ export default function Limits() {
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-0.5">
             <h2 className="text-base font-medium">{t("pages.limits.budgetsTitle")}</h2>
-            <span className="text-xs text-muted-foreground">
-              {t("pages.limits.budgetsHint")}
-            </span>
+            <span className="text-xs text-muted-foreground">{t("pages.limits.budgetsHint")}</span>
           </div>
           <GatedButton
             gate="budget:create"
@@ -290,7 +278,11 @@ export default function Limits() {
             title={t("pages.limits.budgetsEmptyTitle")}
             description={t("pages.limits.budgetsEmptyBody")}
             actions={
-              <GatedButton gate="budget:create" disabled={!scopeId} onClick={() => setAddBudgetOpen(true)}>
+              <GatedButton
+                gate="budget:create"
+                disabled={!scopeId}
+                onClick={() => setAddBudgetOpen(true)}
+              >
                 {t("pages.limits.budgetsEmptyAction")}
               </GatedButton>
             }
@@ -342,7 +334,11 @@ export default function Limits() {
             title={t("pages.limits.rateLimitsEmptyTitle")}
             description={t("pages.limits.rateLimitsEmptyBody")}
             actions={
-              <GatedButton gate="rate_limit:create" disabled={!scopeId} onClick={() => setAddRateLimitOpen(true)}>
+              <GatedButton
+                gate="rate_limit:create"
+                disabled={!scopeId}
+                onClick={() => setAddRateLimitOpen(true)}
+              >
                 {t("pages.limits.rateLimitsEmptyAction")}
               </GatedButton>
             }
@@ -425,7 +421,11 @@ function BudgetCard({
           onClick={onDelete}
           className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          {deleting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
         </button>
       </div>
       <div className="flex items-center gap-1.5">
@@ -452,10 +452,7 @@ function RateLimitCard({
   // the caps are the only thing that tells two limits on one scope apart, so
   // they are what the accessible name carries (#1214)
   const caps =
-    [
-      limit.rpm != null ? `${limit.rpm} rpm` : null,
-      limit.tpm != null ? `${limit.tpm} tpm` : null,
-    ]
+    [limit.rpm != null ? `${limit.rpm} rpm` : null, limit.tpm != null ? `${limit.tpm} tpm` : null]
       .filter(Boolean)
       .join(" · ") || t("pages.limits.noCaps");
   const label = t("pages.limits.deleteRateLimitAria", {
@@ -478,7 +475,11 @@ function RateLimitCard({
           onClick={onDelete}
           className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          {deleting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
         </button>
       </div>
       <div className="flex items-center gap-1.5">

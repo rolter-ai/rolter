@@ -138,9 +138,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.type(within(form).getByLabelText("Team name"), "Platform");
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
     await expectToast(canvasElement, /already exists/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(form).getByLabelText("Team name")).toHaveValue("Platform");
   },
 };

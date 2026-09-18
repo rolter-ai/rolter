@@ -118,10 +118,7 @@ export const EmptySummaryEnvelope: Story = {
     <Harness
       fetchStub={routes([
         ["/mcp/logs/summary", () => ({ data: [] })],
-        [
-          "/mcp/logs",
-          () => ({ data: [call(), call({ event_id: "evt-2" })], next_cursor: null }),
-        ],
+        ["/mcp/logs", () => ({ data: [call(), call({ event_id: "evt-2" })], next_cursor: null })],
       ])}
     >
       <McpLogs />
@@ -168,9 +165,7 @@ export const Forbidden: Story = {
 // /api/v1/mcp/logs at all — a 404 the fetcher reads the same way (#1236)
 export const NoAnalyticsStore: Story = {
   render: () => (
-    <Harness
-      fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}
-    >
+    <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
       <McpLogs />
     </Harness>
   ),

@@ -75,9 +75,7 @@ function ProfileCard({
   // only the compositions that are *narrower* than the profile's org: an
   // org-wide one is what the count already says, and repeating it for every
   // role would bury the one that is pinned to a single project
-  const narrow = (detail.data?.roles ?? []).filter(
-    (role) => role.team_id || role.project_id,
-  );
+  const narrow = (detail.data?.roles ?? []).filter((role) => role.team_id || role.project_id);
 
   const users = detail.data?.assignments.filter((a) => a.user_id).length ?? 0;
   const teams = detail.data?.assignments.filter((a) => a.team_id).length ?? 0;
@@ -102,9 +100,7 @@ function ProfileCard({
             </Pill>
           </div>
           {profile.description && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {profile.description}
-            </p>
+            <p className="mt-1 text-sm text-muted-foreground">{profile.description}</p>
           )}
           <div className="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
             <Users className="size-3.5" />
@@ -143,9 +139,7 @@ function ProfileCard({
                   tint="var(--surface-subtle)"
                   format={(scope) =>
                     t("pages.accessProfiles.roleAtScope", {
-                      role:
-                        roleCatalog.find((r) => r.id === role.role_id)?.name ??
-                        role.role_id,
+                      role: roleCatalog.find((r) => r.id === role.role_id)?.name ?? role.role_id,
                       scope,
                     })
                   }
@@ -175,11 +169,7 @@ function ProfileCard({
             disabled={deleting}
             onClick={() => onDelete(profile)}
           >
-            {deleting ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Trash2 className="size-4" />
-            )}
+            {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
           </GatedButton>
         </div>
       </div>
@@ -356,9 +346,7 @@ export default function AccessProfiles() {
   const [seed, setSeed] = React.useState("");
   // a profile reaches users and teams, so deleting it changes what a group of
   // people can do — confirmed by name first (#1179)
-  const [deleteTarget, setDeleteTarget] = React.useState<AccessProfileRow | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = React.useState<AccessProfileRow | null>(null);
   const startDelete = (profile: AccessProfileRow) => {
     remove.reset();
     setDeleteTarget(profile);
@@ -382,7 +370,12 @@ export default function AccessProfiles() {
         <span className="text-sm text-muted-foreground">
           {t("pages.accessProfiles.summary", { count: profiles.data?.length ?? 0 })}
         </span>
-        <GatedButton gate="access_profile:create" className="ml-auto" disabled={!orgId} onClick={startCreate}>
+        <GatedButton
+          gate="access_profile:create"
+          className="ml-auto"
+          disabled={!orgId}
+          onClick={startCreate}
+        >
           {t("pages.accessProfiles.add")}
         </GatedButton>
       </Toolbar>
@@ -522,9 +515,7 @@ function ProfileSheet({
       subtitle={t("pages.accessProfiles.sheetSubtitle")}
       dirty={dirty}
       errorMessage={errorMessage}
-      saveLabel={
-        draft.id ? t("pages.accessProfiles.save") : t("pages.accessProfiles.create")
-      }
+      saveLabel={draft.id ? t("pages.accessProfiles.save") : t("pages.accessProfiles.create")}
       canSave={!!draft.name.trim()}
       saving={saving}
       onSave={onSave}
@@ -563,9 +554,7 @@ function ProfileSheet({
           <legend className="text-sm font-medium leading-none">
             {t("pages.accessProfiles.rolesLabel")}
           </legend>
-          <p className="text-xs text-muted-foreground">
-            {t("pages.accessProfiles.rolesHint")}
-          </p>
+          <p className="text-xs text-muted-foreground">{t("pages.accessProfiles.rolesHint")}</p>
           {roles.length === 0 ? (
             <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
               {t("pages.accessProfiles.rolesEmpty")}
@@ -615,9 +604,7 @@ function ProfileSheet({
           <legend className="text-sm font-medium leading-none">
             {t("pages.accessProfiles.policyLabel")}
           </legend>
-          <p className="text-xs text-muted-foreground">
-            {t("pages.accessProfiles.policyHint")}
-          </p>
+          <p className="text-xs text-muted-foreground">{t("pages.accessProfiles.policyHint")}</p>
           {policyField(
             t("pages.accessProfiles.allowedModels"),
             t("pages.accessProfiles.allowHint"),

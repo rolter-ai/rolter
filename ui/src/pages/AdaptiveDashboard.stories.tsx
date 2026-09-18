@@ -131,7 +131,7 @@ const TELEMETRY: AdaptiveRoutingTelemetryDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <AdaptiveDashboard />
+      <AdaptiveDashboard />
     </ScreenHarness>
   );
 }
@@ -225,9 +225,7 @@ export const Empty: Story = {
 export const SwitchedOff: Story = {
   render: () => <Harness fetchStub={stub(NOTHING, { enabled: false })} />,
   play: async ({ canvas }) => {
-    await waitFor(() =>
-      expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible());
     // the gateway is not at fault here, so it is not named
     await expect(canvas.queryByText("No fresh adaptive routing telemetry")).toBeNull();
     await expect(canvas.getByText("1 route is held back:")).toBeVisible();
@@ -241,13 +239,9 @@ export const SwitchedOff: Story = {
 
 /** The switch is off and no route asks for the strategy — nothing to list. */
 export const SwitchedOffWithNoAdaptiveRoutes: Story = {
-  render: () => (
-    <Harness fetchStub={stub(NOTHING, { enabled: false, affected_routes: [] })} />
-  ),
+  render: () => <Harness fetchStub={stub(NOTHING, { enabled: false, affected_routes: [] })} />,
   play: async ({ canvas }) => {
-    await waitFor(() =>
-      expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible());
     await expect(canvas.queryByText(/held back:/)).toBeNull();
   },
 };
@@ -278,9 +272,7 @@ export const SwitchStateUnknown: Story = {
 };
 
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvas }) => {
     await waitFor(() =>
       expect(canvas.getByRole("alert")).toHaveTextContent(

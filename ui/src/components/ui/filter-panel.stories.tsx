@@ -1,12 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 
-import {
-  FilterCheckList,
-  FilterPanel,
-  FilterSearchList,
-  FilterSection,
-} from "./filter-panel";
+import { FilterCheckList, FilterPanel, FilterSearchList, FilterSection } from "./filter-panel";
 
 const meta = {
   title: "Navigation/FilterPanel",

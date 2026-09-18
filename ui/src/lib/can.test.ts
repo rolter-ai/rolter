@@ -1,12 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { RbacEffective, RbacMatrix } from "@/lib/api";
-import {
-  decide,
-  decideSuperadmin,
-  requirementFor,
-  type CapabilityValue,
-} from "@/lib/can";
+import { decide, decideSuperadmin, requirementFor, type CapabilityValue } from "@/lib/can";
 import { visibleNav, type NavDef } from "@/lib/nav";
 
 const effective = (over: Partial<RbacEffective> = {}): RbacEffective => ({
@@ -156,12 +151,7 @@ describe("visibleNav", () => {
   it("drops a group whose every leaf is unreadable", () => {
     const deployment = new Set(["feature_flags", "security_settings"]);
     const visible = visibleNav((resource) => !deployment.has(resource), nav);
-    expect(keys(visible)).toEqual([
-      "playground",
-      "governance",
-      "virtual-keys",
-      "gov-users",
-    ]);
+    expect(keys(visible)).toEqual(["playground", "governance", "virtual-keys", "gov-users"]);
   });
 
   it("keeps a group that still has one readable leaf", () => {

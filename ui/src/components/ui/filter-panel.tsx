@@ -55,9 +55,7 @@ export interface FilterCheckListProps {
 
 export function FilterCheckList({ options, selected, onChange }: FilterCheckListProps) {
   const toggle = (v: string) =>
-    onChange(
-      selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v],
-    );
+    onChange(selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v]);
   return (
     <div className="flex flex-col overflow-hidden rounded-md border border-[color:var(--border-subtle)]">
       {options.map((o, i) => {
@@ -109,9 +107,7 @@ export function FilterSearchList({
   const { t } = useTranslation();
   const [query, setQuery] = React.useState("");
   const q = query.trim().toLowerCase();
-  const shown = q
-    ? options.filter((o) => String(o.label).toLowerCase().includes(q))
-    : options;
+  const shown = q ? options.filter((o) => String(o.label).toLowerCase().includes(q)) : options;
   return (
     <div className="flex flex-col overflow-hidden rounded-md border border-[color:var(--border-subtle)] transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
       <label className="flex items-center gap-2 bg-[color:var(--surface-base)] px-2.5 py-2">
@@ -137,9 +133,7 @@ export function FilterSearchList({
 // rows without the outer border so they stack under the search input
 function FilterCheckListInner({ options, selected, onChange }: FilterCheckListProps) {
   const toggle = (v: string) =>
-    onChange(
-      selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v],
-    );
+    onChange(selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v]);
   return (
     <>
       {options.map((o) => {
@@ -197,7 +191,9 @@ export function FilterPanel({
       {...props}
     >
       <div className="flex items-center justify-between px-2 pb-1.5">
-        <span className="text-sm font-semibold text-foreground">{title ?? t("common.filters")}</span>
+        <span className="text-sm font-semibold text-foreground">
+          {title ?? t("common.filters")}
+        </span>
         {onHide && (
           <button
             title={t("common.hideFilters")}

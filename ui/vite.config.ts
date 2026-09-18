@@ -6,9 +6,7 @@ import { readAppVersion } from "./scripts/app-version";
 
 // the Cargo workspace version is the one release-plz maintains; package.json
 // carried an independent version that nothing bumped (#953)
-const appVersion = readAppVersion(
-  fileURLToPath(new URL("../Cargo.toml", import.meta.url)),
-);
+const appVersion = readAppVersion(fileURLToPath(new URL("../Cargo.toml", import.meta.url)));
 
 export default defineConfig({
   plugins: [react()],

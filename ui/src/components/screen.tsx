@@ -9,19 +9,11 @@ import { cn } from "@/lib/utils";
 // prototype: page body padding, toolbar search, status dots, mono pills, and
 // the css-grid list table with sortable headers.
 
-export function PageBody({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div className={cn("flex flex-col gap-4 p-[22px]", className)} {...props} />
-  );
+export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("flex flex-col gap-4 p-[22px]", className)} {...props} />;
 }
 
-export function SearchInput({
-  className,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+export function SearchInput({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   const { t } = useTranslation();
   return (
     <div className={cn("relative max-w-[320px] flex-1", className)}>
@@ -226,11 +218,7 @@ export function SortLabel({
     >
       {label}
       {active &&
-        (sort.dir === "asc" ? (
-          <ArrowUp className="h-3 w-3" />
-        ) : (
-          <ArrowDown className="h-3 w-3" />
-        ))}
+        (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
     </button>
   );
 }

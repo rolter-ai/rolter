@@ -142,7 +142,10 @@ export function TableSkeleton({ rows = 4, className }: { rows?: number; classNam
         <Skeleton width={180} height={11} radius={4} />
       </div>
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="border-b border-[color:var(--border-subtle)] px-4 py-[13px] last:border-b-0">
+        <div
+          key={i}
+          className="border-b border-[color:var(--border-subtle)] px-4 py-[13px] last:border-b-0"
+        >
           <Skeleton height={13} radius={4} />
         </div>
       ))}
@@ -151,16 +154,13 @@ export function TableSkeleton({ rows = 4, className }: { rows?: number; classNam
 }
 
 /** the stat-card strip an analytics screen opens with */
-export function StatGridSkeleton({
-  cards = 4,
-  className,
-}: {
-  cards?: number;
-  className?: string;
-}) {
+export function StatGridSkeleton({ cards = 4, className }: { cards?: number; className?: string }) {
   return (
     <LoadingRegion
-      className={cn("grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr))]", className)}
+      className={cn(
+        "grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr))]",
+        className,
+      )}
     >
       {Array.from({ length: cards }, (_, i) => (
         <Skeleton key={i} height={96} radius={10} />

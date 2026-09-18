@@ -215,9 +215,7 @@ export const BudgetCreateRejectedByTheServer: Story = {
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
 
     await expectToast(canvasElement, /already has a 30d budget/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(250);
   },
 };

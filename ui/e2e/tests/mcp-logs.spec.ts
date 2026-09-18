@@ -78,7 +78,9 @@ test("an absent endpoint reads as unavailable, not as an error", async ({ page }
   const alert = page.getByRole("alert");
   await expect(alert.getByText(UNAVAILABLE)).toBeVisible();
   // and names both causes, so the operator knows where to look
-  await expect(alert.getByText(t("errors.load.noAnalytics.body", { resource: RESOURCE }))).toBeVisible();
+  await expect(
+    alert.getByText(t("errors.load.noAnalytics.body", { resource: RESOURCE })),
+  ).toBeVisible();
   await expect(alert).toContainText("CLICKHOUSE_URL");
   await expect(page.getByText(FAILED)).toHaveCount(0);
 });

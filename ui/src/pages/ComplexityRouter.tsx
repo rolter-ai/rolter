@@ -41,8 +41,7 @@ type PolicyState =
 
 /** `states.filter(isKind("configured"))`, narrowed rather than cast */
 function isKind<K extends PolicyState["kind"]>(kind: K) {
-  return (state: PolicyState): state is Extract<PolicyState, { kind: K }> =>
-    state.kind === kind;
+  return (state: PolicyState): state is Extract<PolicyState, { kind: K }> => state.kind === kind;
 }
 
 // bounded input-size tiers per route: requests below each byte ceiling are
@@ -187,11 +186,7 @@ export default function ComplexityRouter() {
               <span className="min-w-0 truncate font-mono text-sm font-semibold">
                 {route.model}
               </span>
-              <Pill
-                className="ml-auto"
-                color="var(--status-info-text)"
-                tint="rgba(59,130,246,.14)"
-              >
+              <Pill className="ml-auto" color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
                 {t("pages.complexityRouter.tierCount", { count: tiers.length })}
               </Pill>
             </div>
@@ -432,7 +427,11 @@ function PolicyDialog({
             onClick={() =>
               setTiers((ts) => [
                 ...(ts ?? []),
-                { name: `tier-${(ts?.length ?? 0) + 1}`, max_input_bytes: null, route: route.model },
+                {
+                  name: `tier-${(ts?.length ?? 0) + 1}`,
+                  max_input_bytes: null,
+                  route: route.model,
+                },
               ])
             }
           >

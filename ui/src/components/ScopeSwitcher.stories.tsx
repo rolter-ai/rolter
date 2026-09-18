@@ -22,11 +22,13 @@ import {
  * fixture would answer the component's own query.
  */
 const chain =
-  (over: {
-    orgs?: () => Response | Promise<Response>;
-    teams?: () => Response | Promise<Response>;
-    projects?: () => Response | Promise<Response>;
-  } = {}): FetchStub =>
+  (
+    over: {
+      orgs?: () => Response | Promise<Response>;
+      teams?: () => Response | Promise<Response>;
+      projects?: () => Response | Promise<Response>;
+    } = {},
+  ): FetchStub =>
   async (input) => {
     const path = new URL(String(input), "http://localhost").pathname;
     if (path === "/api/v1/orgs") return (over.orgs ?? (() => json([ORG])))();

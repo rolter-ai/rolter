@@ -70,9 +70,7 @@ let started = false;
  * the default. Typed structurally for the same reason: a static type import
  * would defeat the point of the dynamic one.
  */
-let traceApi:
-  | { getActiveSpan(): { spanContext(): { traceId: string } } | undefined }
-  | undefined;
+let traceApi: { getActiveSpan(): { spanContext(): { traceId: string } } | undefined } | undefined;
 
 /**
  * The trace id of the span currently in context, or `""` when tracing is off or
@@ -142,11 +140,7 @@ export async function initTelemetry(
       [ATTR_SERVICE_NAME]: config.otelServiceName ?? "rolter-ui",
       ...(config.version ? { [ATTR_SERVICE_VERSION]: config.version } : {}),
     }),
-    spanProcessors: [
-      new BatchSpanProcessor(
-        new OTLPTraceExporter({ url: config.otelEndpoint }),
-      ),
-    ],
+    spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: config.otelEndpoint }))],
   });
 
   // zone context manager keeps the active span across async boundaries, so a

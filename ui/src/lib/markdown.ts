@@ -151,7 +151,10 @@ function mapBlock(token: Token): MdBlock | null {
     }
     case "text": {
       const t = token as Tokens.Text;
-      return { type: "paragraph", children: t.tokens ? inlines(t.tokens) : [{ type: "text", value: t.text }] };
+      return {
+        type: "paragraph",
+        children: t.tokens ? inlines(t.tokens) : [{ type: "text", value: t.text }],
+      };
     }
     default:
       return { type: "raw", value: (token as Tokens.Generic).raw ?? "" };

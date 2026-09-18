@@ -27,7 +27,13 @@ const GROUPS: ProviderGroupRow[] = [
     created_at: "2026-03-01T00:00:00Z",
     members: [
       { group_id: "g-1", provider_id: "p-1", provider_name: "openai-prod", weight: 3, position: 0 },
-      { group_id: "g-1", provider_id: "p-2", provider_name: "anthropic-eu", weight: 1, position: 1 },
+      {
+        group_id: "g-1",
+        provider_id: "p-2",
+        provider_name: "anthropic-eu",
+        weight: 1,
+        position: 1,
+      },
     ],
   },
 ];
@@ -99,9 +105,7 @@ export const NoSearchMatch: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("frontier")).toBeVisible());
     await userEvent.type(canvas.getByLabelText("Search provider groups"), "zzz");
-    await waitFor(() =>
-      expect(canvas.getByText(/No provider groups match/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/No provider groups match/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
   },
 };
@@ -187,9 +191,7 @@ export const DeleteRejectedByTheServer: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
 
     await expectToast(canvasElement, /still the target of 3 routes/, "error");
-    await waitFor(() =>
-      expect(dialog.getByText(/still the target of 3 routes/)).toBeVisible(),
-    );
+    await waitFor(() => expect(dialog.getByText(/still the target of 3 routes/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };
@@ -241,9 +243,7 @@ export const Labelled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByLabelText("tier=frontier, your label")).toBeVisible());
-    await expect(
-      canvas.getByLabelText("tier=observed-frontier, automatic label"),
-    ).toBeVisible();
+    await expect(canvas.getByLabelText("tier=observed-frontier, automatic label")).toBeVisible();
   },
 };
 
@@ -295,8 +295,6 @@ export const LabelPanel: Story = {
     const panel = within(await within(document.body).findByRole("dialog"));
     await expect(await panel.findByText(/every member priced/)).toBeVisible();
     await expect(panel.getByRole("button", { name: "Remove tier=frontier" })).toBeVisible();
-    await expect(
-      panel.queryByRole("button", { name: "Remove tier=observed-frontier" }),
-    ).toBeNull();
+    await expect(panel.queryByRole("button", { name: "Remove tier=observed-frontier" })).toBeNull();
   },
 };

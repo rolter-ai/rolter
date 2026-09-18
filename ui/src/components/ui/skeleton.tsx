@@ -12,7 +12,14 @@ export interface SkeletonProps extends React.HTMLAttributes<HTMLSpanElement> {
   radius?: number | string;
 }
 
-export function Skeleton({ width, height = 14, radius, className, style, ...props }: SkeletonProps) {
+export function Skeleton({
+  width,
+  height = 14,
+  radius,
+  className,
+  style,
+  ...props
+}: SkeletonProps) {
   return (
     <span
       aria-hidden="true"

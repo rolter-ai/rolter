@@ -174,7 +174,10 @@ export function importedPrimitives(source: string): Set<string> {
   let match: RegExpExecArray | null;
   while ((match = spec.exec(source))) {
     for (const part of match[1]!.split(",")) {
-      const name = part.trim().split(/\s+as\s+/)[0]?.trim();
+      const name = part
+        .trim()
+        .split(/\s+as\s+/)[0]
+        ?.trim();
       if (name) imported.add(name);
     }
   }
@@ -230,7 +233,9 @@ export function checkSource(
   // shared component rather than towards it
   const shadowable = primitives.filter((name) => !imported.has(name));
   const shadow = shadowable.length
-    ? new RegExp(`^(?:export )?(?:function (${shadowable.join("|")})\\b|const (${shadowable.join("|")})\\s*[:=])`)
+    ? new RegExp(
+        `^(?:export )?(?:function (${shadowable.join("|")})\\b|const (${shadowable.join("|")})\\s*[:=])`,
+      )
     : null;
 
   const record = (index: number, rule: RuleId, found: string) => {

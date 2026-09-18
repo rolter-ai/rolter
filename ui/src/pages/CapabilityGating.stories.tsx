@@ -264,9 +264,7 @@ export const SecurityAsAdmin: Story = {
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
     // and it is not a failure a retry can change
-    await expect(
-      within(canvasElement).queryByRole("button", { name: /try again/i }),
-    ).toBeNull();
+    await expect(within(canvasElement).queryByRole("button", { name: /try again/i })).toBeNull();
   },
 };
 
@@ -289,9 +287,7 @@ export const SecurityAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Password protect the dashboard")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
   },
 };
 
@@ -511,12 +507,7 @@ export const PriceRowsAsAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectRowRefused(
-      canvasElement,
-      "button",
-      "Edit the price for gpt-4o",
-      NEEDS_SUPERADMIN,
-    );
+    await expectRowRefused(canvasElement, "button", "Edit the price for gpt-4o", NEEDS_SUPERADMIN);
     await expectRowRefused(
       canvasElement,
       "button",

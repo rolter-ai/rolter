@@ -260,9 +260,7 @@ export const Labelled: Story = {
     await expect(canvas.getAllByTestId("label-auto")).toHaveLength(1);
     // the two on `openai-prod` are told apart by name, not by colour
     await expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible();
-    await expect(
-      canvas.getByLabelText("tier=observed-gold, automatic label"),
-    ).toBeVisible();
+    await expect(canvas.getByLabelText("tier=observed-gold, automatic label")).toBeVisible();
   },
 };
 
@@ -324,9 +322,7 @@ export const AutoLabelsAreReadOnly: Story = {
     await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
     // and only this provider's labels: `region=eu` belongs to the other row
     await expect(panel.queryByRole("button", { name: "Remove region=eu" })).toBeNull();
-    await expect(
-      panel.queryByRole("button", { name: "Remove tier=observed-gold" }),
-    ).toBeNull();
+    await expect(panel.queryByRole("button", { name: "Remove tier=observed-gold" })).toBeNull();
   },
 };
 

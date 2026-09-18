@@ -10,11 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  fetchSecuritySettings,
-  updateSecuritySettings,
-  type SecuritySettingsDto,
-} from "@/lib/api";
+import { fetchSecuritySettings, updateSecuritySettings, type SecuritySettingsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -53,9 +49,7 @@ const fromDto = (dto: SecuritySettingsDto): FormState => ({
   enforceVk: dto.virtual_key_required,
   allowedOrigins: dto.allowed_origins.join(", "),
   allowedHeaders: dto.allowed_headers.join(", "),
-  requiredHeaders: Object.entries(
-    (dto.required_headers ?? {}) as Record<string, string>,
-  )
+  requiredHeaders: Object.entries((dto.required_headers ?? {}) as Record<string, string>)
     .map(([k, v]) => `${k}: ${v}`)
     .join(", "),
   bypassRoutes: dto.auth_bypass_routes.join(", "),
@@ -96,9 +90,7 @@ function SecurityScreen() {
         auth_bypass_routes: splitList(f.bypassRoutes),
         dashboard_auth_enabled: f.authEnabled,
         dashboard_credential_ref: f.credentialRef.trim() || null,
-        ...(f.managedSecret.trim()
-          ? { managed_dashboard_secret: f.managedSecret }
-          : {}),
+        ...(f.managedSecret.trim() ? { managed_dashboard_secret: f.managedSecret } : {}),
       }),
     onSuccess: (dto) => {
       queryClient.setQueryData(["security-settings"], dto);
@@ -176,7 +168,10 @@ function SecurityScreen() {
           disabled={disabledAuth}
           style={{ opacity: disabledAuth ? 0.55 : 1 }}
         >
-          <label htmlFor="security-credential-ref" className="text-xs font-medium text-[color:var(--text-secondary)]">
+          <label
+            htmlFor="security-credential-ref"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
             {t("pages.security.credentialRef")}
           </label>
           <Input
@@ -192,7 +187,10 @@ function SecurityScreen() {
           disabled={disabledAuth}
           style={{ opacity: disabledAuth ? 0.55 : 1 }}
         >
-          <label htmlFor="security-managed-secret" className="text-xs font-medium text-[color:var(--text-secondary)]">
+          <label
+            htmlFor="security-managed-secret"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
             {t("pages.security.managedSecret")}
           </label>
           <Input

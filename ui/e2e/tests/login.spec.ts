@@ -9,9 +9,10 @@ import { expect, test } from "@playwright/test";
 test.use({ storageState: { cookies: [], origins: [] } });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const tenant = JSON.parse(
-  readFileSync(path.join(HERE, "..", ".auth", "tenant.json"), "utf8"),
-) as { email: string; password: string };
+const tenant = JSON.parse(readFileSync(path.join(HERE, "..", ".auth", "tenant.json"), "utf8")) as {
+  email: string;
+  password: string;
+};
 
 test("login with a real account lands on the dashboard", async ({ page }) => {
   await page.goto("/");
@@ -25,8 +26,6 @@ test("login with a real account lands on the dashboard", async ({ page }) => {
 
   // the auth gate falls through to the app shell — the login heading is gone and
   // the primary nav is present
-  await expect(
-    page.getByRole("heading", { name: /sign in to the control plane/i }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /sign in to the control plane/i })).toHaveCount(0);
   await expect(page.getByText("rolter", { exact: false }).first()).toBeVisible();
 });

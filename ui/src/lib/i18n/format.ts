@@ -9,10 +9,7 @@ import { DEFAULT_LOCALE, type Locale } from "./index";
 
 // Intl formatters are expensive to construct and immutable once built, so one
 // per (locale, options) pair is cached for the life of the tab
-const cache = new Map<
-  string,
-  Intl.NumberFormat | Intl.DateTimeFormat | Intl.RelativeTimeFormat
->();
+const cache = new Map<string, Intl.NumberFormat | Intl.DateTimeFormat | Intl.RelativeTimeFormat>();
 
 function numberFormat(locale: string, options?: Intl.NumberFormatOptions): Intl.NumberFormat {
   const key = `n:${locale}:${JSON.stringify(options ?? {})}`;

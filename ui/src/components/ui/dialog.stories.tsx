@@ -3,13 +3,7 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Button } from "./button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./dialog";
+import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./dialog";
 
 const meta = {
   title: "Overlays/Dialog",
