@@ -388,3 +388,166 @@ export const ClosingWithoutSavingEmitsAnAbandon: Story = {
     expectNoUxEvent("form_submit", TARGET);
   },
 };
+
+/**
+ * The shape five screens use (#1739): the parent holds the draft and mounts
+ * the sheet only while it exists, so `open` is a bare literal and the sheet is
+ * *unmounted* instead of closed. There is no closing edge to read here, and
+ * reading only that edge is why those screens reported zero abandonments.
+ */
+function Unmountable({ mounted: initial = true }: { mounted?: boolean }) {
+  const [draft, setDraft] = React.useState<string | null>(initial ? "openai-prod" : null);
+  const [submitted, setSubmitted] = React.useState(false);
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <button type="button" onClick={() => setDraft("openai-prod")}>
+        open the editor
+      </button>
+      <button type="button" onClick={() => setDraft(null)}>
+        drop the editor
+      </button>
+      {submitted && <p>submitted</p>}
+      {draft !== null && (
+        <EditorSheet
+          name={TARGET}
+          open
+          onOpenChange={(next) => !next && setDraft(null)}
+          title="Edit provider"
+          subtitle="openai-prod · openai"
+          dirty={false}
+          saveLabel="Save provider"
+          canSave
+          saving={false}
+          onSave={() => setSubmitted(true)}
+        >
+          <Field label="Name">
+            <Input value={draft} onChange={(e) => setDraft(e.target.value)} />
+          </Field>
+        </EditorSheet>
+      )}
+    </UxScreenProvider>
+  );
+}
+
+/**
+ * An editor that goes away by being unmounted is an abandon exactly once — the
+ * regression #1739 was filed for. Counted rather than merely found: the fix
+ * defers the emit so a remount can cancel it, and a deferral that fired twice
+ * would double every abandonment on those five screens.
+ */
+export const UnmountingWithoutSavingEmitsOneAbandon: Story = {
+  render: () => <Unmountable />,
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "drop the editor" }));
+    await expectSheetClosed();
+    const event = await expectUxEvent("form_abandon", TARGET);
+    await expect(event.screen).toBe(SCREEN);
+    await expect(typeof event.duration_ms).toBe("number");
+    expectNoUxEvent("form_submit", TARGET);
+    // the queue has settled by the time the event above was waited for, so a
+    // second copy would already be in it
+    await expect(
+      uxEvents().filter((e) => e.action === "form_abandon" && e.target === TARGET),
+    ).toHaveLength(1);
+  },
+};
+
+/**
+ * `React.StrictMode` wraps the whole app in `src/main.tsx`, and its simulated
+ * unmount right after mount looks exactly like the teardown above. Emitting
+ * straight from the effect cleanup would therefore put a spurious abandon on
+ * every editor opened in `bun run dev` — an abandonment for a form still on
+ * screen, which is worse than the zero it replaced.
+ *
+ * The sheet is mounted *into* an already-mounted StrictMode rather than with
+ * it, because that is the only arrangement that double-invokes: React walks
+ * the newly placed subtree and only doubles what sits below a `StrictMode`
+ * element it passed on the way down, so a StrictMode placed in the same commit
+ * as its children doubles nothing and this story would assert against a
+ * lifecycle that never happened. It is also the app's own shape — the root is
+ * strict long before anyone opens an editor.
+ */
+export const StrictModeDoesNotInventAnAbandon: Story = {
+  render: () => (
+    <React.StrictMode>
+      <Unmountable mounted={false} />
+    </React.StrictMode>
+  ),
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
+    // the submit is the proof that the double-invoke has been and gone: it
+    // cannot be pressed before the sheet has mounted, remounted and settled
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Save provider" }));
+    await expectUxEvent("form_submit", TARGET);
+    await waitFor(() => expect(screen().getByText("submitted")).toBeVisible());
+    expectNoUxEvent("form_abandon", TARGET);
+  },
+};
+
+/**
+ * And the real abandonment underneath it still arrives, exactly once. The
+ * deferral is what separates the two — a cancelled deferral must not swallow
+ * the teardown that follows it, and an uncancelled one must not double it.
+ */
+export const StrictModeStillReportsARealAbandonOnce: Story = {
+  render: () => (
+    <React.StrictMode>
+      <Unmountable mounted={false} />
+    </React.StrictMode>
+  ),
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
+    await waitFor(() => expect(sheet()).toBeVisible());
+    await userEvent.click(screen().getByRole("button", { name: "drop the editor" }));
+    await expectSheetClosed();
+    await expectUxEvent("form_abandon", TARGET);
+    await expect(
+      uxEvents().filter((e) => e.action === "form_abandon" && e.target === TARGET),
+    ).toHaveLength(1);
+  },
+};
+
+/**
+ * A form nobody opened has nothing to report. The deferral has to keep that
+ * true: an unmount is an abandonment only when there was a dwell to abandon,
+ * so a sheet mounted closed and then thrown away — a screen unmounting under
+ * it, a route change — must stay silent rather than invent one.
+ */
+function MountedClosed() {
+  const [mounted, setMounted] = React.useState(true);
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <button type="button" onClick={() => setMounted(false)}>
+        drop the editor
+      </button>
+      {mounted && (
+        <EditorSheet
+          name={TARGET}
+          open={false}
+          onOpenChange={() => {}}
+          title="Edit provider"
+          subtitle="openai-prod · openai"
+          dirty={false}
+          saveLabel="Save provider"
+          canSave
+          saving={false}
+          onSave={() => {}}
+        >
+          <Field label="Name">
+            <Input value="openai-prod" onChange={() => {}} />
+          </Field>
+        </EditorSheet>
+      )}
+      <p>dropped: {String(!mounted)}</p>
+    </UxScreenProvider>
+  );
+}
+
+export const UnmountingAnUnopenedEditorEmitsNothing: Story = {
+  render: () => <MountedClosed />,
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "drop the editor" }));
+    await waitFor(() => expect(screen().getByText("dropped: true")).toBeVisible());
+    expectNoUxEvent("form_abandon", TARGET);
+  },
+};

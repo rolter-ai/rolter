@@ -179,9 +179,16 @@ export interface FormTelemetry {
  * Instrument one form.
  *
  * `open` is the form's own visibility, which is what makes abandonment
- * measurable: a form unmounted without a submit is an abandon, and the dwell
+ * measurable: a form closed without a submit is an abandon, and the dwell
  * time separates "opened by mistake" from "tried and gave up". Those are
  * different problems and the duration is the only thing that tells them apart.
+ *
+ * A form goes away in one of two ways, and both are abandonments: `open` falls
+ * to false while the form stays mounted, or the parent stops rendering it
+ * altogether. Five screens use the second shape — they hold the draft in state
+ * and mount the sheet only while it exists — so reading the closing edge alone
+ * reported those five as *zero* abandonments, which reads as a clean result
+ * rather than a missing one (#1739).
  *
  * `target` is the form's stable name (`provider-create`, `virtual-key`), never
  * anything derived from what was typed into it.
@@ -191,15 +198,51 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
   const key = screen ?? contextScreen;
   const openedAt = React.useRef<number>(0);
   const submitted = React.useRef(false);
+  // an abandon the cleanup below has deferred, still cancellable. a token
+  // rather than a boolean so a stale timer can never silence a later one
+  const deferred = React.useRef<{ cancelled: boolean } | null>(null);
 
   React.useEffect(() => {
-    if (open) {
-      openedAt.current = Date.now();
-      submitted.current = false;
-      return;
+    // this effect running at all means the form is still mounted, so whatever
+    // the previous cleanup deferred was not a teardown after all
+    if (deferred.current) {
+      deferred.current.cancelled = true;
+      deferred.current = null;
     }
-    // the closing edge. a form that was never opened has no dwell to report,
-    // and one that was submitted already told its own story
+
+    if (open) {
+      // the clock is only started on the *first* open. a re-run with the form
+      // still open — a screen key arriving, StrictMode's remount — is not a
+      // second opening, and restarting it there would report the dwell of the
+      // last render instead of the dwell of the form
+      if (!openedAt.current) {
+        openedAt.current = Date.now();
+        submitted.current = false;
+      }
+      return () => {
+        // the form went away while open. whether this is a real unmount or
+        // StrictMode's simulated one is not knowable here — the double-invoke
+        // looks exactly like a teardown — so the abandon is *deferred* rather
+        // than emitted: a remount re-runs the effect in the same task and
+        // cancels it above, a real unmount lets it through. emitting straight
+        // from the cleanup would put a spurious abandon on every editor opened
+        // in `bun run dev`
+        if (!openedAt.current || submitted.current || !key) return;
+        const duration = Date.now() - openedAt.current;
+        const token = { cancelled: false };
+        deferred.current = token;
+        setTimeout(() => {
+          if (token.cancelled) return;
+          deferred.current = null;
+          openedAt.current = 0;
+          trackFormAbandon(key, target, duration);
+        }, 0);
+      };
+    }
+
+    // the closing edge, with the form still mounted. a form that was never
+    // opened has no dwell to report, and one that was submitted already told
+    // its own story
     if (openedAt.current && !submitted.current && key) {
       trackFormAbandon(key, target, Date.now() - openedAt.current);
     }
