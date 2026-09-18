@@ -23,7 +23,14 @@ export interface OAuthDraft {
   scopes: string;
 }
 
-export const splitList = (value: string) => [...new Set(value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean))];
+export const splitList = (value: string) => [
+  ...new Set(
+    value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ),
+];
 
 // a row from a control plane older than #1347 has no discovery column; it
 // behaved as `auto` there, so that is what it is read as
@@ -38,12 +45,17 @@ export const oauthDraft = (server: McpServerRow | null): OAuthDraft => ({
   scopes: (server?.default_scopes ?? []).join(", "),
 });
 
-const discoveryOf = (server: McpServerRow | null): McpOAuthDiscovery => server?.oauth_discovery ?? "auto";
+const discoveryOf = (server: McpServerRow | null): McpOAuthDiscovery =>
+  server?.oauth_discovery ?? "auto";
 
 /** Whether the operator has started describing a client at all. */
 export const oauthTouched = (draft: OAuthDraft, server: McpServerRow | null) =>
-  !!(draft.authorizeUrl.trim() || draft.tokenUrl.trim() || draft.clientId.trim() || draft.issuer.trim()) ||
-  draft.discovery !== discoveryOf(server);
+  !!(
+    draft.authorizeUrl.trim() ||
+    draft.tokenUrl.trim() ||
+    draft.clientId.trim() ||
+    draft.issuer.trim()
+  ) || draft.discovery !== discoveryOf(server);
 
 export type OAuthProblem = "clientId" | "pair" | "manualNeedsEndpoints" | "endpoint";
 
@@ -52,7 +64,12 @@ export function oauthProblem(draft: OAuthDraft): OAuthProblem | null {
   const authorize = draft.authorizeUrl.trim();
   const token = draft.tokenUrl.trim();
   const issuer = draft.issuer.trim();
-  if ((authorize && !oauthEndpoint(authorize)) || (token && !oauthEndpoint(token)) || (issuer && !oauthEndpoint(issuer))) return "endpoint";
+  if (
+    (authorize && !oauthEndpoint(authorize)) ||
+    (token && !oauthEndpoint(token)) ||
+    (issuer && !oauthEndpoint(issuer))
+  )
+    return "endpoint";
   if (!draft.clientId.trim()) return "clientId";
   // half a pair is not a fallback anybody can use, in either mode
   if (!!authorize !== !!token) return "pair";
@@ -114,11 +131,14 @@ export const urlResetsDiscovery = (url: string, server: McpServerRow | null) =>
 /** Whether saving this draft makes the control plane drop what discovery found. */
 export const oauthResetsDiscovery = (draft: OAuthDraft, server: McpServerRow | null, url: string) =>
   !!server?.oauth_discovered_at &&
-  (urlResetsDiscovery(url, server) || draft.discovery !== discoveryOf(server) || draft.issuer.trim() !== (server.oauth_issuer ?? ""));
+  (urlResetsDiscovery(url, server) ||
+    draft.discovery !== discoveryOf(server) ||
+    draft.issuer.trim() !== (server.oauth_issuer ?? ""));
 
 /**
  * Whether Connect has anywhere to send the browser: a client id, and either a
  * configured pair or a mode that is allowed to discover one.
  */
 export const oauthConnectable = (server: McpServerRow) =>
-  !!server.client_id && (discoveryOf(server) === "auto" || !!(server.authorize_url && server.token_url));
+  !!server.client_id &&
+  (discoveryOf(server) === "auto" || !!(server.authorize_url && server.token_url));

@@ -61,9 +61,12 @@ const PLUGINS: PluginInstanceRow[] = [
 ];
 
 const scopeResponse = (url: string) => {
-  if (url.endsWith("/api/v1/orgs")) return json([{ id: "org-1", name: "Rolter", slug: "rolter", created_at: "" }]);
-  if (url.includes("/teams")) return json([{ id: "team-1", org_id: "org-1", name: "Platform", created_at: "" }]);
-  if (url.includes("/projects")) return json([{ id: "project-1", team_id: "team-1", name: "Gateway", created_at: "" }]);
+  if (url.endsWith("/api/v1/orgs"))
+    return json([{ id: "org-1", name: "Rolter", slug: "rolter", created_at: "" }]);
+  if (url.includes("/teams"))
+    return json([{ id: "team-1", org_id: "org-1", name: "Platform", created_at: "" }]);
+  if (url.includes("/projects"))
+    return json([{ id: "project-1", team_id: "team-1", name: "Gateway", created_at: "" }]);
   return null;
 };
 
@@ -100,18 +103,31 @@ function Harness({
   );
 }
 
-const withPlugins = (plugins: PluginInstanceRow[], pluginStatus = 200): FetchStub => async (input) => {
-  const url = String(input);
-  return scopeResponse(url) ?? json(pluginStatus === 200 ? plugins : { error: { message: "forbidden" } }, pluginStatus);
-};
+const withPlugins =
+  (plugins: PluginInstanceRow[], pluginStatus = 200): FetchStub =>
+  async (input) => {
+    const url = String(input);
+    return (
+      scopeResponse(url) ??
+      json(pluginStatus === 200 ? plugins : { error: { message: "forbidden" } }, pluginStatus)
+    );
+  };
 
-const meta = { title: "Screens/Plugins", component: Plugins, parameters: { layout: "fullscreen" } } satisfies Meta<typeof Plugins>;
+const meta = {
+  title: "Screens/Plugins",
+  component: Plugins,
+  parameters: { layout: "fullscreen" },
+} satisfies Meta<typeof Plugins>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Loaded: Story = { render: () => <Harness fetchStub={withPlugins(PLUGINS)} /> };
 export const Loading: Story = {
-  render: () => <Harness fetchStub={async (input) => scopeResponse(String(input)) ?? new Promise<Response>(() => {})} />,
+  render: () => (
+    <Harness
+      fetchStub={async (input) => scopeResponse(String(input)) ?? new Promise<Response>(() => {})}
+    />
+  ),
   play: async ({ canvasElement }) => expectSkeleton(canvasElement),
 };
 export const Empty: Story = {
@@ -128,18 +144,24 @@ export const Forbidden: Story = {
 };
 
 export const InstallsWebhookConfiguration: Story = {
-  render: () => <Harness fetchStub={async (input, init) => {
-    const scoped = scopeResponse(String(input));
-    if (scoped) return scoped;
-    return init?.method === "POST" ? json(PLUGINS[0], 201) : json(PLUGINS);
-  }} />,
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const scoped = scopeResponse(String(input));
+        if (scoped) return scoped;
+        return init?.method === "POST" ? json(PLUGINS[0], 201) : json(PLUGINS);
+      }}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument(),
+    );
   },
 };
 
@@ -172,9 +194,7 @@ export const InstallRejectedByTheServer: Story = {
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
 
     await expectToast(canvasElement, /already installed/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(dialog).getByLabelText("Name")).toHaveValue("Policy webhook");
   },
 };
@@ -190,7 +210,9 @@ export const RejectsInvalidConfiguration: Story = {
     await userEvent.click(within(dialog).getByLabelText("Plugin configuration"));
     await userEvent.paste("[]");
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
-    await expect(within(dialog).getByRole("alert")).toHaveTextContent("Configuration must be a JSON object.");
+    await expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "Configuration must be a JSON object.",
+    );
   },
 };
 
@@ -220,8 +242,7 @@ export const ConfirmsBeforeDeletingAPlugin: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // by name, not by index: each row control names its own plugin (#1214)
-    const del = async () =>
-      canvas.findByRole("button", { name: "Delete plugin PII redaction" });
+    const del = async () => canvas.findByRole("button", { name: "Delete plugin PII redaction" });
 
     await userEvent.click(await del());
     await cancelConfirmation();
@@ -242,11 +263,15 @@ export const ConfirmsBeforeDeletingAPlugin: Story = {
 // a toggle that never settles: the plugin being switched must be the only one
 // whose controls go dead, not every row on the screen (#1128)
 export const KeepsOtherRowsInteractiveWhileOneToggles: Story = {
-  render: () => <Harness fetchStub={async (input, init) => {
-    const scoped = scopeResponse(String(input));
-    if (scoped) return scoped;
-    return init?.method === "PUT" ? new Promise<Response>(() => {}) : json(PLUGINS);
-  }} />,
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const scoped = scopeResponse(String(input));
+        if (scoped) return scoped;
+        return init?.method === "PUT" ? new Promise<Response>(() => {}) : json(PLUGINS);
+      }}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const toggled = await canvas.findByRole("switch", { name: "Enable PII redaction" });

@@ -23,9 +23,7 @@ describe("browser telemetry", () => {
     // the web instrumentations touch window/document when constructed. this
     // runs without a DOM, so the guard is what keeps it from throwing — the
     // same guard that protects any future server-side render
-    expect(
-      await initTelemetry({ otelEndpoint: "http://localhost:4318/v1/traces" }),
-    ).toBe(false);
+    expect(await initTelemetry({ otelEndpoint: "http://localhost:4318/v1/traces" })).toBe(false);
   });
 });
 

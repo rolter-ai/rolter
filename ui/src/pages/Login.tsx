@@ -230,12 +230,8 @@ export default function Login() {
               }}
             >
               <div className="flex flex-col gap-1">
-                <h2 className="text-sm font-medium text-foreground">
-                  {t("auth.mfa.title")}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {t("auth.mfa.subtitle")}
-                </p>
+                <h2 className="text-sm font-medium text-foreground">{t("auth.mfa.title")}</h2>
+                <p className="text-sm text-muted-foreground">{t("auth.mfa.subtitle")}</p>
               </div>
               <Field
                 label={t("auth.mfa.codeLabel")}
@@ -258,8 +254,7 @@ export default function Login() {
               >
                 {pending ? (
                   <>
-                    {t("auth.mfa.verifying")}{" "}
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t("auth.mfa.verifying")} <Loader2 className="h-4 w-4 animate-spin" />
                   </>
                 ) : (
                   <>
@@ -281,108 +276,104 @@ export default function Login() {
             </form>
           )}
           {resolved && !challenge && showPassword && (
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit();
-            }}
-          >
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">{t("auth.email")}</span>
-              <Input
-                type="email"
-                name="email"
-                autoComplete="email"
-                autoFocus
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">{t("auth.password")}</span>
-              <span className="relative block">
-                <Input
-                  type={show ? "text" : "password"}
-                  name="password"
-                  autoComplete="current-password"
-                  required
-                  value={pw}
-                  onChange={(e) => setPw(e.target.value)}
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShow((s) => !s)}
-                  aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
-                  className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  {show ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </button>
-              </span>
-            </label>
-            {error && (
-              <p
-                role="alert"
-                className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
-              >
-                {error}
-              </p>
-            )}
-            <Button
-              type="submit"
-              disabled={pending}
-              className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void submit();
+              }}
             >
-              {pending ? (
-                <>
-                  {t("auth.signingIn")} <Loader2 className="h-4 w-4 animate-spin" />
-                </>
-              ) : (
-                <>
-                  {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
-                </>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-muted-foreground">{t("auth.email")}</span>
+                <Input
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  autoFocus
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-muted-foreground">{t("auth.password")}</span>
+                <span className="relative block">
+                  <Input
+                    type={show ? "text" : "password"}
+                    name="password"
+                    autoComplete="current-password"
+                    required
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShow((s) => !s)}
+                    aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
+                    className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </span>
+              </label>
+              {error && (
+                <p
+                  role="alert"
+                  className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
+                >
+                  {error}
+                </p>
               )}
-            </Button>
-          </form>
+              <Button
+                type="submit"
+                disabled={pending}
+                className="w-full bg-brand-folk text-white hover:bg-brand-press"
+              >
+                {pending ? (
+                  <>
+                    {t("auth.signingIn")} <Loader2 className="h-4 w-4 animate-spin" />
+                  </>
+                ) : (
+                  <>
+                    {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
+              </Button>
+            </form>
           )}
           {resolved && !challenge && (
-          <div
-            className={
-              showPassword
-                ? "flex flex-col gap-3 border-t border-[color:var(--border-subtle)] pt-5"
-                : "flex flex-col gap-3"
-            }
-          >
-            {/* one button per configured identity provider. a deployment with
+            <div
+              className={
+                showPassword
+                  ? "flex flex-col gap-3 border-t border-[color:var(--border-subtle)] pt-5"
+                  : "flex flex-col gap-3"
+              }
+            >
+              {/* one button per configured identity provider. a deployment with
                 no IdP registered gets none, and never learns sso exists */}
-            {providers.map((p) => (
-              <a
-                key={p.slug}
-                href={p.start_url}
-                className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {t("auth.continueWith", { provider: p.name })}
-              </a>
-            ))}
-            {!showPassword && providers.length === 0 && (
-              <span className="text-center text-sm text-muted-foreground">
-                {t("auth.noMethod")}
-              </span>
-            )}
-            <span className="flex items-center justify-center gap-2 text-center text-xs text-[color:var(--text-subtle)]">
-              {t("auth.selfHosted")}
-              {/* the only language switch lives in the shell's nav, which a
+              {providers.map((p) => (
+                <a
+                  key={p.slug}
+                  href={p.start_url}
+                  className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {t("auth.continueWith", { provider: p.name })}
+                </a>
+              ))}
+              {!showPassword && providers.length === 0 && (
+                <span className="text-center text-sm text-muted-foreground">
+                  {t("auth.noMethod")}
+                </span>
+              )}
+              <span className="flex items-center justify-center gap-2 text-center text-xs text-[color:var(--text-subtle)]">
+                {t("auth.selfHosted")}
+                {/* the only language switch lives in the shell's nav, which a
                   signed-out visitor never sees; the menu opens upward, so it
                   sits on the card's last line rather than above the form */}
-              <LocalePicker />
-            </span>
-          </div>
+                <LocalePicker />
+              </span>
+            </div>
           )}
         </div>
       </div>

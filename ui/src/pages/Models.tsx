@@ -97,7 +97,6 @@ export default function Models() {
 
   const models = useQuery({ queryKey: ["models"], queryFn: fetchModels });
 
-
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
   // `models` is the query the user is actually waiting on for this screen
@@ -182,7 +181,10 @@ export default function Models() {
       route,
       providerName:
         targets.length > 1
-          ? t("pages.models.providerCount", { first: providerName(target?.provider_id), count: targets.length - 1 })
+          ? t("pages.models.providerCount", {
+              first: providerName(target?.provider_id),
+              count: targets.length - 1,
+            })
           : providerName(target?.provider_id),
       providerNames,
       strategy: entry.strategy,
@@ -256,11 +258,7 @@ export default function Models() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <LabelFilterSelect
-          value={labelFilter}
-          onChange={setLabelFilter}
-          options={labels.options}
-        />
+        <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <span className="text-sm text-muted-foreground">
           {t("pages.models.modelTally", { count: rows.length })} ·{" "}
           {t("pages.models.providerTally", { count: providerCount })}
@@ -386,9 +384,7 @@ export default function Models() {
         {sorted.map((r) => (
           <ListRow key={r.name} grid={GRID}>
             <div className="flex min-w-0 items-center gap-2">
-              <StatusDot
-                color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"}
-              />
+              <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
               <span className="flex min-w-0 flex-col gap-1">
                 <span className="truncate font-mono text-sm">{r.name}</span>
                 <LabelChips labels={labels.bySubject(r.name)} />
@@ -448,24 +444,18 @@ export default function Models() {
                 variant="outline"
                 className="h-[30px]"
                 aria-label={t(
-                  r.origin === "config"
-                    ? "pages.models.viewAria"
-                    : "pages.models.editAria",
+                  r.origin === "config" ? "pages.models.viewAria" : "pages.models.editAria",
                   { model: r.name },
                 )}
                 title={r.origin === "config" ? undefined : routeUpdateGate.reason}
-                disabled={
-                  r.origin === "db" && (!r.route || routeUpdateGate.denied)
-                }
+                disabled={r.origin === "db" && (!r.route || routeUpdateGate.denied)}
                 onClick={() =>
                   r.origin === "config"
                     ? setSheet({ mode: "view", configModel: r.entry })
                     : r.route && setSheet({ mode: "edit", route: r.route })
                 }
               >
-                {r.origin === "config"
-                  ? t("pages.models.view")
-                  : t("pages.models.edit")}
+                {r.origin === "config" ? t("pages.models.view") : t("pages.models.edit")}
               </Button>
               <Button
                 size="sm"
@@ -479,10 +469,7 @@ export default function Models() {
               {r.origin === "db" && (
                 <button
                   type="button"
-                  title={
-                    deleteGate.reason ??
-                    t("pages.models.deleteAria", { model: r.name })
-                  }
+                  title={deleteGate.reason ?? t("pages.models.deleteAria", { model: r.name })}
                   aria-label={t("pages.models.deleteAria", { model: r.name })}
                   disabled={
                     deleteGate.denied ||
@@ -491,7 +478,11 @@ export default function Models() {
                   onClick={() => setDeleteTarget(r.entry)}
                   className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {removeModel.isPending && deleteTarget?.model === r.entry.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  {removeModel.isPending && deleteTarget?.model === r.entry.model ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
                 </button>
               )}
             </div>
@@ -563,7 +554,9 @@ export default function Models() {
           </DialogDescription>
         </DialogHeader>
         {removeModel.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">{(removeModel.error as Error).message}</p>
+          <p className="text-xs text-[color:var(--status-danger-text)]">
+            {(removeModel.error as Error).message}
+          </p>
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>

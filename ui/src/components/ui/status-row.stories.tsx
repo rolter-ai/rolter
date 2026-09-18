@@ -4,15 +4,7 @@ import { expect, userEvent, within } from "storybook/test";
 
 import { StatusRow, type StatusKind } from "./status-row";
 
-const KINDS: StatusKind[] = [
-  "pending",
-  "running",
-  "success",
-  "error",
-  "warning",
-  "info",
-  "idle",
-];
+const KINDS: StatusKind[] = ["pending", "running", "success", "error", "warning", "info", "idle"];
 
 const meta = {
   title: "Feedback/StatusRow",

@@ -52,7 +52,12 @@ const LONG_FLAT: ComboboxOption[] = LONG.map(({ group: _group, ...rest }) => res
 
 const WITH_DISABLED: ComboboxOption[] = [
   { value: "round_robin", label: "round_robin" },
-  { value: "cache_aware", label: "cache_aware", description: "needs a kv-event source", disabled: true },
+  {
+    value: "cache_aware",
+    label: "cache_aware",
+    description: "needs a kv-event source",
+    disabled: true,
+  },
   { value: "weighted", label: "weighted" },
 ];
 

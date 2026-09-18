@@ -10,11 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Input } from "@/components/ui/input";
-import {
-  fetchClientSettings,
-  updateClientSettings,
-  type ClientSettingsDto,
-} from "@/lib/api";
+import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -206,7 +202,10 @@ function ClientSettingsScreen() {
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="client-public-base-url" className="text-xs font-medium text-[color:var(--text-secondary)]">
+          <label
+            htmlFor="client-public-base-url"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
             {t("pages.clientSettings.publicBaseUrl")}
           </label>
           <Input
@@ -298,9 +297,7 @@ function ClientSettingsScreen() {
                 type="button"
                 aria-label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
                 className="flex h-8 w-8 flex-none items-center justify-center rounded-md text-[color:var(--text-subtle)] transition-colors hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                onClick={() =>
-                  set({ injected: form.injected.filter((r) => r.id !== row.id) })
-                }
+                onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
@@ -308,10 +305,7 @@ function ClientSettingsScreen() {
           ))}
         </div>
         <div>
-          <Button
-            variant="outline"
-            onClick={() => set({ injected: [...form.injected, pair()] })}
-          >
+          <Button variant="outline" onClick={() => set({ injected: [...form.injected, pair()] })}>
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             {t("pages.clientSettings.addHeader")}
           </Button>
@@ -326,7 +320,10 @@ function ClientSettingsScreen() {
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="client-request-id-header" className="text-xs font-medium text-[color:var(--text-secondary)]">
+          <label
+            htmlFor="client-request-id-header"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
             {t("pages.clientSettings.requestIdHeader")}
           </label>
           <Input

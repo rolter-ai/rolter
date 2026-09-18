@@ -152,9 +152,7 @@ export function CapabilityProvider({ children }: { children: React.ReactNode }) 
     [effective.data, effective.isPending, matrix.data, enabled],
   );
 
-  return (
-    <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>
-  );
+  return <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>;
 }
 
 /** The raw context, for the components that need more than a yes/no. */
@@ -170,10 +168,7 @@ export function useCapabilities(): CapabilityValue | null {
  */
 export function useCan(): (resource: string, action: RbacAction) => Permission {
   const value = useCapabilities();
-  return React.useCallback(
-    (resource, action) => decide(value, resource, action),
-    [value],
-  );
+  return React.useCallback((resource, action) => decide(value, resource, action), [value]);
 }
 
 /**

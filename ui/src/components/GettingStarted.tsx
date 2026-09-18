@@ -184,8 +184,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
   }
 
   const failed = providers.error ?? routes.error ?? keys.error;
-  const loading =
-    scope.isLoading || providers.isLoading || routes.isLoading || keys.isLoading;
+  const loading = scope.isLoading || providers.isLoading || routes.isLoading || keys.isLoading;
 
   const steps: Step[] = [
     { key: "call", done: hasTraffic, to: "/playground" },

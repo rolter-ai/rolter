@@ -96,11 +96,7 @@ export function useRouteTelemetry(screen: string): void {
 }
 
 /** Keep the grouping labels on emitted events in step with the scope picker. */
-export function useUxContext(scope: {
-  orgId?: string;
-  teamId?: string;
-  projectId?: string;
-}): void {
+export function useUxContext(scope: { orgId?: string; teamId?: string; projectId?: string }): void {
   const { orgId, teamId, projectId } = scope;
   React.useEffect(() => {
     setUxContext({ orgId, teamId, projectId });

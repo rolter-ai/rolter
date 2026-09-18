@@ -6,14 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
-import {
-  ListHeader,
-  ListRow,
-  ListTable,
-  PageBody,
-  Pill,
-  RowIconButton,
-} from "@/components/screen";
+import { ListHeader, ListRow, ListTable, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -304,10 +297,7 @@ export function OAuthGrants() {
         </>
       )}
 
-      <Dialog
-        open={confirming !== null}
-        onOpenChange={(open) => !open && setConfirming(null)}
-      >
+      <Dialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
         {confirming && (
           <>
             <DialogHeader>
@@ -334,10 +324,7 @@ export function OAuthGrants() {
               <Button variant="outline" onClick={() => setConfirming(null)}>
                 {t("common.cancel")}
               </Button>
-              <Button
-                disabled={revoke.isPending}
-                onClick={() => revoke.mutate(confirming.id)}
-              >
+              <Button disabled={revoke.isPending} onClick={() => revoke.mutate(confirming.id)}>
                 {t("pages.mcpOAuth.confirm.grantConfirm")}
               </Button>
             </DialogFooter>
@@ -379,8 +366,7 @@ export function AuthSessions() {
 
   const revoke = useMutation({
     mutationFn: (id: string) => revokeMcpSession(id),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] }),
   });
 
   // renewing on demand, next to the background sweeper that renews about five
@@ -405,9 +391,10 @@ export function AuthSessions() {
   // grants on this screen already confirm before revoking; a session revoke is
   // just as irreversible, so it asks the same way (#1179). the server label is
   // carried alongside the row because it is resolved from two other queries
-  const [confirming, setConfirming] = React.useState<
-    { session: McpOAuthSessionRow; server: string } | null
-  >(null);
+  const [confirming, setConfirming] = React.useState<{
+    session: McpOAuthSessionRow;
+    server: string;
+  } | null>(null);
   const startRevoke = (session: McpOAuthSessionRow, server: string) => {
     revoke.reset();
     setConfirming({ session, server });
@@ -478,15 +465,15 @@ export function AuthSessions() {
                 const owner = grant ? ownerLabel(users.data, grant.user_id) : "—";
                 return (
                   <ListRow key={s.id} grid={SESSION_GRID}>
-                    <span className="truncate font-mono text-xs font-semibold">
-                      {server}
-                    </span>
+                    <span className="truncate font-mono text-xs font-semibold">{server}</span>
                     <span className="truncate text-xs text-[color:var(--text-secondary)]">
                       {grant ? ownerLabel(users.data, grant.user_id) : "—"}
                     </span>
                     <Scopes scopes={s.scopes} />
                     <span className="text-xs text-[color:var(--text-secondary)]">
-                      {s.last_used_at ? fmt.relative(s.last_used_at, now) : t("pages.mcpOAuth.never")}
+                      {s.last_used_at
+                        ? fmt.relative(s.last_used_at, now)
+                        : t("pages.mcpOAuth.never")}
                     </span>
                     <span
                       className="font-mono text-xs text-[color:var(--text-secondary)]"
@@ -545,7 +532,9 @@ export function AuthSessions() {
                         owner,
                         server,
                       })}
-                      disabled={state === "revoked" || (revoke.isPending && revoke.variables === s.id)}
+                      disabled={
+                        state === "revoked" || (revoke.isPending && revoke.variables === s.id)
+                      }
                       onClick={() => startRevoke(s, server)}
                     >
                       {revoke.isPending && revoke.variables === s.id ? (

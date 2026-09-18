@@ -16,7 +16,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-function Controlled({ initial = false, disabled = false }: { initial?: boolean; disabled?: boolean }) {
+function Controlled({
+  initial = false,
+  disabled = false,
+}: {
+  initial?: boolean;
+  disabled?: boolean;
+}) {
   const [checked, setChecked] = React.useState(initial);
   // a wrapping <label> names an input, never a role="switch" button, so the
   // caption beside the track is wired up explicitly — the pattern every call

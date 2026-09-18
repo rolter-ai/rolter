@@ -52,7 +52,9 @@ function Stage({
 // a handful of the ~40 generic ones the screen renders collapsed (#1204)
 const CONFIG = {
   providers: [{ name: "openai-prod", kind: "openai", api_base: "https://api.openai.com/v1" }],
-  routes: [{ model: "gpt-4o", strategy: "round_robin", targets: [{ provider: "openai-prod", weight: 1 }] }],
+  routes: [
+    { model: "gpt-4o", strategy: "round_robin", targets: [{ provider: "openai-prod", weight: 1 }] },
+  ],
   virtual_keys: [],
   db_virtual_keys: [{ key_hash: "", id: "k1" }],
   mcp_oauth_sessions: [],

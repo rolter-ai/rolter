@@ -2,12 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import {
-  OrgScopePicker,
-  OrgScopePill,
-  useOrgScope,
-  type ScopeTarget,
-} from "./OrgScopePicker";
+import { OrgScopePicker, OrgScopePill, useOrgScope, type ScopeTarget } from "./OrgScopePicker";
 import { Harness, ORG, json, openOptions, type FetchStub } from "@/pages/story-harness";
 
 const NOW = "2026-01-01T00:00:00Z";
@@ -71,11 +66,7 @@ function Picker({ fetchStub }: { fetchStub: FetchStub }) {
 
 // the read-only chip the mapping and profile rows draw a stored scope as. it
 // reads the same two queries the picker does, so it is mounted the same way
-function Chip({
-  value,
-}: {
-  value: { team_id?: string | null; project_id?: string | null };
-}) {
+function Chip({ value }: { value: { team_id?: string | null; project_id?: string | null } }) {
   return <OrgScopePill scope={useOrgScope(ORG.id)} value={value} />;
 }
 
@@ -100,9 +91,7 @@ export const EveryScopeInTheOrg: Story = {
     const canvas = within(canvasElement);
     const picker = await canvas.findByLabelText("Where the role applies");
     const options = within(await openOptions(picker));
-    await waitFor(() =>
-      expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument());
     // the two "prod" projects are told apart by the team they hang under
     await expect(options.getByRole("group", { name: "Projects in Platform" })).toBeInTheDocument();
     await expect(options.getByRole("group", { name: "Projects in Payments" })).toBeInTheDocument();
@@ -152,9 +141,7 @@ export const TeamsFailed: Story = {
   args: { fetchStub: chain({ teams: () => json({ error: { message: "boom" } }, 500) }) },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/),
-    );
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/));
     await expect(canvas.getByLabelText("Where the role applies")).toBeVisible();
   },
 };
@@ -166,9 +153,7 @@ export const ProjectsFailed: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/),
-    );
+    await waitFor(() => expect(canvas.getByRole("alert")).toHaveTextContent(/teams and projects/));
     // the teams still loaded, so the picker keeps offering them
     const options = within(await openOptions(canvas.getByLabelText("Where the role applies")));
     await expect(options.getByRole("group", { name: "Teams" })).toBeInTheDocument();

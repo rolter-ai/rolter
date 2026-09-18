@@ -124,9 +124,7 @@ export const AddsAParam: Story = {
     await pickOption(canvas.getByLabelText("Param type"), "number");
     await userEvent.type(canvas.getByLabelText("Param value"), "0.9");
     await userEvent.click(canvas.getByRole("button", { name: "Save params" }));
-    await waitFor(() =>
-      expect(canvas.getByTestId("saved")).toHaveTextContent('"top_p":0.9'),
-    );
+    await waitFor(() => expect(canvas.getByTestId("saved")).toHaveTextContent('"top_p":0.9'));
   },
 };
 
@@ -139,9 +137,7 @@ export const UnknownParamKeyWarns: Story = {
   render: () => <EditHarness params={{ temperture: 0.7 }} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/Not a standard OpenAI\/Anthropic param/),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/Not a standard OpenAI\/Anthropic param/)).toBeVisible();
     await expect(canvas.getByLabelText("Unrecognized param key")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Save params" })).toBeEnabled();
   },
@@ -189,9 +185,7 @@ export const LockedByDefault: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Locked by default" }));
     await expect(canvas.getByText(/the admin values always win/)).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Save params" }));
-    await waitFor(() =>
-      expect(canvas.getByTestId("saved")).toHaveTextContent('"mode":"deny"'),
-    );
+    await waitFor(() => expect(canvas.getByTestId("saved")).toHaveTextContent('"mode":"deny"'));
   },
 };
 
@@ -201,9 +195,7 @@ export const CreateVariantReportsUpward: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.queryByRole("button", { name: "Save params" })).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(canvas.getByTestId("reported")).toHaveTextContent('"ok":true'),
-    );
+    await waitFor(() => expect(canvas.getByTestId("reported")).toHaveTextContent('"ok":true'));
     const value = canvas.getAllByLabelText("Param value")[0];
     await userEvent.clear(value);
     await userEvent.type(value, "0.2");
@@ -221,8 +213,6 @@ export const RemovesAParam: Story = {
     await userEvent.click((await canvas.findAllByRole("button", { name: "Remove param" }))[0]);
     await expect(canvas.getAllByLabelText("Param name")).toHaveLength(2);
     await userEvent.click(canvas.getByRole("button", { name: "Save params" }));
-    await waitFor(() =>
-      expect(canvas.getByTestId("saved")).not.toHaveTextContent("temperature"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("saved")).not.toHaveTextContent("temperature"));
   },
 };

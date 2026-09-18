@@ -199,11 +199,7 @@ export const ProvidersEmptyMeansAll: Story = {
     const [selected, setSelected] = React.useState<string[]>([]);
     return (
       <div className="max-w-md">
-        <KeyProvidersField
-          providers={PROVIDERS}
-          selected={selected}
-          onChange={setSelected}
-        />
+        <KeyProvidersField providers={PROVIDERS} selected={selected} onChange={setSelected} />
       </div>
     );
   },
@@ -217,9 +213,7 @@ export const ProvidersEmptyMeansAll: Story = {
 
 /** No providers configured at all: the field renders nothing rather than an empty box. */
 export const ProvidersFieldHidesWhenThereAreNone: Story = {
-  render: () => (
-    <KeyProvidersField providers={[]} selected={[]} onChange={() => {}} />
-  ),
+  render: () => <KeyProvidersField providers={[]} selected={[]} onChange={() => {}} />,
   play: async ({ canvasElement }) => {
     await expect(canvasElement.textContent?.trim()).toBe("");
   },

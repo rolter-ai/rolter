@@ -17,8 +17,7 @@ const svgOf = (canvasElement: HTMLElement): SVGSVGElement => {
 };
 
 /** the module grid the viewBox describes, quiet zone included */
-const extentOf = (svg: SVGSVGElement): number =>
-  Number(svg.getAttribute("viewBox")?.split(" ")[3]);
+const extentOf = (svg: SVGSVGElement): number => Number(svg.getAttribute("viewBox")?.split(" ")[3]);
 
 const meta = {
   title: "Components/QrCode",
@@ -42,7 +41,11 @@ export const Default: Story = {
 /** every module the path paints, as `col,row` in grid coordinates (quiet zone removed) */
 const paintedModules = (svg: SVGSVGElement): Set<string> => {
   const d = svg.querySelector("path")?.getAttribute("d") ?? "";
-  return new Set([...d.matchAll(/M(\d+) (\d+)h1v1h-1z/g)].map(([, col, row]) => `${Number(col) - 4},${Number(row) - 4}`));
+  return new Set(
+    [...d.matchAll(/M(\d+) (\d+)h1v1h-1z/g)].map(
+      ([, col, row]) => `${Number(col) - 4},${Number(row) - 4}`,
+    ),
+  );
 };
 
 /**
@@ -152,7 +155,9 @@ export const KeepsItsQuietZoneAndWhiteBackdrop: Story = {
     await expect(Number(rect?.getAttribute("width"))).toBe(extent);
     // the quiet zone is the gap between the grid and the viewBox: every dark
     // module starts at 4 or beyond, and none reaches the far edge
-    const starts = [...(svg.querySelector("path")?.getAttribute("d") ?? "").matchAll(/M(\d+) (\d+)/g)];
+    const starts = [
+      ...(svg.querySelector("path")?.getAttribute("d") ?? "").matchAll(/M(\d+) (\d+)/g),
+    ];
     await expect(starts.length).toBeGreaterThan(0);
     for (const [, col, row] of starts) {
       await expect(Number(col)).toBeGreaterThanOrEqual(4);

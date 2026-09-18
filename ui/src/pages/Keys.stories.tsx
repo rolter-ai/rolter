@@ -20,13 +20,7 @@ import {
   answerDiscardPrompt,
   expectEmptyState,
 } from "./story-harness";
-import type {
-  BusinessUnitRow,
-  CustomerRow,
-  ProviderRow,
-  RouteRow,
-  VirtualKeyRow,
-} from "@/lib/api";
+import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -88,7 +82,6 @@ const PROVIDERS: ProviderRow[] = [
     created_at: "2026-01-01T00:00:00Z",
   },
 ];
-
 
 /** the project's routes, which the model allow-list ticks off (#1345) */
 const ROUTES: RouteRow[] = [
@@ -464,9 +457,7 @@ export const EditingAKeySendsTheAttributionPut: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("revoked laptop");
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /Edit key revoked laptop/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /Edit key revoked laptop/i }));
     const form = sheet();
     // save stays disabled until something actually moves — re-saving an
     // untouched sheet must not write or audit anything
@@ -498,15 +489,11 @@ export const ClearingAnAttributionSendsNull: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("backend service");
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /Edit key backend service/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /Edit key backend service/i }));
     const form = sheet();
     // seeded from the row, so the editor opens on the truth rather than blank
     // a combobox reads as the option's label; the id is what goes on the wire
-    await expect(within(form).getByLabelText("Business unit")).toHaveValue(
-      "Platform Engineering",
-    );
+    await expect(within(form).getByLabelText("Business unit")).toHaveValue("Platform Engineering");
     await pickOption(within(form).getByLabelText("Business unit"), "Unattributed");
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
 
@@ -527,9 +514,7 @@ export const NarrowingTheProviderAllowListSendsItsOwnPut: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("revoked laptop");
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /Edit key revoked laptop/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /Edit key revoked laptop/i }));
     const form = sheet();
     await userEvent.click(within(form).getByRole("checkbox", { name: "Anthropic" }));
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
@@ -585,9 +570,7 @@ export const OnlyCustomersThatFitTheChosenUnitAreOffered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("revoked laptop");
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /Edit key revoked laptop/i }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: /Edit key revoked laptop/i }));
     const form = sheet();
     const customer = within(form).getByLabelText("Customer");
     // with no unit chosen, every customer is reachable
@@ -623,10 +606,7 @@ export const TheAllowListOffersTheProjectsRoutes: Story = {
     );
     await userEvent.click(within(form).getByRole("checkbox", { name: "gpt-4o" }));
     // an address no route serves is still allowed through free-form entry
-    await userEvent.type(
-      within(form).getByLabelText(/model allow-list/i),
-      "legacy-davinci",
-    );
+    await userEvent.type(within(form).getByLabelText(/model allow-list/i), "legacy-davinci");
     await userEvent.click(within(form).getByRole("button", { name: "Add" }));
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
 

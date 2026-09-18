@@ -81,9 +81,7 @@ export function SheetHeader({
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">
           {title}
         </h2>
-        <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-          {subtitle}
-        </p>
+        <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{subtitle}</p>
       </div>
       <button
         type="button"

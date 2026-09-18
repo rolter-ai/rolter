@@ -58,7 +58,12 @@ function Harness({
       <button type="button" onClick={() => setOpen(true)}>
         open the panel
       </button>
-      <Modal open={open} onClose={() => setOpen(false)} initialFocus={initialFocus} label="Edit provider">
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        initialFocus={initialFocus}
+        label="Edit provider"
+      >
         {children ?? (
           <>
             <input aria-label="name" defaultValue="openai" />
@@ -204,7 +209,9 @@ export const EscapeClosesOnlyTheTopmostModal: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
-    await waitFor(() => expect(canvas.getByRole("button", { name: "open the dialog" })).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "open the dialog" })).toBeVisible(),
+    );
     await userEvent.click(canvas.getByRole("button", { name: "open the dialog" }));
     await waitFor(() => expect(canvas.getAllByRole("dialog")).toHaveLength(2));
     await userEvent.keyboard("{Escape}");

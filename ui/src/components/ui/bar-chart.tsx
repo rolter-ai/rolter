@@ -89,7 +89,14 @@ export function BarChart({
           const y = padT + (ih / ticks) * i;
           return (
             <g key={i}>
-              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="var(--border-subtle)" strokeWidth="1" />
+              <line
+                x1={padL}
+                y1={y}
+                x2={W - padR}
+                y2={y}
+                stroke="var(--border-subtle)"
+                strokeWidth="1"
+              />
               <text
                 x={padL - 8}
                 y={y + 3}

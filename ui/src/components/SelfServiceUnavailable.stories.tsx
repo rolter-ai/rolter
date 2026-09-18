@@ -19,8 +19,6 @@ export const Default: Story = {
   play: async ({ canvas }) => {
     // the remedy is the point: an operator who reads this should know what to
     // change, not just that something failed
-    await expect(
-      await canvas.findByText(/ROLTER_ADMIN_TOKEN/),
-    ).toBeInTheDocument();
+    await expect(await canvas.findByText(/ROLTER_ADMIN_TOKEN/)).toBeInTheDocument();
   },
 };

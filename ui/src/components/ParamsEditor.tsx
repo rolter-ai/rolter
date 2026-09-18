@@ -122,8 +122,7 @@ function rowsFromParams(
   const rows = Object.entries(params).map(([key, value]) => {
     const type = inferType(value);
     // under a deny-base manual policy, a param is locked unless it's allowed
-    const isLocked =
-      mode === "manual" && base === "deny" ? !allow.includes(key) : locked.has(key);
+    const isLocked = mode === "manual" && base === "deny" ? !allow.includes(key) : locked.has(key);
     return { id: nextId(), key, type, value: toRowValue(value, type), locked: isLocked };
   });
   return { rows, mode };
@@ -192,8 +191,7 @@ export interface ParamsEditorValue {
 }
 
 export type ParamsEditorResult =
-  | { ok: true; value: ParamsEditorValue }
-  | { ok: false; error: string };
+  { ok: true; value: ParamsEditorValue } | { ok: false; error: string };
 
 interface CommonProps {
   params?: Record<string, unknown>;
@@ -270,16 +268,11 @@ export function ParamsEditor(props: EditProps | CreateProps) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
   const addRow = () =>
-    setRows((rs) => [
-      ...rs,
-      { id: nextId(), key: "", type: "string", value: "", locked: false },
-    ]);
+    setRows((rs) => [...rs, { id: nextId(), key: "", type: "string", value: "", locked: false }]);
 
   const removeRow = (id: number) => setRows((rs) => rs.filter((r) => r.id !== id));
 
-  const unknownKeys = rows
-    .map((r) => r.key.trim())
-    .filter((k) => k && !KNOWN_PARAMS.has(k));
+  const unknownKeys = rows.map((r) => r.key.trim()).filter((k) => k && !KNOWN_PARAMS.has(k));
 
   const submit = () => {
     if (isCreate) return;
@@ -309,24 +302,18 @@ export function ParamsEditor(props: EditProps | CreateProps) {
     <div className="space-y-3 rounded-md border border-dashed border-border p-3">
       <div className="space-y-0.5">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium leading-none">
-            {t("paramsEditor.title")}
-          </p>
+          <p className="text-sm font-medium leading-none">{t("paramsEditor.title")}</p>
           <InfoHint
             label={t("paramsEditor.aboutParams")}
             text={t("paramsEditor.aboutParamsText")}
           />
         </div>
-        <p className="text-xs text-muted-foreground">
-          {t("paramsEditor.subtitle")}
-        </p>
+        <p className="text-xs text-muted-foreground">{t("paramsEditor.subtitle")}</p>
       </div>
 
       <div className="space-y-1.5">
         {rows.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            {t("paramsEditor.empty")}
-          </p>
+          <p className="text-xs text-muted-foreground">{t("paramsEditor.empty")}</p>
         )}
         {rows.map((row) => {
           const unknown = row.key.trim() !== "" && !KNOWN_PARAMS.has(row.key.trim());
@@ -356,8 +343,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                 onChange={(picked) => {
                   const type = picked as ParamType;
                   // reset the value to a sane default for the new type
-                  const value =
-                    type === "boolean" ? "false" : type === "json" ? "null" : "";
+                  const value = type === "boolean" ? "false" : type === "json" ? "null" : "";
                   updateRow(row.id, { type, value });
                 }}
                 options={PARAM_TYPE_OPTIONS}
@@ -430,17 +416,13 @@ export function ParamsEditor(props: EditProps | CreateProps) {
       {unknownKeys.length > 0 && (
         <p className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
-            {t("paramsEditor.unknownKeys", { keys: unknownKeys.join(", ") })}
-          </span>
+          <span>{t("paramsEditor.unknownKeys", { keys: unknownKeys.join(", ") })}</span>
         </p>
       )}
 
       <div className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-medium leading-none">
-            {t("paramsEditor.policyTitle")}
-          </p>
+          <p className="text-sm font-medium leading-none">{t("paramsEditor.policyTitle")}</p>
           <InfoHint
             label={t("paramsEditor.aboutPolicy")}
             text={t("paramsEditor.aboutPolicyText")}

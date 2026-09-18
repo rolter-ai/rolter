@@ -36,9 +36,9 @@ const BASE: AdaptiveRoutingPolicyDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <AdaptiveSettings />
-    </Toasted>
+      <Toasted>
+        <AdaptiveSettings />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -75,18 +75,14 @@ export const NoAffectedRoutes: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
-      expect(
-        canvas.getByText("No route currently uses the adaptive strategy."),
-      ).toBeVisible(),
+      expect(canvas.getByText("No route currently uses the adaptive strategy.")).toBeVisible(),
     );
   },
 };
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },
@@ -120,9 +116,7 @@ export const RejectsAnOutOfRangeExplorationRatio: Story = {
     await userEvent.clear(ratio);
     await userEvent.type(ratio, "0.9");
     await waitFor(() =>
-      expect(
-        canvas.getByText("Exploration ratio must be between 0 and 0.5."),
-      ).toBeVisible(),
+      expect(canvas.getByText("Exploration ratio must be between 0 and 0.5.")).toBeVisible(),
     );
   },
 };
@@ -161,7 +155,10 @@ export const SaveRejectedByTheServer: Story = {
   render: () => {
     const stub: FetchStub = async (_input, init) => {
       if (init?.method === "PUT") {
-        return json({ error: { message: "the blend must leave at least one weight non-zero" } }, 422);
+        return json(
+          { error: { message: "the blend must leave at least one weight non-zero" } },
+          422,
+        );
       }
       return json(BASE);
     };

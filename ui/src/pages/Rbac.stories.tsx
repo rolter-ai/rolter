@@ -17,12 +17,7 @@ import {
   Toasted,
   expectToast,
 } from "./story-harness";
-import type {
-  AccessProfileDetail,
-  CustomRoleRow,
-  MembershipRow,
-  RbacMatrix,
-} from "@/lib/api";
+import type { AccessProfileDetail, CustomRoleRow, MembershipRow, RbacMatrix } from "@/lib/api";
 
 // a slice of the real CAPABILITIES table, chosen for the four things a cell can
 // say: a plain minimum role, a superadmin-only deployment setting, an action
@@ -48,19 +43,49 @@ const MATRIX: RbacMatrix = {
       resource: "org",
       scope: "org",
       actions: [
-        { action: "read", minimum_role: "viewer", superadmin_only: false, authenticated_only: false },
+        {
+          action: "read",
+          minimum_role: "viewer",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
         { action: "create", minimum_role: null, superadmin_only: true, authenticated_only: false },
-        { action: "delete", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
+        {
+          action: "delete",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
       ],
     },
     {
       resource: "provider",
       scope: "org",
       actions: [
-        { action: "read", minimum_role: "viewer", superadmin_only: false, authenticated_only: false },
-        { action: "create", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
-        { action: "update", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
-        { action: "delete", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
+        {
+          action: "read",
+          minimum_role: "viewer",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "create",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "update",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "delete",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
       ],
     },
     {
@@ -68,7 +93,12 @@ const MATRIX: RbacMatrix = {
       resource: "audit_log",
       scope: "org",
       actions: [
-        { action: "read", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
+        {
+          action: "read",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
       ],
     },
     {
@@ -83,19 +113,54 @@ const MATRIX: RbacMatrix = {
       resource: "project",
       scope: "team",
       actions: [
-        { action: "read", minimum_role: "viewer", superadmin_only: false, authenticated_only: false },
-        { action: "create", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
-        { action: "delete", minimum_role: "admin", superadmin_only: false, authenticated_only: false },
+        {
+          action: "read",
+          minimum_role: "viewer",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "create",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "delete",
+          minimum_role: "admin",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
       ],
     },
     {
       resource: "virtual_key",
       scope: "project",
       actions: [
-        { action: "read", minimum_role: "viewer", superadmin_only: false, authenticated_only: false },
-        { action: "create", minimum_role: "member", superadmin_only: false, authenticated_only: false },
-        { action: "update", minimum_role: "member", superadmin_only: false, authenticated_only: false },
-        { action: "delete", minimum_role: "member", superadmin_only: false, authenticated_only: false },
+        {
+          action: "read",
+          minimum_role: "viewer",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "create",
+          minimum_role: "member",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "update",
+          minimum_role: "member",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
+        {
+          action: "delete",
+          minimum_role: "member",
+          superadmin_only: false,
+          authenticated_only: false,
+        },
       ],
     },
   ],
@@ -161,9 +226,33 @@ const PROFILE_DETAIL: AccessProfileDetail = {
 };
 
 const MEMBERSHIPS: MembershipRow[] = [
-  { id: "m-1", user_id: "u-1", org_id: "org-1", team_id: null, project_id: null, role: "admin", created_at: "2026-01-01T00:00:00Z" },
-  { id: "m-2", user_id: "u-2", org_id: "org-1", team_id: null, project_id: null, role: "admin", created_at: "2026-01-01T00:00:00Z" },
-  { id: "m-3", user_id: "u-3", org_id: "org-1", team_id: null, project_id: null, role: "member", created_at: "2026-01-01T00:00:00Z" },
+  {
+    id: "m-1",
+    user_id: "u-1",
+    org_id: "org-1",
+    team_id: null,
+    project_id: null,
+    role: "admin",
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "m-2",
+    user_id: "u-2",
+    org_id: "org-1",
+    team_id: null,
+    project_id: null,
+    role: "admin",
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "m-3",
+    user_id: "u-3",
+    org_id: "org-1",
+    team_id: null,
+    project_id: null,
+    role: "member",
+    created_at: "2026-01-01T00:00:00Z",
+  },
 ];
 
 const stub = (matrix: RbacMatrix) =>
@@ -276,9 +365,7 @@ export const WithCustomRole: Story = {
     // it is a viewer plus exactly one pair, shown as its own state. the column
     // arrives with the matrix, but the cells are re-derived once the roles land
     await waitFor(() =>
-      expect(
-        canvas.getAllByTitle("Create — granted by this custom role"),
-      ).toHaveLength(1),
+      expect(canvas.getAllByTitle("Create — granted by this custom role")).toHaveLength(1),
     );
 
     // a grant naming a resource this build retired is surfaced, not hidden
@@ -321,9 +408,7 @@ export const CustomRolesEmpty: Story = {
     await openCustomTab(canvasElement);
 
     await expect(await canvas.findByText("No custom roles yet")).toBeVisible();
-    await expect(
-      canvas.getAllByRole("button", { name: /New role/ }).length,
-    ).toBeGreaterThan(0);
+    await expect(canvas.getAllByRole("button", { name: /New role/ }).length).toBeGreaterThan(0);
   },
 };
 
@@ -397,9 +482,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.click(form.getByRole("button", { name: "Create role" }));
 
     await expectToast(canvasElement, /slug already exists/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(form.getByLabelText("Name")).toHaveValue("Support engineer");
     await expect(form.getByLabelText("Create on virtual_key")).toBeChecked();
   },
@@ -419,15 +502,11 @@ export const EditsACustomRole: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await openCustomTab(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Edit Support engineer" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit Support engineer" }));
 
     const form = within(sheet());
     // seeded from the stored role: the pair it already grants is ticked
-    await waitFor(() =>
-      expect(form.getByLabelText("Create on virtual_key")).toBeChecked(),
-    );
+    await waitFor(() => expect(form.getByLabelText("Create on virtual_key")).toBeChecked());
     // and the retired pair is accounted for rather than silently dropped
     await expect(form.getByText(/does not define/)).toBeVisible();
     // the slug is the role's stable handle, so an edit does not offer it
@@ -464,9 +543,7 @@ export const ConfirmsBeforeDeletingARole: Story = {
     const canvas = within(canvasElement);
     await openCustomTab(canvasElement);
 
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Delete Support engineer" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete Support engineer" }));
     await cancelConfirmation();
     deletes.expectNotSent("DELETE", "/custom-roles/role-1");
 

@@ -117,7 +117,9 @@ describe("allow-list", () => {
   });
 
   test("an entry has to say why it is not copy", () => {
-    expect(unexplainedAllowed({ "a.tsx": { "n=1": "  ", "v{…}": "a version" } })).toEqual(["a.tsx: n=1"]);
+    expect(unexplainedAllowed({ "a.tsx": { "n=1": "  ", "v{…}": "a version" } })).toEqual([
+      "a.tsx: n=1",
+    ]);
     expect(unexplainedAllowed(allowed)).toEqual([]);
   });
 });
@@ -126,7 +128,7 @@ describe("allow-list", () => {
 // that wraps, strings inside expressions, a confirm split across lines
 describe("findLiterals sees what the line-at-a-time scan missed", () => {
   test("reports every literal on a dense line, not just the first", () => {
-    const source = '<Button>Cancel</Button><Button>Delete</Button>';
+    const source = "<Button>Cancel</Button><Button>Delete</Button>";
     expect(texts(source)).toEqual(["Cancel", "Delete"]);
   });
 
@@ -329,7 +331,7 @@ describe("findLiterals sees prose beside an interpolation", () => {
   // `{" "}` is how a formatter is told to keep a space; it is whitespace, not a
   // value, so it does not become a placeholder in the middle of a sentence
   test("treats the explicit JSX space as a space", () => {
-    const source = ['<p>', '  Governs {affected.length}{" "}', "  routes today", "</p>"].join("\n");
+    const source = ["<p>", '  Governs {affected.length}{" "}', "  routes today", "</p>"].join("\n");
     expect(texts(source)).toEqual(["Governs {…} routes today"]);
   });
 
@@ -414,16 +416,18 @@ describe("findLiterals tells a comparison from a tag", () => {
 // both were invisible to the gate (#1537)
 describe("findLiterals follows copy through object keys and local bindings", () => {
   test("reads a template literal assigned to a user-facing object key", () => {
-    const source = "const tail = { label: `Other (${rest.length})`, value: sum, color: PALETTE[5] };";
+    const source =
+      "const tail = { label: `Other (${rest.length})`, value: sum, color: PALETTE[5] };";
     expect(texts(source)).toEqual(["Other ({…})"]);
   });
 
   test("reads a plain string and a ternary under a user-facing object key", () => {
-    expect(texts('const TABS = [{ key: "limits", title: "Rate limits" }];')).toEqual(["Rate limits"]);
-    expect(texts('const row = { description: ok ? "Healthy upstream" : "Degraded upstream" };')).toEqual([
-      "Healthy upstream",
-      "Degraded upstream",
+    expect(texts('const TABS = [{ key: "limits", title: "Rate limits" }];')).toEqual([
+      "Rate limits",
     ]);
+    expect(
+      texts('const row = { description: ok ? "Healthy upstream" : "Degraded upstream" };'),
+    ).toEqual(["Healthy upstream", "Degraded upstream"]);
     expect(texts('const a11y = { "aria-label": "Close dialog" };')).toEqual(["Close dialog"]);
   });
 
@@ -480,11 +484,17 @@ describe("findLiterals reads expressions that share a text node with prose", () 
 // the quote rather than on the backtick, so it never matched (#1390)
 describe("findLiterals reads template-literal error messages", () => {
   test("reads a thrown template literal with embedded quotes", () => {
-    expect(texts('throw new Error(`duplicate param "${key}"`);')).toEqual(['duplicate param "{…}"']);
-    expect(texts('throw new Error(`"${key}": not a valid number`);')).toEqual(['"{…}": not a valid number']);
+    expect(texts('throw new Error(`duplicate param "${key}"`);')).toEqual([
+      'duplicate param "{…}"',
+    ]);
+    expect(texts('throw new Error(`"${key}": not a valid number`);')).toEqual([
+      '"{…}": not a valid number',
+    ]);
     // a template without quotes in it matched the old pattern too; it is one
     // finding, not the raw `${…}` spelling beside the placeholder one
-    expect(texts("throw new Error(`Request failed: ${res.status}`);")).toEqual(["Request failed: {…}"]);
+    expect(texts("throw new Error(`Request failed: ${res.status}`);")).toEqual([
+      "Request failed: {…}",
+    ]);
   });
 });
 
@@ -514,17 +524,19 @@ describe("findLiterals reads every copy-carrying prop name", () => {
         "Healthy upstream",
         "Degraded upstream",
       ]);
-      expect(texts(`const ROWS = [{ key: "retries", ${name}: "Retries upstream calls" }];`)).toEqual([
-        "Retries upstream calls",
-      ]);
-      expect(texts(`function Row({ ${name} = "Retries upstream calls" }) { return null; }`)).toEqual([
-        "Retries upstream calls",
-      ]);
+      expect(
+        texts(`const ROWS = [{ key: "retries", ${name}: "Retries upstream calls" }];`),
+      ).toEqual(["Retries upstream calls"]);
+      expect(
+        texts(`function Row({ ${name} = "Retries upstream calls" }) { return null; }`),
+      ).toEqual(["Retries upstream calls"]);
     });
   }
 
   test("a longer name that only ends in one is not a copy prop", () => {
-    expect(texts('<Row onError="Retries upstream calls" helpText2="Retries upstream calls" />')).toEqual([]);
+    expect(
+      texts('<Row onError="Retries upstream calls" helpText2="Retries upstream calls" />'),
+    ).toEqual([]);
   });
 
   test("a wire value under one of the new keys is still not copy", () => {
@@ -541,11 +553,16 @@ describe("findLiterals reads every copy-carrying prop name", () => {
 // (#1546). a class list is told apart by its tokens, not by its case
 describe("findLiterals tells lowercase prose from a class list", () => {
   test("reports a lowercase error message, prop and text node", () => {
-    expect(texts("throw new Error(`request failed: ${res.status}`);")).toEqual(["request failed: {…}"]);
+    expect(texts("throw new Error(`request failed: ${res.status}`);")).toEqual([
+      "request failed: {…}",
+    ]);
     expect(texts('throw new Error("not a valid number");')).toEqual(["not a valid number"]);
     expect(texts('<Field hint="no events yet" />')).toEqual(["no events yet"]);
     expect(texts("<p>none available</p>")).toEqual(["none available"]);
-    expect(texts('<Badge label={armed ? "secret set" : "no secret"} />')).toEqual(["secret set", "no secret"]);
+    expect(texts('<Badge label={armed ? "secret set" : "no secret"} />')).toEqual([
+      "secret set",
+      "no secret",
+    ]);
   });
 
   test("reports lowercase prose that carries a class-list character", () => {
@@ -604,7 +621,9 @@ describe("findLiterals reads copy that only ever sits in data", () => {
 
   test("reads the group header an option sits under", () => {
     expect(
-      texts('const OPTIONS = [{ value: "gpt-4o", label: t("models.gpt4o"), group: "Chat models" }];'),
+      texts(
+        'const OPTIONS = [{ value: "gpt-4o", label: t("models.gpt4o"), group: "Chat models" }];',
+      ),
     ).toEqual(["Chat models"]);
   });
 
@@ -643,7 +662,7 @@ describe("findLiterals reads copy that only ever sits in data", () => {
       "  {icon && (",
       '    <span className="inline-flex h-11 w-11 items-center [&>svg]:h-5">{icon}</span>',
       "  )}",
-      '  {rows.map((r) => <circle key={r.id} transform={`rotate(-90 ${r.x} ${r.y})`} />)}',
+      "  {rows.map((r) => <circle key={r.id} transform={`rotate(-90 ${r.x} ${r.y})`} />)}",
       "</div>",
     ].join("\n");
     expect(texts(source)).toEqual([]);

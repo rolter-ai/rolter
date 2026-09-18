@@ -55,7 +55,6 @@ export default function Pricing() {
   });
   const { t } = useTranslation();
 
-
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
   // `prices` is the query the user is actually waiting on for this screen
@@ -64,8 +63,7 @@ export default function Pricing() {
 
   useErrorState(!!prices.error, "pricing");
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: PRICES_QUERY_KEY });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: PRICES_QUERY_KEY });
 
   const removePrice = useMutation({
     mutationFn: (model: string) => deleteModelPrice(model),
@@ -181,10 +179,7 @@ export default function Pricing() {
               </GatedButton>
               <button
                 type="button"
-                title={
-                  deleteGate.reason ??
-                  t("pages.pricing.deleteAria", { model: price.model })
-                }
+                title={deleteGate.reason ?? t("pages.pricing.deleteAria", { model: price.model })}
                 aria-label={t("pages.pricing.deleteAria", { model: price.model })}
                 disabled={
                   deleteGate.denied ||
@@ -193,7 +188,11 @@ export default function Pricing() {
                 onClick={() => setDeleteTarget(price)}
                 className="flex items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {removePrice.isPending && deleteTarget?.model === price.model ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                {removePrice.isPending && deleteTarget?.model === price.model ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
               </button>
             </div>
           </div>
@@ -207,10 +206,7 @@ export default function Pricing() {
         onDone={invalidate}
       />
 
-      <Dialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
           <DialogTitle>{t("pages.pricing.deleteTitle")}</DialogTitle>
           <DialogDescription>

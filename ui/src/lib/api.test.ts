@@ -49,12 +49,9 @@ describe("api client", () => {
     it("should make a GET request with auth headers if token exists", async () => {
       localStorageMock["rolter.session.token"] = "test-token";
       fetchMock.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ providers: [], routes: [], virtual_keys: [] }),
-          {
-            status: 200,
-          },
-        ),
+        new Response(JSON.stringify({ providers: [], routes: [], virtual_keys: [] }), {
+          status: 200,
+        }),
       );
 
       const result = await fetchConfig();
@@ -70,12 +67,9 @@ describe("api client", () => {
 
     it("should make a GET request without auth headers if no token exists", async () => {
       fetchMock.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ providers: [], routes: [], virtual_keys: [] }),
-          {
-            status: 200,
-          },
-        ),
+        new Response(JSON.stringify({ providers: [], routes: [], virtual_keys: [] }), {
+          status: 200,
+        }),
       );
 
       await fetchConfig();
@@ -95,12 +89,9 @@ describe("api client", () => {
 
     it("should surface control plane error messages", async () => {
       fetchMock.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { message: "superadmin access required" } }),
-          {
-            status: 403,
-          },
-        ),
+        new Response(JSON.stringify({ error: { message: "superadmin access required" } }), {
+          status: 403,
+        }),
       );
 
       const request = fetchConfig();
@@ -132,21 +123,15 @@ describe("api client", () => {
   // bug (#942), so the predicate has to be exact about which it recognizes
   describe("isOpenModeNoSession", () => {
     it("recognizes only the open-mode code", () => {
-      expect(
-        isOpenModeNoSession(new ApiError("nope", 401, "open_mode_no_session")),
-      ).toBe(true);
-      expect(
-        isOpenModeNoSession(new ApiError("nope", 401, "unauthenticated")),
-      ).toBe(false);
+      expect(isOpenModeNoSession(new ApiError("nope", 401, "open_mode_no_session"))).toBe(true);
+      expect(isOpenModeNoSession(new ApiError("nope", 401, "unauthenticated"))).toBe(false);
       expect(isOpenModeNoSession(new ApiError("nope", 401))).toBe(false);
     });
 
     it("is false for anything that is not an ApiError", () => {
       // react-query hands back `unknown`; a plain Error carrying a lookalike
       // message must not light up the banner
-      expect(isOpenModeNoSession(new Error("open_mode_no_session"))).toBe(
-        false,
-      );
+      expect(isOpenModeNoSession(new Error("open_mode_no_session"))).toBe(false);
       expect(isOpenModeNoSession(null)).toBe(false);
       expect(isOpenModeNoSession(undefined)).toBe(false);
     });
@@ -174,9 +159,7 @@ describe("api client", () => {
     it("drops a header it cannot read rather than rendering NaN", async () => {
       // the http-date form is legal and rolter never sends it; a screen that
       // printed `NaN seconds` would be worse than one that says nothing
-      fetchMock.mockResolvedValueOnce(
-        refusal({ "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" }),
-      );
+      fetchMock.mockResolvedValueOnce(refusal({ "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" }));
       const err = await login("a@b.co", "pw").catch((e) => e);
       expect(err.retryAfterSeconds).toBeUndefined();
     });
@@ -203,26 +186,18 @@ describe("api client", () => {
       const callArgs = fetchMock.mock.calls[0];
       expect(callArgs[0]).toBe("/api/v1/orgs");
       expect(callArgs[1].method).toBe("POST");
-      expect(callArgs[1].headers).toHaveProperty(
-        "Content-Type",
-        "application/json",
-      );
+      expect(callArgs[1].headers).toHaveProperty("Content-Type", "application/json");
       expect(callArgs[1].body).toBe(JSON.stringify(input));
     });
 
     it("should parse and throw control plane API errors", async () => {
       fetchMock.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { message: "Invalid org name" } }),
-          {
-            status: 400,
-          },
-        ),
+        new Response(JSON.stringify({ error: { message: "Invalid org name" } }), {
+          status: 400,
+        }),
       );
 
-      await expect(createOrg({ name: "Bad", slug: "bad" })).rejects.toThrow(
-        "Invalid org name",
-      );
+      await expect(createOrg({ name: "Bad", slug: "bad" })).rejects.toThrow("Invalid org name");
     });
   });
 
@@ -239,9 +214,7 @@ describe("api client", () => {
     });
 
     it("omits the cursor for the first page", async () => {
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [] }), { status: 200 }),
-      );
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
       await fetchInvocationsPage({ limit: 50 });
       expect(String(fetchMock.mock.calls[0][0])).not.toContain("cursor");
     });
@@ -256,9 +229,7 @@ describe("api client", () => {
       expect(page.next_cursor).toBe("t|a");
       expect(page.data).toHaveLength(1);
 
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [] }), { status: 200 }),
-      );
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
       expect(await fetchInvocationsPage()).toEqual({ data: [], next_cursor: null });
     });
   });
@@ -296,9 +267,7 @@ describe("api client", () => {
     // an empty envelope has to come back as `null` or the dashboard renders the
     // load-error panel instead of zeroes (#1608)
     it("should resolve an empty envelope to null, never undefined", async () => {
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [] }), { status: 200 }),
-      );
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
 
       const result = await fetchAnalyticsSummary();
       expect(result).toBeNull();
@@ -309,9 +278,7 @@ describe("api client", () => {
     // aggregate row read straight into a query, so an empty envelope there is
     // the same outage screen on a quiet deployment (#1611)
     it("resolves an empty mcp summary envelope to null too", async () => {
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [] }), { status: 200 }),
-      );
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
 
       const result = await fetchMcpSummary();
       expect(result).toBeNull();
@@ -330,17 +297,12 @@ describe("api client", () => {
 
     it("should throw AnalyticsUnavailableError on 503", async () => {
       fetchMock.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { message: "ClickHouse down" } }),
-          {
-            status: 503,
-          },
-        ),
+        new Response(JSON.stringify({ error: { message: "ClickHouse down" } }), {
+          status: 503,
+        }),
       );
 
-      await expect(fetchAnalyticsSummary()).rejects.toThrow(
-        AnalyticsUnavailableError,
-      );
+      await expect(fetchAnalyticsSummary()).rejects.toThrow(AnalyticsUnavailableError);
     });
 
     it("should throw AnalyticsUnavailableError on 404 by default", async () => {
@@ -350,9 +312,7 @@ describe("api client", () => {
         }),
       );
 
-      await expect(fetchAnalyticsSummary()).rejects.toThrow(
-        AnalyticsUnavailableError,
-      );
+      await expect(fetchAnalyticsSummary()).rejects.toThrow(AnalyticsUnavailableError);
     });
   });
 });
@@ -383,9 +343,7 @@ describe("api_base resolution", () => {
   });
 
   it("does not double the separator on a trailing slash", () => {
-    expect(resolveUpstreamUrl("https://host/", false)).toBe(
-      "https://host/v1/chat/completions",
-    );
+    expect(resolveUpstreamUrl("https://host/", false)).toBe("https://host/v1/chat/completions");
     expect(apiBaseDoublesV1("https://host/v1/", false)).toBe(true);
   });
 
@@ -431,7 +389,6 @@ describe("isConvertible", () => {
     expect(isConvertible(undefined, "RUB")).toBe(true);
   });
 });
-
 
 // #1196: the dashboard never re-checked the stored token, and never dropped
 // one the control plane had already rejected.
@@ -492,9 +449,7 @@ describe("session revalidation", () => {
 
   it("asks /auth/me with the stored token and returns {user, memberships}", async () => {
     store["rolter.session.token"] = "sess-1";
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify(ME), { status: 200 }),
-    );
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(ME), { status: 200 }));
 
     const me = await fetchMe();
     expect(me.user.is_superadmin).toBe(true);

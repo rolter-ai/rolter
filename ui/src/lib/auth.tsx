@@ -31,8 +31,7 @@ export type AuthStatus = "checking" | "ready";
  * [`UserRow`]; the login response still sends a subset of it (#1178), so the
  * shared shape is the three fields both carry plus whatever else arrived.
  */
-export type SessionUser = Pick<UserRow, "id" | "email" | "is_superadmin"> &
-  Partial<UserRow>;
+export type SessionUser = Pick<UserRow, "id" | "email" | "is_superadmin"> & Partial<UserRow>;
 
 interface AuthState {
   email: string | null;
@@ -48,11 +47,7 @@ interface AuthState {
   status: AuthStatus;
   /** the previous session was rejected — the login screen says so */
   expired: boolean;
-  signIn: (
-    email: string,
-    token?: string | null,
-    user?: SessionUser | null,
-  ) => void;
+  signIn: (email: string, token?: string | null, user?: SessionUser | null) => void;
   signOut: () => void;
 }
 
@@ -74,12 +69,8 @@ function readStoredUser(): SessionUser | null {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [email, setEmail] = React.useState<string | null>(() =>
-    localStorage.getItem(EMAIL_KEY),
-  );
-  const [token, setToken] = React.useState<string | null>(() =>
-    localStorage.getItem(TOKEN_KEY),
-  );
+  const [email, setEmail] = React.useState<string | null>(() => localStorage.getItem(EMAIL_KEY));
+  const [token, setToken] = React.useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = React.useState<SessionUser | null>(readStoredUser);
   const [memberships, setMemberships] = React.useState<MeMembership[]>([]);
   // only a stored token is worth checking; an email-only session has nothing
@@ -130,11 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // a network failure, a 5xx, or the 404 of a control plane that does
         // not mount /auth/* at all — is the control plane blinking, and
         // locking the operator out over it would be the worse bug
-        if (
-          err instanceof ApiError &&
-          err.status === 401 &&
-          !isOpenModeNoSession(err)
-        ) {
+        if (err instanceof ApiError && err.status === 401 && !isOpenModeNoSession(err)) {
           clearSession();
           setExpired(true);
         }

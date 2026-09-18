@@ -265,9 +265,7 @@ export const ChannelDeleteFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ops-slack")).toBeInTheDocument();
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Delete channel ops-slack" }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: "Delete channel ops-slack" }));
     await confirmDestructive(/ops-slack/, /delete channel/i);
     await waitFor(() =>
       expect(within(document.body).getByRole("alert")).toHaveTextContent(

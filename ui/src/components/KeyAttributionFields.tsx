@@ -65,10 +65,7 @@ export function KeyAttributionFields({
   const pickUnit = (unit: string) => {
     const owner = customers.find((c) => c.id === customerId)?.business_unit_id;
     const stranded =
-      customerId !== UNATTRIBUTED &&
-      unit !== UNATTRIBUTED &&
-      !!owner &&
-      owner !== unit;
+      customerId !== UNATTRIBUTED && unit !== UNATTRIBUTED && !!owner && owner !== unit;
     onChange(unit, stranded ? UNATTRIBUTED : customerId);
   };
   return (
@@ -144,13 +141,7 @@ export function KeyProvidersField({
  * attribution is optional, and badging its absence on every row would read as a
  * warning about a state most deployments are legitimately in.
  */
-export function AttributionBadges({
-  unit,
-  customer,
-}: {
-  unit?: string;
-  customer?: string;
-}) {
+export function AttributionBadges({ unit, customer }: { unit?: string; customer?: string }) {
   const { t } = useTranslation();
   if (!unit && !customer) {
     return (

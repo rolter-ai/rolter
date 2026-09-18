@@ -54,7 +54,18 @@ describe("headerNameProblem", () => {
   });
 
   it("refuses every reserved header, whatever its case", () => {
-    for (const name of ["Authorization", "HOST", "content-length", "Content-Type", "Connection", "Transfer-Encoding", "Upgrade", "TE", "Trailer", "Proxy-Authorization"]) {
+    for (const name of [
+      "Authorization",
+      "HOST",
+      "content-length",
+      "Content-Type",
+      "Connection",
+      "Transfer-Encoding",
+      "Upgrade",
+      "TE",
+      "Trailer",
+      "Proxy-Authorization",
+    ]) {
       expect(headerNameProblem(name)).toBe("reserved");
     }
   });
@@ -69,23 +80,38 @@ describe("headerNameProblem", () => {
 
 describe("authInput", () => {
   it("sends nothing when the draft matches the row", () => {
-    const server = row({ auth_kind: "header", auth_header_name: "X-Api-Key", has_credential: true });
+    const server = row({
+      auth_kind: "header",
+      auth_header_name: "X-Api-Key",
+      has_credential: true,
+    });
     expect(authInput(authDraft(server), server)).toBeNull();
   });
 
   // the load-bearing rule: an empty credential input keeps the stored secret
   it("renames a header without sending the credential", () => {
-    const server = row({ auth_kind: "header", auth_header_name: "X-Api-Key", has_credential: true });
-    expect(authInput({ ...authDraft(server), headerName: "X-Token" }, server)).toEqual({ auth_kind: "header", auth_header_name: "X-Token" });
+    const server = row({
+      auth_kind: "header",
+      auth_header_name: "X-Api-Key",
+      has_credential: true,
+    });
+    expect(authInput({ ...authDraft(server), headerName: "X-Token" }, server)).toEqual({
+      auth_kind: "header",
+      auth_header_name: "X-Token",
+    });
   });
 
   it("sends a typed credential and no header name for bearer", () => {
-    expect(authInput({ kind: "bearer", headerName: "X-Left-Over", credential: "tok" }, row())).toEqual({ auth_kind: "bearer", credential: "tok" });
+    expect(
+      authInput({ kind: "bearer", headerName: "X-Left-Over", credential: "tok" }, row()),
+    ).toEqual({ auth_kind: "bearer", credential: "tok" });
   });
 
   it("never sends a credential for a kind that carries none", () => {
     const server = row({ auth_kind: "bearer", has_credential: true });
-    expect(authInput({ kind: "none", headerName: "", credential: "typed-then-switched" }, server)).toEqual({ auth_kind: "none" });
+    expect(
+      authInput({ kind: "none", headerName: "", credential: "typed-then-switched" }, server),
+    ).toEqual({ auth_kind: "none" });
   });
 });
 
@@ -97,8 +123,12 @@ describe("authDraftValid", () => {
 
   it("lets a stored credential carry over from bearer to header", () => {
     const server = row({ auth_kind: "bearer", has_credential: true });
-    expect(authDraftValid({ kind: "header", headerName: "X-Api-Key", credential: "" }, server)).toBe(true);
-    expect(authDraftValid({ kind: "header", headerName: "Authorization", credential: "" }, server)).toBe(false);
+    expect(
+      authDraftValid({ kind: "header", headerName: "X-Api-Key", credential: "" }, server),
+    ).toBe(true);
+    expect(
+      authDraftValid({ kind: "header", headerName: "Authorization", credential: "" }, server),
+    ).toBe(false);
   });
 });
 
@@ -107,7 +137,9 @@ describe("dropsCredential", () => {
     const server = row({ auth_kind: "bearer", has_credential: true });
     expect(dropsCredential({ kind: "none", headerName: "", credential: "" }, server)).toBe(true);
     expect(dropsCredential({ kind: "oauth", headerName: "", credential: "" }, server)).toBe(true);
-    expect(dropsCredential({ kind: "header", headerName: "X", credential: "" }, server)).toBe(false);
+    expect(dropsCredential({ kind: "header", headerName: "X", credential: "" }, server)).toBe(
+      false,
+    );
     expect(dropsCredential({ kind: "none", headerName: "", credential: "" }, row())).toBe(false);
   });
 });
@@ -120,7 +152,9 @@ describe("transport overrides", () => {
     expect(parseOverride("connect_timeout_ms", "1.5")).toBeUndefined();
     expect(parseOverride("max_retries", "0")).toBe(0);
     expect(parseOverride("max_retries", "6")).toBeUndefined();
-    expect(overridesValid({ connect_timeout_ms: "", request_timeout_ms: "abc", max_retries: "" })).toBe(false);
+    expect(
+      overridesValid({ connect_timeout_ms: "", request_timeout_ms: "abc", max_retries: "" }),
+    ).toBe(false);
   });
 
   // absent leaves an override, null drops it: the two must stay distinct
@@ -138,7 +172,13 @@ describe("transport overrides", () => {
 
 describe("isKekMissing", () => {
   it("recognises the control plane's refusal by the variable it names", () => {
-    expect(isKekMissing(new Error("storing an MCP credential requires the ROLTER_KEK environment variable on the control plane to seal it at rest"))).toBe(true);
+    expect(
+      isKekMissing(
+        new Error(
+          "storing an MCP credential requires the ROLTER_KEK environment variable on the control plane to seal it at rest",
+        ),
+      ),
+    ).toBe(true);
     expect(isKekMissing(new Error("auth_kind 'bearer' requires a credential"))).toBe(false);
     expect(isKekMissing("ROLTER_KEK")).toBe(false);
   });

@@ -42,7 +42,7 @@ describe("parseMarkdown", () => {
 
   // streaming: the fence has not closed yet, and the column must not break
   test("treats an unterminated fence as the code block it is becoming", () => {
-    const blocks = parseMarkdown("here you go:\n\n```json\n{\n  \"a\": 1");
+    const blocks = parseMarkdown('here you go:\n\n```json\n{\n  "a": 1');
     expect(types(blocks)).toEqual(["paragraph", "code"]);
     expect(blocks[1]).toMatchObject({ type: "code", language: "json" });
   });
@@ -63,7 +63,8 @@ describe("parseMarkdown", () => {
     test("keeps an inline tag as text too", () => {
       const [block] = parseMarkdown("hello <img src=x onerror=alert(1)> world");
       expect(block.type).toBe("paragraph");
-      const text = block.type === "paragraph" ? block.children.map((c) => JSON.stringify(c)).join("") : "";
+      const text =
+        block.type === "paragraph" ? block.children.map((c) => JSON.stringify(c)).join("") : "";
       expect(text).toContain("onerror=alert(1)");
       // there is no node type that could become an element
       expect(text).not.toContain('"type":"image"');

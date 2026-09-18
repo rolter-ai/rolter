@@ -56,8 +56,7 @@ function isUnavailable(error: unknown): boolean {
 
 const TH =
   "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-2.5 text-left text-xs font-medium text-muted-foreground";
-const TD =
-  "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono text-xs";
+const TD = "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono text-xs";
 
 // LLM logs from the design prototype: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
@@ -83,9 +82,7 @@ export default function Logs() {
   // overlays at those widths — the same panels, out of the flow
   const railOverlays = useMediaQuery(BELOW_MD);
   const detailAsSheet = useMediaQuery(BELOW_LG);
-  const drawer = useDrawerA11y(selected != null && !detailAsSheet, () =>
-    setSelected(null),
-  );
+  const drawer = useDrawerA11y(selected != null && !detailAsSheet, () => setSelected(null));
   const filterPanel = React.useRef<HTMLDivElement>(null);
   const filterA11y = useModalA11y(filterPanel, {
     open: railOverlays && filtersOpen,
@@ -124,10 +121,7 @@ export default function Logs() {
 
   useErrorState(!!models.error, "logs");
 
-  React.useEffect(
-    () => setCursors([]),
-    [status, modelSel, unitSel, customerSel],
-  );
+  React.useEffect(() => setCursors([]), [status, modelSel, unitSel, customerSel]);
 
   const query = useQuery({
     queryKey: [
@@ -164,14 +158,12 @@ export default function Logs() {
   // a short page is the last one even though it still carries a cursor. while
   // a page is loading the previous one stays on screen as a placeholder, and
   // its cursor is the one just followed: a second click would push it again
-  const hasMore =
-    nextCursor != null && rows.length === PAGE_SIZE && !query.isPlaceholderData;
+  const hasMore = nextCursor != null && rows.length === PAGE_SIZE && !query.isPlaceholderData;
   const toNextPage = () => {
     if (hasMore) setCursors((stack) => [...stack, nextCursor]);
   };
   const unitName = (id: string) => units.data?.find((u) => u.id === id)?.name;
-  const customerName = (id: string) =>
-    customers.data?.find((c) => c.id === id)?.name;
+  const customerName = (id: string) => customers.data?.find((c) => c.id === id)?.name;
   // the gateway decided this per request, against the catalogue that applied
   // when it was served. re-deriving it from today's model prices re-judges an
   // old row against a price added or removed after the fact (#1226)
@@ -179,10 +171,7 @@ export default function Logs() {
   const cost = (row: InvocationRow) =>
     isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =
-    (status === "all" ? 0 : 1) +
-    modelSel.length +
-    unitSel.length +
-    customerSel.length;
+    (status === "all" ? 0 : 1) + modelSel.length + unitSel.length + customerSel.length;
   const clearFilters = () => {
     setStatus("all");
     setModelSel([]);
@@ -280,9 +269,7 @@ export default function Logs() {
                   { value: "error", label: t("pages.logs.statusErrors") },
                 ]}
                 selected={statusSelected}
-                onChange={(sel) =>
-                  setStatus(sel.length === 1 ? (sel[0] as StatusFilter) : "all")
-                }
+                onChange={(sel) => setStatus(sel.length === 1 ? (sel[0] as StatusFilter) : "all")}
               />
             </FilterSection>
             <FilterSection title={t("pages.logs.model")} defaultOpen count={modelSel.length}>
@@ -297,10 +284,7 @@ export default function Logs() {
               />
             </FilterSection>
             {(units.data ?? []).length > 0 && (
-              <FilterSection
-                title={t("pages.logs.businessUnit")}
-                count={unitSel.length}
-              >
+              <FilterSection title={t("pages.logs.businessUnit")} count={unitSel.length}>
                 <FilterSearchList
                   options={(units.data ?? []).map((u) => ({
                     value: u.id,
@@ -313,10 +297,7 @@ export default function Logs() {
               </FilterSection>
             )}
             {(customers.data ?? []).length > 0 && (
-              <FilterSection
-                title={t("pages.logs.customer")}
-                count={customerSel.length}
-              >
+              <FilterSection title={t("pages.logs.customer")} count={customerSel.length}>
                 <FilterSearchList
                   options={(customers.data ?? []).map((c) => ({
                     value: c.id,
@@ -357,7 +338,9 @@ export default function Logs() {
             <span
               className={cn(
                 "h-[7px] w-[7px] rounded-full",
-                streaming ? "rl-pulse bg-[color:var(--status-success)]" : "bg-[color:var(--text-subtle)]",
+                streaming
+                  ? "rl-pulse bg-[color:var(--status-success)]"
+                  : "bg-[color:var(--text-subtle)]",
               )}
             />
             {streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} ·{" "}
@@ -378,7 +361,9 @@ export default function Logs() {
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-              <span className="font-mono text-xs text-muted-foreground">{t("pages.logs.pageShort", { page: page + 1 })}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {t("pages.logs.pageShort", { page: page + 1 })}
+              </span>
               <button
                 type="button"
                 title={t("pages.logs.nextPage")}
@@ -407,13 +392,27 @@ export default function Logs() {
             </colgroup>
             <thead>
               <tr>
-                <th scope="col" className={TH}>{t("pages.logs.time")}</th>
-                <th scope="col" className={TH}>{t("pages.logs.model")}</th>
-                <th scope="col" className={TH}>{t("common.provider")}</th>
-                <th scope="col" className={TH}>{t("pages.logs.status")}</th>
-                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.latency")}</th>
-                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.tokens")}</th>
-                <th scope="col" className={cn(TH, "text-right")}>{t("pages.logs.cost")}</th>
+                <th scope="col" className={TH}>
+                  {t("pages.logs.time")}
+                </th>
+                <th scope="col" className={TH}>
+                  {t("pages.logs.model")}
+                </th>
+                <th scope="col" className={TH}>
+                  {t("common.provider")}
+                </th>
+                <th scope="col" className={TH}>
+                  {t("pages.logs.status")}
+                </th>
+                <th scope="col" className={cn(TH, "text-right")}>
+                  {t("pages.logs.latency")}
+                </th>
+                <th scope="col" className={cn(TH, "text-right")}>
+                  {t("pages.logs.tokens")}
+                </th>
+                <th scope="col" className={cn(TH, "text-right")}>
+                  {t("pages.logs.cost")}
+                </th>
                 <th scope="col" className={TH}>
                   <span className="sr-only">{t("analytics.details")}</span>
                 </th>
@@ -429,11 +428,14 @@ export default function Logs() {
                     onClick={() => setSelected(r)}
                     className="cursor-pointer transition-colors hover:bg-[color:var(--surface-hover)]"
                   >
-                    <td className={cn(TD, "truncate whitespace-nowrap")}>
-                      {fmt.dateTimeMs(r.ts)}
-                    </td>
+                    <td className={cn(TD, "truncate whitespace-nowrap")}>{fmt.dateTimeMs(r.ts)}</td>
                     <td className={cn(TD, "[overflow-wrap:anywhere]")}>{r.model}</td>
-                    <td className={cn(TD, "truncate whitespace-nowrap text-[color:var(--text-secondary)]")}>
+                    <td
+                      className={cn(
+                        TD,
+                        "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
+                      )}
+                    >
                       {r.provider || "—"}
                     </td>
                     <td className={TD}>
@@ -548,9 +550,7 @@ export default function Logs() {
             className="w-[380px] flex-none overflow-y-auto border-l border-[color:var(--border-subtle)] bg-background focus-visible:outline-none"
           >
             <div className="flex items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3.5">
-              <span className="truncate font-mono text-sm">
-                {selected.request_id || "request"}
-              </span>
+              <span className="truncate font-mono text-sm">{selected.request_id || "request"}</span>
               <button
                 type="button"
                 aria-label={t("pages.logs.closeDetails")}
@@ -651,15 +651,7 @@ function payloadLanguage(raw: string | undefined): CodeLanguage {
   }
 }
 
-function DrawerStat({
-  label,
-  value,
-  title,
-}: {
-  label: string;
-  value: string;
-  title?: string;
-}) {
+function DrawerStat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div>
       <div className="mb-[3px] text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">

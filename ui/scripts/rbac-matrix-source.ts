@@ -59,7 +59,8 @@ function capabilityTable(source: string): string {
   if (start < 0) throw new Error(`no \`const CAPABILITIES\` table in ${SOURCE}`);
   const open = source.indexOf("&[", source.indexOf("=", start));
   const end = source.indexOf("\n];", open);
-  if (open < 0 || end < 0) throw new Error(`could not find the end of \`CAPABILITIES\` in ${SOURCE}`);
+  if (open < 0 || end < 0)
+    throw new Error(`could not find the end of \`CAPABILITIES\` in ${SOURCE}`);
   // comments go first: the table annotates individual fields as well as
   // whole entries ("an org is created out of band…"), and a comment sitting
   // between `create:` and `update:` would break a match over the entry
@@ -89,7 +90,14 @@ export function parseCapabilities(source: string): CapabilityRow[] {
     /Capability\s*\{\s*resource:\s*"([^"]+)",\s*scope:\s*"([^"]+)",\s*read:\s*(\w+),\s*create:\s*(\w+),\s*update:\s*(\w+),\s*delete:\s*(\w+),?\s*\}/g;
   const rows: CapabilityRow[] = [];
   for (const [, resource, scope, ...aliases] of table.matchAll(entry)) {
-    const row: CapabilityRow = { resource, scope, read: null, create: null, update: null, delete: null };
+    const row: CapabilityRow = {
+      resource,
+      scope,
+      read: null,
+      create: null,
+      update: null,
+      delete: null,
+    };
     ACTION_FIELDS.forEach((field, i) => {
       row[field] = authority(aliases[i]!, resource, field);
     });
@@ -138,7 +146,8 @@ export function drift(expected: CapabilityRow[], actual: CapabilityRow[]): strin
       differences.push(`${resource}: in the fixture, missing from ${SOURCE}`);
       continue;
     }
-    if (a.scope !== b.scope) differences.push(`${resource}: scope is ${a.scope} in ${SOURCE}, ${b.scope} in the fixture`);
+    if (a.scope !== b.scope)
+      differences.push(`${resource}: scope is ${a.scope} in ${SOURCE}, ${b.scope} in the fixture`);
     for (const action of ACTION_FIELDS) {
       if (a[action] !== b[action]) {
         differences.push(

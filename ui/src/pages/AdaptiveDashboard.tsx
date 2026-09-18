@@ -47,14 +47,9 @@ function formatCost(t: TFunction, fmt: Formatters, value?: number): string {
   return fmt.number(value, DECIMAL);
 }
 
-function policySummary(
-  t: TFunction,
-  fmt: Formatters,
-  node: AdaptiveNodeTelemetryDto,
-): string {
+function policySummary(t: TFunction, fmt: Formatters, node: AdaptiveNodeTelemetryDto): string {
   const policy = node.policy;
-  const weight = (key: string, value: number) =>
-    t(key, { value: fmt.number(value, DECIMAL) });
+  const weight = (key: string, value: number) => t(key, { value: fmt.number(value, DECIMAL) });
   const weights = [
     policy.latency_weight != null
       ? weight("pages.adaptiveDashboard.policy.latencyWeight", policy.latency_weight)
@@ -67,9 +62,7 @@ function policySummary(
       : null,
   ].filter(Boolean);
   const details =
-    weights.length > 0
-      ? weights.join(" / ")
-      : t("pages.adaptiveDashboard.policy.unavailable");
+    weights.length > 0 ? weights.join(" / ") : t("pages.adaptiveDashboard.policy.unavailable");
   const summary =
     policy.min_samples == null
       ? details
@@ -172,8 +165,7 @@ function AdaptiveDashboardScreen() {
           <p className="text-xs tabular-nums text-muted-foreground">
             <time dateTime={view.generated_at} title={fmt.dateTime(view.generated_at)}>
               {t("pages.adaptiveDashboard.updated", { time: fmt.time(view.generated_at) })}
-            </time>
-            {" "}
+            </time>{" "}
             {t("pages.adaptiveDashboard.reportsExpire", {
               seconds: fmt.number(view.fresh_window_secs),
             })}
@@ -232,10 +224,22 @@ function AdaptiveDashboardScreen() {
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label={t("pages.adaptiveDashboard.stats.adaptiveRoutes")} value={fmt.number(routes.length)} />
-            <StatCard label={t("pages.adaptiveDashboard.stats.blendActive")} value={fmt.number(engaged)} />
-            <StatCard label={t("pages.adaptiveDashboard.stats.reportingGateways")} value={fmt.number(nodes.size)} />
-            <StatCard label={t("pages.adaptiveDashboard.stats.observedPicks")} value={fmt.number(observed)} />
+            <StatCard
+              label={t("pages.adaptiveDashboard.stats.adaptiveRoutes")}
+              value={fmt.number(routes.length)}
+            />
+            <StatCard
+              label={t("pages.adaptiveDashboard.stats.blendActive")}
+              value={fmt.number(engaged)}
+            />
+            <StatCard
+              label={t("pages.adaptiveDashboard.stats.reportingGateways")}
+              value={fmt.number(nodes.size)}
+            />
+            <StatCard
+              label={t("pages.adaptiveDashboard.stats.observedPicks")}
+              value={fmt.number(observed)}
+            />
           </div>
 
           <div className="flex flex-col gap-4">
@@ -251,11 +255,15 @@ function AdaptiveDashboardScreen() {
                       {route.model}
                     </h2>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {t("pages.adaptiveDashboard.reportingGateways", { count: route.nodes.length })}
+                      {t("pages.adaptiveDashboard.reportingGateways", {
+                        count: route.nodes.length,
+                      })}
                     </p>
                   </div>
                   <Badge
-                    tone={route.engaged ? "success" : routeIsDisabled(route) ? "outline" : "warning"}
+                    tone={
+                      route.engaged ? "success" : routeIsDisabled(route) ? "outline" : "warning"
+                    }
                     dot={!routeIsDisabled(route)}
                   >
                     {route.engaged
@@ -277,7 +285,10 @@ function AdaptiveDashboardScreen() {
                       >
                         <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-lg px-4 py-3 transition-colors hover:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                           <span className="flex min-w-0 items-center gap-2">
-                            <Network className="h-4 w-4 flex-none text-muted-foreground" aria-hidden="true" />
+                            <Network
+                              className="h-4 w-4 flex-none text-muted-foreground"
+                              aria-hidden="true"
+                            />
                             <span className="break-all font-mono text-sm font-medium">
                               {node.node_id}
                             </span>
@@ -327,7 +338,9 @@ function AdaptiveDashboardScreen() {
                               />
                               <span
                                 className="bg-[color:var(--status-info)]"
-                                style={{ width: barWidth(node.decisions.exploration, decisionTotal) }}
+                                style={{
+                                  width: barWidth(node.decisions.exploration, decisionTotal),
+                                }}
                               />
                               <span
                                 className="bg-[color:var(--text-subtle)]"
@@ -335,15 +348,23 @@ function AdaptiveDashboardScreen() {
                               />
                             </div>
                             <dl className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
-                              {([
-                                [t("pages.adaptiveDashboard.modes.blend"), node.decisions.blend],
+                              {(
                                 [
-                                  t("pages.adaptiveDashboard.modes.exploration"),
-                                  node.decisions.exploration,
-                                ],
-                                [t("pages.adaptiveDashboard.modes.fallback"), node.decisions.fallback],
-                              ] as const).map(([label, value]) => (
-                                <div key={label} className="flex items-baseline justify-between gap-2">
+                                  [t("pages.adaptiveDashboard.modes.blend"), node.decisions.blend],
+                                  [
+                                    t("pages.adaptiveDashboard.modes.exploration"),
+                                    node.decisions.exploration,
+                                  ],
+                                  [
+                                    t("pages.adaptiveDashboard.modes.fallback"),
+                                    node.decisions.fallback,
+                                  ],
+                                ] as const
+                              ).map(([label, value]) => (
+                                <div
+                                  key={label}
+                                  className="flex items-baseline justify-between gap-2"
+                                >
                                   <dt className="text-muted-foreground">{label}</dt>
                                   <dd className="font-mono tabular-nums text-foreground">
                                     {fmt.number(value)} · {share(fmt, value, decisionTotal)}
@@ -396,11 +417,16 @@ function AdaptiveDashboardScreen() {
                                       key={target.target}
                                       className="border-t border-[color:var(--border-subtle)]"
                                     >
-                                      <th scope="row" className="break-words px-3 py-2.5 text-left font-mono text-xs font-medium">
+                                      <th
+                                        scope="row"
+                                        className="break-words px-3 py-2.5 text-left font-mono text-xs font-medium"
+                                      >
                                         {targetName(target)}
                                       </th>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {target.score == null ? "—" : fmt.number(target.score, DECIMAL)}
+                                        {target.score == null
+                                          ? "—"
+                                          : fmt.number(target.score, DECIMAL)}
                                       </td>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
                                         {formatLatency(t, fmt, target.latency_ms)}

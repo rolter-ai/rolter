@@ -3,10 +3,7 @@ import { Building2, Plug, Tag, Trash2, Loader2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
-import {
-  ProviderSheet,
-  type ProviderSheetMode,
-} from "@/components/ProviderSheet";
+import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
@@ -31,20 +28,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CopyButton } from "@/components/CopyButton";
-import {
-  deleteProvider,
-  fetchConfigProblems,
-  fetchProviders,
-  type ProviderRow,
-} from "@/lib/api";
+import { deleteProvider, fetchConfigProblems, fetchProviders, type ProviderRow } from "@/lib/api";
 import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import {
-  useErrorState,
-  useFormTelemetry,
-  useScreenReady,
-} from "@/lib/ux-react";
+import { useErrorState, useFormTelemetry, useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
 
@@ -86,9 +74,7 @@ export default function Providers() {
     mode: ProviderSheetMode;
     provider?: ProviderRow | null;
   } | null>(null);
-  const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
   const [search, setSearch] = React.useState("");
   // the label the list is narrowed to, as `key=value`; "" is no filter
   const [labelFilter, setLabelFilter] = React.useState("");
@@ -129,11 +115,7 @@ export default function Providers() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <LabelFilterSelect
-          value={labelFilter}
-          onChange={setLabelFilter}
-          options={labels.options}
-        />
+        <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <GatedButton
           gate="provider:create"
           className="ml-auto"
@@ -288,10 +270,7 @@ export default function Providers() {
         onDone={invalidate}
       />
 
-      <Dialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogHeader>
           <DialogTitle>{t("pages.providers.deleteTitle")}</DialogTitle>
           <DialogDescription>
@@ -335,9 +314,7 @@ export default function Providers() {
               });
             }}
           >
-            {removeProvider.isPending && (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            )}
+            {removeProvider.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {t("common.delete")}
           </Button>
         </DialogFooter>

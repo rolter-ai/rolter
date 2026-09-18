@@ -84,7 +84,14 @@ export function Donut({
       {...props}
     >
       <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ flex: "none" }}>
-        <circle cx={c} cy={c} r={r} fill="none" stroke="var(--surface-subtle)" strokeWidth={thickness} />
+        <circle
+          cx={c}
+          cy={c}
+          r={r}
+          fill="none"
+          stroke="var(--surface-subtle)"
+          strokeWidth={thickness}
+        />
         {segs.map((s, i) => {
           const frac = s.value / total;
           const dash = frac * circ;

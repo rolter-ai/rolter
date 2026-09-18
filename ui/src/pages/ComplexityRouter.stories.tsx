@@ -40,7 +40,10 @@ const RETRY = en.errors.load.retry;
 // `/complexity` is listed first: it is a suffix of the route path, and `routes`
 // matches in order, so the shorter fragment would otherwise swallow it
 const loaded = routes([
-  ["/complexity", () => ({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] })],
+  [
+    "/complexity",
+    () => ({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] }),
+  ],
   ["/routes", () => ROUTES],
 ]);
 
@@ -62,9 +65,7 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
-    await waitFor(() =>
-      expect(canvas.getAllByText("small").length).toBeGreaterThan(0),
-    );
+    await waitFor(() => expect(canvas.getAllByText("small").length).toBeGreaterThan(0));
   },
 };
 
@@ -90,9 +91,7 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No routes to give a policy/);
-    await expect(
-      canvas.getByRole("link", { name: /Open routing rules/ }),
-    ).toBeInTheDocument();
+    await expect(canvas.getByRole("link", { name: /Open routing rules/ })).toBeInTheDocument();
   },
 };
 

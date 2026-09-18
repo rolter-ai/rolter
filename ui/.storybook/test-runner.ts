@@ -40,7 +40,7 @@ const DISABLED_RULES: Record<string, { enabled: boolean }> = {
   // three widths and Screens/Login mounts the signed-out page, so between them
   // every landmark, the <main> and the <h1> are gated on every PR (#1353).
   // any other story is one component and keeps them off
-  "region": { enabled: false },
+  region: { enabled: false },
   "landmark-one-main": { enabled: false },
   "page-has-heading-one": { enabled: false },
 };
@@ -48,9 +48,7 @@ const DISABLED_RULES: Record<string, { enabled: boolean }> = {
 const config: TestRunnerConfig = {
   async preVisit(page, context) {
     const story = await getStoryContext(page, context);
-    const size = story.parameters?.viewportSize as
-      | { width: number; height: number }
-      | undefined;
+    const size = story.parameters?.viewportSize as { width: number; height: number } | undefined;
     await page.setViewportSize(size ?? DESKTOP);
     await injectAxe(page);
   },

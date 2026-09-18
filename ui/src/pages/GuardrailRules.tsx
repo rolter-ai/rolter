@@ -4,11 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import {
-  GuardrailEmpty,
-  GuardrailLoading,
-  PolicyCard,
-} from "@/components/GuardrailPanel";
+import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -65,15 +61,11 @@ function GuardrailRulesScreen() {
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
   useErrorState(!!query.error, "guardrail-rules");
-  const [editing, setEditing] = React.useState<
-    GuardrailRuleRow | null | undefined
-  >();
+  const [editing, setEditing] = React.useState<GuardrailRuleRow | null | undefined>();
 
   const save = useMutation({
     mutationFn: (body: GuardrailRuleInput) =>
-      editing
-        ? updateGuardrailRule(editing.id, body)
-        : createGuardrailRule(body),
+      editing ? updateGuardrailRule(editing.id, body) : createGuardrailRule(body),
     onSuccess: (_result, body) => {
       void client.invalidateQueries({ queryKey: ["guardrail-rules"] });
       // the dialog closes on success, so the outcome is announced somewhere
@@ -99,15 +91,12 @@ function GuardrailRulesScreen() {
   });
   const remove = useMutation({
     mutationFn: deleteGuardrailRule,
-    onSuccess: () =>
-      void client.invalidateQueries({ queryKey: ["guardrail-rules"] }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["guardrail-rules"] }),
   });
 
   // was a bare window.confirm: unstyled, untranslatable, and invisible to the
   // story runner, which is the one place this path is ever exercised (#1179)
-  const [deleteTarget, setDeleteTarget] = React.useState<GuardrailRuleRow | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = React.useState<GuardrailRuleRow | null>(null);
   const startDelete = (rule: GuardrailRuleRow) => {
     remove.reset();
     setDeleteTarget(rule);
@@ -294,11 +283,9 @@ function RuleDialog({
 }) {
   const { t } = useTranslation();
   const [form, setForm] = React.useState<GuardrailRuleInput>(initial ?? EMPTY);
-  const set = (patch: Partial<GuardrailRuleInput>) =>
-    setForm((value) => ({ ...value, ...patch }));
+  const set = (patch: Partial<GuardrailRuleInput>) => setForm((value) => ({ ...value, ...patch }));
   const valid =
-    form.name.trim() !== "" &&
-    (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
+    form.name.trim() !== "" && (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
@@ -307,9 +294,7 @@ function RuleDialog({
             ? t("pages.guardrailRules.dialogEditTitle")
             : t("pages.guardrailRules.dialogAddTitle")}
         </DialogTitle>
-        <DialogDescription>
-          {t("pages.guardrailRules.dialogBody")}
-        </DialogDescription>
+        <DialogDescription>{t("pages.guardrailRules.dialogBody")}</DialogDescription>
       </DialogHeader>
       <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
         <Field label={t("pages.guardrailRules.fieldName")} htmlFor="rule-name">
@@ -347,9 +332,7 @@ function RuleDialog({
               type="number"
               min={0}
               value={form.position}
-              onChange={(event) =>
-                set({ position: Number(event.target.value) })
-              }
+              onChange={(event) => set({ position: Number(event.target.value) })}
             />
           </Field>
         </div>
@@ -419,16 +402,11 @@ function RuleDialog({
           </Field>
         </div>
         {form.action === "redact" && (
-          <Field
-            label={t("pages.guardrailRules.fieldReplacement")}
-            htmlFor="rule-replacement"
-          >
+          <Field label={t("pages.guardrailRules.fieldReplacement")} htmlFor="rule-replacement">
             <Input
               id="rule-replacement"
               value={form.replacement ?? ""}
-              onChange={(event) =>
-                set({ replacement: event.target.value || null })
-              }
+              onChange={(event) => set({ replacement: event.target.value || null })}
             />
           </Field>
         )}
@@ -455,9 +433,7 @@ function RuleDialog({
           {t("common.cancel")}
         </Button>
         <Button disabled={!valid || pending} onClick={() => onSave(form)}>
-          {pending
-            ? t("pages.guardrailRules.publishing")
-            : t("pages.guardrailRules.publish")}
+          {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>
       </DialogFooter>
     </Dialog>

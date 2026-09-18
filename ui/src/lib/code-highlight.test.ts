@@ -7,9 +7,7 @@ import { HIGHLIGHT_CHAR_LIMIT, nodeText, type CodeNode } from "@/lib/code";
 const text = (nodes: CodeNode[]): string => nodeText(nodes);
 
 const classNames = (nodes: CodeNode[]): string[] =>
-  nodes.flatMap((n) =>
-    typeof n === "string" ? [] : [n.className, ...classNames(n.children)],
-  );
+  nodes.flatMap((n) => (typeof n === "string" ? [] : [n.className, ...classNames(n.children)]));
 
 describe("highlight", () => {
   it("tokenises a known grammar into classed elements", () => {

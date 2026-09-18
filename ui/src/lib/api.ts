@@ -67,12 +67,7 @@ export class ApiError extends Error {
    */
   readonly retryAfterSeconds?: number;
 
-  constructor(
-    message: string,
-    status: number,
-    code?: string,
-    retryAfterSeconds?: number,
-  ) {
+  constructor(message: string, status: number, code?: string, retryAfterSeconds?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -104,9 +99,7 @@ let sessionExpiredHandler: SessionExpiredHandler | null = null;
  * Register the handler called when a request made *with a session token* is
  * answered 401. Returns an unsubscribe, so a provider can drop it on unmount.
  */
-export function setSessionExpiredHandler(
-  handler: SessionExpiredHandler | null,
-): () => void {
+export function setSessionExpiredHandler(handler: SessionExpiredHandler | null): () => void {
   sessionExpiredHandler = handler;
   return () => {
     if (sessionExpiredHandler === handler) sessionExpiredHandler = null;
@@ -117,10 +110,7 @@ export function setSessionExpiredHandler(
 // session token that happens to be in localStorage: a wrong password and an
 // invite token that expired are both answered 401, and neither means the
 // current session died
-const SESSION_EXEMPT_PATHS = [
-  "/api/v1/auth/login",
-  "/api/v1/invitations/accept/",
-];
+const SESSION_EXEMPT_PATHS = ["/api/v1/auth/login", "/api/v1/invitations/accept/"];
 
 /// signal a dead session, but only for the failures that actually are one
 function noteUnauthorized(url: string, authed: boolean, err: ApiError) {
@@ -190,12 +180,7 @@ async function apiError(res: Response): Promise<ApiError> {
       error?: { message?: string; code?: string };
     };
     if (body?.error?.message) {
-      return new ApiError(
-        body.error.message,
-        res.status,
-        body.error.code,
-        retryAfter,
-      );
+      return new ApiError(body.error.message, res.status, body.error.code, retryAfter);
     }
   } catch {
     // not json, fall through
@@ -454,23 +439,18 @@ export interface InvocationsPage {
   next_cursor: string | null;
 }
 
-export function fetchInvocations(
-  query: InvocationsQuery = {},
-): Promise<InvocationRow[]> {
+export function fetchInvocations(query: InvocationsQuery = {}): Promise<InvocationRow[]> {
   return fetchInvocationsPage(query).then((r) => r.data);
 }
 
-export function fetchInvocationsPage(
-  query: InvocationsQuery = {},
-): Promise<InvocationsPage> {
+export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<InvocationsPage> {
   const params = new URLSearchParams();
   if (query.since) params.set("since", query.since);
   if (query.until) params.set("until", query.until);
   if (query.model) params.set("model", query.model);
   if (query.key) params.set("key", query.key);
   // the control plane splits these on commas, so a set travels as one param
-  if (query.business_unit?.length)
-    params.set("business_unit", query.business_unit.join(","));
+  if (query.business_unit?.length) params.set("business_unit", query.business_unit.join(","));
   if (query.customer?.length) params.set("customer", query.customer.join(","));
   if (query.status) params.set("status", query.status);
   if (query.limit != null) params.set("limit", String(query.limit));
@@ -494,9 +474,7 @@ export function fetchConfig(): Promise<GatewayConfigDto> {
  * simply never takes effect.
  */
 export function fetchConfigProblems(): Promise<string[]> {
-  return getJson<{ problems: string[] }>("/api/v1/config/problems").then(
-    (r) => r.problems,
-  );
+  return getJson<{ problems: string[] }>("/api/v1/config/problems").then((r) => r.problems);
 }
 
 /**
@@ -568,21 +546,17 @@ interface DataEnvelope<T> {
 }
 
 export function fetchUptime(sla = 0.99): Promise<UptimeRow[]> {
-  return getJson<DataEnvelope<UptimeRow>>(
-    `/api/v1/health/uptime?sla=${sla}`,
-  ).then((r) => r.data);
+  return getJson<DataEnvelope<UptimeRow>>(`/api/v1/health/uptime?sla=${sla}`).then((r) => r.data);
 }
 
 export function fetchMttr(): Promise<MttrRow[]> {
-  return getJson<DataEnvelope<MttrRow>>("/api/v1/health/mttr").then(
-    (r) => r.data,
-  );
+  return getJson<DataEnvelope<MttrRow>>("/api/v1/health/mttr").then((r) => r.data);
 }
 
 export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
-  return getJson<DataEnvelope<TimelineRow>>(
-    `/api/v1/health/timeline?bucket=${bucket}`,
-  ).then((r) => r.data);
+  return getJson<DataEnvelope<TimelineRow>>(`/api/v1/health/timeline?bucket=${bucket}`).then(
+    (r) => r.data,
+  );
 }
 
 // --- control-plane CRUD (only reachable when rolter-control is started
@@ -774,10 +748,7 @@ export function fetchOrgProjects(orgId: string): Promise<OrgProjectRow[]> {
   return getJson<OrgProjectRow[]>(`/api/v1/orgs/${orgId}/projects`);
 }
 
-export function createOrg(input: {
-  name: string;
-  slug: string;
-}): Promise<OrgRow> {
+export function createOrg(input: { name: string; slug: string }): Promise<OrgRow> {
   return sendJson<OrgRow>("POST", "/api/v1/orgs", input);
 }
 
@@ -785,10 +756,7 @@ export function deleteOrg(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/orgs/${id}`);
 }
 
-export function createTeam(
-  orgId: string,
-  input: { name: string },
-): Promise<TeamRow> {
+export function createTeam(orgId: string, input: { name: string }): Promise<TeamRow> {
   return sendJson<TeamRow>("POST", `/api/v1/orgs/${orgId}/teams`, input);
 }
 
@@ -878,11 +846,7 @@ export function createCustomRole(
     grants?: CustomRoleGrantInput[];
   },
 ): Promise<CustomRoleDetail> {
-  return sendJson<CustomRoleDetail>(
-    "POST",
-    `/api/v1/orgs/${orgId}/custom-roles`,
-    input,
-  );
+  return sendJson<CustomRoleDetail>("POST", `/api/v1/orgs/${orgId}/custom-roles`, input);
 }
 
 // `grants` absent leaves the stored set alone; present replaces it wholesale, so
@@ -979,9 +943,7 @@ export interface AccessProfilePolicyInput {
   denied_routes: string[];
 }
 
-export function fetchAccessProfiles(
-  orgId: string,
-): Promise<AccessProfileRow[]> {
+export function fetchAccessProfiles(orgId: string): Promise<AccessProfileRow[]> {
   return getJson<AccessProfileRow[]>(`/api/v1/orgs/${orgId}/access-profiles`);
 }
 
@@ -1004,11 +966,7 @@ export function createAccessProfile(
     policy?: AccessProfilePolicyInput;
   },
 ): Promise<AccessProfileDetail> {
-  return sendJson<AccessProfileDetail>(
-    "POST",
-    `/api/v1/orgs/${orgId}/access-profiles`,
-    input,
-  );
+  return sendJson<AccessProfileDetail>("POST", `/api/v1/orgs/${orgId}/access-profiles`, input);
 }
 
 // `roles` absent leaves the composition alone, present replaces it wholesale —
@@ -1022,23 +980,15 @@ export function updateAccessProfile(
     policy?: AccessProfilePolicyInput;
   },
 ): Promise<AccessProfileDetail> {
-  return sendJson<AccessProfileDetail>(
-    "PUT",
-    `/api/v1/access-profiles/${id}`,
-    input,
-  );
+  return sendJson<AccessProfileDetail>("PUT", `/api/v1/access-profiles/${id}`, input);
 }
 
 export function deleteAccessProfile(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/access-profiles/${id}`);
 }
 
-export function fetchAccessProfileAssignments(
-  id: string,
-): Promise<AccessProfileAssignmentRow[]> {
-  return getJson<AccessProfileAssignmentRow[]>(
-    `/api/v1/access-profiles/${id}/assignments`,
-  );
+export function fetchAccessProfileAssignments(id: string): Promise<AccessProfileAssignmentRow[]> {
+  return getJson<AccessProfileAssignmentRow[]>(`/api/v1/access-profiles/${id}/assignments`);
 }
 
 // exactly one of user_id / team_id is set; a team assignment reaches every
@@ -1069,11 +1019,7 @@ export function setAccessProfilePolicy(
     denied_routes: string[];
   },
 ): Promise<AccessProfilePolicy> {
-  return sendJson<AccessProfilePolicy>(
-    "PUT",
-    `/api/v1/access-profiles/${id}/policy`,
-    policy,
-  );
+  return sendJson<AccessProfilePolicy>("PUT", `/api/v1/access-profiles/${id}/policy`, policy);
 }
 
 export function fetchBusinessUnits(orgId: string): Promise<BusinessUnitRow[]> {
@@ -1084,11 +1030,7 @@ export function createBusinessUnit(
   orgId: string,
   input: { name: string; slug?: string },
 ): Promise<BusinessUnitRow> {
-  return sendJson<BusinessUnitRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/business-units`,
-    input,
-  );
+  return sendJson<BusinessUnitRow>("POST", `/api/v1/orgs/${orgId}/business-units`, input);
 }
 
 // a slug change breaks whatever already attributes spend by it, so the server
@@ -1102,11 +1044,7 @@ export function updateBusinessUnit(
     retired?: boolean;
   },
 ): Promise<BusinessUnitRow> {
-  return sendJson<BusinessUnitRow>(
-    "PUT",
-    `/api/v1/business-units/${id}`,
-    input,
-  );
+  return sendJson<BusinessUnitRow>("PUT", `/api/v1/business-units/${id}`, input);
 }
 
 export function deleteBusinessUnit(id: string): Promise<void> {
@@ -1121,11 +1059,7 @@ export function createCustomer(
   orgId: string,
   input: { name: string; slug?: string; business_unit_id?: string | null },
 ): Promise<CustomerRow> {
-  return sendJson<CustomerRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/customers`,
-    input,
-  );
+  return sendJson<CustomerRow>("POST", `/api/v1/orgs/${orgId}/customers`, input);
 }
 
 export function updateCustomer(
@@ -1147,15 +1081,8 @@ export function deleteCustomer(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/customers/${id}`);
 }
 
-export function createProject(
-  teamId: string,
-  input: { name: string },
-): Promise<ProjectRow> {
-  return sendJson<ProjectRow>(
-    "POST",
-    `/api/v1/teams/${teamId}/projects`,
-    input,
-  );
+export function createProject(teamId: string, input: { name: string }): Promise<ProjectRow> {
+  return sendJson<ProjectRow>("POST", `/api/v1/teams/${teamId}/projects`, input);
 }
 
 export function deleteProject(id: string): Promise<void> {
@@ -1292,21 +1219,11 @@ export function fetchProviders(orgId: string): Promise<ProviderRow[]> {
   return getJson<ProviderRow[]>(`/api/v1/orgs/${orgId}/providers`);
 }
 
-export function createProvider(
-  orgId: string,
-  input: CreateProviderInput,
-): Promise<ProviderRow> {
-  return sendJson<ProviderRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/providers`,
-    input,
-  );
+export function createProvider(orgId: string, input: CreateProviderInput): Promise<ProviderRow> {
+  return sendJson<ProviderRow>("POST", `/api/v1/orgs/${orgId}/providers`, input);
 }
 
-export function updateProvider(
-  id: string,
-  input: UpdateProviderInput,
-): Promise<ProviderRow> {
+export function updateProvider(id: string, input: UpdateProviderInput): Promise<ProviderRow> {
   return sendJson<ProviderRow>("PUT", `/api/v1/providers/${id}`, input);
 }
 
@@ -1390,9 +1307,7 @@ export interface UpdateProviderGroupInput {
   members?: GroupMemberInput[];
 }
 
-export function fetchProviderGroups(
-  orgId: string,
-): Promise<ProviderGroupRow[]> {
+export function fetchProviderGroups(orgId: string): Promise<ProviderGroupRow[]> {
   return getJson<ProviderGroupRow[]>(`/api/v1/orgs/${orgId}/provider-groups`);
 }
 
@@ -1400,22 +1315,14 @@ export function createProviderGroup(
   orgId: string,
   input: CreateProviderGroupInput,
 ): Promise<ProviderGroupRow> {
-  return sendJson<ProviderGroupRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/provider-groups`,
-    input,
-  );
+  return sendJson<ProviderGroupRow>("POST", `/api/v1/orgs/${orgId}/provider-groups`, input);
 }
 
 export function updateProviderGroup(
   id: string,
   input: UpdateProviderGroupInput,
 ): Promise<ProviderGroupRow> {
-  return sendJson<ProviderGroupRow>(
-    "PUT",
-    `/api/v1/provider-groups/${id}`,
-    input,
-  );
+  return sendJson<ProviderGroupRow>("PUT", `/api/v1/provider-groups/${id}`, input);
 }
 
 export function deleteProviderGroup(id: string): Promise<void> {
@@ -1457,17 +1364,10 @@ export function createRoute(
   projectId: string,
   input: { model: string; strategy: string },
 ): Promise<RouteRow> {
-  return sendJson<RouteRow>(
-    "POST",
-    `/api/v1/projects/${projectId}/routes`,
-    input,
-  );
+  return sendJson<RouteRow>("POST", `/api/v1/projects/${projectId}/routes`, input);
 }
 
-export function setRouteEnabled(
-  id: string,
-  enabled: boolean,
-): Promise<RouteRow> {
+export function setRouteEnabled(id: string, enabled: boolean): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, { enabled });
 }
 
@@ -1494,11 +1394,7 @@ export function createRouteTarget(
   routeId: string,
   input: { provider_id: string; upstream_model?: string; weight?: number },
 ): Promise<RouteTargetRow> {
-  return sendJson<RouteTargetRow>(
-    "POST",
-    `/api/v1/routes/${routeId}/targets`,
-    input,
-  );
+  return sendJson<RouteTargetRow>("POST", `/api/v1/routes/${routeId}/targets`, input);
 }
 
 export function deleteRouteTarget(id: string): Promise<void> {
@@ -1519,10 +1415,7 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
 }
 
 export function deleteModel(model: string): Promise<void> {
-  return sendJson<void>(
-    "DELETE",
-    `/api/v1/models/${encodeURIComponent(model)}`,
-  );
+  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
 }
 
 // --- virtual keys (crates/rolter-control/src/crud.rs) ---
@@ -1576,26 +1469,16 @@ export function createVirtualKey(
   projectId: string,
   input: CreateVirtualKeyInput,
 ): Promise<CreatedVirtualKey> {
-  return sendJson<CreatedVirtualKey>(
-    "POST",
-    `/api/v1/projects/${projectId}/virtual-keys`,
-    input,
-  );
+  return sendJson<CreatedVirtualKey>("POST", `/api/v1/projects/${projectId}/virtual-keys`, input);
 }
 
-export function setVirtualKeyDisabled(
-  id: string,
-  disabled: boolean,
-): Promise<VirtualKeyRow> {
+export function setVirtualKeyDisabled(id: string, disabled: boolean): Promise<VirtualKeyRow> {
   return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}`, {
     disabled,
   });
 }
 
-export function setVirtualKeyCache(
-  id: string,
-  cache: boolean | null,
-): Promise<VirtualKeyRow> {
+export function setVirtualKeyCache(id: string, cache: boolean | null): Promise<VirtualKeyRow> {
   return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/cache`, {
     cache,
   });
@@ -1605,15 +1488,8 @@ export function setVirtualKeyCache(
  * Narrow a key to a set of upstream providers, by slug. An empty list restores
  * the permissive default rather than locking the key out of everything.
  */
-export function setVirtualKeyProviders(
-  id: string,
-  providers: string[],
-): Promise<VirtualKeyRow> {
-  return sendJson<VirtualKeyRow>(
-    "PUT",
-    `/api/v1/virtual-keys/${id}/providers`,
-    { providers },
-  );
+export function setVirtualKeyProviders(id: string, providers: string[]): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/providers`, { providers });
 }
 
 /**
@@ -1631,11 +1507,7 @@ export function setVirtualKeyAttribution(
     customer_id?: string | null;
   },
 ): Promise<VirtualKeyRow> {
-  return sendJson<VirtualKeyRow>(
-    "PUT",
-    `/api/v1/virtual-keys/${id}/attribution`,
-    attribution,
-  );
+  return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/attribution`, attribution);
 }
 
 export function deleteVirtualKey(id: string): Promise<void> {
@@ -1677,8 +1549,7 @@ export interface PromptTemplateVersionRow {
   created_at: string;
 }
 
-export type PromptTemplateScopeType =
-  "org" | "project" | "route" | "virtual_key";
+export type PromptTemplateScopeType = "org" | "project" | "route" | "virtual_key";
 
 export interface PromptTemplateScopeRow {
   template_id: string;
@@ -1693,9 +1564,7 @@ export interface PromptTemplateScopeInput {
   scope_id: string;
 }
 
-export function fetchPromptTemplates(
-  orgId: string,
-): Promise<PromptTemplateRow[]> {
+export function fetchPromptTemplates(orgId: string): Promise<PromptTemplateRow[]> {
   return getJson<PromptTemplateRow[]>(`/api/v1/orgs/${orgId}/prompt-templates`);
 }
 
@@ -1703,22 +1572,14 @@ export function createPromptTemplate(
   orgId: string,
   input: { name: string; slug?: string; description?: string },
 ): Promise<PromptTemplateRow> {
-  return sendJson<PromptTemplateRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/prompt-templates`,
-    input,
-  );
+  return sendJson<PromptTemplateRow>("POST", `/api/v1/orgs/${orgId}/prompt-templates`, input);
 }
 
 export function updatePromptTemplate(
   templateId: string,
   input: { name?: string; description?: string },
 ): Promise<PromptTemplateRow> {
-  return sendJson<PromptTemplateRow>(
-    "PUT",
-    `/api/v1/prompt-templates/${templateId}`,
-    input,
-  );
+  return sendJson<PromptTemplateRow>("PUT", `/api/v1/prompt-templates/${templateId}`, input);
 }
 
 export function deletePromptTemplate(templateId: string): Promise<void> {
@@ -1728,9 +1589,7 @@ export function deletePromptTemplate(templateId: string): Promise<void> {
 export function fetchPromptTemplateVersions(
   templateId: string,
 ): Promise<PromptTemplateVersionRow[]> {
-  return getJson<PromptTemplateVersionRow[]>(
-    `/api/v1/prompt-templates/${templateId}/versions`,
-  );
+  return getJson<PromptTemplateVersionRow[]>(`/api/v1/prompt-templates/${templateId}/versions`);
 }
 
 export function createPromptTemplateVersion(
@@ -1772,22 +1631,18 @@ export function publishPromptTemplateVersion(
   templateId: string,
   version: number,
 ): Promise<PromptTemplateRow> {
-  return sendJson<PromptTemplateRow>(
-    "PUT",
-    `/api/v1/prompt-templates/${templateId}/publish`,
-    { version },
-  );
+  return sendJson<PromptTemplateRow>("PUT", `/api/v1/prompt-templates/${templateId}/publish`, {
+    version,
+  });
 }
 
 export function rollbackPromptTemplateVersion(
   templateId: string,
   version: number,
 ): Promise<PromptTemplateRow> {
-  return sendJson<PromptTemplateRow>(
-    "PUT",
-    `/api/v1/prompt-templates/${templateId}/rollback`,
-    { version },
-  );
+  return sendJson<PromptTemplateRow>("PUT", `/api/v1/prompt-templates/${templateId}/rollback`, {
+    version,
+  });
 }
 
 // --- organization skills repository (crates/rolter-control/src/crud.rs) ---
@@ -1836,17 +1691,11 @@ export function fetchSkills(orgId: string): Promise<SkillRow[]> {
   return getJson<SkillRow[]>(`/api/v1/orgs/${orgId}/skills`);
 }
 
-export function createSkill(
-  orgId: string,
-  input: CreateSkillInput,
-): Promise<SkillRow> {
+export function createSkill(orgId: string, input: CreateSkillInput): Promise<SkillRow> {
   return sendJson<SkillRow>("POST", `/api/v1/orgs/${orgId}/skills`, input);
 }
 
-export function updateSkill(
-  id: string,
-  input: UpdateSkillInput,
-): Promise<SkillRow> {
+export function updateSkill(id: string, input: UpdateSkillInput): Promise<SkillRow> {
   return sendJson<SkillRow>("PUT", `/api/v1/skills/${id}`, input);
 }
 
@@ -1872,24 +1721,14 @@ export function createSkillVersion(
         metadata: Record<string, unknown>;
       },
 ): Promise<SkillVersionRow> {
-  return sendJson<SkillVersionRow>(
-    "POST",
-    `/api/v1/skills/${id}/versions`,
-    input,
-  );
+  return sendJson<SkillVersionRow>("POST", `/api/v1/skills/${id}/versions`, input);
 }
 
-export function publishSkillVersion(
-  id: string,
-  version: number,
-): Promise<SkillRow> {
+export function publishSkillVersion(id: string, version: number): Promise<SkillRow> {
   return sendJson<SkillRow>("PUT", `/api/v1/skills/${id}/publish`, { version });
 }
 
-export function rollbackSkillVersion(
-  id: string,
-  version: number,
-): Promise<SkillRow> {
+export function rollbackSkillVersion(id: string, version: number): Promise<SkillRow> {
   return sendJson<SkillRow>("PUT", `/api/v1/skills/${id}/rollback`, {
     version,
   });
@@ -1941,10 +1780,7 @@ export interface CreateBudgetInput {
   unpriced_policy?: UnpricedPolicy | null;
 }
 
-export function fetchBudgets(
-  scopeType: string,
-  scopeId: string,
-): Promise<BudgetRow[]> {
+export function fetchBudgets(scopeType: string, scopeId: string): Promise<BudgetRow[]> {
   return getJson<BudgetRow[]>(
     `/api/v1/budgets?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
   );
@@ -1974,18 +1810,13 @@ export interface CreateRateLimitInput {
   tpm?: number;
 }
 
-export function fetchRateLimits(
-  scopeType: string,
-  scopeId: string,
-): Promise<RateLimitRow[]> {
+export function fetchRateLimits(scopeType: string, scopeId: string): Promise<RateLimitRow[]> {
   return getJson<RateLimitRow[]>(
     `/api/v1/rate-limits?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
   );
 }
 
-export function createRateLimit(
-  input: CreateRateLimitInput,
-): Promise<RateLimitRow> {
+export function createRateLimit(input: CreateRateLimitInput): Promise<RateLimitRow> {
   return sendJson<RateLimitRow>("POST", "/api/v1/rate-limits", input);
 }
 
@@ -2096,26 +1927,18 @@ export function fetchStability(): Promise<SubsystemStability[]> {
  * so spend that includes it is understated. Callers surface that rather than
  * silently treating the number as base currency.
  */
-export function isConvertible(
-  settings: CurrencySettings | undefined,
-  code: string,
-): boolean {
+export function isConvertible(settings: CurrencySettings | undefined, code: string): boolean {
   if (!settings) return true;
   const normalized = code.trim().toUpperCase();
   return settings.codes.some((c) => c.toUpperCase() === normalized);
 }
 
-export function upsertModelPrice(
-  input: UpsertModelPriceInput,
-): Promise<ModelPriceRow> {
+export function upsertModelPrice(input: UpsertModelPriceInput): Promise<ModelPriceRow> {
   return sendJson<ModelPriceRow>("PUT", "/api/v1/model-prices", input);
 }
 
 export function deleteModelPrice(model: string): Promise<void> {
-  return sendJson<void>(
-    "DELETE",
-    `/api/v1/model-prices/${encodeURIComponent(model)}`,
-  );
+  return sendJson<void>("DELETE", `/api/v1/model-prices/${encodeURIComponent(model)}`);
 }
 
 // --- local-account auth (crates/rolter-control/src/auth.rs, ROL-32) ---
@@ -2176,10 +1999,7 @@ export function login(email: string, password: string): Promise<LoginOutcome> {
  * one are deliberately indistinguishable, so a guesser cannot tell "keep
  * going" from "start over".
  */
-export function verifyMfaChallenge(
-  mfaToken: string,
-  code: string,
-): Promise<LoginResponse> {
+export function verifyMfaChallenge(mfaToken: string, code: string): Promise<LoginResponse> {
   return sendJson<LoginResponse>("POST", "/api/v1/auth/mfa/verify", {
     mfa_token: mfaToken,
     code,
@@ -2237,12 +2057,7 @@ export function fetchMe(): Promise<MeResponse> {
 // --- second factor (crates/rolter-control/src/mfa.rs, #1078) ---
 
 /** how hard the org insists on a second factor; `off` is the default */
-export const MFA_POLICIES = [
-  "off",
-  "optional",
-  "required_superadmin",
-  "required_all",
-] as const;
+export const MFA_POLICIES = ["off", "optional", "required_superadmin", "required_all"] as const;
 export type MfaPolicy = (typeof MFA_POLICIES)[number];
 
 /** `MfaStatus` — what this account's factor looks like right now */
@@ -2350,11 +2165,7 @@ export function createInvitation(
     scope_id?: string;
   },
 ): Promise<CreatedInvitation> {
-  return sendJson<CreatedInvitation>(
-    "POST",
-    `/api/v1/orgs/${orgId}/invitations`,
-    body,
-  );
+  return sendJson<CreatedInvitation>("POST", `/api/v1/orgs/${orgId}/invitations`, body);
 }
 
 export function revokeInvitation(id: string): Promise<Invitation> {
@@ -2370,15 +2181,10 @@ export interface InvitationPreview {
 
 // unauthenticated: the invitee has no account yet, the token is the credential
 export function previewInvitation(token: string): Promise<InvitationPreview> {
-  return getJson<InvitationPreview>(
-    `/api/v1/invitations/accept/${encodeURIComponent(token)}`,
-  );
+  return getJson<InvitationPreview>(`/api/v1/invitations/accept/${encodeURIComponent(token)}`);
 }
 
-export function acceptInvitation(
-  token: string,
-  password: string,
-): Promise<LoginResponse> {
+export function acceptInvitation(token: string, password: string): Promise<LoginResponse> {
   return sendJson<LoginResponse>(
     "POST",
     `/api/v1/invitations/accept/${encodeURIComponent(token)}/accept`,
@@ -2448,17 +2254,11 @@ export function fetchUsers(orgId: string): Promise<UserRow[]> {
 }
 
 // create/invite an account and grant it a role in the org atomically
-export function inviteUser(
-  orgId: string,
-  input: InviteUserInput,
-): Promise<CreatedUser> {
+export function inviteUser(orgId: string, input: InviteUserInput): Promise<CreatedUser> {
   return sendJson<CreatedUser>("POST", `/api/v1/orgs/${orgId}/users`, input);
 }
 
-export function updateUser(
-  id: string,
-  input: UpdateUserInput,
-): Promise<UserRow> {
+export function updateUser(id: string, input: UpdateUserInput): Promise<UserRow> {
   return sendJson<UserRow>("PUT", `/api/v1/users/${id}`, input);
 }
 
@@ -2475,11 +2275,7 @@ export function createMembership(
   orgId: string,
   input: CreateMembershipInput,
 ): Promise<MembershipRow> {
-  return sendJson<MembershipRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/memberships`,
-    input,
-  );
+  return sendJson<MembershipRow>("POST", `/api/v1/orgs/${orgId}/memberships`, input);
 }
 
 export function deleteMembership(id: string): Promise<void> {
@@ -2649,15 +2445,8 @@ export function fetchScimTokens(orgId: string): Promise<ScimTokenRow[]> {
   return getJson<ScimTokenRow[]>(`/api/v1/orgs/${orgId}/scim-tokens`);
 }
 
-export function createScimToken(
-  orgId: string,
-  input: { name: string },
-): Promise<CreatedScimToken> {
-  return sendJson<CreatedScimToken>(
-    "POST",
-    `/api/v1/orgs/${orgId}/scim-tokens`,
-    input,
-  );
+export function createScimToken(orgId: string, input: { name: string }): Promise<CreatedScimToken> {
+  return sendJson<CreatedScimToken>("POST", `/api/v1/orgs/${orgId}/scim-tokens`, input);
 }
 
 // revocation returns the updated row rather than 204 — the screen uses it to
@@ -2694,12 +2483,8 @@ export interface CreateScimGroupMappingInput {
   project_id?: string;
 }
 
-export function fetchScimGroupMappings(
-  orgId: string,
-): Promise<ScimGroupMappingRow[]> {
-  return getJson<ScimGroupMappingRow[]>(
-    `/api/v1/orgs/${orgId}/scim-group-mappings`,
-  );
+export function fetchScimGroupMappings(orgId: string): Promise<ScimGroupMappingRow[]> {
+  return getJson<ScimGroupMappingRow[]>(`/api/v1/orgs/${orgId}/scim-group-mappings`);
 }
 
 // creating one reconciles the group's members straight away rather than at the
@@ -2708,11 +2493,7 @@ export function createScimGroupMapping(
   orgId: string,
   input: CreateScimGroupMappingInput,
 ): Promise<ScimGroupMappingRow> {
-  return sendJson<ScimGroupMappingRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/scim-group-mappings`,
-    input,
-  );
+  return sendJson<ScimGroupMappingRow>("POST", `/api/v1/orgs/${orgId}/scim-group-mappings`, input);
 }
 
 export function deleteScimGroupMapping(id: string): Promise<void> {
@@ -2768,15 +2549,8 @@ export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
   return getJson<OwnedKeyRow[]>("/api/v1/me/virtual-keys");
 }
 
-export function mintMyKey(
-  projectId: string,
-  input: MintKeyInput,
-): Promise<MintedKey> {
-  return sendJson<MintedKey>(
-    "POST",
-    `/api/v1/me/projects/${projectId}/virtual-keys`,
-    input,
-  );
+export function mintMyKey(projectId: string, input: MintKeyInput): Promise<MintedKey> {
+  return sendJson<MintedKey>("POST", `/api/v1/me/projects/${projectId}/virtual-keys`, input);
 }
 
 export function rotateMyKey(id: string): Promise<MintedKey> {
@@ -2789,12 +2563,10 @@ export function deleteMyKey(id: string): Promise<void> {
 
 // per-key usage/spend over the window; throws AnalyticsUnavailableError (503)
 // when the deployment has no ClickHouse configured
-export function fetchMyUsage(
-  window: AnalyticsWindow = {},
-): Promise<MyUsageRow[]> {
-  return getAnalytics<DataEnvelope<MyUsageRow>>(
-    `/api/v1/me/usage${windowParams(window)}`,
-  ).then((r) => r.data);
+export function fetchMyUsage(window: AnalyticsWindow = {}): Promise<MyUsageRow[]> {
+  return getAnalytics<DataEnvelope<MyUsageRow>>(`/api/v1/me/usage${windowParams(window)}`).then(
+    (r) => r.data,
+  );
 }
 
 export interface AuditLogEntry {
@@ -2829,10 +2601,7 @@ export interface AuditLogQuery {
   include_total?: boolean;
 }
 
-export function fetchAuditLogPage(
-  orgId: string,
-  query: AuditLogQuery = {},
-): Promise<AuditLogPage> {
+export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== "") {
@@ -2840,9 +2609,7 @@ export function fetchAuditLogPage(
     }
   }
   const qs = params.toString();
-  return getJson<AuditLogPage>(
-    `/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`,
-  );
+  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2879,11 +2646,7 @@ export function fetchSecuritySettings(): Promise<SecuritySettingsDto> {
 export function updateSecuritySettings(
   input: UpdateSecuritySettingsInput,
 ): Promise<SecuritySettingsDto> {
-  return sendJson<SecuritySettingsDto>(
-    "PUT",
-    "/api/v1/security-settings",
-    input,
-  );
+  return sendJson<SecuritySettingsDto>("PUT", "/api/v1/security-settings", input);
 }
 
 // ---------------------------------------------------------------------------
@@ -2911,11 +2674,7 @@ export function fetchCompatibilityPolicy(): Promise<CompatibilityPolicyDto> {
 export function updateCompatibilityPolicy(
   input: UpdateCompatibilityPolicyInput,
 ): Promise<CompatibilityPolicyDto> {
-  return sendJson<CompatibilityPolicyDto>(
-    "PUT",
-    "/api/v1/compatibility-policy",
-    input,
-  );
+  return sendJson<CompatibilityPolicyDto>("PUT", "/api/v1/compatibility-policy", input);
 }
 
 // ---------------------------------------------------------------------------
@@ -2945,9 +2704,7 @@ export function fetchRuntimePolicy(): Promise<RuntimePolicyDto> {
   return getJson<RuntimePolicyDto>("/api/v1/runtime-policy");
 }
 
-export function updateRuntimePolicy(
-  input: UpdateRuntimePolicyInput,
-): Promise<RuntimePolicyDto> {
+export function updateRuntimePolicy(input: UpdateRuntimePolicyInput): Promise<RuntimePolicyDto> {
   return sendJson<RuntimePolicyDto>("PUT", "/api/v1/runtime-policy", input);
 }
 
@@ -2968,19 +2725,14 @@ export interface ClientSettingsDto {
 
 export type UpdateClientSettingsInput = Pick<
   ClientSettingsDto,
-  | "public_base_url"
-  | "forwarded_headers"
-  | "injected_headers"
-  | "request_id_header"
+  "public_base_url" | "forwarded_headers" | "injected_headers" | "request_id_header"
 >;
 
 export function fetchClientSettings(): Promise<ClientSettingsDto> {
   return getJson<ClientSettingsDto>("/api/v1/client-settings");
 }
 
-export function updateClientSettings(
-  input: UpdateClientSettingsInput,
-): Promise<ClientSettingsDto> {
+export function updateClientSettings(input: UpdateClientSettingsInput): Promise<ClientSettingsDto> {
   return sendJson<ClientSettingsDto>("PUT", "/api/v1/client-settings", input);
 }
 
@@ -3002,9 +2754,7 @@ export function fetchModelDefaults(): Promise<ModelDefaultsDto> {
   return getJson<ModelDefaultsDto>("/api/v1/model-defaults");
 }
 
-export function updateModelDefaults(
-  input: UpdateModelDefaultsInput,
-): Promise<ModelDefaultsDto> {
+export function updateModelDefaults(input: UpdateModelDefaultsInput): Promise<ModelDefaultsDto> {
   return sendJson<ModelDefaultsDto>("PUT", "/api/v1/model-defaults", input);
 }
 
@@ -3067,9 +2817,7 @@ export function fetchFeatureFlags(): Promise<FeatureFlagsDto> {
   return getJson<FeatureFlagsDto>("/api/v1/feature-flags");
 }
 
-export function updateFeatureFlags(
-  input: FeatureFlagValues,
-): Promise<FeatureFlagsDto> {
+export function updateFeatureFlags(input: FeatureFlagValues): Promise<FeatureFlagsDto> {
   return sendJson<FeatureFlagsDto>("PUT", "/api/v1/feature-flags", input);
 }
 
@@ -3096,22 +2844,14 @@ export function fetchClusterNodes(): Promise<ClusterNodeRow[]> {
   return getJson<ClusterNodeRow[]>("/api/v1/cluster/nodes");
 }
 
-export function setClusterNodeDrain(
-  id: string,
-  draining: boolean,
-): Promise<ClusterNodeRow> {
-  return sendJson<ClusterNodeRow>(
-    "PUT",
-    `/api/v1/cluster/nodes/${encodeURIComponent(id)}/drain`,
-    { draining },
-  );
+export function setClusterNodeDrain(id: string, draining: boolean): Promise<ClusterNodeRow> {
+  return sendJson<ClusterNodeRow>("PUT", `/api/v1/cluster/nodes/${encodeURIComponent(id)}/drain`, {
+    draining,
+  });
 }
 
 export function forgetClusterNode(id: string): Promise<void> {
-  return sendJson<void>(
-    "DELETE",
-    `/api/v1/cluster/nodes/${encodeURIComponent(id)}`,
-  );
+  return sendJson<void>("DELETE", `/api/v1/cluster/nodes/${encodeURIComponent(id)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3153,11 +2893,7 @@ export function fetchAdaptiveRoutingPolicy(): Promise<AdaptiveRoutingPolicyDto> 
 export function updateAdaptiveRoutingPolicy(
   input: UpdateAdaptiveRoutingPolicyInput,
 ): Promise<AdaptiveRoutingPolicyDto> {
-  return sendJson<AdaptiveRoutingPolicyDto>(
-    "PUT",
-    "/api/v1/adaptive-routing-policy",
-    input,
-  );
+  return sendJson<AdaptiveRoutingPolicyDto>("PUT", "/api/v1/adaptive-routing-policy", input);
 }
 
 export interface AdaptiveDecisionCountsDto {
@@ -3211,9 +2947,7 @@ export interface AdaptiveRoutingTelemetryDto {
 }
 
 export function fetchAdaptiveRoutingTelemetry(): Promise<AdaptiveRoutingTelemetryDto> {
-  return getJson<AdaptiveRoutingTelemetryDto>(
-    "/api/v1/adaptive-routing-telemetry",
-  );
+  return getJson<AdaptiveRoutingTelemetryDto>("/api/v1/adaptive-routing-telemetry");
 }
 
 // ---------------------------------------------------------------------------
@@ -3284,21 +3018,12 @@ export function fetchAlertChannels(): Promise<AlertChannelRow[]> {
   return getJson<AlertChannelRow[]>("/api/v1/alert-channels");
 }
 
-export function createAlertChannel(
-  input: AlertChannelInput,
-): Promise<AlertChannelRow> {
+export function createAlertChannel(input: AlertChannelInput): Promise<AlertChannelRow> {
   return sendJson<AlertChannelRow>("POST", "/api/v1/alert-channels", input);
 }
 
-export function updateAlertChannel(
-  id: string,
-  input: AlertChannelInput,
-): Promise<AlertChannelRow> {
-  return sendJson<AlertChannelRow>(
-    "PUT",
-    `/api/v1/alert-channels/${id}`,
-    input,
-  );
+export function updateAlertChannel(id: string, input: AlertChannelInput): Promise<AlertChannelRow> {
+  return sendJson<AlertChannelRow>("PUT", `/api/v1/alert-channels/${id}`, input);
 }
 
 export function deleteAlertChannel(id: string): Promise<void> {
@@ -3313,10 +3038,7 @@ export function createAlertRule(input: AlertRuleInput): Promise<AlertRuleRow> {
   return sendJson<AlertRuleRow>("POST", "/api/v1/alert-rules", input);
 }
 
-export function updateAlertRule(
-  id: string,
-  input: AlertRuleInput,
-): Promise<AlertRuleRow> {
+export function updateAlertRule(id: string, input: AlertRuleInput): Promise<AlertRuleRow> {
   return sendJson<AlertRuleRow>("PUT", `/api/v1/alert-rules/${id}`, input);
 }
 
@@ -3324,24 +3046,17 @@ export function deleteAlertRule(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/alert-rules/${id}`);
 }
 
-export function evaluateAlertRule(
-  id: string,
-): Promise<{ rule: AlertRuleRow; notified: boolean }> {
+export function evaluateAlertRule(id: string): Promise<{ rule: AlertRuleRow; notified: boolean }> {
   return sendJson<{ rule: AlertRuleRow; notified: boolean }>(
     "POST",
     `/api/v1/alert-rules/${id}/evaluate`,
   );
 }
 
-export function fetchAlertHistory(
-  limit = 100,
-  ruleId?: string,
-): Promise<AlertNotificationRow[]> {
+export function fetchAlertHistory(limit = 100, ruleId?: string): Promise<AlertNotificationRow[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (ruleId) params.set("rule_id", ruleId);
-  return getJson<AlertNotificationRow[]>(
-    `/api/v1/alert-notifications?${params}`,
-  );
+  return getJson<AlertNotificationRow[]>(`/api/v1/alert-notifications?${params}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3382,10 +3097,7 @@ export function createConnector(input: ConnectorInput): Promise<ConnectorRow> {
   return sendJson<ConnectorRow>("POST", "/api/v1/connectors", input);
 }
 
-export function updateConnector(
-  id: string,
-  input: ConnectorInput,
-): Promise<ConnectorRow> {
+export function updateConnector(id: string, input: ConnectorInput): Promise<ConnectorRow> {
   return sendJson<ConnectorRow>("PUT", `/api/v1/connectors/${id}`, input);
 }
 
@@ -3404,10 +3116,7 @@ export interface ConnectorTestResult {
 }
 
 export function testConnector(id: string): Promise<ConnectorTestResult> {
-  return sendJson<ConnectorTestResult>(
-    "POST",
-    `/api/v1/connectors/${id}/test`,
-  );
+  return sendJson<ConnectorTestResult>("POST", `/api/v1/connectors/${id}/test`);
 }
 
 /**
@@ -3501,9 +3210,7 @@ export function fetchMcpLogs(
  * `undefined`, so an empty `data` turned the MCP logs summary into the load
  * error panel instead of zeroes.
  */
-export function fetchMcpSummary(
-  window: AnalyticsWindow = {},
-): Promise<McpSummaryRow | null> {
+export function fetchMcpSummary(window: AnalyticsWindow = {}): Promise<McpSummaryRow | null> {
   return getAnalytics<{ data: McpSummaryRow[] }>(
     `/api/v1/mcp/logs/summary${windowParams(window)}`,
   ).then((r) => r.data[0] ?? null);
@@ -3511,10 +3218,9 @@ export function fetchMcpSummary(
 
 export function fetchMcpLogDetail(eventId: string): Promise<McpLogDetail> {
   // by-id: a 404 here is "no such event", not "analytics is unavailable"
-  return getAnalytics<McpLogDetail>(
-    `/api/v1/mcp/logs/${encodeURIComponent(eventId)}`,
-    { notFoundIsUnavailable: false },
-  );
+  return getAnalytics<McpLogDetail>(`/api/v1/mcp/logs/${encodeURIComponent(eventId)}`, {
+    notFoundIsUnavailable: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3710,15 +3416,8 @@ export function fetchMcpServers(orgId: string): Promise<McpServerRow[]> {
   return getJson<McpServerRow[]>(`/api/v1/orgs/${orgId}/mcp-servers`);
 }
 
-export function createMcpServer(
-  orgId: string,
-  input: McpServerInput,
-): Promise<McpServerRow> {
-  return sendJson<McpServerRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/mcp-servers`,
-    input,
-  );
+export function createMcpServer(orgId: string, input: McpServerInput): Promise<McpServerRow> {
+  return sendJson<McpServerRow>("POST", `/api/v1/orgs/${orgId}/mcp-servers`, input);
 }
 
 export function updateMcpServer(
@@ -3732,10 +3431,7 @@ export function updateMcpServer(
 // PATCH so the general edit path never carries a secret. setting anything here
 // needs ROLTER_KEK on the control plane, which refuses rather than storing a
 // credential in the clear
-export function setMcpServerAuth(
-  id: string,
-  input: McpServerAuthInput,
-): Promise<McpServerRow> {
+export function setMcpServerAuth(id: string, input: McpServerAuthInput): Promise<McpServerRow> {
   return sendJson<McpServerRow>("PUT", `/api/v1/mcp-servers/${id}/auth`, input);
 }
 
@@ -3755,34 +3451,21 @@ export function createMcpToolGroup(
   orgId: string,
   input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
 ): Promise<McpToolGroupRow> {
-  return sendJson<McpToolGroupRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/mcp/tool-groups`,
-    input,
-  );
+  return sendJson<McpToolGroupRow>("POST", `/api/v1/orgs/${orgId}/mcp/tool-groups`, input);
 }
 
 export function updateMcpToolGroup(
   id: string,
-  input: Omit<
-    McpToolGroupRow,
-    "id" | "org_id" | "slug" | "created_at" | "updated_at"
-  >,
+  input: Omit<McpToolGroupRow, "id" | "org_id" | "slug" | "created_at" | "updated_at">,
 ): Promise<McpToolGroupRow> {
-  return sendJson<McpToolGroupRow>(
-    "PUT",
-    `/api/v1/mcp/tool-groups/${id}`,
-    input,
-  );
+  return sendJson<McpToolGroupRow>("PUT", `/api/v1/mcp/tool-groups/${id}`, input);
 }
 
 export function deleteMcpToolGroup(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/mcp/tool-groups/${id}`);
 }
 
-export function fetchMcpSettings(
-  orgId: string,
-): Promise<McpGatewaySettingsRow> {
+export function fetchMcpSettings(orgId: string): Promise<McpGatewaySettingsRow> {
   return getJson<McpGatewaySettingsRow>(`/api/v1/orgs/${orgId}/mcp/settings`);
 }
 
@@ -3790,11 +3473,7 @@ export function updateMcpSettings(
   orgId: string,
   input: Omit<McpGatewaySettingsRow, "org_id" | "updated_at">,
 ): Promise<McpGatewaySettingsRow> {
-  return sendJson<McpGatewaySettingsRow>(
-    "PUT",
-    `/api/v1/orgs/${orgId}/mcp/settings`,
-    input,
-  );
+  return sendJson<McpGatewaySettingsRow>("PUT", `/api/v1/orgs/${orgId}/mcp/settings`, input);
 }
 
 export function fetchMcpGrants(orgId: string): Promise<McpOAuthGrantRow[]> {
@@ -3880,20 +3559,13 @@ export function setMcpOAuthClient(
   serverId: string,
   input: McpOAuthClientInput,
 ): Promise<McpOAuthClientRow> {
-  return sendJson<McpOAuthClientRow>(
-    "PUT",
-    `/api/v1/mcp-servers/${serverId}/oauth-client`,
-    input,
-  );
+  return sendJson<McpOAuthClientRow>("PUT", `/api/v1/mcp-servers/${serverId}/oauth-client`, input);
 }
 
 // the control plane does not redirect here: the caller is a `fetch` from the
 // dashboard, which cannot usefully follow a cross-origin 302, so the url comes
 // back for the browser to open itself
-export function startMcpOAuth(
-  serverId: string,
-  scopes?: string[],
-): Promise<McpAuthorizeStarted> {
+export function startMcpOAuth(serverId: string, scopes?: string[]): Promise<McpAuthorizeStarted> {
   return sendJson<McpAuthorizeStarted>(
     "POST",
     `/api/v1/mcp-servers/${serverId}/oauth/authorize`,
@@ -3920,11 +3592,7 @@ export function exchangeMcpSession(
   id: string,
   input: McpSessionExchangeInput = {},
 ): Promise<McpOAuthSessionRow> {
-  return sendJson<McpOAuthSessionRow>(
-    "POST",
-    `/api/v1/mcp/sessions/${id}/exchange`,
-    input,
-  );
+  return sendJson<McpOAuthSessionRow>("POST", `/api/v1/mcp/sessions/${id}/exchange`, input);
 }
 
 // ---------------------------------------------------------------------------
@@ -3941,21 +3609,12 @@ export interface ComplexityPolicy {
   tiers: ComplexityTier[];
 }
 
-export function fetchRouteComplexity(
-  routeId: string,
-): Promise<ComplexityPolicy> {
+export function fetchRouteComplexity(routeId: string): Promise<ComplexityPolicy> {
   return getJson<ComplexityPolicy>(`/api/v1/routes/${routeId}/complexity`);
 }
 
-export function setRouteComplexity(
-  routeId: string,
-  policy: ComplexityPolicy,
-): Promise<RouteRow> {
-  return sendJson<RouteRow>(
-    "PUT",
-    `/api/v1/routes/${routeId}/complexity`,
-    policy,
-  );
+export function setRouteComplexity(routeId: string, policy: ComplexityPolicy): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${routeId}/complexity`, policy);
 }
 
 // advanced per-route model configuration (base_url, pricing, limits, headers…)
@@ -4001,8 +3660,7 @@ export const createPlugin = (orgId: string, body: PluginInstanceInput) =>
   sendJson<PluginInstanceRow>("POST", `/api/v1/orgs/${orgId}/plugins`, body);
 export const updatePlugin = (id: string, body: PluginInstanceInput) =>
   sendJson<PluginInstanceRow>("PUT", `/api/v1/plugins/${id}`, body);
-export const deletePlugin = (id: string) =>
-  sendJson<void>("DELETE", `/api/v1/plugins/${id}`);
+export const deletePlugin = (id: string) => sendJson<void>("DELETE", `/api/v1/plugins/${id}`);
 
 // ---------------------------------------------------------------------------
 // deployment-wide guardrail registry
@@ -4023,10 +3681,7 @@ export interface GuardrailRuleRow {
   updated_at: string;
 }
 
-export type GuardrailRuleInput = Omit<
-  GuardrailRuleRow,
-  "id" | "created_at" | "updated_at"
->;
+export type GuardrailRuleInput = Omit<GuardrailRuleRow, "id" | "created_at" | "updated_at">;
 
 export interface GuardrailProviderRow {
   id: string;
@@ -4044,13 +3699,9 @@ export interface GuardrailProviderRow {
   updated_at: string;
 }
 
-export type GuardrailProviderInput = Omit<
-  GuardrailProviderRow,
-  "id" | "created_at" | "updated_at"
->;
+export type GuardrailProviderInput = Omit<GuardrailProviderRow, "id" | "created_at" | "updated_at">;
 
-export const fetchGuardrailRules = () =>
-  getJson<GuardrailRuleRow[]>("/api/v1/guardrails/rules");
+export const fetchGuardrailRules = () => getJson<GuardrailRuleRow[]>("/api/v1/guardrails/rules");
 export const createGuardrailRule = (body: GuardrailRuleInput) =>
   sendJson<GuardrailRuleRow>("POST", "/api/v1/guardrails/rules", body);
 export const updateGuardrailRule = (id: string, body: GuardrailRuleInput) =>
@@ -4062,15 +3713,8 @@ export const fetchGuardrailProviders = () =>
   getJson<GuardrailProviderRow[]>("/api/v1/guardrails/providers");
 export const createGuardrailProvider = (body: GuardrailProviderInput) =>
   sendJson<GuardrailProviderRow>("POST", "/api/v1/guardrails/providers", body);
-export const updateGuardrailProvider = (
-  id: string,
-  body: GuardrailProviderInput,
-) =>
-  sendJson<GuardrailProviderRow>(
-    "PUT",
-    `/api/v1/guardrails/providers/${id}`,
-    body,
-  );
+export const updateGuardrailProvider = (id: string, body: GuardrailProviderInput) =>
+  sendJson<GuardrailProviderRow>("PUT", `/api/v1/guardrails/providers/${id}`, body);
 export const deleteGuardrailProvider = (id: string) =>
   sendJson<void>("DELETE", `/api/v1/guardrails/providers/${id}`);
 
@@ -4195,11 +3839,7 @@ export function createSsoProvider(
   orgId: string,
   input: CreateSsoProviderInput,
 ): Promise<SsoProviderRow> {
-  return sendJson<SsoProviderRow>(
-    "POST",
-    `/api/v1/orgs/${orgId}/sso-providers`,
-    input,
-  );
+  return sendJson<SsoProviderRow>("POST", `/api/v1/orgs/${orgId}/sso-providers`, input);
 }
 
 /**
@@ -4254,12 +3894,8 @@ export interface CreateSsoGroupMappingInput {
   project_id?: string;
 }
 
-export function fetchSsoGroupMappings(
-  providerId: string,
-): Promise<SsoGroupMappingRow[]> {
-  return getJson<SsoGroupMappingRow[]>(
-    `/api/v1/sso-providers/${providerId}/group-mappings`,
-  );
+export function fetchSsoGroupMappings(providerId: string): Promise<SsoGroupMappingRow[]> {
+  return getJson<SsoGroupMappingRow[]>(`/api/v1/sso-providers/${providerId}/group-mappings`);
 }
 
 export function createSsoGroupMapping(
@@ -4329,9 +3965,5 @@ export function updateAuthPolicy(
     mfa_policy?: MfaPolicy;
   },
 ): Promise<OrgAuthPolicy> {
-  return sendJson<OrgAuthPolicy>(
-    "PUT",
-    `/api/v1/orgs/${orgId}/auth-policy`,
-    input,
-  );
+  return sendJson<OrgAuthPolicy>("PUT", `/api/v1/orgs/${orgId}/auth-policy`, input);
 }

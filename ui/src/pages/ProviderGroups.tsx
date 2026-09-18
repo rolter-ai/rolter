@@ -3,10 +3,7 @@ import { Building2, Layers, Loader2, Tag, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
-import {
-  ProviderGroupSheet,
-  type ProviderGroupSheetMode,
-} from "@/components/ProviderGroupSheet";
+import { ProviderGroupSheet, type ProviderGroupSheetMode } from "@/components/ProviderGroupSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
@@ -58,7 +55,6 @@ export default function ProviderGroups() {
     queryFn: () => fetchProviderGroups(scope.orgId as string),
     enabled: !!scope.orgId,
   });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -121,11 +117,7 @@ export default function ProviderGroups() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <LabelFilterSelect
-          value={labelFilter}
-          onChange={setLabelFilter}
-          options={labels.options}
-        />
+        <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <GatedButton
           gate="provider_group:create"
           className="ml-auto"
@@ -242,8 +234,7 @@ export default function ProviderGroups() {
               <button
                 type="button"
                 title={
-                  deleteGate.reason ??
-                  t("pages.providerGroups.deleteOne", { name: group.name })
+                  deleteGate.reason ?? t("pages.providerGroups.deleteOne", { name: group.name })
                 }
                 aria-label={t("pages.providerGroups.deleteOne", { name: group.name })}
                 disabled={deleteGate.denied}
@@ -335,7 +326,9 @@ export default function ProviderGroups() {
           </DialogDescription>
         </DialogHeader>
         {removeGroup.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">{(removeGroup.error as Error).message}</p>
+          <p className="text-xs text-[color:var(--status-danger-text)]">
+            {(removeGroup.error as Error).message}
+          </p>
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => setDeleteTarget(null)}>
@@ -362,9 +355,7 @@ export default function ProviderGroups() {
               });
             }}
           >
-            {removeGroup.isPending && (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            )}
+            {removeGroup.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {t("common.delete")}
           </Button>
         </DialogFooter>

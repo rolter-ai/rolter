@@ -205,9 +205,7 @@ export const InviteRejectedByTheServer: Story = {
     await userEvent.type(within(form).getByLabelText("Email"), "newcomer@example.com");
     await userEvent.click(within(form).getByRole("button", { name: "Invite" }));
     await expectToast(canvasElement, /already has an invitation/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(form).getByLabelText("Email")).toHaveValue("newcomer@example.com");
   },
 };
@@ -292,8 +290,6 @@ export const EditRefusedToAnAdmin: Story = {
     const canvas = within(canvasElement);
     await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
     // the invitation half of the screen is still theirs
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Invite user" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Invite user" })).toBeEnabled());
   },
 };

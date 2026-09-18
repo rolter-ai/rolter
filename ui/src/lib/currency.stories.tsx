@@ -12,10 +12,12 @@ import { Harness, type FetchStub, json, recording } from "@/pages/story-harness"
 const settings = (base: string) => ({ base, codes: ["USD", "EUR"], rates: { USD: 1, EUR: 1.08 } });
 
 /** answer `/api/v1/currency` with `respond`, and nothing else */
-const currency = (respond: () => Promise<Response>): FetchStub => async (input) => {
-  const path = new URL(String(input), "http://localhost").pathname;
-  return path === "/api/v1/currency" ? respond() : json({});
-};
+const currency =
+  (respond: () => Promise<Response>): FetchStub =>
+  async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    return path === "/api/v1/currency" ? respond() : json({});
+  };
 
 function CurrencyProbe({ name = "probe" }: { name?: string }) {
   return <p data-testid={name}>{useCurrencyCode()}</p>;

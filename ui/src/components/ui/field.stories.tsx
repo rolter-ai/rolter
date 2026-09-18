@@ -174,11 +174,17 @@ export const TwoChildrenKeepTheirDescription: Story = {
  * set, so the input sounded valid to a screen reader (#1527).
  */
 export const ExplicitIdKeepsTheDescription: Story = {
-  args: { label: "API base", htmlFor: "field-api-base", error: "Must start with http:// or https://." },
+  args: {
+    label: "API base",
+    htmlFor: "field-api-base",
+    error: "Must start with http:// or https://.",
+  },
   render: (args) => (
     <Field {...args}>
       <Input id="field-api-base" defaultValue="api.example.com" />
-      <p className="text-xs text-muted-foreground">Resolves to api.example.com/v1/chat/completions</p>
+      <p className="text-xs text-muted-foreground">
+        Resolves to api.example.com/v1/chat/completions
+      </p>
     </Field>
   ),
   play: async ({ canvasElement }) => {

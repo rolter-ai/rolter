@@ -7,12 +7,7 @@ import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Pill } from "@/components/screen";
 import { Combobox } from "@/components/ui/combobox";
-import {
-  fetchOrgProjects,
-  fetchTeams,
-  type OrgProjectRow,
-  type TeamRow,
-} from "@/lib/api";
+import { fetchOrgProjects, fetchTeams, type OrgProjectRow, type TeamRow } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /**
@@ -93,19 +88,13 @@ export interface OrgScope {
    * was deleted, or one this account cannot list — because showing the id is
    * still more than hiding the row's scope entirely.
    */
-  nameFor: (scope: {
-    team_id?: string | null;
-    project_id?: string | null;
-  }) => string | undefined;
+  nameFor: (scope: { team_id?: string | null; project_id?: string | null }) => string | undefined;
   /**
    * The same lookup, keeping "no scope stored" apart from "could not resolve
    * it" — which is what a read-only surface needs to say so rather than print
    * the id as a name (#1671).
    */
-  resolve: (scope: {
-    team_id?: string | null;
-    project_id?: string | null;
-  }) => ResolvedScope;
+  resolve: (scope: { team_id?: string | null; project_id?: string | null }) => ResolvedScope;
 }
 
 // this key is `useScope()`'s as well, and a screen that mounts both gates its

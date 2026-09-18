@@ -40,9 +40,9 @@ const BASE: RuntimePolicyDto = {
 function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Toasted>
-      <Performance />
-    </Toasted>
+      <Toasted>
+        <Performance />
+      </Toasted>
     </ScreenHarness>
   );
 }
@@ -69,9 +69,7 @@ export const Loading: Story = {
 
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
   },
@@ -80,9 +78,7 @@ export const Forbidden: Story = {
 // queue off: the queue-scoped fields disable, since they only shape a queue
 // that is not admitting anything
 export const QueueDisabled: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ ...BASE, queue_enabled: false })} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ ...BASE, queue_enabled: false })} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByLabelText("Capacity")).toBeDisabled());
@@ -103,17 +99,13 @@ export const BlockNeedsATimeout: Story = {
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
     await pickOption(mode, "block");
     await waitFor(() =>
-      expect(
-        canvas.getByText("Block backpressure needs a non-zero block timeout."),
-      ).toBeVisible(),
+      expect(canvas.getByText("Block backpressure needs a non-zero block timeout.")).toBeVisible(),
     );
     await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
     // giving it a timeout clears the block
     await userEvent.clear(canvas.getByLabelText("Block timeout (ms)"));
     await userEvent.type(canvas.getByLabelText("Block timeout (ms)"), "500");
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled());
   },
 };
 
@@ -126,9 +118,7 @@ export const RetryCapCannotBeBelowBase: Story = {
     await userEvent.clear(cap);
     await userEvent.type(cap, "10");
     await waitFor(() =>
-      expect(
-        canvas.getByText("Retry cap cannot be lower than the retry base."),
-      ).toBeVisible(),
+      expect(canvas.getByText("Retry cap cannot be lower than the retry base.")).toBeVisible(),
     );
     await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
   },

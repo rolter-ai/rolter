@@ -165,11 +165,7 @@ export interface TrackOptions {
  * Queue one event. Silently does nothing when the screen key is unusable or
  * the endpoint has already refused us.
  */
-export function track(
-  screen: string,
-  action: UiEvent["action"],
-  options: TrackOptions = {},
-): void {
+export function track(screen: string, action: UiEvent["action"], options: TrackOptions = {}): void {
   if (disabled) return;
   const screenKey = sanitizeKey(screen);
   // without a screen the event answers no question worth asking, and the

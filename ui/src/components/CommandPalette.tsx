@@ -4,12 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
 import { useCan } from "@/lib/can";
@@ -115,7 +110,13 @@ export function CommandPalette({
     const walk = (defs: NavDef[], parent?: string) => {
       for (const def of defs) {
         if (def.children) walk(def.children, t(`nav.${def.key}`));
-        else out.push({ id: `screen:${def.key}`, screen: def.key, label: t(`nav.${def.key}`), hint: parent });
+        else
+          out.push({
+            id: `screen:${def.key}`,
+            screen: def.key,
+            label: t(`nav.${def.key}`),
+            hint: parent,
+          });
       }
     };
     walk(nav);
@@ -162,17 +163,26 @@ export function CommandPalette({
         .map((key) => byKey.get(key))
         .filter((s): s is PaletteEntry => s !== undefined)
         .map((s) => ({ ...s, id: `recent:${s.screen}` }));
-      if (seen.length) out.push({ key: "recent", label: t("shell.palette.sections.recent"), entries: seen });
+      if (seen.length)
+        out.push({ key: "recent", label: t("shell.palette.sections.recent"), entries: seen });
     }
     const matchedScreens = rankEntries(screens, query);
     if (matchedScreens.length) {
-      out.push({ key: "screens", label: t("shell.palette.sections.screens"), entries: matchedScreens });
+      out.push({
+        key: "screens",
+        label: t("shell.palette.sections.screens"),
+        entries: matchedScreens,
+      });
     }
     // records only once there is something to match them against: the whole
     // list of every key, provider and route is not a useful thing to open onto
     const matchedRecords = typed ? rankEntries(records, query) : [];
     if (matchedRecords.length || (typed && (recordsPending || recordsError))) {
-      out.push({ key: "records", label: t("shell.palette.sections.records"), entries: matchedRecords });
+      out.push({
+        key: "records",
+        label: t("shell.palette.sections.records"),
+        entries: matchedRecords,
+      });
     }
     return out;
   }, [query, screens, records, recent, recordsPending, recordsError, t]);
@@ -296,9 +306,7 @@ export function CommandPalette({
             uxTarget="command-palette"
             title={t("shell.palette.noMatches")}
             description={
-              typed
-                ? t("shell.palette.noMatchesBody", { query: query.trim() })
-                : undefined
+              typed ? t("shell.palette.noMatchesBody", { query: query.trim() }) : undefined
             }
           />
         )}

@@ -64,12 +64,7 @@ export function CodeSnippetDialog({
   // window is read at render rather than module load so the snippet follows
   // whatever host the dashboard is actually being served from
   const snippet = React.useMemo(
-    () =>
-      renderSnippet(
-        lang,
-        request,
-        typeof window === "undefined" ? "" : window.location.origin,
-      ),
+    () => renderSnippet(lang, request, typeof window === "undefined" ? "" : window.location.origin),
     [lang, request],
   );
 
@@ -131,9 +126,7 @@ export function CopyAsCodeButton({ request }: { request: SnippetRequest }) {
         <Code2 className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">{t("playground.copyAsCode")}</span>
       </Button>
-      {open && (
-        <CodeSnippetDialog open={open} onOpenChange={setOpen} request={request} />
-      )}
+      {open && <CodeSnippetDialog open={open} onOpenChange={setOpen} request={request} />}
     </>
   );
 }

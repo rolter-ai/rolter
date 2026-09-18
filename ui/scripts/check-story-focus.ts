@@ -70,8 +70,9 @@ export interface FocusViolation {
  */
 export function blankComments(source: string): string {
   let out = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-  out = out.replace(/(^|[^:])\/\/[^\n]*/g, (m, lead: string) =>
-    lead + " ".repeat(m.length - lead.length),
+  out = out.replace(
+    /(^|[^:])\/\/[^\n]*/g,
+    (m, lead: string) => lead + " ".repeat(m.length - lead.length),
   );
   return out;
 }

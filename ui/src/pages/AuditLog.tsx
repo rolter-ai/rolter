@@ -83,8 +83,7 @@ const TARGET_PATH: Record<string, string> = {
   security_settings: "/security",
 };
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // server-side paginated, filtered audit log: action/target/actor/time-range
 // filters map to query params, pagination walks the keyset cursor
@@ -109,9 +108,7 @@ export default function AuditLog() {
 
   const from = React.useMemo(() => {
     const hours = RANGES[rangeIdx].hours;
-    return hours != null
-      ? new Date(Date.now() - hours * 3_600_000).toISOString()
-      : undefined;
+    return hours != null ? new Date(Date.now() - hours * 3_600_000).toISOString() : undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rangeIdx, cursor]);
 
@@ -126,15 +123,7 @@ export default function AuditLog() {
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
-    queryKey: [
-      "audit-log",
-      scope.orgId,
-      action,
-      target,
-      actorParam,
-      rangeIdx,
-      cursor,
-    ],
+    queryKey: ["audit-log", scope.orgId, action, target, actorParam, rangeIdx, cursor],
     queryFn: () =>
       fetchAuditLogPage(scope.orgId as string, {
         limit: PAGE_SIZE,
@@ -163,8 +152,7 @@ export default function AuditLog() {
 
   const rows = page.data?.items ?? [];
   const [total, setTotal] = React.useState<number | null>(null);
-  const filtersActive =
-    !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
+  const filtersActive = !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
   const clearFilters = () => {
     setActor("");
     setAction("");
@@ -187,11 +175,7 @@ export default function AuditLog() {
       header: t("pages.auditLog.columns.actor"),
       mono: true,
       render: (v) =>
-        v ? (
-          <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span>
-        ) : (
-          "system"
-        ),
+        v ? <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span> : "system",
     },
     {
       key: "action",
@@ -333,9 +317,7 @@ export default function AuditLog() {
             <TableSkeleton rows={6} />
           ) : (
             <Table
-              columns={
-                columns as unknown as TableColumn<Record<string, unknown>>[]
-              }
+              columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
               data={rows as unknown as Record<string, unknown>[]}
               rowKey="id"
               empty={
@@ -348,9 +330,7 @@ export default function AuditLog() {
                       : t("pages.auditLog.emptyTitle")
                   }
                   description={
-                    filtersActive
-                      ? t("pages.auditLog.noMatchBody")
-                      : t("pages.auditLog.emptyBody")
+                    filtersActive ? t("pages.auditLog.noMatchBody") : t("pages.auditLog.emptyBody")
                   }
                   actions={
                     filtersActive ? (

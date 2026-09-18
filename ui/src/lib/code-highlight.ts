@@ -23,28 +23,12 @@ import toml from "refractor/toml";
 import typescript from "refractor/typescript";
 import yaml from "refractor/yaml";
 
-import {
-  HIGHLIGHT_CHAR_LIMIT,
-  type CodeLanguage,
-  type CodeNode,
-} from "@/lib/code";
+import { HIGHLIGHT_CHAR_LIMIT, type CodeLanguage, type CodeNode } from "@/lib/code";
 
 // one entry per non-`text` member of CODE_LANGUAGES. refractor pulls each
 // grammar's own dependencies in for us (typescript extends javascript, which
 // extends clike), so this list is the languages, not the graph
-const GRAMMARS = [
-  bash,
-  csv,
-  javascript,
-  json,
-  log,
-  markdown,
-  python,
-  sql,
-  toml,
-  typescript,
-  yaml,
-];
+const GRAMMARS = [bash, csv, javascript, json, log, markdown, python, sql, toml, typescript, yaml];
 
 let registered = false;
 

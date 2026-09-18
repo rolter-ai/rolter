@@ -87,9 +87,7 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No audit entries yet/);
-    await expect(
-      canvas.queryByRole("button", { name: /Clear search/i }),
-    ).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: /Clear search/i })).not.toBeInTheDocument();
   },
 };
 

@@ -4,12 +4,7 @@ import { AnalyticsUnavailableError, ApiError } from "@/lib/api";
 import { flatten, placeholders, type Catalog } from "@/lib/i18n/parity";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import {
-  classifyLoadError,
-  isRetryable,
-  needsSignIn,
-  type LoadErrorKind,
-} from "@/lib/load-error";
+import { classifyLoadError, isRetryable, needsSignIn, type LoadErrorKind } from "@/lib/load-error";
 
 describe("classifyLoadError", () => {
   // the #942 case that motivated #962: every /api/v1/me/* route returned 401
@@ -97,9 +92,7 @@ describe("noAnalytics", () => {
   it("does not read it as an unreachable control plane", () => {
     // it is not an ApiError, so the status-less rule would have claimed the
     // request never got an answer — it got one, and the answer was this
-    expect(classifyLoadError(new AnalyticsUnavailableError("503"))).not.toBe(
-      "unreachable",
-    );
+    expect(classifyLoadError(new AnalyticsUnavailableError("503"))).not.toBe("unreachable");
   });
 
   it("offers neither a retry nor a sign-in, because neither can help", () => {

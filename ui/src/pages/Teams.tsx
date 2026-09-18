@@ -34,7 +34,6 @@ export default function Teams() {
     enabled: !!scope.orgId,
   });
 
-
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
   // `teams` is the query the user is actually waiting on for this screen
@@ -84,7 +83,12 @@ export default function Teams() {
         <span className="text-sm text-muted-foreground">
           {t("pages.teams.summary", { count: teams.data?.length ?? 0 })}
         </span>
-        <GatedButton gate="team:create" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!scope.orgId}>
+        <GatedButton
+          gate="team:create"
+          className="ml-auto"
+          onClick={() => setAddOpen(true)}
+          disabled={!scope.orgId}
+        >
           + {t("pages.teams.emptyAction")}
         </GatedButton>
       </Toolbar>
@@ -104,7 +108,11 @@ export default function Teams() {
           title={t("pages.teams.emptyTitle")}
           description={t("pages.teams.emptyBody")}
           actions={
-            <GatedButton gate="team:create" disabled={!scope.orgId} onClick={() => setAddOpen(true)}>
+            <GatedButton
+              gate="team:create"
+              disabled={!scope.orgId}
+              onClick={() => setAddOpen(true)}
+            >
               {t("pages.teams.emptyAction")}
             </GatedButton>
           }
@@ -113,8 +121,7 @@ export default function Teams() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">
         {(teams.data ?? []).map((team, i) => {
           const budget = budgetQueries[i]?.data?.[0];
-          const members =
-            memberships.data?.filter((m) => m.team_id === team.id) ?? [];
+          const members = memberships.data?.filter((m) => m.team_id === team.id) ?? [];
           const admin = members.find((m) => m.role === "admin");
           return (
             <div

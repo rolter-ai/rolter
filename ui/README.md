@@ -121,6 +121,7 @@ export const Toggles: Story = {
 ```
 
 Notes:
+
 - Portalled overlays (Dialog, Sheet) render into `document.body`, so assert with
   `within(document.body)`, not the story canvas.
 - `userEvent.click` refuses to click a `disabled` control; assert `toBeDisabled()`

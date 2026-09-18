@@ -126,8 +126,7 @@ const NAV_WIDTH_STORAGE_KEY = "rolter.nav.width";
 /** one arrow press; shift multiplies it so a keyboard user is not stuck stepping */
 const NAV_KEY_STEP = 16;
 
-const clampWidth = (w: number) =>
-  Math.min(NAV_MAX_WIDTH, Math.max(NAV_MIN_WIDTH, Math.round(w)));
+const clampWidth = (w: number) => Math.min(NAV_MAX_WIDTH, Math.max(NAV_MIN_WIDTH, Math.round(w)));
 
 function readStoredWidth(key: string): number | null {
   // storage throws outright in some embedding contexts, and can hold anything
@@ -308,9 +307,7 @@ export function NavSidebar({
   // viewport shrank, so it always shows them
   const folded = collapsed && !isDrawer;
   // one accessible name for the hint in both shapes of the rail
-  const updateHint = update
-    ? t("shell.updateAvailableHint", { latest: update.latest })
-    : undefined;
+  const updateHint = update ? t("shell.updateAvailableHint", { latest: update.latest }) : undefined;
 
   // the splitter belongs to the `lg`-and-up rail: the icon rail has no edge
   // worth dragging and the drawer is sized by the viewport, not by the pointer
@@ -320,8 +317,7 @@ export function NavSidebar({
   const q = folded ? "" : query.trim().toLowerCase();
 
   const isOpen = (it: NavItem) =>
-    q !== "" ||
-    (open[it.key] ?? (it.children ?? []).some((c) => c.key === activeKey));
+    q !== "" || (open[it.key] ?? (it.children ?? []).some((c) => c.key === activeKey));
 
   // `forced`: an ancestor matched on its own label, so this subtree is part of
   // that match and is shown whole. searching for a group's name used to expand
@@ -376,11 +372,7 @@ export function NavSidebar({
           )}
           {!folded && <span className="min-w-0 truncate">{it.label}</span>}
           {!folded && it.experimental && (
-            <Badge
-              tone="warning"
-              title={it.experimentalNote}
-              className="ml-auto flex-none"
-            >
+            <Badge tone="warning" title={it.experimentalNote} className="ml-auto flex-none">
               {t("shell.experimental")}
             </Badge>
           )}
@@ -678,11 +670,7 @@ export function NavSidebar({
 
   return (
     <div className="fixed inset-0 z-50 flex">
-      <div
-        className="absolute inset-0 bg-black/50 rl-fade-in"
-        onClick={closeDrawer}
-        aria-hidden
-      />
+      <div className="absolute inset-0 bg-black/50 rl-fade-in" onClick={closeDrawer} aria-hidden />
       <div
         ref={panelRef}
         role="dialog"

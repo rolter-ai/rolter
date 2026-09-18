@@ -20,9 +20,7 @@ function SessionProbe() {
       <dt>superadmin</dt>
       <dd data-testid="superadmin">{String(user?.is_superadmin ?? "unknown")}</dd>
       <dt>member of</dt>
-      <dd data-testid="orgs">
-        {memberships.map((m) => m.org_id).join(", ") || "—"}
-      </dd>
+      <dd data-testid="orgs">{memberships.map((m) => m.org_id).join(", ") || "—"}</dd>
     </dl>
   );
 }
@@ -71,9 +69,7 @@ export const TokenAccepted: Story = {
     const canvas = within(canvasElement);
     // the check is one request: waited out rather than sampled, since the probe
     // renders "checking" first and `findBy*` only waits for the element
-    await waitFor(() =>
-      expect(canvas.getByTestId("status")).toHaveTextContent("ready"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("status")).toHaveTextContent("ready"));
     await expect(canvas.getByTestId("email")).toHaveTextContent("anya@acme.co");
     // superadmin is the server's answer, not the cached login blob
     await expect(canvas.getByTestId("superadmin")).toHaveTextContent("true");
@@ -87,10 +83,7 @@ export const TokenRejected: Story = {
   render: () => (
     <Harness
       fetchStub={async () =>
-        json(
-          { error: { message: "missing or invalid session", code: "unauthenticated" } },
-          401,
-        )
+        json({ error: { message: "missing or invalid session", code: "unauthenticated" } }, 401)
       }
     >
       <StaleSession>
@@ -119,9 +112,7 @@ export const ControlPlaneBlinked: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByTestId("status")).toHaveTextContent("ready"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("status")).toHaveTextContent("ready"));
     await expect(canvas.getByTestId("email")).toHaveTextContent("anya@acme.co");
     // kept, but not verified: nothing was learned about the account
     await expect(canvas.getByTestId("superadmin")).toHaveTextContent("unknown");
@@ -142,9 +133,7 @@ export const AuthEndpointsNotMounted: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByTestId("status")).toHaveTextContent("ready"),
-    );
+    await waitFor(() => expect(canvas.getByTestId("status")).toHaveTextContent("ready"));
     await expect(canvas.getByTestId("email")).toHaveTextContent("anya@acme.co");
   },
 };

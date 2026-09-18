@@ -134,9 +134,7 @@ export const Saves: Story = {
     await userEvent.clear(dialog.getByLabelText("Name"));
     await userEvent.type(dialog.getByLabelText("Name"), "openai-eu");
     await userEvent.click(dialog.getByRole("button", { name: "Save provider" }));
-    await waitFor(() =>
-      expect(within(canvasElement).getByText("Saved openai-eu")).toBeVisible(),
-    );
+    await waitFor(() => expect(within(canvasElement).getByText("Saved openai-eu")).toBeVisible());
   },
 };
 

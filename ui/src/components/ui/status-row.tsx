@@ -4,14 +4,7 @@ import { cn } from "@/lib/utils";
 
 // colored ◆ glyph + uppercase label activity row. pending/running states gently
 // breathe the diamond. mirrors the Rolter Design System feedback/StatusRow.
-export type StatusKind =
-  | "pending"
-  | "running"
-  | "success"
-  | "error"
-  | "warning"
-  | "info"
-  | "idle";
+export type StatusKind = "pending" | "running" | "success" | "error" | "warning" | "info" | "idle";
 
 export interface StatusRowProps extends React.HTMLAttributes<HTMLElement> {
   status?: StatusKind;
@@ -72,10 +65,7 @@ export function StatusRow({
       {...props}
     >
       <span
-        className={cn(
-          "flex-none text-[10px] leading-none",
-          breathe && "animate-pulse",
-        )}
+        className={cn("flex-none text-[10px] leading-none", breathe && "animate-pulse")}
         style={{ color }}
         aria-hidden
       >
@@ -83,19 +73,12 @@ export function StatusRow({
       </span>
       <span
         className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase tracking-wide"
-        style={
-          colorText
-            ? { color: LABEL_COLORS[status] ?? LABEL_COLORS.idle }
-            : undefined
-        }
+        style={colorText ? { color: LABEL_COLORS[status] ?? LABEL_COLORS.idle } : undefined}
       >
         {label}
       </span>
       {chevron && (
-        <span
-          className="ml-auto flex-none text-[9px] text-[color:var(--text-subtle)]"
-          aria-hidden
-        >
+        <span className="ml-auto flex-none text-[9px] text-[color:var(--text-subtle)]" aria-hidden>
           ▸
         </span>
       )}

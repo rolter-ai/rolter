@@ -34,7 +34,12 @@ import { strategyOptions, strategyTone } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-const TARGET_BARS = ["var(--red-folk)", "var(--zinc-400)", "var(--status-info)", "var(--status-success)"];
+const TARGET_BARS = [
+  "var(--red-folk)",
+  "var(--zinc-400)",
+  "var(--status-info)",
+  "var(--status-success)",
+];
 
 // routing rules from the design prototype: one card per route with its
 // strategy pill, per-target weight bars, and edit/delete actions
@@ -52,7 +57,6 @@ export default function RoutingRules() {
     queryFn: () => fetchRoutes(scope.projectId as string),
     enabled: !!scope.projectId,
   });
-
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
@@ -114,12 +118,13 @@ export default function RoutingRules() {
         <span className="text-sm text-muted-foreground">
           {t("pages.routing.summary", { count: routes.data?.length ?? 0 })}
         </span>
-        <LabelFilterSelect
-          value={labelFilter}
-          onChange={setLabelFilter}
-          options={labels.options}
-        />
-        <GatedButton gate="route:create" className="ml-auto" onClick={() => setAddOpen(true)} disabled={!scope.projectId}>
+        <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
+        <GatedButton
+          gate="route:create"
+          className="ml-auto"
+          onClick={() => setAddOpen(true)}
+          disabled={!scope.projectId}
+        >
           + {t("pages.routing.emptyAction")}
         </GatedButton>
       </Toolbar>
@@ -140,16 +145,18 @@ export default function RoutingRules() {
           uxTarget="routes"
           icon={<Route />}
           title={labelFilter ? t("pages.routing.noMatchTitle") : t("pages.routing.emptyTitle")}
-          description={
-            labelFilter ? t("pages.routing.noMatchBody") : t("pages.routing.emptyBody")
-          }
+          description={labelFilter ? t("pages.routing.noMatchBody") : t("pages.routing.emptyBody")}
           actions={
             labelFilter ? (
               <Button variant="outline" onClick={() => setLabelFilter("")}>
                 {t("common.clearSearch")}
               </Button>
             ) : (
-              <GatedButton gate="route:create" disabled={!scope.projectId} onClick={() => setAddOpen(true)}>
+              <GatedButton
+                gate="route:create"
+                disabled={!scope.projectId}
+                onClick={() => setAddOpen(true)}
+              >
                 {t("pages.routing.emptyAction")}
               </GatedButton>
             )
@@ -183,9 +190,7 @@ export default function RoutingRules() {
               </div>
               <div className="flex flex-col gap-2.5">
                 {targets.length === 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    {t("pages.routing.noTargets")}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("pages.routing.noTargets")}</p>
                 )}
                 {targets.map((t, i) => {
                   const share = t.weight / totalWeight;
@@ -235,15 +240,9 @@ export default function RoutingRules() {
                 </Button>
                 <button
                   type="button"
-                  title={
-                    deleteGate.reason ??
-                    t("pages.routing.deleteRoute", { model: r.model })
-                  }
+                  title={deleteGate.reason ?? t("pages.routing.deleteRoute", { model: r.model })}
                   aria-label={t("pages.routing.deleteRoute", { model: r.model })}
-                  disabled={
-                    deleteGate.denied ||
-                    (remove.isPending && remove.variables === r.id)
-                  }
+                  disabled={deleteGate.denied || (remove.isPending && remove.variables === r.id)}
                   onClick={() => startDelete(r)}
                   className="flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
@@ -259,7 +258,9 @@ export default function RoutingRules() {
         })}
       </div>
       {remove.isError && !deleteTarget && (
-        <p className="text-xs text-[color:var(--status-danger-text)]">{(remove.error as Error).message}</p>
+        <p className="text-xs text-[color:var(--status-danger-text)]">
+          {(remove.error as Error).message}
+        </p>
       )}
 
       {scope.orgId && labelling && (

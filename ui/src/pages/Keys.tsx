@@ -166,8 +166,7 @@ export default function Keys() {
 
   // id -> display name for the two attribution dimensions, so a row and the
   // editor name the same unit rather than showing a uuid in one of them
-  const unitName = (id: string | null | undefined) =>
-    units.data?.find((u) => u.id === id)?.name;
+  const unitName = (id: string | null | undefined) => units.data?.find((u) => u.id === id)?.name;
   const customerName = (id: string | null | undefined) =>
     customers.data?.find((c) => c.id === id)?.name;
 
@@ -217,7 +216,11 @@ export default function Keys() {
           <Button variant="outline" onClick={exportCsv}>
             {t("pages.virtualKeys.exportCsv")}
           </Button>
-          <GatedButton gate="virtual_key:create" onClick={() => setAddOpen(true)} disabled={scopeBlocked || !scope.projectId}>
+          <GatedButton
+            gate="virtual_key:create"
+            onClick={() => setAddOpen(true)}
+            disabled={scopeBlocked || !scope.projectId}
+          >
             <Plus className="h-4 w-4" />
             {t("pages.virtualKeys.add")}
           </GatedButton>
@@ -303,9 +306,7 @@ export default function Keys() {
               className="h-8 text-xs"
               value={cacheMode(key.cache_enabled)}
               disabled={setCache.isPending || updateGate.denied}
-              onChange={(picked) =>
-                setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })
-              }
+              onChange={(picked) => setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })}
               options={[
                 { value: "inherit", label: "inherit" },
                 { value: "off", label: "off" },
@@ -442,7 +443,6 @@ export default function Keys() {
             variant="destructive"
             disabled={removeKey.isPending}
             onClick={() => {
-
               if (!deleteTarget) return;
               deleteUx.submitted();
               const name = deleteTarget.name;
@@ -561,9 +561,7 @@ function AddKeyDialog({
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
-      saveLabel={
-        create.isPending ? t("pages.virtualKeys.creating") : t("common.create")
-      }
+      saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
       canSave={keyNameProblem(name) === null}
       saving={create.isPending}
       onSave={() => {
@@ -583,11 +581,7 @@ function AddKeyDialog({
           error={routes.error}
           onRetry={routes.retry}
         />
-        <KeyProvidersField
-          providers={providers}
-          selected={providerSel}
-          onChange={setProviderSel}
-        />
+        <KeyProvidersField providers={providers} selected={providerSel} onChange={setProviderSel} />
         <KeyAttributionFields
           units={units}
           customers={customers}
@@ -705,14 +699,8 @@ function EditKeyDialog({
       }}
     >
       <div className="space-y-3">
-        <p className="text-xs text-muted-foreground">
-          {t("pages.virtualKeys.editSubtitleHint")}
-        </p>
-        <KeyProvidersField
-          providers={providers}
-          selected={providerSel}
-          onChange={setProviderSel}
-        />
+        <p className="text-xs text-muted-foreground">{t("pages.virtualKeys.editSubtitleHint")}</p>
+        <KeyProvidersField providers={providers} selected={providerSel} onChange={setProviderSel} />
         <KeyAttributionFields
           units={units}
           customers={customers}
@@ -758,9 +746,7 @@ function CreatedKeyDialog({
     <Dialog open={!!created} onOpenChange={onOpenChange}>
       <DialogHeader>
         <DialogTitle>{t("pages.virtualKeys.createdTitle")}</DialogTitle>
-        <DialogDescription>
-          {t("pages.virtualKeys.createdBody")}
-        </DialogDescription>
+        <DialogDescription>{t("pages.virtualKeys.createdBody")}</DialogDescription>
       </DialogHeader>
       <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
         <div className="flex items-center justify-between gap-2">

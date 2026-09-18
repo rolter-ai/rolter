@@ -1,6 +1,12 @@
 import { describe, it, expect } from "bun:test";
 
-import { ACTIONS, CAPABILITIES, allowedFor, effectiveFor, matrixFixture } from "./rbac-capabilities";
+import {
+  ACTIONS,
+  CAPABILITIES,
+  allowedFor,
+  effectiveFor,
+  matrixFixture,
+} from "./rbac-capabilities";
 
 // The mirror of the `rbac_matrix` unit tests in
 // `crates/rolter-control/src/rbac_matrix.rs`: the fixture is only worth pinning

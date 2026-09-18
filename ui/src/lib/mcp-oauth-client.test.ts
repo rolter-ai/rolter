@@ -61,23 +61,38 @@ describe("oauthProblem", () => {
   });
 
   it("requires the endpoint pair under manual discovery", () => {
-    expect(oauthProblem({ ...oauthDraft(null), clientId: "rolter", discovery: "manual" })).toBe("manualNeedsEndpoints");
+    expect(oauthProblem({ ...oauthDraft(null), clientId: "rolter", discovery: "manual" })).toBe(
+      "manualNeedsEndpoints",
+    );
     expect(oauthProblem(oauthDraft(MANUAL))).toBeNull();
   });
 
   it("refuses half a pair in either mode", () => {
     for (const discovery of ["auto", "manual"] as const) {
-      expect(oauthProblem({ ...oauthDraft(null), clientId: "rolter", discovery, tokenUrl: "https://a.example/token" })).toBe("pair");
+      expect(
+        oauthProblem({
+          ...oauthDraft(null),
+          clientId: "rolter",
+          discovery,
+          tokenUrl: "https://a.example/token",
+        }),
+      ).toBe("pair");
     }
   });
 
   it("refuses a plaintext issuer or endpoint off loopback", () => {
-    expect(oauthProblem({ ...oauthDraft(null), clientId: "rolter", issuer: "http://auth.example.com" })).toBe("endpoint");
-    expect(oauthProblem({ ...oauthDraft(null), clientId: "rolter", issuer: "http://localhost:9000" })).toBeNull();
+    expect(
+      oauthProblem({ ...oauthDraft(null), clientId: "rolter", issuer: "http://auth.example.com" }),
+    ).toBe("endpoint");
+    expect(
+      oauthProblem({ ...oauthDraft(null), clientId: "rolter", issuer: "http://localhost:9000" }),
+    ).toBeNull();
   });
 
   it("needs a client id", () => {
-    expect(oauthProblem({ ...oauthDraft(null), issuer: "https://auth.example.com" })).toBe("clientId");
+    expect(oauthProblem({ ...oauthDraft(null), issuer: "https://auth.example.com" })).toBe(
+      "clientId",
+    );
   });
 });
 
@@ -107,7 +122,12 @@ describe("toOAuthInput", () => {
 
   it("leaves blank endpoints out and unpins a cleared issuer", () => {
     const input = toOAuthInput({ ...oauthDraft(null), clientId: "rolter" });
-    expect(input).toEqual({ client_id: "rolter", discovery: "auto", issuer: null, default_scopes: [] });
+    expect(input).toEqual({
+      client_id: "rolter",
+      discovery: "auto",
+      issuer: null,
+      default_scopes: [],
+    });
     expect("authorize_url" in input).toBe(false);
   });
 
@@ -129,18 +149,40 @@ describe("oauthChanged", () => {
 });
 
 describe("oauthResetsDiscovery", () => {
-  const found = server({ client_id: "rolter", oauth_discovered_at: "2026-09-01T10:00:00Z", oauth_discovered_issuer: "https://auth.example.com" });
+  const found = server({
+    client_id: "rolter",
+    oauth_discovered_at: "2026-09-01T10:00:00Z",
+    oauth_discovered_issuer: "https://auth.example.com",
+  });
 
   it("warns only when there is a cache and the issuer or mode moves", () => {
     expect(oauthResetsDiscovery(oauthDraft(found), found, found.url)).toBe(false);
-    expect(oauthResetsDiscovery({ ...oauthDraft(found), issuer: "https://other.example.com" }, found, found.url)).toBe(true);
-    expect(oauthResetsDiscovery({ ...oauthDraft(found), clientId: "renamed" }, found, found.url)).toBe(false);
-    expect(oauthResetsDiscovery({ ...oauthDraft(null), issuer: "https://x.example.com" }, server(), found.url)).toBe(false);
+    expect(
+      oauthResetsDiscovery(
+        { ...oauthDraft(found), issuer: "https://other.example.com" },
+        found,
+        found.url,
+      ),
+    ).toBe(true);
+    expect(
+      oauthResetsDiscovery({ ...oauthDraft(found), clientId: "renamed" }, found, found.url),
+    ).toBe(false);
+    expect(
+      oauthResetsDiscovery(
+        { ...oauthDraft(null), issuer: "https://x.example.com" },
+        server(),
+        found.url,
+      ),
+    ).toBe(false);
   });
 
   it("warns when the url moves, as the store clears the cache for that too", () => {
-    expect(oauthResetsDiscovery(oauthDraft(found), found, "https://mcp.example.com/mcp")).toBe(true);
-    expect(oauthResetsDiscovery(oauthDraft(server()), server(), "https://mcp.example.com/mcp")).toBe(false);
+    expect(oauthResetsDiscovery(oauthDraft(found), found, "https://mcp.example.com/mcp")).toBe(
+      true,
+    );
+    expect(
+      oauthResetsDiscovery(oauthDraft(server()), server(), "https://mcp.example.com/mcp"),
+    ).toBe(false);
   });
 });
 

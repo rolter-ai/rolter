@@ -1,7 +1,12 @@
 import { describe, it, expect } from "bun:test";
 import { fileURLToPath, URL } from "node:url";
 
-import { drift, parseCapabilities, readCapabilities, type CapabilityRow } from "./rbac-matrix-source";
+import {
+  drift,
+  parseCapabilities,
+  readCapabilities,
+  type CapabilityRow,
+} from "./rbac-matrix-source";
 import snapshot from "../src/lib/rbac-capabilities.json";
 
 const RBAC_MATRIX = fileURLToPath(
@@ -36,7 +41,14 @@ impl Capability {}
 describe("the capability table parser", () => {
   it("reads a resource, its scope and the authority of each action", () => {
     expect(parseCapabilities(TABLE)).toEqual([
-      { resource: "org", scope: "org", read: "viewer", create: "superadmin", update: null, delete: "admin" },
+      {
+        resource: "org",
+        scope: "org",
+        read: "viewer",
+        create: "superadmin",
+        update: null,
+        delete: "admin",
+      },
       {
         resource: "model_price",
         scope: "deployment",
@@ -87,7 +99,10 @@ describe("the checked-in capability fixture", () => {
   // action or authority added to the control plane and not regenerated here
   // would leave the gating stories asserting a deployment nobody runs
   it("is what crates/rolter-control/src/rbac_matrix.rs publishes", () => {
-    const differences = drift(readCapabilities(RBAC_MATRIX), snapshot.capabilities as CapabilityRow[]);
+    const differences = drift(
+      readCapabilities(RBAC_MATRIX),
+      snapshot.capabilities as CapabilityRow[],
+    );
     expect(differences.join("\n") || "up to date").toBe("up to date");
   });
 

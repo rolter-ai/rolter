@@ -4,7 +4,17 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import PromptRepository from "./PromptRepository";
-import { Toasted, expectEmptyState, expectInStatusRegion, expectLoadError, expectRefused, expectSkeleton, expectToast, withCapabilities, type StoryRole } from "./story-harness";
+import {
+  Toasted,
+  expectEmptyState,
+  expectInStatusRegion,
+  expectLoadError,
+  expectRefused,
+  expectSkeleton,
+  expectToast,
+  withCapabilities,
+  type StoryRole,
+} from "./story-harness";
 import type {
   PromptTemplateRow,
   PromptTemplateScopeRow,
@@ -90,15 +100,56 @@ function loadedStub(): FetchStub {
   let deleted = false;
   return async (input, init) => {
     const url = String(input);
-    if (url === "/api/v1/orgs") return json([{ id: ORG, name: "Northstar", slug: "northstar", created_at: "2026-01-01T00:00:00Z" }]);
-    if (url.endsWith(`/orgs/${ORG}/teams`)) return json([{ id: TEAM, org_id: ORG, name: "Platform", created_at: "2026-01-01T00:00:00Z" }]);
-    if (url.endsWith(`/teams/${TEAM}/projects`)) return json([{ id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" }]);
+    if (url === "/api/v1/orgs")
+      return json([
+        { id: ORG, name: "Northstar", slug: "northstar", created_at: "2026-01-01T00:00:00Z" },
+      ]);
+    if (url.endsWith(`/orgs/${ORG}/teams`))
+      return json([
+        { id: TEAM, org_id: ORG, name: "Platform", created_at: "2026-01-01T00:00:00Z" },
+      ]);
+    if (url.endsWith(`/teams/${TEAM}/projects`))
+      return json([
+        { id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" },
+      ]);
     if (url.endsWith(`/orgs/${ORG}/prompt-templates`)) return json(deleted ? [] : [template]);
-    if (url.endsWith(`/projects/${PROJECT}/routes`)) return json([{ id: ROUTE, project_id: PROJECT, model: "support", strategy: "round_robin", enabled: true, params: {}, param_policy: {}, created_at: "2026-01-01T00:00:00Z" }]);
-    if (url.endsWith(`/projects/${PROJECT}/virtual-keys`)) return json([{ id: KEY, project_id: PROJECT, key_hash: "hash", key_prefix: "rlt_prod", name: "Support app", models: ["support"], disabled: false, created_at: "2026-01-01T00:00:00Z" }]);
+    if (url.endsWith(`/projects/${PROJECT}/routes`))
+      return json([
+        {
+          id: ROUTE,
+          project_id: PROJECT,
+          model: "support",
+          strategy: "round_robin",
+          enabled: true,
+          params: {},
+          param_policy: {},
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ]);
+    if (url.endsWith(`/projects/${PROJECT}/virtual-keys`))
+      return json([
+        {
+          id: KEY,
+          project_id: PROJECT,
+          key_hash: "hash",
+          key_prefix: "rlt_prod",
+          name: "Support app",
+          models: ["support"],
+          disabled: false,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ]);
     if (url.endsWith(`/prompt-templates/${TEMPLATE}/versions`) && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as Pick<PromptTemplateVersionRow, "variables" | "decorators">;
-      const created = { template_id: TEMPLATE, version: 3, ...body, created_at: "2026-08-02T08:00:00Z" };
+      const body = JSON.parse(String(init.body)) as Pick<
+        PromptTemplateVersionRow,
+        "variables" | "decorators"
+      >;
+      const created = {
+        template_id: TEMPLATE,
+        version: 3,
+        ...body,
+        created_at: "2026-08-02T08:00:00Z",
+      };
       currentVersions = [created, ...currentVersions];
       return json(created);
     }
@@ -115,8 +166,10 @@ function loadedStub(): FetchStub {
       deleted = true;
       return new Response(null, { status: 204 });
     }
-    if (url.endsWith(`/prompt-templates/${TEMPLATE}/publish`)) return json({ ...template, published_version: JSON.parse(String(init?.body)).version });
-    if (url.endsWith(`/prompt-templates/${TEMPLATE}/rollback`)) return json({ ...template, published_version: JSON.parse(String(init?.body)).version });
+    if (url.endsWith(`/prompt-templates/${TEMPLATE}/publish`))
+      return json({ ...template, published_version: JSON.parse(String(init?.body)).version });
+    if (url.endsWith(`/prompt-templates/${TEMPLATE}/rollback`))
+      return json({ ...template, published_version: JSON.parse(String(init?.body)).version });
     return json({ error: { message: `unhandled story request: ${url}` } }, 500);
   };
 }
@@ -125,15 +178,28 @@ function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
-    globalThis.fetch = (role ? withCapabilities(role, fetchStub) : fetchStub) as typeof globalThis.fetch;
+    globalThis.fetch = (
+      role ? withCapabilities(role, fetchStub) : fetchStub
+    ) as typeof globalThis.fetch;
     localStorage.removeItem("rolter.scope");
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub, role]);
-  React.useEffect(() => () => {
-    if (original.current) globalThis.fetch = original.current;
-  }, []);
-  const screen = <div className="h-screen bg-[color:var(--surface-app)]"><PromptRepository /></div>;
-  return <QueryClientProvider client={client}><Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted></QueryClientProvider>;
+  React.useEffect(
+    () => () => {
+      if (original.current) globalThis.fetch = original.current;
+    },
+    [],
+  );
+  const screen = (
+    <div className="h-screen bg-[color:var(--surface-app)]">
+      <PromptRepository />
+    </div>
+  );
+  return (
+    <QueryClientProvider client={client}>
+      <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
+    </QueryClientProvider>
+  );
 }
 
 const meta = {
@@ -152,7 +218,13 @@ export const Loaded: Story = {
 export const Empty: Story = {
   render: () => {
     const stub = loadedStub();
-    return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/prompt-templates`) ? json([]) : stub(input, init)} />;
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/orgs/${ORG}/prompt-templates`) ? json([]) : stub(input, init)
+        }
+      />
+    );
   },
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No templates yet/, /Create template/);
@@ -167,7 +239,15 @@ export const Loading: Story = {
 export const Error: Story = {
   render: () => {
     const stub = loadedStub();
-    return <Harness fetchStub={async (input, init) => String(input).endsWith(`/orgs/${ORG}/prompt-templates`) ? json({ error: { message: "database is unavailable" } }, 503) : stub(input, init)} />;
+    return (
+      <Harness
+        fetchStub={async (input, init) =>
+          String(input).endsWith(`/orgs/${ORG}/prompt-templates`)
+            ? json({ error: { message: "database is unavailable" } }, 503)
+            : stub(input, init)
+        }
+      />
+    );
   },
   play: async ({ canvasElement }) => expectLoadError(canvasElement, /prompt templates/i),
 };
@@ -181,7 +261,8 @@ export const VersionHistoryLoading: Story = {
     return (
       <Harness
         fetchStub={async (input, init) =>
-          String(input).endsWith(`/prompt-templates/${TEMPLATE}/versions`) && init?.method !== "POST"
+          String(input).endsWith(`/prompt-templates/${TEMPLATE}/versions`) &&
+          init?.method !== "POST"
             ? new Promise<Response>(() => {})
             : stub(input, init)
         }

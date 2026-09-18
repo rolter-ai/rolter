@@ -18,11 +18,7 @@ import {
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
 
-const price = (
-  model: string,
-  currency: string,
-  id = model,
-): ModelPriceRow => ({
+const price = (model: string, currency: string, id = model): ModelPriceRow => ({
   id,
   model,
   input_per_mtok: "2.50",
@@ -198,9 +194,7 @@ export const AddRejectedByTheServer: Story = {
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
     await expectToast(canvasElement, /already has a price in USD/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(form.getByLabelText("Model name")).toHaveValue("gpt-4o");
     // a number input, so the value reads back numeric rather than as typed
     await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(10);

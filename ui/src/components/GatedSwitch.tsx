@@ -20,11 +20,5 @@ export function GatedSwitch({
   ...props
 }: SwitchProps & { gate: Capability }) {
   const { denied, reason } = useGate(gate);
-  return (
-    <Switch
-      {...props}
-      disabled={disabled || denied}
-      title={denied ? reason : title}
-    />
-  );
+  return <Switch {...props} disabled={disabled || denied} title={denied ? reason : title} />;
 }

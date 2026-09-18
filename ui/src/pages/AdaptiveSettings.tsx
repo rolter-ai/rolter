@@ -64,11 +64,7 @@ function validate(form: FormState): string | null {
     return "pages.adaptiveSettings.validation.ratioRange";
   }
   const samples = Number(form.minSamples);
-  if (
-    !Number.isInteger(samples) ||
-    samples < 0 ||
-    samples > MAX_ADAPTIVE_MIN_SAMPLES
-  ) {
+  if (!Number.isInteger(samples) || samples < 0 || samples > MAX_ADAPTIVE_MIN_SAMPLES) {
     return "pages.adaptiveSettings.validation.samplesRange";
   }
   return null;
@@ -168,9 +164,7 @@ function AdaptiveSettingsScreen() {
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div className="flex-1">
-          <span className="text-sm font-medium">
-            {t("pages.adaptiveSettings.title")}
-          </span>
+          <span className="text-sm font-medium">{t("pages.adaptiveSettings.title")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.adaptiveSettings.killSwitch"
@@ -208,9 +202,7 @@ function AdaptiveSettingsScreen() {
 
       <section className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
-          <span className="text-sm font-medium">
-            {t("pages.adaptiveSettings.weightsTitle")}
-          </span>
+          <span className="text-sm font-medium">{t("pages.adaptiveSettings.weightsTitle")}</span>
           <p className="mt-1 text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.adaptiveSettings.weightsDesc"
@@ -256,9 +248,7 @@ function AdaptiveSettingsScreen() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">
-            {t("pages.adaptiveSettings.explorationRatio")}
-          </span>
+          <span className="flex-1 text-sm">{t("pages.adaptiveSettings.explorationRatio")}</span>
           <Input
             className="w-[92px]"
             inputMode="decimal"
@@ -268,9 +258,7 @@ function AdaptiveSettingsScreen() {
           />
         </div>
         <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">
-            {t("pages.adaptiveSettings.warmUpSamples")}
-          </span>
+          <span className="flex-1 text-sm">{t("pages.adaptiveSettings.warmUpSamples")}</span>
           <Input
             className="w-[92px]"
             inputMode="numeric"
@@ -282,11 +270,10 @@ function AdaptiveSettingsScreen() {
       </section>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>}
-        <Button
-          disabled={save.isPending || localError !== null}
-          onClick={() => save.mutate(form)}
-        >
+        {localError && (
+          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        )}
+        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

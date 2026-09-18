@@ -26,11 +26,7 @@ import {
   expectToast,
   type FetchStub,
 } from "./story-harness";
-import type {
-  AccessProfileDetail,
-  AccessProfileRow,
-  CustomRoleRow,
-} from "@/lib/api";
+import type { AccessProfileDetail, AccessProfileRow, CustomRoleRow } from "@/lib/api";
 
 const ORG = "org-1";
 
@@ -157,15 +153,11 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Support engineers")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Support engineers")).toBeVisible());
     await expect(canvas.getByText("On-call")).toBeVisible();
 
     // a profile's reach is the thing that matters: one user plus one team
-    await waitFor(() =>
-      expect(canvas.getByText("1 user · 1 team")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("1 user · 1 team")).toBeVisible());
     // and a profile assigned to nobody says so plainly
     await expect(canvas.getByText("Not assigned to anyone yet")).toBeVisible();
 
@@ -270,9 +262,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.click(form.getByRole("button", { name: "Create profile" }));
 
     await expectToast(canvasElement, /already taken/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(form.getByLabelText("Name")).toHaveValue("Support");
     await expect(form.getByRole("checkbox", { name: /Support engineer/ })).toBeChecked();
   },
@@ -331,9 +321,7 @@ export const Deleting: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Support engineers")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Support engineers")).toBeVisible());
 
     const target = canvas.getByRole("button", { name: "Delete Support engineers" });
     const other = canvas.getByRole("button", { name: "Delete On-call" });
@@ -382,19 +370,13 @@ export const ConfirmsBeforeDeletingAProfile: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Support engineers")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Support engineers")).toBeVisible());
 
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Delete Support engineers" }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: "Delete Support engineers" }));
     await cancelConfirmation();
     deletes.expectNotSent("DELETE", "/access-profiles/p-1");
 
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Delete Support engineers" }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: "Delete Support engineers" }));
     await confirmDestructive(/Support engineers/, /delete profile/i);
     await deletes.expectSent("DELETE", "/access-profiles/p-1");
 
@@ -402,9 +384,7 @@ export const ConfirmsBeforeDeletingAProfile: Story = {
     // announces it, and the row is gone from the list
     await expectSheetClosed();
     await expectToast(canvasElement, /Support engineers deleted/);
-    await waitFor(() =>
-      expect(canvas.queryByText("Support engineers")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(canvas.queryByText("Support engineers")).not.toBeInTheDocument());
   },
 };
 
@@ -412,9 +392,7 @@ export const ConfirmsBeforeDeletingAProfile: Story = {
 export const Error_: Story = {
   name: "Error",
   render: () => (
-    <Harness
-      fetchStub={stub(async () => json({ error: { message: "forbidden" } }, 403))}
-    >
+    <Harness fetchStub={stub(async () => json({ error: { message: "forbidden" } }, 403))}>
       <AccessProfiles />
     </Harness>
   ),
@@ -531,9 +509,7 @@ export const ShowsAProjectScopedRoleOnTheCard: Story = {
     const canvas = within(canvasElement);
     // the role's name and the project's name, both resolved — a raw uuid on a
     // card is not an answer to "what does this profile grant"
-    await waitFor(() =>
-      expect(canvas.getByText("Deploy admin on Gateway")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Deploy admin on Gateway")).toBeVisible());
     await expect(canvas.queryByText(PROJECT.id)).not.toBeInTheDocument();
     await expect(canvas.queryByText("role-2")).not.toBeInTheDocument();
   },
@@ -567,9 +543,7 @@ export const ScopeThatCannotBeResolved: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // the role is still named — only the scope half failed to resolve
-    await waitFor(() =>
-      expect(canvas.getByText("Deploy admin on Unresolved scope")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Deploy admin on Unresolved scope")).toBeVisible());
     await expect(canvas.queryByText(PROJECT.id)).not.toBeInTheDocument();
     // the id stays quotable in a support conversation
     const chip = canvas.getByTitle(/could not be matched/);
@@ -594,9 +568,7 @@ export const ComposesARoleAtTeamScope: Story = {
 
     // the scope is only a question once the role is actually composed, so an
     // unchecked role carries no picker to answer
-    await expect(
-      form.queryByLabelText("Where Support engineer applies"),
-    ).not.toBeInTheDocument();
+    await expect(form.queryByLabelText("Where Support engineer applies")).not.toBeInTheDocument();
     await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
 
     const picker = await form.findByLabelText("Where Support engineer applies");
@@ -607,22 +579,15 @@ export const ComposesARoleAtTeamScope: Story = {
 
     // the whole org is on offer, not just the team the scope switcher holds
     const listbox = await openOptions(picker);
-    await expect(
-      within(listbox).getByRole("option", { name: TEAM.name }),
-    ).toBeVisible();
-    await expect(
-      within(listbox).getByRole("option", { name: PROJECT.name }),
-    ).toBeVisible();
-    await userEvent.click(
-      within(listbox).getByRole("option", { name: TEAM.name }),
-    );
+    await expect(within(listbox).getByRole("option", { name: TEAM.name })).toBeVisible();
+    await expect(within(listbox).getByRole("option", { name: PROJECT.name })).toBeVisible();
+    await userEvent.click(within(listbox).getByRole("option", { name: TEAM.name }));
 
     await userEvent.click(form.getByRole("button", { name: "Create profile" }));
 
-    const body = (await composesAtTeamScope.expectSentBody(
-      "POST",
-      "/access-profiles",
-    )) as { roles: Record<string, string>[] };
+    const body = (await composesAtTeamScope.expectSentBody("POST", "/access-profiles")) as {
+      roles: Record<string, string>[];
+    };
     // `team_id` set and `project_id` absent rather than null: the control plane
     // resolves the most specific id it is given, so a null project would still
     // be the narrower scope if it were sent
@@ -654,16 +619,15 @@ export const SeedsTheComposedScopeIntoTheSheet: Story = {
     await expect(form.getByRole("checkbox", { name: /Deploy admin/ })).toBeChecked();
     // the stored scope comes back into the picker rather than resetting to the
     // org
-    await expect(
-      await form.findByLabelText("Where Deploy admin applies"),
-    ).toHaveValue(PROJECT.name);
+    await expect(await form.findByLabelText("Where Deploy admin applies")).toHaveValue(
+      PROJECT.name,
+    );
 
     await userEvent.click(form.getByRole("button", { name: "Save profile" }));
 
-    const body = (await keepsTheScopeOnEdit.expectSentBody(
-      "PUT",
-      "/access-profiles/p-3",
-    )) as { roles: Record<string, string>[] };
+    const body = (await keepsTheScopeOnEdit.expectSentBody("PUT", "/access-profiles/p-3")) as {
+      roles: Record<string, string>[];
+    };
     expect(body.roles).toEqual([{ role_id: "role-2", project_id: PROJECT.id }]);
   },
 };

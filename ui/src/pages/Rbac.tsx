@@ -113,11 +113,7 @@ const CELL_STYLE: Record<CellState, React.CSSProperties> = {
 
 const RANK: Record<string, number> = { viewer: 0, member: 1, admin: 2 };
 
-function cellState(
-  resource: RbacResourceView,
-  action: RbacAction,
-  column: RoleColumn,
-): CellState {
+function cellState(resource: RbacResourceView, action: RbacAction, column: RoleColumn): CellState {
   const view = resource.actions.find((a) => a.action === action);
   // absent from `actions` means the backend's authority was None
   if (!view) return "na";
@@ -252,17 +248,13 @@ function MatrixTab({
   return (
     <>
       <div className="flex flex-wrap items-start gap-3">
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          {t("pages.rbac.intro")}
-        </p>
+        <p className="max-w-2xl text-sm text-muted-foreground">{t("pages.rbac.intro")}</p>
         {/* each count is its own node: two plural sentences sharing one text
             node cannot be read back, by a test or by a screen reader */}
         <span className="ml-auto inline-flex flex-none items-center gap-1.5 rounded-full border border-[color:var(--border-subtle)] px-2.5 py-[5px] text-xs text-muted-foreground">
           <span>{t("pages.rbac.roleCount", { count: cols.length })}</span>
           <span aria-hidden>·</span>
-          <span>
-            {t("pages.rbac.resourceCount", { count: matrix.resources.length })}
-          </span>
+          <span>{t("pages.rbac.resourceCount", { count: matrix.resources.length })}</span>
         </span>
       </div>
 
@@ -272,7 +264,10 @@ function MatrixTab({
         </p>
       )}
 
-      <div tabIndex={0} className="overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+      <div
+        tabIndex={0}
+        className="overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
         <div className="min-w-[720px] overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
           <div
             className="grid items-end gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-4 py-[11px]"
@@ -438,13 +433,7 @@ function grantsOf(draft: RoleDraft): CustomRoleGrantInput[] {
   return [...grid, ...draft.unknown];
 }
 
-function CustomRolesTab({
-  matrix,
-  orgId,
-}: {
-  matrix: RbacMatrix;
-  orgId?: string;
-}) {
+function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string }) {
   const { t } = useTranslation();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -480,8 +469,7 @@ function CustomRolesTab({
   // of the roles, so a row rendered "not used by any access profile" — a claim,
   // not a placeholder — for as long as the detail calls were still in flight,
   // and then swapped it for the real composition (#1266)
-  const usageKnown =
-    !profiles.isLoading && details.every((detail) => !detail.isLoading);
+  const usageKnown = !profiles.isLoading && details.every((detail) => !detail.isLoading);
   const usedBy = new Map<string, string[]>();
   for (const detail of details) {
     if (!detail.data) continue;
@@ -532,9 +520,7 @@ function CustomRolesTab({
       setDraft(null);
       toast.push({
         tone: "success",
-        title: input.id
-          ? t("toast.saved")
-          : t("toast.created", { what: role.name }),
+        title: input.id ? t("toast.saved") : t("toast.created", { what: role.name }),
       });
     },
     onError: (error, input) =>
@@ -579,10 +565,13 @@ function CustomRolesTab({
   return (
     <>
       <div className="flex flex-wrap items-start gap-3">
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          {t("pages.rbac.custom.intro")}
-        </p>
-        <GatedButton gate="custom_role:create" className="ml-auto" disabled={!orgId} onClick={startCreate}>
+        <p className="max-w-2xl text-sm text-muted-foreground">{t("pages.rbac.custom.intro")}</p>
+        <GatedButton
+          gate="custom_role:create"
+          className="ml-auto"
+          disabled={!orgId}
+          onClick={startCreate}
+        >
           {t("pages.rbac.custom.add")}
         </GatedButton>
       </div>
@@ -633,9 +622,7 @@ function CustomRolesTab({
                   </span>
                 </div>
                 {role.description && (
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {role.description}
-                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">{role.description}</p>
                 )}
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                   <span>
@@ -771,10 +758,7 @@ function RoleSheet({
         {/* the slug is the role's stable handle and the control plane refuses
             to change it, so it is offered on create and never on edit */}
         {!draft.id && (
-          <Field
-            label={t("pages.rbac.custom.fieldSlug")}
-            hint={t("pages.rbac.custom.slugHint")}
-          >
+          <Field label={t("pages.rbac.custom.fieldSlug")} hint={t("pages.rbac.custom.slugHint")}>
             <Input
               value={draft.slug}
               placeholder={t("pages.rbac.custom.slugPlaceholder")}
@@ -857,9 +841,7 @@ function GrantGrid({
       <legend className="text-sm font-medium leading-none">
         {t("pages.rbac.custom.grantsLabel")}
       </legend>
-      <p className="text-xs text-muted-foreground">
-        {t("pages.rbac.custom.grantsHint")}
-      </p>
+      <p className="text-xs text-muted-foreground">{t("pages.rbac.custom.grantsHint")}</p>
       <Input
         value={filter}
         placeholder={t("pages.rbac.custom.filterPlaceholder")}
@@ -919,11 +901,7 @@ function GrantGrid({
                         type="checkbox"
                         className="h-4 w-4 accent-[color:var(--red-folk)] disabled:cursor-not-allowed disabled:opacity-40"
                         aria-label={label}
-                        title={
-                          view.superadmin_only
-                            ? t("pages.rbac.custom.superadminHint")
-                            : label
-                        }
+                        title={view.superadmin_only ? t("pages.rbac.custom.superadminHint") : label}
                         disabled={view.superadmin_only}
                         checked={grants.includes(key)}
                         onChange={() => onToggle(key)}
@@ -936,9 +914,7 @@ function GrantGrid({
           </div>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground">
-        {t("pages.rbac.custom.superadminHint")}
-      </p>
+      <p className="text-xs text-muted-foreground">{t("pages.rbac.custom.superadminHint")}</p>
     </fieldset>
   );
 }

@@ -5,11 +5,7 @@ import { useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  acceptInvitation,
-  previewInvitation,
-  type InvitationPreview,
-} from "@/lib/api";
+import { acceptInvitation, previewInvitation, type InvitationPreview } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 // the invitee has no account yet, so this screen renders outside the signed-in
@@ -28,11 +24,7 @@ export default function AcceptInvite({ token }: { token: string }) {
     let live = true;
     void previewInvitation(token)
       .then((p) => live && setInvite(p))
-      .catch(
-        () =>
-          live &&
-          setError(t("pages.acceptInvite.invalidLink")),
-      );
+      .catch(() => live && setError(t("pages.acceptInvite.invalidLink")));
     return () => {
       live = false;
     };
@@ -99,9 +91,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                 }}
               >
                 <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">
-                    {t("pages.acceptInvite.password")}
-                  </span>
+                  <span className="text-muted-foreground">{t("pages.acceptInvite.password")}</span>
                   <Input
                     type="password"
                     name="new-password"
@@ -113,9 +103,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                   />
                 </label>
                 <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">
-                    {t("pages.acceptInvite.confirm")}
-                  </span>
+                  <span className="text-muted-foreground">{t("pages.acceptInvite.confirm")}</span>
                   <Input
                     type="password"
                     name="confirm-password"
@@ -148,8 +136,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                     </>
                   ) : (
                     <>
-                      {t("pages.acceptInvite.accept")}{" "}
-                      <ArrowRight className="h-4 w-4" />
+                      {t("pages.acceptInvite.accept")} <ArrowRight className="h-4 w-4" />
                     </>
                   )}
                 </Button>

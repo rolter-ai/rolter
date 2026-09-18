@@ -66,8 +66,7 @@ export function TwoFactorPanel() {
   const [removing, setRemoving] = React.useState(false);
   const [removeCode, setRemoveCode] = React.useState("");
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [MFA_STATUS_KEY] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: [MFA_STATUS_KEY] });
 
   const regenerate = useMutation({
     mutationFn: regenerateRecoveryCodes,
@@ -97,12 +96,8 @@ export function TwoFactorPanel() {
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
-        <h2 className="text-sm font-medium text-foreground">
-          {t("account.mfa.title")}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("account.mfa.subtitle")}
-        </p>
+        <h2 className="text-sm font-medium text-foreground">{t("account.mfa.title")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t("account.mfa.subtitle")}</p>
       </header>
 
       <div className="px-4 py-4">
@@ -121,9 +116,7 @@ export function TwoFactorPanel() {
             icon={<ShieldCheck />}
             title={t("account.mfa.off.title")}
             description={
-              status.data.required
-                ? t("account.mfa.off.requiredBody")
-                : t("account.mfa.off.body")
+              status.data.required ? t("account.mfa.off.requiredBody") : t("account.mfa.off.body")
             }
             actions={
               <Button
@@ -144,9 +137,7 @@ export function TwoFactorPanel() {
                 className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-success-text)]"
               />
               <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground">
-                  {t("account.mfa.on.title")}
-                </p>
+                <p className="text-sm font-medium text-foreground">{t("account.mfa.on.title")}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {status.data.recovery_codes_remaining === 0
                     ? t("account.mfa.on.noCodes")
@@ -179,11 +170,7 @@ export function TwoFactorPanel() {
                 // the org made it mandatory, so the control plane answers 403;
                 // the title says which, rather than leaving a dead button
                 disabled={status.data.required}
-                title={
-                  status.data.required
-                    ? t("account.mfa.on.removeLocked")
-                    : undefined
-                }
+                title={status.data.required ? t("account.mfa.on.removeLocked") : undefined}
                 onClick={() => {
                   remove.reset();
                   setRemoveCode("");
@@ -317,10 +304,7 @@ function EnrolDialog({
         />
       )}
       {confirm.isError && (
-        <p
-          role="alert"
-          className="mt-3 text-xs text-[color:var(--status-danger-text)]"
-        >
+        <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
           {(confirm.error as Error).message}
         </p>
       )}
@@ -330,9 +314,7 @@ function EnrolDialog({
           {t("common.cancel")}
         </Button>
         <Button
-          disabled={
-            !enrolment.data || confirm.isPending || code.trim().length === 0
-          }
+          disabled={!enrolment.data || confirm.isPending || code.trim().length === 0}
           onClick={() => confirm.mutate()}
         >
           {t("account.mfa.enrol.confirm")}
@@ -358,21 +340,13 @@ function EnrolSteps({
     <div className="flex flex-col gap-4">
       <div className="flex flex-col items-center gap-3">
         <QrCode value={enrolment.otpauth_uri} />
-        <p className="text-sm text-muted-foreground">
-          {t("account.mfa.enrol.scan")}
-        </p>
+        <p className="text-sm text-muted-foreground">{t("account.mfa.enrol.scan")}</p>
       </div>
       {/* the same secret as text, for a desktop authenticator or a phone whose
           camera is not an option. `CodeBlock` owns the copy button */}
       <div className="flex flex-col gap-1.5">
-        <p className="text-sm text-muted-foreground">
-          {t("account.mfa.enrol.manual")}
-        </p>
-        <CodeBlock
-          value={enrolment.secret}
-          label={t("account.mfa.enrol.secretLabel")}
-          wrap
-        />
+        <p className="text-sm text-muted-foreground">{t("account.mfa.enrol.manual")}</p>
+        <CodeBlock value={enrolment.secret} label={t("account.mfa.enrol.secretLabel")} wrap />
       </div>
       <form
         onSubmit={(e) => {
@@ -408,13 +382,7 @@ function EnrolSteps({
  * trapping someone in a dialog is not a safety feature — but the primary
  * action stays refused until the box is ticked.
  */
-function RecoveryCodesDialog({
-  codes,
-  onClose,
-}: {
-  codes: string[] | null;
-  onClose: () => void;
-}) {
+function RecoveryCodesDialog({ codes, onClose }: { codes: string[] | null; onClose: () => void }) {
   const { t } = useTranslation();
   const [saved, setSaved] = React.useState(false);
 

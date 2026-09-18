@@ -48,9 +48,7 @@ export function ScopeSwitcher() {
   };
 
   if (scope.isLoading) {
-    return (
-      <div className="px-3 py-1 text-xs text-muted-foreground">{t("scope.loading")}</div>
-    );
+    return <div className="px-3 py-1 text-xs text-muted-foreground">{t("scope.loading")}</div>;
   }
 
   return (
@@ -102,16 +100,13 @@ export function ScopeSwitcher() {
                 setDeleteTarget({
                   level: "project",
                   id: scope.projectId as string,
-                  name:
-                    scope.projects.find((p) => p.id === scope.projectId)?.name ?? "",
+                  name: scope.projects.find((p) => p.id === scope.projectId)?.name ?? "",
                 })
             : undefined
         }
         disabled={!scope.teamId}
       />
-      {scopeMessage && (
-        <p className="px-1 text-xs text-muted-foreground">{scopeMessage}</p>
-      )}
+      {scopeMessage && <p className="px-1 text-xs text-muted-foreground">{scopeMessage}</p>}
 
       <CreateScopeDialog
         level={createLevel}
@@ -302,7 +297,9 @@ function CreateScopeDialog({
           />
         </Field>
         {create.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">{(create.error as Error).message}</p>
+          <p className="text-xs text-[color:var(--status-danger-text)]">
+            {(create.error as Error).message}
+          </p>
         )}
       </div>
       <DialogFooter>
@@ -369,17 +366,15 @@ function DeleteScopeDialog({
         </DialogDescription>
       </DialogHeader>
       {remove.isError && (
-        <p className="text-xs text-[color:var(--status-danger-text)]">{(remove.error as Error).message}</p>
+        <p className="text-xs text-[color:var(--status-danger-text)]">
+          {(remove.error as Error).message}
+        </p>
       )}
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)}>
           {t("common.cancel")}
         </Button>
-        <Button
-          variant="destructive"
-          disabled={remove.isPending}
-          onClick={() => remove.mutate()}
-        >
+        <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
           {remove.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {t("common.delete")}
         </Button>

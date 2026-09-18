@@ -115,7 +115,9 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(en.pages.gettingStarted.title)).toBeVisible();
-    await waitFor(() => expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.todo));
+    await waitFor(() =>
+      expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.todo),
+    );
     await expect(state(canvasElement, "route")).toBe(en.pages.gettingStarted.todo);
     await expect(state(canvasElement, "key")).toBe(en.pages.gettingStarted.todo);
     // the CTAs are links to the screens that own those forms, not a second copy
@@ -134,7 +136,9 @@ export const Loaded: Story = {
 export const StepsFollowTheRealRows: Story = {
   render: () => render(configured),
   play: async ({ canvasElement }) => {
-    await waitFor(() => expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.done));
+    await waitFor(() =>
+      expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.done),
+    );
     await expect(state(canvasElement, "route")).toBe(en.pages.gettingStarted.done);
     await expect(state(canvasElement, "key")).toBe(en.pages.gettingStarted.done);
     // no traffic yet, so the one step the operator has not done is still open
@@ -154,7 +158,8 @@ export const Loading: Story = {
  */
 export const LoadFailed: Story = {
   render: () => render(broken),
-  play: async ({ canvasElement }) => expectLoadError(canvasElement, new RegExp(en.errors.resources.gettingStarted)),
+  play: async ({ canvasElement }) =>
+    expectLoadError(canvasElement, new RegExp(en.errors.resources.gettingStarted)),
 };
 
 /** no project in scope, so there is nothing whose real state could be reflected */
@@ -192,7 +197,9 @@ export const RetiresOnceConfiguredAndServing: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull());
-    await expect(canvas.queryByRole("button", { name: en.pages.gettingStarted.dismiss })).toBeNull();
+    await expect(
+      canvas.queryByRole("button", { name: en.pages.gettingStarted.dismiss }),
+    ).toBeNull();
     // and no way back either: there is nothing left to come back to
     await expect(canvas.queryByRole("button", { name: en.pages.gettingStarted.reopen })).toBeNull();
   },
@@ -237,7 +244,10 @@ export const AdminSeesEveryCta: Story = {
     ] as const) {
       const action = en.pages.gettingStarted.steps[step].action;
       await waitFor(() =>
-        expect(canvas.getByRole("link", { name: new RegExp(action) })).toHaveAttribute("href", href),
+        expect(canvas.getByRole("link", { name: new RegExp(action) })).toHaveAttribute(
+          "href",
+          href,
+        ),
       );
     }
   },

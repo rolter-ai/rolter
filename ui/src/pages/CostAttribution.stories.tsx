@@ -18,22 +18,14 @@ import {
   Toasted,
   type StoryRole,
 } from "./story-harness";
-import type {
-  AttributionSpendRow,
-  BusinessUnitRow,
-  CustomerRow,
-} from "@/lib/api";
+import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 
 // the formatter the screen itself uses, so a story asserts the house format
 // rather than a second copy of it
 const fmt = formattersFor("en");
 
-const spendRow = (
-  id: string,
-  cost: number,
-  requests: number,
-): AttributionSpendRow => ({
+const spendRow = (id: string, cost: number, requests: number): AttributionSpendRow => ({
   id,
   requests,
   tokens: requests * 900,
@@ -106,9 +98,7 @@ type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 // route by path so useScope's /api/v1/orgs call is served alongside the
 // screen's own collection
 function router(
-  handlers: Partial<
-    Record<"units" | "customers" | "spend", (init?: RequestInit) => Response>
-  >,
+  handlers: Partial<Record<"units" | "customers" | "spend", (init?: RequestInit) => Response>>,
 ): FetchStub {
   return async (input, init) => {
     const url = String(input);
@@ -208,9 +198,7 @@ export const BusinessUnitsEmpty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No business units yet")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No business units yet")).toBeVisible());
   },
 };
 
@@ -227,9 +215,7 @@ export const BusinessUnitsForbidden: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
-      expect(
-        canvas.getByText(/You do not have access to business units/),
-      ).toBeVisible(),
+      expect(canvas.getByText(/You do not have access to business units/)).toBeVisible(),
     );
   },
 };
@@ -247,9 +233,7 @@ export const SlugRenameNeedsConfirmation: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
     // by name, not by index: each row control names its own unit (#1214)
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Edit Platform Engineering" }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: "Edit Platform Engineering" }));
     // the sheet portals to document.body, so query outside the canvas root
     const sheet = within(document.body);
     const slug = await sheet.findByLabelText("Slug");
@@ -336,9 +320,7 @@ export const CreateRejectedByTheServer: Story = {
     // holds what was typed, and the inline refusal is inside the sheet
     await expect(panel.getByRole("button", { name: "Create" })).toBeVisible();
     await expect(await panel.findByLabelText("Name")).toHaveValue("Ops");
-    await expect(
-      within(sheet()).getByText(/already taken/),
-    ).toBeVisible();
+    await expect(within(sheet()).getByText(/already taken/)).toBeVisible();
   },
 };
 
@@ -400,8 +382,7 @@ export const ConfirmsBeforeDeletingABusinessUnit: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
-    const del = () =>
-      canvas.getByRole("button", { name: "Delete Platform Engineering" });
+    const del = () => canvas.getByRole("button", { name: "Delete Platform Engineering" });
 
     await userEvent.click(del());
     await cancelConfirmation();
@@ -416,9 +397,7 @@ export const ConfirmsBeforeDeletingABusinessUnit: Story = {
     // announces it, and the card is gone from the roster
     await expectSheetClosed();
     await expectToast(canvasElement, /Platform Engineering deleted/);
-    await waitFor(() =>
-      expect(canvas.queryByText("Platform Engineering")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(canvas.queryByText("Platform Engineering")).not.toBeInTheDocument());
   },
 };
 
@@ -430,11 +409,7 @@ const customerDeletes = recording(async (input, init) => {
   }
   return router({
     customers: () =>
-      json(
-        customerDeleted
-          ? CUSTOMERS.filter((row) => row.id !== CUSTOMERS[0].id)
-          : CUSTOMERS,
-      ),
+      json(customerDeleted ? CUSTOMERS.filter((row) => row.id !== CUSTOMERS[0].id) : CUSTOMERS),
   })(input, init);
 });
 
@@ -458,9 +433,7 @@ export const ConfirmsBeforeDeletingACustomer: Story = {
 
     await expectSheetClosed();
     await expectToast(canvasElement, /Acme Corp deleted/);
-    await waitFor(() =>
-      expect(canvas.queryByText("Acme Corp")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(canvas.queryByText("Acme Corp")).not.toBeInTheDocument());
   },
 };
 
@@ -477,9 +450,7 @@ export const BusinessUnitsShowWindowSpend: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible());
     // attributed and unattributed are shown side by side: a report that lists
     // five units and quietly omits a quarter of the spend is the failure mode
     await expect(canvas.getByText(fmt.currency(148.5, "USD"))).toBeVisible();
@@ -505,9 +476,7 @@ export const SpendFollowsTheDeploymentCurrency: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText(fmt.currency(190, "EUR"))).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "EUR"))).toBeVisible());
   },
 };
 
@@ -522,9 +491,7 @@ export const CustomersShowWindowSpend: Story = {
     const canvas = within(canvasElement);
     // total, attributed and each card's own figure are all distinct here, so
     // the assertions cannot pass by coincidence
-    await waitFor(() =>
-      expect(canvas.getByText(fmt.currency(175, "USD"))).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(fmt.currency(175, "USD"))).toBeVisible());
     await expect(canvas.getByText(fmt.currency(115, "USD"))).toBeVisible();
     await expect(canvas.getByText(fmt.currency(90, "USD"))).toBeVisible();
     await expect(canvas.getByText(fmt.currency(25, "USD"))).toBeVisible();

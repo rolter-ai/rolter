@@ -29,8 +29,10 @@ export const NOT_COPY: AllowList = {
       "a developer invariant thrown when a component renders outside the provider; no operator path reaches it",
   },
   "src/pages/Limits.tsx": {
-    "{…} rpm": "a rate unit named after the `rpm` field the limit is set through; the badge is notation",
-    "{…} tpm": "a rate unit named after the `tpm` field the limit is set through; the badge is notation",
+    "{…} rpm":
+      "a rate unit named after the `rpm` field the limit is set through; the badge is notation",
+    "{…} tpm":
+      "a rate unit named after the `tpm` field the limit is set through; the badge is notation",
   },
   "src/pages/PromptRepository.tsx": {
     "v{…}": "a version number in `v3` notation, the same in every locale",

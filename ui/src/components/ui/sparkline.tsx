@@ -23,8 +23,7 @@ export function Sparkline({
   const range = max - min || 1;
   const n = values.length;
   const xAt = (i: number) => (n <= 1 ? width / 2 : (i / (n - 1)) * width);
-  const yAt = (v: number) =>
-    padY + (height - padY * 2) - ((v - min) / range) * (height - padY * 2);
+  const yAt = (v: number) => padY + (height - padY * 2) - ((v - min) / range) * (height - padY * 2);
   // SVG path coordinates, not copy: they must stay machine-readable, so they
   // are rounded arithmetically and never handed to a locale-aware formatter
   const round = (v: number) => Math.round(v * 10) / 10;

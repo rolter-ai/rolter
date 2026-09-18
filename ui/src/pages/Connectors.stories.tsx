@@ -164,18 +164,14 @@ export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json([])} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText(/No connectors yet/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/No connectors yet/)).toBeVisible());
   },
 };
 
 // connectors are a deployment-wide egress decision, so a non-superadmin gets 403
 export const Error_: Story = {
   name: "Error",
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
@@ -244,9 +240,7 @@ export const DeletingAConnector: Story = {
 
     const dialog = within(document.body).getByRole("dialog");
     await waitFor(() =>
-      expect(
-        within(dialog).getByRole("button", { name: /delete connector/i }),
-      ).toBeDisabled(),
+      expect(within(dialog).getByRole("button", { name: /delete connector/i })).toBeDisabled(),
     );
   },
 };
@@ -259,9 +253,7 @@ export const CollectorConfig: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
-    await userEvent.click(
-      canvas.getByRole("button", { name: /Collector config/ }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
 
     const dialog = within(await within(document.body).findByRole("dialog"));
     // the document itself, verbatim — one exporter and one pipeline per
@@ -283,15 +275,11 @@ export const CollectorConfig: Story = {
 // the document is rendered on request from the connector rows, so it can be
 // slow; the dialog stands in a skeleton rather than an empty frame
 export const CollectorConfigLoading: Story = {
-  render: () => (
-    <Harness fetchStub={withConfig(() => new Promise<Response>(() => {}))} />
-  ),
+  render: () => <Harness fetchStub={withConfig(() => new Promise<Response>(() => {}))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
-    await userEvent.click(
-      canvas.getByRole("button", { name: /Collector config/ }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
     await expectSkeleton(document.body);
   },
 };
@@ -299,15 +287,11 @@ export const CollectorConfigLoading: Story = {
 // with no connectors the config renders no exporters at all: a valid document
 // that delivers nothing, which is worth saying rather than showing
 export const CollectorConfigEmpty: Story = {
-  render: () => (
-    <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG), [])} />
-  ),
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG), [])} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No connectors yet/)).toBeVisible());
-    await userEvent.click(
-      canvas.getByRole("button", { name: /Collector config/ }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await expect(dialog.getByText(/Nothing to deliver yet/)).toBeVisible();
   },
@@ -317,16 +301,12 @@ export const CollectorConfigEmpty: Story = {
 // open, say. the failure belongs in the dialog, not on the screen behind it
 export const CollectorConfigError: Story = {
   render: () => (
-    <Harness
-      fetchStub={withConfig(() => json({ error: { message: "kek unavailable" } }, 500))}
-    />
+    <Harness fetchStub={withConfig(() => json({ error: { message: "kek unavailable" } }, 500))} />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
-    await userEvent.click(
-      canvas.getByRole("button", { name: /Collector config/ }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
     await expectLoadError(document.body, /collector config/i);
   },
 };

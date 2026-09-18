@@ -69,8 +69,7 @@ export function Field({
   // an explicit htmlFor over several children named the control but still left
   // its hint and error undescribed, so an invalid input sounded valid (#1527)
   const multi = !control && !!htmlFor;
-  const controlId =
-    htmlFor ?? control?.props.id ?? (control ? generated : wrapped);
+  const controlId = htmlFor ?? control?.props.id ?? (control ? generated : wrapped);
   // the error or hint below the control is tied to it as its description, and
   // an error also flips aria-invalid, so a screen reader hears both the state
   // and the reason rather than a control that silently refuses to submit

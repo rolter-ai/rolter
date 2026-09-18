@@ -28,10 +28,7 @@ export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHead
   // assembled-shell story (#1239) caught the moment the axe gate started
   // asserting heading-order (#1244)
   return (
-    <h2
-      className={cn("text-lg font-semibold leading-none tracking-tight", className)}
-      {...props}
-    />
+    <h2 className={cn("text-lg font-semibold leading-none tracking-tight", className)} {...props} />
   );
 }
 

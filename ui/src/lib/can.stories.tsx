@@ -17,7 +17,12 @@ import { Harness, NEEDS_ADMIN, json, type FetchStub } from "@/pages/story-harnes
 // *is* the scope's own.
 
 const ORG = { id: "org-1", name: "Rolter", slug: "rolter", created_at: "2026-01-01T00:00:00Z" };
-const TEAM = { id: "team-1", org_id: "org-1", name: "Platform", created_at: "2026-01-01T00:00:00Z" };
+const TEAM = {
+  id: "team-1",
+  org_id: "org-1",
+  name: "Platform",
+  created_at: "2026-01-01T00:00:00Z",
+};
 
 /** a chain that stops at `depth`: the org exists, the rest of it does not */
 function chain(depth: "org" | "team"): FetchStub {
@@ -86,7 +91,12 @@ export const ResolvesInAFullyPopulatedChain: Story = {
         if (/\/teams$/.test(path)) return json([TEAM]);
         if (/\/projects$/.test(path))
           return json([
-            { id: "project-1", team_id: "team-1", name: "Gateway", created_at: "2026-01-01T00:00:00Z" },
+            {
+              id: "project-1",
+              team_id: "team-1",
+              name: "Gateway",
+              created_at: "2026-01-01T00:00:00Z",
+            },
           ]);
         return json([]);
       }}

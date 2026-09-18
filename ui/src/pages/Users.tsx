@@ -70,7 +70,6 @@ export default function Users() {
     enabled: !!orgId,
   });
 
-
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
   // `users` is the query the user is actually waiting on for this screen
@@ -195,7 +194,12 @@ export default function Users() {
             </button>
           ))}
         </div>
-        <GatedButton gate="invitation:create" className="ml-auto" onClick={() => setInviteOpen(true)} disabled={!orgId}>
+        <GatedButton
+          gate="invitation:create"
+          className="ml-auto"
+          onClick={() => setInviteOpen(true)}
+          disabled={!orgId}
+        >
           <Plus className="h-4 w-4" />
           {t("pages.users.inviteAction")}
         </GatedButton>
@@ -304,14 +308,12 @@ export default function Users() {
                 <RowIconButton
                   gate="user:update"
                   danger={active}
-                  title={t(
-                    active ? "pages.users.deactivate" : "pages.users.reactivate",
-                    { email: user.email },
-                  )}
-                  aria-label={t(
-                    active ? "pages.users.deactivate" : "pages.users.reactivate",
-                    { email: user.email },
-                  )}
+                  title={t(active ? "pages.users.deactivate" : "pages.users.reactivate", {
+                    email: user.email,
+                  })}
+                  aria-label={t(active ? "pages.users.deactivate" : "pages.users.reactivate", {
+                    email: user.email,
+                  })}
                   disabled={toggleActive.isPending && toggleActive.variables?.id === user.id}
                   onClick={() => toggleActive.mutate(user)}
                 >
@@ -337,7 +339,11 @@ export default function Users() {
                   {t("common.clearSearch")}
                 </Button>
               ) : (
-                <GatedButton gate="invitation:create" disabled={!orgId} onClick={() => setInviteOpen(true)}>
+                <GatedButton
+                  gate="invitation:create"
+                  disabled={!orgId}
+                  onClick={() => setInviteOpen(true)}
+                >
                   {t("pages.users.emptyAction")}
                 </GatedButton>
               )
@@ -374,7 +380,6 @@ export default function Users() {
     </PageBody>
   );
 }
-
 
 // render a membership's scope compactly, resolving team names where the scope
 // is a team in the current org; projects fall back to a short id
@@ -471,9 +476,7 @@ function InviteUserDialog({
               components={[<strong key="email" />]}
             />
           </p>
-          <code className="block break-all rounded-md border bg-muted/40 p-2 text-xs">
-            {link}
-          </code>
+          <code className="block break-all rounded-md border bg-muted/40 p-2 text-xs">{link}</code>
         </div>
         <DialogFooter>
           <Button
@@ -504,46 +507,46 @@ function InviteUserDialog({
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
-        <div className="space-y-3">
-          <Field label={t("pages.users.email")}>
+      <div className="space-y-3">
+        <Field label={t("pages.users.email")}>
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={t("pages.users.emailPlaceholder")}
+          />
+        </Field>
+        <Field label={t("pages.users.method")}>
+          <Combobox
+            value={method}
+            onChange={(picked) => setMethod(picked as "link" | "password")}
+            options={[
+              { value: "link", label: t("pages.users.methodLink") },
+              { value: "password", label: t("pages.users.methodPassword") },
+            ]}
+          />
+        </Field>
+        {method === "password" && (
+          <Field
+            label={t("pages.users.passwordOptional")}
+            hint={t("pages.users.passwordOptionalHint")}
+          >
             <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t("pages.users.emailPlaceholder")}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={t("pages.users.passwordOptionalPlaceholder")}
             />
           </Field>
-          <Field label={t("pages.users.method")}>
-            <Combobox
-              value={method}
-              onChange={(picked) => setMethod(picked as "link" | "password")}
-              options={[
-                { value: "link", label: t("pages.users.methodLink") },
-                { value: "password", label: t("pages.users.methodPassword") },
-              ]}
-            />
-          </Field>
-          {method === "password" && (
-            <Field
-              label={t("pages.users.passwordOptional")}
-              hint={t("pages.users.passwordOptionalHint")}
-            >
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={t("pages.users.passwordOptionalPlaceholder")}
-              />
-            </Field>
-          )}
-          <Field label={t("pages.users.orgRole")}>
-            <Combobox
-              value={role}
-              onChange={setRole}
-              options={ROLES.map((r) => ({ value: r, label: r }))}
-            />
-          </Field>
-        </div>
+        )}
+        <Field label={t("pages.users.orgRole")}>
+          <Combobox
+            value={role}
+            onChange={setRole}
+            options={ROLES.map((r) => ({ value: r, label: r }))}
+          />
+        </Field>
+      </div>
     </EditorSheet>
   );
 }
@@ -569,8 +572,7 @@ function EditUserDialog({
       updateUser(user.id, {
         email: email.trim() !== user.email ? email.trim() : undefined,
         password: password.trim() ? password : undefined,
-        is_superadmin:
-          isSuperadmin !== user.is_superadmin ? isSuperadmin : undefined,
+        is_superadmin: isSuperadmin !== user.is_superadmin ? isSuperadmin : undefined,
       }),
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
@@ -614,11 +616,7 @@ function EditUserDialog({
       onOpenChange={onOpenChange}
       title={t("pages.users.editTitle")}
       subtitle={t("pages.users.editSubtitle")}
-      dirty={
-        email.trim() !== user.email ||
-        password !== "" ||
-        isSuperadmin !== user.is_superadmin
-      }
+      dirty={email.trim() !== user.email || password !== "" || isSuperadmin !== user.is_superadmin}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={t("common.save")}
       canSave
@@ -627,16 +625,9 @@ function EditUserDialog({
     >
       <div className="space-y-3">
         <Field label={t("pages.users.email")}>
-          <Input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field
-          label={t("pages.users.newPassword")}
-          hint={t("pages.users.newPasswordHint")}
-        >
+        <Field label={t("pages.users.newPassword")} hint={t("pages.users.newPasswordHint")}>
           <Input
             type="password"
             value={password}
@@ -656,14 +647,8 @@ function EditUserDialog({
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
           {!confirmDelete ? (
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
-                {t("pages.users.deleteHint")}
-              </span>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => setConfirmDelete(true)}
-              >
+              <span className="text-xs text-muted-foreground">{t("pages.users.deleteHint")}</span>
+              <Button size="sm" variant="destructive" onClick={() => setConfirmDelete(true)}>
                 <Trash2 className="h-3.5 w-3.5" />
                 {t("common.delete")}
               </Button>
@@ -683,11 +668,7 @@ function EditUserDialog({
                 </p>
               )}
               <div className="flex justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setConfirmDelete(false)}
-                >
+                <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)}>
                   {t("common.cancel")}
                 </Button>
                 <Button
@@ -724,16 +705,12 @@ function AddRoleDialog({
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [scopeType, setScopeType] =
-    React.useState<(typeof MEMBERSHIP_SCOPE_TYPES)[number]>("org");
+  const [scopeType, setScopeType] = React.useState<(typeof MEMBERSHIP_SCOPE_TYPES)[number]>("org");
   const [teamId, setTeamId] = React.useState<string>(teams[0]?.id ?? "");
-  const [projectId, setProjectId] = React.useState<string>(
-    defaultProjectId ?? "",
-  );
+  const [projectId, setProjectId] = React.useState<string>(defaultProjectId ?? "");
   const [role, setRole] = React.useState<string>("member");
 
-  const scopeId =
-    scopeType === "org" ? orgId : scopeType === "team" ? teamId : projectId;
+  const scopeId = scopeType === "org" ? orgId : scopeType === "team" ? teamId : projectId;
 
   const create = useMutation({
     mutationFn: () =>
@@ -785,9 +762,7 @@ function AddRoleDialog({
         <Field label={t("pages.users.scope")}>
           <Combobox
             value={scopeType}
-            onChange={(picked) =>
-              setScopeType(picked as (typeof MEMBERSHIP_SCOPE_TYPES)[number])
-            }
+            onChange={(picked) => setScopeType(picked as (typeof MEMBERSHIP_SCOPE_TYPES)[number])}
             options={MEMBERSHIP_SCOPE_TYPES.map((kind) => ({ value: kind, label: kind }))}
           />
         </Field>
@@ -802,10 +777,7 @@ function AddRoleDialog({
           </Field>
         )}
         {scopeType === "project" && (
-          <Field
-            label={t("pages.users.projectId")}
-            hint={t("pages.users.projectIdHint")}
-          >
+          <Field label={t("pages.users.projectId")} hint={t("pages.users.projectIdHint")}>
             <Input
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}

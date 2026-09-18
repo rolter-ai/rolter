@@ -78,9 +78,7 @@ export const CustomLabel: Story = {
   render: (args) => <CopyButton {...args} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.getByRole("button", { name: /copy address prefix/i }),
-    ).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /copy address prefix/i })).toBeVisible();
   },
 };
 
@@ -130,9 +128,7 @@ export const ClipboardRefused: Story = {
     const canvas = within(canvasElement);
     const button = canvas.getByRole("button");
     await userEvent.click(button);
-    await waitFor(() =>
-      expect(button).toHaveAttribute("title", en.common.copyFailed),
-    );
+    await waitFor(() => expect(button).toHaveAttribute("title", en.common.copyFailed));
   },
 };
 

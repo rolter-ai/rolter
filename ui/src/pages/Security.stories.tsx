@@ -42,9 +42,7 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Password protect the dashboard")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
   },
 };
 
@@ -106,9 +104,7 @@ export const SavesChanges: Story = {
   render: () => (
     <Harness
       fetchStub={async (_input, init) =>
-        init?.method === "PUT"
-          ? json({ ...BASE, ...JSON.parse(String(init.body)) })
-          : json(BASE)
+        init?.method === "PUT" ? json({ ...BASE, ...JSON.parse(String(init.body)) }) : json(BASE)
       }
     >
       <Toasted>
@@ -169,9 +165,7 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Password protect the dashboard")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };
@@ -185,9 +179,7 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Password protect the dashboard")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };

@@ -181,11 +181,7 @@ function insideParameters(masked: string, index: number): boolean {
 }
 
 /** Every misplaced fixture spread in one story file. */
-export function checkStorySource(
-  source: string,
-  file: string,
-  fixtures: Fixture[],
-): Violation[] {
+export function checkStorySource(source: string, file: string, fixtures: Fixture[]): Violation[] {
   const masked = maskLiterals(source);
   const violations: Violation[] = [];
   for (const fixture of fixtures) {

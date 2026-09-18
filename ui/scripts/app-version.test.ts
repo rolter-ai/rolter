@@ -4,9 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 
 import { parseWorkspaceVersion, readAppVersion } from "./app-version";
 
-const WORKSPACE_MANIFEST = fileURLToPath(
-  new URL("../../Cargo.toml", import.meta.url),
-);
+const WORKSPACE_MANIFEST = fileURLToPath(new URL("../../Cargo.toml", import.meta.url));
 
 describe("app version", () => {
   it("reads the version from [workspace.package]", () => {
@@ -41,9 +39,7 @@ version = "0.0.10"
   it("throws rather than falling back to a wrong version", () => {
     // silently defaulting is exactly how the sidebar came to show v0.0.1 for
     // ten releases; a build that cannot find the version must fail loudly
-    expect(() => parseWorkspaceVersion("[workspace]\nmembers = []\n")).toThrow(
-      /workspace.package/,
-    );
+    expect(() => parseWorkspaceVersion("[workspace]\nmembers = []\n")).toThrow(/workspace.package/);
   });
 
   it("resolves the real workspace manifest to the shipped version", () => {
@@ -51,9 +47,7 @@ version = "0.0.10"
     // dashboard reports — and it is never the stale 0.0.1
     const version = readAppVersion(WORKSPACE_MANIFEST);
     expect(version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(readFileSync(WORKSPACE_MANIFEST, "utf8")).toContain(
-      `version = "${version}"`,
-    );
+    expect(readFileSync(WORKSPACE_MANIFEST, "utf8")).toContain(`version = "${version}"`);
   });
 
   it("no longer keeps a second version in package.json", () => {

@@ -87,7 +87,10 @@ const ALIASES: Record<string, CodeLanguage> = {
 export function resolveLanguage(tag: string | null | undefined): CodeLanguage {
   if (!tag) return DEFAULT_LANGUAGE;
   // a fence may carry metadata after the tag: ```ts title="x"
-  const name = tag.trim().split(/[\s,{]/)[0].toLowerCase();
+  const name = tag
+    .trim()
+    .split(/[\s,{]/)[0]
+    .toLowerCase();
   if ((CODE_LANGUAGES as readonly string[]).includes(name)) return name as CodeLanguage;
   return ALIASES[name] ?? DEFAULT_LANGUAGE;
 }

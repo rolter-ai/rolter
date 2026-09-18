@@ -15,17 +15,17 @@ import {
   type StoryRole,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
-import type {
-  McpOAuthGrantRow,
-  McpOAuthSessionRow,
-  McpServerRow,
-  UserRow,
-} from "@/lib/api";
+import type { McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow, UserRow } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
 
 const ORG = { id: "org-1", name: "acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
 const TEAM = { id: "team-1", org_id: ORG.id, name: "platform", created_at: "2026-01-01T00:00:00Z" };
-const PROJECT = { id: "proj-1", team_id: TEAM.id, name: "gateway", created_at: "2026-01-01T00:00:00Z" };
+const PROJECT = {
+  id: "proj-1",
+  team_id: TEAM.id,
+  name: "gateway",
+  created_at: "2026-01-01T00:00:00Z",
+};
 
 const SERVERS: McpServerRow[] = [
   {
@@ -95,7 +95,12 @@ const SERVERS: McpServerRow[] = [
 ];
 
 const USERS: UserRow[] = [
-  { id: "user-ada", email: "ada@acme.dev", is_superadmin: false, created_at: "2026-01-02T00:00:00Z" },
+  {
+    id: "user-ada",
+    email: "ada@acme.dev",
+    is_superadmin: false,
+    created_at: "2026-01-02T00:00:00Z",
+  },
   { id: "user-bo", email: "bo@acme.dev", is_superadmin: false, created_at: "2026-01-03T00:00:00Z" },
 ];
 
@@ -165,11 +170,7 @@ function routed(
 ): FetchStub {
   return async (input) => {
     const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes("/mcp-servers")) return over.servers?.() ?? json(SERVERS);
     if (url.includes("/mcp/grants")) return over.grants?.() ?? json(GRANTS);
     if (url.includes("/mcp/sessions")) return over.sessions?.() ?? json(SESSIONS);
@@ -246,12 +247,8 @@ export const GrantRevokeNamesItsSessions: Story = {
     await userEvent.click(revoke);
     // the dialog portals to document.body, not the canvas root
     const body = within(document.body);
-    await waitFor(() =>
-      expect(body.getByText(/also revokes 2 live sessions/)).toBeVisible(),
-    );
-    await expect(
-      body.getByText(/in the same transaction/),
-    ).toBeVisible();
+    await waitFor(() => expect(body.getByText(/also revokes 2 live sessions/)).toBeVisible());
+    await expect(body.getByText(/in the same transaction/)).toBeVisible();
   },
 };
 
@@ -274,9 +271,7 @@ export const GrantsEmpty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No consent granted yet")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No consent granted yet")).toBeVisible());
   },
 };
 
@@ -365,7 +360,9 @@ export const SessionsEmpty: Story = {
 // grants on this screen have always confirmed before revoking; a session
 // revoke went straight through on one click until #1179
 const sessionRevokes = recording(async (input, init) =>
-  init?.method === "DELETE" ? json(session({ revoked_at: new Date().toISOString() })) : routed()(input, init),
+  init?.method === "DELETE"
+    ? json(session({ revoked_at: new Date().toISOString() }))
+    : routed()(input, init),
 );
 
 export const SessionRevokeConfirmsFirst: Story = {
@@ -418,9 +415,11 @@ export const SessionRefreshesFromTheRow: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const renew = (await canvas.findAllByRole("button", {
-      name: "Renew the session ada@acme.dev holds on github",
-    }))[0];
+    const renew = (
+      await canvas.findAllByRole("button", {
+        name: "Renew the session ada@acme.dev holds on github",
+      })
+    )[0];
     await userEvent.click(renew);
     await sessionRefreshes.expectSent("POST", "/mcp/sessions/sess-1/refresh");
     // the toast fades in, so it is momentarily transparent: waitFor rather
@@ -449,11 +448,13 @@ export const SessionRefreshFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      (await canvas.findAllByRole("button", { name: "Renew the session ada@acme.dev holds on github" }))[0],
+      (
+        await canvas.findAllByRole("button", {
+          name: "Renew the session ada@acme.dev holds on github",
+        })
+      )[0],
     );
-    await waitFor(() =>
-      expect(canvas.getByText("Could not renew the session")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Could not renew the session")).toBeVisible());
     await expect(canvas.getByText(/no usable refresh token/)).toBeVisible();
   },
 };

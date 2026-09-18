@@ -79,18 +79,14 @@ export const Default: Story = {
     const canvas = within(canvasElement);
     // a combobox reads as the option's label; `30` and `inherit` are what the
     // form sends
-    await expect(canvas.getByLabelText("Expires")).toHaveValue(
-      `In ${DEFAULT_KEY_TTL_DAYS} days`,
-    );
+    await expect(canvas.getByLabelText("Expires")).toHaveValue(`In ${DEFAULT_KEY_TTL_DAYS} days`);
     await expect(canvas.getByLabelText("Response cache")).toHaveValue("Inherit route setting");
   },
 };
 
 /** A filled-in draft, narrowed to two models. */
 export const Filled: Story = {
-  render: () => (
-    <MintForm initialName="ci-runner" initialModels={["gpt-4o", "claude-sonnet"]} />
-  ),
+  render: () => <MintForm initialName="ci-runner" initialModels={["gpt-4o", "claude-sonnet"]} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/2 models: gpt-4o, claude-sonnet/)).toBeVisible();
@@ -164,12 +160,7 @@ export const CacheIsThreeState: Story = {
 export const ScopedToProviders: Story = {
   render: () => (
     <div className="max-w-md">
-      <KeyReachSummary
-        project="Gateway"
-        models={["gpt-4o"]}
-        providers={["openai-prod"]}
-        ttl="7"
-      />
+      <KeyReachSummary project="Gateway" models={["gpt-4o"]} providers={["openai-prod"]} ttl="7" />
     </div>
   ),
   play: async ({ canvasElement }) => {
@@ -256,9 +247,7 @@ export const ModelsLoadFailed: Story = {
   render: () => <MintForm error={new ApiError("forbidden", 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("alert")).toHaveTextContent(
-      "You do not have access to routes",
-    );
+    await expect(canvas.getByRole("alert")).toHaveTextContent("You do not have access to routes");
     await userEvent.type(canvas.getByLabelText(/model allow-list/i), "gpt-4o");
     await userEvent.click(canvas.getByRole("button", { name: "Add" }));
     await expect(canvas.getByText("One model: gpt-4o")).toBeVisible();

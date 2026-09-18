@@ -42,9 +42,7 @@ export const NamedForItsField: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.getByRole("button", { name: "About queue capacity" }),
-    ).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "About queue capacity" })).toBeVisible();
   },
 };
 

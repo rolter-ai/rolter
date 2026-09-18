@@ -22,9 +22,7 @@ export const OneProblem: Story = {
     // singular, and the reason is visible — "1 provider is broken" without
     // saying why sends the operator back to the logs
     await expect(await canvas.findByText(/1 config entry/)).toBeInTheDocument();
-    await expect(
-      await canvas.findByText(/openrouter\.ai\/api\/v1/),
-    ).toBeInTheDocument();
+    await expect(await canvas.findByText(/openrouter\.ai\/api\/v1/)).toBeInTheDocument();
   },
 };
 
@@ -36,9 +34,7 @@ export const SeveralProblems: Story = {
     ],
   },
   play: async ({ canvas }) => {
-    await expect(
-      await canvas.findByText(/2 config entries/),
-    ).toBeInTheDocument();
+    await expect(await canvas.findByText(/2 config entries/)).toBeInTheDocument();
   },
 };
 

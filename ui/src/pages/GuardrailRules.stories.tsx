@@ -54,7 +54,6 @@ const RULES: GuardrailRuleRow[] = [
   },
 ];
 
-
 /**
  * The screen under the shared fetch-stub harness, with a role to render as.
  *
@@ -89,7 +88,11 @@ function Harness({
   );
 }
 
-const meta = { title: "Screens/GuardrailRules", component: GuardrailRules, parameters: { layout: "fullscreen" } } satisfies Meta<typeof GuardrailRules>;
+const meta = {
+  title: "Screens/GuardrailRules",
+  component: GuardrailRules,
+  parameters: { layout: "fullscreen" },
+} satisfies Meta<typeof GuardrailRules>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -105,7 +108,9 @@ export const Empty: Story = {
   },
 };
 export const Error: Story = {
-  render: () => <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />,
+  render: () => (
+    <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />
+  ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return guardrail rules/);
   },
@@ -115,14 +120,10 @@ export const Error: Story = {
 // screen is refused to every non-superadmin, and a "try again" on a permission
 // suggests the refusal was transient
 export const Forbidden: Story = {
-  render: () => (
-    <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />
-  ),
+  render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/do not have access to guardrail rules/i),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/do not have access to guardrail rules/i)).toBeVisible();
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
   },
 };
@@ -130,29 +131,32 @@ export const Forbidden: Story = {
 // fetch never connected, so there is no status to read: that one *is* worth
 // retrying, and the control plane's own message is still printed underneath
 export const Unreachable: Story = {
-  render: () => (
-    <Harness fetchStub={() => Promise.reject(new TypeError("Failed to fetch"))} />
-  ),
+  render: () => <Harness fetchStub={() => Promise.reject(new TypeError("Failed to fetch"))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText(/cannot reach the control plane/i),
-    ).toBeVisible();
-    await expect(
-      await canvas.findByRole("button", { name: /try again/i }),
-    ).toBeVisible();
+    await expect(await canvas.findByText(/cannot reach the control plane/i)).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: /try again/i })).toBeVisible();
   },
 };
 
 export const CreatesCustomRule: Story = {
-  render: () => <Harness fetchStub={async (_input, init) => init?.method === "POST" ? json(RULES[1], 201) : json(RULES)} />,
+  render: () => (
+    <Harness
+      fetchStub={async (_input, init) =>
+        init?.method === "POST" ? json(RULES[1], 201) : json(RULES)
+      }
+    />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /add rule/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Rule name"), "Prompt injection policy");
     await pickOption(within(dialog).getByLabelText("Source"), "Custom regex");
-    await userEvent.type(within(dialog).getByLabelText("Regular expression"), "ignore previous instructions");
+    await userEvent.type(
+      within(dialog).getByLabelText("Regular expression"),
+      "ignore previous instructions",
+    );
     await expect(within(dialog).getByRole("button", { name: "Publish rule" })).toBeEnabled();
   },
 };
@@ -187,9 +191,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.click(within(dialog).getByRole("button", { name: "Publish rule" }));
 
     await expectToast(canvasElement, /does not compile/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(dialog).getByLabelText("Regular expression")).toHaveValue(
       "ignore previous instructions",
     );
@@ -249,7 +251,9 @@ export const EditsRule: Story = {
       await canvas.findByRole("button", { name: "Edit rule Redact customer email" }),
     );
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeVisible());
-    await expect(within(document.body).getByLabelText("Rule name")).toHaveValue("Redact customer email");
+    await expect(within(document.body).getByLabelText("Rule name")).toHaveValue(
+      "Redact customer email",
+    );
   },
 };
 

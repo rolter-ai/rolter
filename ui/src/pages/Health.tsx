@@ -260,9 +260,7 @@ export default function Health() {
   const error = uptime.error || mttr.error || timeline.error;
 
   const key = (provider: string, target: string) => `${provider}::${target}`;
-  const mttrByTarget = new Map(
-    (mttr.data ?? []).map((m) => [key(m.provider, m.target_id), m]),
-  );
+  const mttrByTarget = new Map((mttr.data ?? []).map((m) => [key(m.provider, m.target_id), m]));
   const timelineByTarget = new Map<string, TimelineRow[]>();
   for (const row of timeline.data ?? []) {
     const k = key(row.provider, row.target_id);
@@ -344,9 +342,7 @@ export default function Health() {
                 <span
                   className="h-2 w-2 flex-none rounded-full"
                   style={{
-                    background: head.breached
-                      ? "var(--status-danger)"
-                      : "var(--status-success)",
+                    background: head.breached ? "var(--status-danger)" : "var(--status-success)",
                   }}
                 />
                 <span className="font-mono text-sm font-semibold">{group.provider}</span>
@@ -378,10 +374,7 @@ export default function Health() {
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-2.5 border-t sm:grid-cols-3 border-[color:var(--border-subtle)] pt-3">
-                <Stat
-                  label={t("pages.health.failures")}
-                  value={fmt.number(head.failures)}
-                />
+                <Stat label={t("pages.health.failures")} value={fmt.number(head.failures)} />
                 <Stat
                   label={t("pages.health.mttr")}
                   value={mttrLabel(fmt, providerMttr?.mttr_seconds)}
@@ -415,8 +408,7 @@ export default function Health() {
                 <span
                   className="ml-auto font-mono text-xs"
                   style={{
-                    color:
-                      head.burn > 1 ? "var(--status-danger-text)" : "var(--text-secondary)",
+                    color: head.burn > 1 ? "var(--status-danger-text)" : "var(--text-secondary)",
                   }}
                 >
                   {fmt.percent(head.burn, 0)}

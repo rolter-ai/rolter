@@ -90,11 +90,8 @@ export default function Plugins() {
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
   useErrorState(!!query.error, "plugins");
-  const [editing, setEditing] = React.useState<
-    PluginInstanceRow | null | undefined
-  >();
-  const invalidate = () =>
-    client.invalidateQueries({ queryKey: ["plugins", scope.orgId] });
+  const [editing, setEditing] = React.useState<PluginInstanceRow | null | undefined>();
+  const invalidate = () => client.invalidateQueries({ queryKey: ["plugins", scope.orgId] });
   const toggle = useMutation({
     mutationFn: (plugin: PluginInstanceRow) =>
       updatePlugin(plugin.id, { ...asInput(plugin), enabled: !plugin.enabled }),
@@ -114,8 +111,7 @@ export default function Plugins() {
   });
   // was a bare window.confirm, which carried the copy but none of the styling,
   // and had no pending state to show while the delete was in flight (#1179)
-  const [deleteTarget, setDeleteTarget] =
-    React.useState<PluginInstanceRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<PluginInstanceRow | null>(null);
   const startDelete = (plugin: PluginInstanceRow) => {
     remove.reset();
     setDeleteTarget(plugin);
@@ -145,9 +141,7 @@ export default function Plugins() {
           <h1 className="mt-1 text-xl font-semibold tracking-tight">
             {t("pages.plugins.heading")}
           </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            {t("pages.plugins.intro")}
-          </p>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
         </div>
         <GatedButton gate="plugin:create" onClick={() => setEditing(null)}>
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.plugins.install")}
@@ -288,9 +282,7 @@ function StageLane({
           </span>
           <h2 className="text-sm font-semibold">{stage.label}</h2>
         </div>
-        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          {stage.description}
-        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{stage.description}</p>
       </div>
       {plugins.length === 0 ? (
         <div className="flex min-h-[116px] items-center justify-center rounded-[10px] border border-dashed border-[color:var(--border-default)] text-xs text-[color:var(--text-subtle)]">
@@ -307,8 +299,7 @@ function StageLane({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="truncate text-sm font-semibold">
-                      {plugin.position.toString().padStart(2, "0")} ·{" "}
-                      {plugin.name}
+                      {plugin.position.toString().padStart(2, "0")} · {plugin.name}
                     </h3>
                     <Badge tone={plugin.enabled ? "accent" : "neutral"} dot>
                       {plugin.enabled
@@ -323,9 +314,7 @@ function StageLane({
                 <GatedSwitch
                   gate="plugin:update"
                   checked={plugin.enabled}
-                  disabled={
-                    togglingId === plugin.id || removingId === plugin.id
-                  }
+                  disabled={togglingId === plugin.id || removingId === plugin.id}
                   aria-label={t("pages.plugins.toggleAria", {
                     name: plugin.name,
                   })}
@@ -338,22 +327,15 @@ function StageLane({
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <Badge tone="outline">
                   {plugin.project_id
-                    ? (projectNames[plugin.project_id] ??
-                      t("pages.plugins.scopeProject"))
+                    ? (projectNames[plugin.project_id] ?? t("pages.plugins.scopeProject"))
                     : t("pages.plugins.scopeOrg")}
                 </Badge>
-                <Badge
-                  tone={
-                    plugin.failure_mode === "fail_closed" ? "danger" : "warning"
-                  }
-                >
+                <Badge tone={plugin.failure_mode === "fail_closed" ? "danger" : "warning"}>
                   {plugin.failure_mode === "fail_closed"
                     ? t("pages.plugins.failClosed")
                     : t("pages.plugins.failOpen")}
                 </Badge>
-                {plugin.secret_env && (
-                  <Badge tone="info">{t("pages.plugins.secretRef")}</Badge>
-                )}
+                {plugin.secret_env && <Badge tone="info">{t("pages.plugins.secretRef")}</Badge>}
               </div>
               <div className="mt-4 flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
@@ -363,9 +345,7 @@ function StageLane({
                   disabled={removingId === plugin.id}
                   onClick={() => onDelete(plugin)}
                 >
-                  {removingId === plugin.id && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  )}
+                  {removingId === plugin.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {t("pages.plugins.delete")}
                 </GatedButton>
                 <GatedButton
@@ -412,9 +392,7 @@ function PluginDialog({
     stage: initial?.stage ?? ("pre_route" as Stage),
     enabled: initial?.enabled ?? false,
     position: String(initial?.position ?? 0),
-    failure_mode:
-      initial?.failure_mode ??
-      ("fail_open" as PluginInstanceRow["failure_mode"]),
+    failure_mode: initial?.failure_mode ?? ("fail_open" as PluginInstanceRow["failure_mode"]),
     endpoint: initial?.endpoint ?? "https://plugins.internal/hook",
     secret_env: initial?.secret_env ?? "",
     config: JSON.stringify(initial?.config ?? {}, null, 2),
@@ -468,11 +446,7 @@ function PluginDialog({
     mutation.mutate({
       project_id: form.project_id || null,
       name: form.name,
-      ...(initial
-        ? { slug: initial.slug }
-        : form.slug
-          ? { slug: form.slug }
-          : {}),
+      ...(initial ? { slug: initial.slug } : form.slug ? { slug: form.slug } : {}),
       description: form.description,
       kind: "webhook",
       stage: form.stage,
@@ -488,13 +462,9 @@ function PluginDialog({
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
         <DialogTitle>
-          {initial
-            ? t("pages.plugins.dialogTitleEdit")
-            : t("pages.plugins.dialogTitleNew")}
+          {initial ? t("pages.plugins.dialogTitleEdit") : t("pages.plugins.dialogTitleNew")}
         </DialogTitle>
-        <DialogDescription>
-          {t("pages.plugins.dialogDescription")}
-        </DialogDescription>
+        <DialogDescription>{t("pages.plugins.dialogDescription")}</DialogDescription>
       </DialogHeader>
       <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
         <div className="grid gap-3 sm:grid-cols-2">
@@ -508,11 +478,7 @@ function PluginDialog({
           <Field
             label={t("pages.plugins.fieldSlug")}
             htmlFor="plugin-slug"
-            hint={
-              initial
-                ? t("pages.plugins.hintSlugLocked")
-                : t("pages.plugins.hintSlugDerived")
-            }
+            hint={initial ? t("pages.plugins.hintSlugLocked") : t("pages.plugins.hintSlugDerived")}
           >
             <Input
               id="plugin-slug"
@@ -522,10 +488,7 @@ function PluginDialog({
             />
           </Field>
         </div>
-        <Field
-          label={t("pages.plugins.fieldDescription")}
-          htmlFor="plugin-description"
-        >
+        <Field label={t("pages.plugins.fieldDescription")} htmlFor="plugin-description">
           <Input
             id="plugin-description"
             value={form.description}
@@ -553,10 +516,7 @@ function PluginDialog({
             />
           </Field>
         </div>
-        <Field
-          label={t("pages.plugins.fieldEndpoint")}
-          htmlFor="plugin-endpoint"
-        >
+        <Field label={t("pages.plugins.fieldEndpoint")} htmlFor="plugin-endpoint">
           <Input
             id="plugin-endpoint"
             type="url"
@@ -578,10 +538,7 @@ function PluginDialog({
               onChange={(event) => set({ position: event.target.value })}
             />
           </Field>
-          <Field
-            label={t("pages.plugins.fieldFailure")}
-            htmlFor="plugin-failure"
-          >
+          <Field label={t("pages.plugins.fieldFailure")} htmlFor="plugin-failure">
             <Combobox
               id="plugin-failure"
               value={form.failure_mode}
@@ -625,12 +582,8 @@ function PluginDialog({
         </Field>
         <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
           <div>
-            <p className="text-sm font-medium">
-              {t("pages.plugins.enabledTitle")}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {t("pages.plugins.enabledHint")}
-            </p>
+            <p className="text-sm font-medium">{t("pages.plugins.enabledTitle")}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("pages.plugins.enabledHint")}</p>
           </div>
           <Switch
             checked={form.enabled}

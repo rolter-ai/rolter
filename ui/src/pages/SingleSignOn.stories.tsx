@@ -23,11 +23,7 @@ import {
   Toasted,
   type FetchStub,
 } from "./story-harness";
-import type {
-  OrgAuthPolicy,
-  SsoGroupMappingRow,
-  SsoProviderRow,
-} from "@/lib/api";
+import type { OrgAuthPolicy, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 
 const NOW = "2026-08-01T10:00:00Z";
 
@@ -169,27 +165,19 @@ export const Loaded: Story = {
 
     // the login URL is the thing an operator has to hand to the IdP, so it is
     // on the card and copyable rather than something to reconstruct by hand
-    await expect(
-      canvas.getByText(new RegExp("/auth/sso/okta/start")),
-    ).toBeVisible();
+    await expect(canvas.getByText(new RegExp("/auth/sso/okta/start"))).toBeVisible();
     await expect(canvas.getByText("https://acme.okta.com")).toBeVisible();
 
     // a group mapping is the thing that grants a role. its own request is
     // separate from the provider list, so it settles after the card is drawn
-    await waitFor(() =>
-      expect(canvas.getByText("platform-engineering")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("platform-engineering")).toBeVisible());
 
     // a provider with no default role refuses an unmapped user, and says so
     await expect(canvas.getByText(/No default role/)).toBeVisible();
 
     // the org policy is the same screen: both ways in are on here
-    await expect(
-      canvas.getByRole("switch", { name: "Password sign-in" }),
-    ).toBeChecked();
-    await expect(
-      canvas.getByRole("switch", { name: "Single sign-on" }),
-    ).toBeChecked();
+    await expect(canvas.getByRole("switch", { name: "Password sign-in" })).toBeChecked();
+    await expect(canvas.getByRole("switch", { name: "Single sign-on" })).toBeChecked();
   },
 };
 
@@ -211,9 +199,7 @@ export const WarnsWhenNoClientSecretIsStored: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No client secret")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No client secret")).toBeVisible());
     await expect(canvas.getByText("Not set")).toBeVisible();
   },
 };
@@ -242,9 +228,7 @@ export const Loading: Story = {
     const canvas = within(canvasElement);
     // skeletons only: nothing claims the org has no provider before the answer
     // has arrived
-    await expect(
-      canvas.queryByRole("button", { name: /Add provider/ }),
-    ).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: /Add provider/ })).not.toBeInTheDocument();
     await expect(canvas.queryByText(/No identity provider yet/)).toBeNull();
   },
 };
@@ -259,9 +243,7 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("No identity provider yet")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No identity provider yet")).toBeVisible());
     // the empty state says what SSO buys them and carries the action
     await expect(canvas.getByText(/company account they already have/)).toBeVisible();
     await expect(canvas.getAllByRole("button", { name: /Add provider/ })).toHaveLength(2);
@@ -286,18 +268,12 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
-      expect(
-        canvas.getByText("You do not have access to identity providers"),
-      ).toBeVisible(),
+      expect(canvas.getByText("You do not have access to identity providers")).toBeVisible(),
     );
-    await expect(
-      canvas.getByText("You do not have access to the sign-in policy"),
-    ).toBeVisible();
+    await expect(canvas.getByText("You do not have access to the sign-in policy")).toBeVisible();
     // a 403 gets no retry button, and nothing to press that would 403 again
     await expect(canvas.queryByRole("button", { name: /Try again/ })).toBeNull();
-    await expect(
-      canvas.getByRole("button", { name: /Add provider/ }),
-    ).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: /Add provider/ })).toBeDisabled();
   },
 };
 
@@ -317,10 +293,7 @@ export const CreatesAProvider: Story = {
     const panel = within(sheet());
     await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
     await userEvent.type(panel.getByLabelText("Slug"), "okta");
-    await userEvent.type(
-      panel.getByLabelText("Issuer URL"),
-      "https://acme.okta.com",
-    );
+    await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
     await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4");
     await userEvent.type(panel.getByLabelText("Client secret"), "s3cr3t");
 
@@ -329,10 +302,7 @@ export const CreatesAProvider: Story = {
 
     await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
 
-    const created = await creates.expectSentBody(
-      "POST",
-      `/api/v1/orgs/${ORG.id}/sso-providers`,
-    );
+    const created = await creates.expectSentBody("POST", `/api/v1/orgs/${ORG.id}/sso-providers`);
     await expect(created).toEqual({
       name: "Acme Okta",
       slug: "okta",
@@ -356,8 +326,7 @@ export const CreateRejectedByTheServer: Story = {
   render: () => (
     <Harness
       fetchStub={scoped(async (input, init) =>
-        (init?.method ?? "GET").toUpperCase() === "POST" &&
-        String(input).includes("/sso-providers")
+        (init?.method ?? "GET").toUpperCase() === "POST" && String(input).includes("/sso-providers")
           ? json({ error: { message: "the issuer did not answer its discovery document" } }, 502)
           : api({ providers: () => [provider()] })(input, init),
       )}
@@ -379,9 +348,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
 
     await expectToast(canvasElement, /discovery document/, "error");
-    await waitFor(() =>
-      expect(within(document.body).getByRole("dialog")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(panel.getByLabelText("Client secret")).toHaveValue("s3cr3t");
     await expect(panel.getByLabelText("Issuer URL")).toHaveValue("https://acme.okta.com");
   },
@@ -502,15 +469,11 @@ export const RemovesTheStoredSecretWithConfirmation: Story = {
 
     // cancelling sends nothing: a secret that cannot be read back must not be
     // droppable by one stray click
-    await userEvent.click(
-      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
-    );
+    await userEvent.click(canvas.getByLabelText("Remove the stored client secret for Acme Okta"));
     await cancelConfirmation();
     clears.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
 
-    await userEvent.click(
-      canvas.getByLabelText("Remove the stored client secret for Acme Okta"),
-    );
+    await userEvent.click(canvas.getByLabelText("Remove the stored client secret for Acme Okta"));
     await confirmDestructive(/Acme Okta/, "Remove secret");
 
     const body = await clears.expectSentBody<Record<string, unknown>>(
@@ -524,9 +487,7 @@ export const RemovesTheStoredSecretWithConfirmation: Story = {
     await expect(body.enabled).toBe(true);
 
     // and the badge flips off the refetched list
-    await waitFor(() =>
-      expect(canvas.getByText("No client secret")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("No client secret")).toBeVisible());
     await expect(canvas.getByText("Not set")).toBeVisible();
     // with nothing stored, the control that removes one is gone
     await expect(
@@ -607,17 +568,12 @@ export const SavesPolicy: Story = {
     // nothing changed yet, so there is nothing to save
     await waitFor(() => expect(save).toBeDisabled());
 
-    await userEvent.click(
-      canvas.getByRole("switch", { name: "Password sign-in" }),
-    );
+    await userEvent.click(canvas.getByRole("switch", { name: "Password sign-in" }));
     await waitFor(() => expect(save).toBeEnabled());
     await userEvent.click(save);
 
     await expect(
-      await policySave.expectSentBody(
-        "PUT",
-        `/api/v1/orgs/${ORG.id}/auth-policy`,
-      ),
+      await policySave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
     ).toEqual({
       allow_password_login: false,
       allow_sso: true,
@@ -643,14 +599,10 @@ export const RefusesToDisableEverySignIn: Story = {
     const canvas = within(canvasElement);
     const save = await canvas.findByRole("button", { name: "Save policy" });
 
-    await userEvent.click(
-      canvas.getByRole("switch", { name: "Password sign-in" }),
-    );
+    await userEvent.click(canvas.getByRole("switch", { name: "Password sign-in" }));
     await userEvent.click(canvas.getByRole("switch", { name: "Single sign-on" }));
 
-    await waitFor(() =>
-      expect(canvas.getByText(/At least one sign-in method/)).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText(/At least one sign-in method/)).toBeVisible());
     await expect(save).toBeDisabled();
   },
 };
@@ -693,13 +645,13 @@ export const RequiringASecondFactorWarnsAboutTheLockout: Story = {
 
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     await confirmDestructive(/cannot set one up/, "Require it");
-    await expect(
-      await mfaSave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
-    ).toEqual({
-      allow_password_login: true,
-      allow_sso: true,
-      mfa_policy: "required_all",
-    });
+    await expect(await mfaSave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual(
+      {
+        allow_password_login: true,
+        allow_sso: true,
+        mfa_policy: "required_all",
+      },
+    );
   },
 };
 
@@ -779,14 +731,8 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add provider");
     await expectRefused(canvasElement, "Delete provider Acme Okta");
-    await expectRefused(
-      canvasElement,
-      "Remove the stored client secret for Acme Okta",
-    );
-    await expectRefused(
-      canvasElement,
-      "Remove the mapping for platform-engineering",
-    );
+    await expectRefused(canvasElement, "Remove the stored client secret for Acme Okta");
+    await expectRefused(canvasElement, "Remove the mapping for platform-engineering");
     // #1234: writing a mapping at a narrower scope is the same capability as
     // writing an org-wide one, so the new scope select must not come with a
     // create button that only fails on submit
@@ -866,9 +812,7 @@ export const ScopeThatCannotBeResolved: Story = {
     const canvas = within(canvasElement);
     const row = (await canvas.findByText("gateway-oncall")).closest("li");
     if (!row) throw new Error("the mapping is not rendered as a row");
-    await waitFor(() =>
-      expect(within(row).getByText("Unresolved scope")).toBeVisible(),
-    );
+    await waitFor(() => expect(within(row).getByText("Unresolved scope")).toBeVisible());
     await expect(within(row).queryByText(TEAM.id)).toBeNull();
     // the id stays quotable in a support conversation
     const chip = within(row).getByTitle(/could not be matched/);
@@ -902,16 +846,10 @@ export const MapsAGroupToATeam: Story = {
     // same org-wide mapping the screen wrote before this
     await expect(picker).toHaveValue("Whole organization");
     const listbox = await openOptions(picker);
-    await expect(
-      within(listbox).getByRole("option", { name: TEAM.name }),
-    ).toBeVisible();
+    await expect(within(listbox).getByRole("option", { name: TEAM.name })).toBeVisible();
     // a project in that team is reachable without moving the scope switcher
-    await expect(
-      within(listbox).getByRole("option", { name: PROJECT.name }),
-    ).toBeVisible();
-    await userEvent.click(
-      within(listbox).getByRole("option", { name: TEAM.name }),
-    );
+    await expect(within(listbox).getByRole("option", { name: PROJECT.name })).toBeVisible();
+    await userEvent.click(within(listbox).getByRole("option", { name: TEAM.name }));
 
     await userEvent.type(canvas.getByLabelText("IdP group"), "gateway-oncall");
     await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
@@ -970,9 +908,7 @@ export const NamesTheScopeWhenRemovingAMapping: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gateway-oncall")).toBeVisible());
-    await userEvent.click(
-      canvas.getByLabelText("Remove the mapping for gateway-oncall"),
-    );
+    await userEvent.click(canvas.getByLabelText("Remove the mapping for gateway-oncall"));
 
     const dialog = within(await confirmation());
     await expect(dialog.getByText(new RegExp(TEAM.name))).toBeVisible();
