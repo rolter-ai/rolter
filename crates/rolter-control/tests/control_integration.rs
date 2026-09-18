@@ -5954,8 +5954,9 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
         }]
     });
 
-    // an unidentified node is accepted and ignored, exactly like an anonymous
-    // snapshot poll: it never lands in the scoreboard
+    // an unidentified node is refused rather than accepted-and-ignored: the
+    // scoreboard is keyed on the node, so the report can never be stored, and
+    // a success status left the reporter with nothing to log (#1644)
     let anonymous = client
         .post(format!("{base}/internal/adaptive-telemetry"))
         .bearer_auth("sekrit")
@@ -5963,7 +5964,17 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
         .send()
         .await
         .unwrap();
-    assert!(anonymous.status().is_success());
+    assert_eq!(anonymous.status(), 400);
+    // a malformed identity is refused on the same grounds as a missing one
+    let malformed = client
+        .post(format!("{base}/internal/adaptive-telemetry"))
+        .bearer_auth("sekrit")
+        .header("x-rolter-node-id", "   ")
+        .json(&report)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), 400);
     let empty: Value = client
         .get(format!("{base}/api/v1/adaptive-routing-telemetry"))
         .bearer_auth("sekrit")

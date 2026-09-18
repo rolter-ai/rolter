@@ -115,17 +115,28 @@ fn merge_targets(report: &RouteReport) -> serde_json::Value {
     serde_json::Value::Array(merged)
 }
 
-/// Record one node's report. Silent (and successful) when the caller sends no
-/// node identity or the deployment has no database: an unidentified node stays
-/// out of the scoreboard exactly as it stays out of the cluster inventory,
-/// and a failed report must never look like a config problem to a gateway.
+/// Record one node's report.
+///
+/// A report with no usable node identity is answered `400`, not `204`. The
+/// scoreboard is keyed on the node, so such a report cannot be stored under
+/// any circumstance, and pretending it succeeded is what made #1644 invisible:
+/// the gateway's reporter only warns on a failure status, so a silent `204`
+/// left two dashboard screens empty with nothing logged on either plane.
+///
+/// Silent (and successful) when the deployment has no database — that is a
+/// deployment shape, not a caller error, and must never look like a config
+/// problem to a gateway.
 async fn ingest(
     State(state): State<ControlState>,
     headers: HeaderMap,
     SafeJson(body): SafeJson<TelemetryReport>,
 ) -> StatusCode {
     let Some(node_id) = node_id(&headers) else {
-        return StatusCode::NO_CONTENT;
+        tracing::debug!(
+            header = NODE_ID_HEADER,
+            "dropping an adaptive-routing telemetry report with no usable node identity"
+        );
+        return StatusCode::BAD_REQUEST;
     };
     let Some(pool) = state.pool.as_ref() else {
         return StatusCode::NO_CONTENT;

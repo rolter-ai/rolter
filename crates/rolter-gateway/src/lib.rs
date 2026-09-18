@@ -253,6 +253,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         let telemetry_snapshot_url = snapshot_url.clone();
         let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
         tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
+        // both the cluster inventory and the adaptive-routing scoreboard are
+        // keyed on this node's id, and a node that cannot name itself is
+        // dropped by the control plane; say so here rather than leaving two
+        // dashboard screens empty with nothing logged (#1644)
+        watcher::log_node_identity();
         watcher::spawn(
             state.clone(),
             snapshot_url,

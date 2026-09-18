@@ -87,7 +87,16 @@ pub(crate) async fn record_heartbeat(
     reported_version: Option<i64>,
 ) -> Option<String> {
     let pool = state.pool.as_ref()?;
-    let id = header_value(headers, NODE_ID_HEADER, 128)?;
+    // the poll itself must still succeed — config propagation is not worth
+    // failing over a bookkeeping header — but the drop is said out loud, since
+    // an anonymous poller is an inventory that never fills (#1644)
+    let Some(id) = header_value(headers, NODE_ID_HEADER, 128) else {
+        tracing::debug!(
+            header = NODE_ID_HEADER,
+            "snapshot poll carries no usable node identity; not recording a cluster sighting"
+        );
+        return None;
+    };
     let role = match header_value(headers, NODE_ROLE_HEADER, 16).as_deref() {
         Some("control") => "control",
         // an unrecognized role is recorded as a gateway rather than dropped;

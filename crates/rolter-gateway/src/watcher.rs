@@ -208,20 +208,36 @@ const NODE_BUILD_HEADER: &str = "x-rolter-node-build";
 /// Response header carrying the operator-requested state for this node.
 const NODE_STATE_HEADER: &str = "x-rolter-node-state";
 
-/// Stable identity for this gateway process. `ROLTER_NODE_ID` when set (the
-/// deployment's own name for the replica), otherwise the hostname, otherwise
-/// nothing — an unidentified node polls exactly as before and stays out of the
-/// inventory rather than churning it with a per-restart id.
+/// Stable identity for this gateway process, resolved by `rolter_core` so the
+/// cluster inventory, the adaptive-routing telemetry and `service.instance.id`
+/// all name this node the same way. An unidentified node polls exactly as
+/// before and stays out of the inventory rather than churning it with a
+/// per-restart id.
 pub(crate) fn node_id() -> Option<String> {
-    for key in ["ROLTER_NODE_ID", "HOSTNAME"] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
+    rolter_core::node_identity::node_id()
+}
+
+/// Say once, at boot, which node this is — or that it is nobody.
+///
+/// Both the cluster inventory and the adaptive-routing scoreboard are keyed on
+/// the node header, and the control plane cannot record a report that does not
+/// carry one. Before #1644 that produced two permanently empty dashboard
+/// screens and not one line of log on either plane, so the absence is now
+/// stated at the only moment an operator can act on it.
+pub(crate) fn log_node_identity() {
+    match rolter_core::node_identity::node_identity() {
+        Some(identity) => tracing::info!(
+            node_id = %identity.id,
+            source = identity.source.as_str(),
+            "node identity resolved"
+        ),
+        None => tracing::warn!(
+            "no node identity could be resolved (ROLTER_NODE_ID, HOSTNAME and the \
+             hostname syscall all came up empty); this gateway will stay out of the \
+             cluster inventory and report no adaptive-routing telemetry until \
+             ROLTER_NODE_ID is set"
+        ),
     }
-    None
 }
 
 /// Fetch the snapshot once and apply it if newer. Returns `Ok(Some(version))`

@@ -45,7 +45,7 @@ Everything lives under one of these groups. Screens you cannot read with your ro
 | **Alerting** | Channels, Rules, History. |
 | **Governance** | Virtual Keys, Users, Teams, Business Units, Customers, User Provisioning (SCIM), Single sign-on, Roles & Permissions, Access Profiles, Audit Logs. |
 | **Guardrails** | Rules and providers for content, PII and safety checks. |
-| **Cluster Config** | The gateways that poll this control plane. A gateway appears once it identifies itself, which needs `ROLTER_NODE_ID` or `HOSTNAME` set in its environment. |
+| **Cluster Config** | The gateways that poll this control plane. A gateway names itself from `ROLTER_NODE_ID`, else `HOSTNAME`, else the host's own name, and logs which one it used at boot. Set `ROLTER_NODE_ID` when several gateways share a host, or they all heartbeat as one node. |
 | **Adaptive Routing** | Live scores from gateways on the adaptive strategy, and its settings. |
 | **Prompt Repository**, **Skills Repository** | Versioned prompt templates and agent skills shared across the org. |
 | **Settings** | Client settings, compatibility, the effective config viewer, security, your own virtual keys, performance tuning, feature flags. |

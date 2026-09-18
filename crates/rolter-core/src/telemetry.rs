@@ -1861,10 +1861,10 @@ mod otlp {
     /// - `service.version` — the crate version, so a bad rollout is visible as a
     ///   version rather than inferred from timing.
     /// - `service.instance.id` — the *same* identity `cluster_nodes` records
-    ///   (`ROLTER_NODE_ID`, else `HOSTNAME`), so a node in the inventory and a
-    ///   node in the trace backend are the same node by construction. Omitted
-    ///   when neither is set, exactly as the cluster inventory omits it, rather
-    ///   than invented per restart.
+    ///   (`ROLTER_NODE_ID`, else `HOSTNAME`, else the host's own name), so a
+    ///   node in the inventory and a node in the trace backend are the same
+    ///   node by construction. Omitted when none of them answers, exactly as
+    ///   the cluster inventory omits it, rather than invented per restart.
     /// - `deployment.environment.name` — from `ROLTER_ENVIRONMENT`, the one
     ///   attribute that separates staging noise from production signal.
     fn resource() -> Resource {
@@ -1892,11 +1892,11 @@ mod otlp {
 
     /// This process's stable identity, matching `cluster_nodes`.
     ///
-    /// Deliberately the same precedence the cluster watcher uses
-    /// (`ROLTER_NODE_ID`, then `HOSTNAME`, then nothing): two different answers
-    /// to "which node is this" would be worse than one missing answer.
+    /// Deliberately the very same resolution the cluster watcher uses, read
+    /// from `crate::node_identity` rather than re-derived: two different
+    /// answers to "which node is this" would be worse than one missing answer.
     fn instance_id() -> Option<String> {
-        non_empty_env("ROLTER_NODE_ID").or_else(|| non_empty_env("HOSTNAME"))
+        crate::node_identity::node_id()
     }
 
     fn non_empty_env(key: &str) -> Option<String> {

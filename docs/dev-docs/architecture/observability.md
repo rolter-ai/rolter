@@ -421,11 +421,18 @@ Every signal carries `service.name`, `service.version` (the crate version), and
 where configured `service.instance.id` and `deployment.environment.name`.
 `OTEL_RESOURCE_ATTRIBUTES` is honoured by the SDK for anything else.
 
-`service.instance.id` deliberately uses the same precedence as the cluster
-watcher — `ROLTER_NODE_ID`, then `HOSTNAME`, then nothing — so a node in
-`cluster_nodes` and a node in the trace backend are the same node by
-construction. When neither is set it is omitted rather than invented per restart,
-which would churn the identity on every deploy.
+`service.instance.id` is the very same value the cluster watcher sends, read
+from `rolter_core::node_identity` rather than derived a second time, so a node
+in `cluster_nodes` and a node in the trace backend are the same node by
+construction. The precedence is `ROLTER_NODE_ID`, then `HOSTNAME`, then the
+host's own name from `gethostname` (#1644) — the syscall is last so an operator
+who names a replica keeps that name, and it exists because a gateway started
+from a shell, a systemd unit or a launchd job has no `HOSTNAME` in its
+environment. When even the syscall fails the attribute is omitted rather than
+invented per restart, which would churn the identity on every deploy. A value
+the control plane's ingest would reject — blank, longer than 128 bytes, or
+carrying a control character — counts as not resolved, so nothing is ever
+reported under an id that is discarded on arrival.
 
 ### Wrapping audit (#815)
 
