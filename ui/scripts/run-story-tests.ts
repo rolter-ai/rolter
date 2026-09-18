@@ -16,9 +16,13 @@
 //   2. it starts `storybook dev --ci` and waits for `/index.json`
 //   3. it checks that index against the story files it was asked to run: every
 //      `export const` in those files must be present, under that file's own
-//      import path. A server from another worktree fails here even when it is
-//      serving a Storybook of the same project
-//   4. only then does it run `test-storybook`, one file per invocation — the
+//      import path. That catches a server that is not this project, and a stale
+//      build missing a story added since
+//   4. it identifies the process holding the port, because the index check
+//      above compares content only and another worktree of this same project
+//      serves the same story ids under the same paths (#1693). The listening
+//      pid's working directory has to be inside this worktree's `ui/`
+//   5. only then does it run `test-storybook`, one file per invocation — the
 //      positional pattern goes through `/bin/sh`, so a pattern containing
 //      `(`, `|` or `)` dies with a shell syntax error
 //
@@ -29,7 +33,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, Socket } from "node:net";
 import { readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const UI_DIR = join(import.meta.dir, "..");
 
@@ -164,6 +168,97 @@ export function missingFrom(
   return problems;
 }
 
+/**
+ * The pids a `lsof -ti :<port>` listing names.
+ *
+ * One listener answers on both address families, so the same pid comes back
+ * twice; the guard asks about each process once.
+ */
+export function parseListeningPids(output: string): number[] {
+  const pids = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^\d+$/.test(line))
+    .map(Number);
+  return [...new Set(pids)];
+}
+
+/**
+ * The working directory a `lsof -a -p <pid> -d cwd -Fn` listing reports, or
+ * null when it reports none — a process owned by another user, or one that has
+ * exited between the two calls.
+ *
+ * The field format is one letter per line (`p<pid>`, `fcwd`, `n<path>`), which
+ * is parsed rather than the column output because a path with a space in it
+ * survives it.
+ */
+export function parseWorkingDirectory(output: string): string | null {
+  for (const line of output.split("\n")) {
+    if (line.startsWith("n")) return line.slice(1).trim() || null;
+  }
+  return null;
+}
+
+/**
+ * Whether `path` is `root` itself or lives inside it, compared on a path
+ * separator so `…/ui-old` is not read as living inside `…/ui`.
+ */
+export function isInsideDirectory(path: string, root: string): boolean {
+  if (path === root) return true;
+  return path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/** A listening process, as the guard sees it. */
+export interface Listener {
+  pid: number;
+  /** its working directory, or null when lsof would not say */
+  cwd: string | null;
+}
+
+/**
+ * What is wrong with the server holding the port, or null when it is this
+ * worktree's.
+ *
+ * The index check upstream of this one compares *content*, so it only catches
+ * a server that is not this project or is missing a story. It passes happily
+ * for another worktree of this same repository, whose build indexes the same
+ * story ids under the same import paths — which is the case that actually
+ * happens here (#1693, hit for real on port 6032). Identity is the process, not
+ * the payload: `storybook dev` is spawned with its cwd in this worktree's `ui/`,
+ * so a listener sitting anywhere else is somebody else's.
+ */
+export function foreignServer(listeners: Listener[], uiDir: string): string | null {
+  if (listeners.length === 0) {
+    return "nothing is listening on the port storybook was told to serve";
+  }
+  const strangers = listeners.filter(
+    (listener) => listener.cwd === null || !isInsideDirectory(listener.cwd, uiDir),
+  );
+  if (strangers.length === 0) return null;
+  const named = strangers
+    .map((listener) => `pid ${listener.pid} (${listener.cwd ?? "working directory unreadable"})`)
+    .join(", ");
+  return `the server on the port is not this worktree's: ${named}, expected one under ${uiDir}`;
+}
+
+/**
+ * The processes listening on `port`, or null when lsof cannot be run at all —
+ * the identity check is a sharpening of the index check, not a reason to refuse
+ * to run the tests on a box without lsof.
+ */
+export function listenersOn(port: number): Listener[] | null {
+  const found = spawnSync("lsof", ["-ti", `:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  // status 1 is lsof's "no match", which is a real answer; only a missing
+  // binary is not one
+  if (found.error) return null;
+  return parseListeningPids(found.stdout ?? "").map((pid) => {
+    const where = spawnSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+      encoding: "utf8",
+    });
+    return { pid, cwd: where.error ? null : parseWorkingDirectory(where.stdout ?? "") };
+  });
+}
+
 function storyFiles(args: string[]): string[] {
   if (args.length > 0) return args.map((arg) => relative(UI_DIR, resolve(arg)));
   const found = spawnSync("rg", ["--files", "-g", "*.stories.tsx", "src"], {
@@ -232,6 +327,21 @@ async function main() {
           problems.join("\n  "),
       );
       process.exit(1);
+    }
+    // and who is serving it: the index above compares content, which another
+    // worktree of this same project satisfies (#1693)
+    const listeners = listenersOn(port);
+    if (listeners === null) {
+      console.warn(
+        "[stories] lsof is not available, so the server on the port was not identified — " +
+          "only its index was checked",
+      );
+    } else {
+      const stranger = foreignServer(listeners, UI_DIR);
+      if (stranger !== null) {
+        console.error(`[stories] ${stranger}`);
+        process.exit(1);
+      }
     }
     console.log(`[stories] index confirmed: ${files.length} file(s), this worktree's build`);
 
