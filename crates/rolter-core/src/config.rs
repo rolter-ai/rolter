@@ -1105,9 +1105,14 @@ pub struct AdvancedModelConfig {
     pub limits: ModelLimits,
     #[serde(default)]
     pub insecure_tls: bool,
-    /// provider-specific JSON settings that are safe to expose in snapshots
-    #[serde(default)]
-    pub additional_fields: HashMap<String, serde_json::Value>,
+    // `additional_fields` used to sit here: a map that was persisted, put in
+    // every snapshot, and read by nothing (#1665). it could not mean what its
+    // name suggested either — `maybe_rewrite_model` forwards the request body
+    // byte for byte apart from the top-level `model`, so a field rolter does not
+    // model already reaches the upstream and there was nothing left for it to
+    // gate. a stored blob that still carries the key keeps deserializing whole,
+    // because none of these types deny unknown fields, and nothing rolter
+    // serializes emits it again
     /// headers injected into calls for this model; secrets must remain in
     /// provider credentials, not this configuration.
     #[serde(default)]
@@ -3850,6 +3855,48 @@ mod tests {
         assert_eq!(
             serde_json::to_value(route).unwrap()["advanced"]["headers"]["x-model-region"],
             "eu"
+        );
+    }
+
+    /// A stored `advanced` blob written before #1665 still loads.
+    ///
+    /// `additional_fields` was persisted into every route's advanced JSON, so
+    /// dropping it from the struct is only safe while the rows that carry it
+    /// keep deserializing — and keep deserializing *whole*, with the key
+    /// ignored rather than stopping the parse at it. That holds because none of
+    /// these types deny unknown fields, which is the same promise
+    /// [`crate::config_lint`] rests on; this pins it for the one key we removed
+    /// on purpose.
+    #[test]
+    fn an_advanced_block_carrying_the_removed_additional_fields_key_still_loads() {
+        let route: ModelRoute = serde_json::from_value(serde_json::json!({
+            "model": "vision",
+            "targets": [],
+            "advanced": {
+                "model_type": "image",
+                "additional_fields": {"safety_identifier": "acme-prod"},
+                "limits": {"output_tokens": 2048},
+                "headers": {"x-model-region": "eu"}
+            }
+        }))
+        .expect("an old stored blob must still deserialize");
+        assert_eq!(route.advanced.model_type.as_deref(), Some("image"));
+        assert_eq!(route.advanced.limits.output_tokens, Some(2048));
+        assert_eq!(
+            route
+                .advanced
+                .headers
+                .get("x-model-region")
+                .map(String::as_str),
+            Some("eu"),
+            "fields after the removed key must survive it"
+        );
+
+        // and it does not come back out: nothing rolter serializes emits it
+        let written = serde_json::to_value(&route).unwrap();
+        assert!(
+            written["advanced"].get("additional_fields").is_none(),
+            "the removed key must not be re-emitted: {written}"
         );
     }
 
