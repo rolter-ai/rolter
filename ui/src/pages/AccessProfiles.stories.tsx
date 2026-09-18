@@ -9,6 +9,7 @@ import {
   expectEmptyState,
   expectLoadError,
   expectRefused,
+  expectClosesWithoutPrompting,
   expectSheetClosed,
   expectSkeleton,
   Harness,
@@ -657,5 +658,36 @@ export const WidensAComposedRoleBackToTheOrg: Story = {
     };
     // neither id, which the control plane reads as the profile's own org
     expect(body.roles).toEqual([{ role_id: "role-2" }]);
+  },
+};
+
+/**
+ * Ticking a role and changing your mind leaves the draft where it started.
+ *
+ * The scope of a composition is kept beside `roleIds` rather than inside it, so
+ * that unticking a role and ticking it again does not throw away a scope
+ * somebody picked. The trap that buys is a map that grows on a toggle the
+ * operator undid: the sheet compares the whole draft against the one it opened
+ * with, so an entry left behind by a round trip through the checkbox reads as
+ * an edit, and closing asks to discard changes nobody made. A prompt on a form
+ * nobody touched is what teaches people to click through the one that matters.
+ */
+export const TogglingARoleOffLeavesTheDraftClean: Story = {
+  render: () => (
+    <Harness fetchStub={stub(async () => json([]))}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "+ Add profile");
+
+    const form = within(sheet());
+    const role = form.getByRole("checkbox", { name: /Support engineer/ });
+    await userEvent.click(role);
+    await expect(await form.findByLabelText("Where Support engineer applies")).toBeVisible();
+    await userEvent.click(role);
+    await expect(role).not.toBeChecked();
+
+    await expectClosesWithoutPrompting();
   },
 };

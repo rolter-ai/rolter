@@ -196,10 +196,15 @@ interface ProfileDraft {
   /**
    * where each composed role applies, keyed by role id (#1251).
    *
-   * `""` — the value a role picked up when it was checked — is the profile's
-   * own org, which is what an omitted scope means on the wire. Kept beside
-   * `roleIds` rather than inside it so unchecking and re-checking a role does
-   * not silently reset a scope somebody chose.
+   * Only the roles pinned to a team or a project are in here: an absent entry
+   * is the profile's own org, which is both the default and what an omitted
+   * scope means on the wire. Keeping the org out rather than writing `""` for
+   * it is what lets the sheet compare drafts — the whole draft is stringified
+   * against the one it opened with, so an entry added by a toggle the operator
+   * undid would make an untouched form ask to discard changes nobody made.
+   *
+   * Kept beside `roleIds` rather than inside it so unticking a role and
+   * ticking it again does not silently reset a scope somebody chose.
    */
   roleScopes: Record<string, ScopeTarget>;
   /** one pattern per line, exactly as typed */
@@ -231,14 +236,12 @@ const draftFrom = (detail: AccessProfileDetail): ProfileDraft => ({
   // read it and throw it away, so an edit rewrote a project-scoped role as an
   // org-wide one (#1251)
   roleScopes: Object.fromEntries(
-    detail.roles.map((r) => [
-      r.role_id,
-      r.project_id
-        ? projectTarget(r.project_id)
-        : r.team_id
-          ? teamTarget(r.team_id)
-          : ORG_TARGET,
-    ]),
+    detail.roles
+      .filter((r) => r.team_id || r.project_id)
+      .map((r) => [
+        r.role_id,
+        r.project_id ? projectTarget(r.project_id) : teamTarget(r.team_id as string),
+      ]),
   ),
   allowedModels: (detail.policy?.allowed_models ?? []).join("\n"),
   deniedModels: (detail.policy?.denied_models ?? []).join("\n"),
@@ -471,16 +474,22 @@ function ProfileSheet({
   const toggleRole = (id: string) =>
     onChange({
       ...draft,
+      // the scope map is deliberately untouched: a role composed for the first
+      // time is org-scoped by having no entry at all, and unticking one keeps
+      // whatever scope was picked in case the tick comes back
       roleIds: draft.roleIds.includes(id)
         ? draft.roleIds.filter((r) => r !== id)
         : [...draft.roleIds, id],
-      // a role that has never been composed starts at the org, the scope the
-      // control plane defaults to
-      roleScopes: { ...draft.roleScopes, [id]: draft.roleScopes[id] ?? ORG_TARGET },
     });
 
-  const setRoleScope = (id: string, target: ScopeTarget) =>
-    onChange({ ...draft, roleScopes: { ...draft.roleScopes, [id]: target } });
+  // the org is stored as the absence of an entry, so picking it back removes
+  // the role from the map rather than writing the empty target into it
+  const setRoleScope = (id: string, target: ScopeTarget) => {
+    const roleScopes = { ...draft.roleScopes };
+    if (target === ORG_TARGET) delete roleScopes[id];
+    else roleScopes[id] = target;
+    onChange({ ...draft, roleScopes });
+  };
 
   const policyField = (
     label: string,
