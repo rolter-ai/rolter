@@ -74,6 +74,12 @@ A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the
 
 The refresh button in every screen header re-reads everything on the screen. Screens that stream (LLM Logs, MCP Logs, Adaptive Routing) update on their own and show when they last did.
 
+## When part of a screen fails to load
+
+Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.
+
+Reading a route's complexity policy takes the same permission as changing it, so a read-only account is told it does not have access rather than being shown the route as unconfigured.
+
 ## Reading structured output
 
 Anywhere the dashboard shows a payload — a request or response body in LLM Logs and MCP Logs, an audit entry's detail, the effective config, a model's config preview, the collector document, a copy-as-code snippet — it renders in a shared code block: syntax highlighted for its language, scrollable sideways rather than wrapped mid-token, reachable with the Tab key, and with a copy button in its corner. Highlighting is bundled with the dashboard, so it works with no internet access.
