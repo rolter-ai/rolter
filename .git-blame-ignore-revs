@@ -8,5 +8,5 @@
 # this repository squash-merges, so the sha a branch carries is not the sha that
 # lands, and an entry naming a sha master has never seen is ignored in silence.
 
-# build(docs): one-time prettier reformat of the tree outside ui/ (#1695). its
-# sha goes here once it is on master -- see #1741
+# build(docs): one-time prettier reformat of the tree outside ui/ (#1695)
+6428dc4fda0ec32b26c78c34267766a01abcd158
