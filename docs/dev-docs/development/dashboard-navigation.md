@@ -276,3 +276,38 @@ pattern, which is a keyboard contract, not styling:
 
 Stories: `WalksWithArrowKeys` and `LinkedToPanel` in `tabs.stories.tsx` cover
 the roving tabindex, the wrap, `Home`/`End` and the panel wiring.
+
+## Every screen is its own chunk
+
+`SCREENS` in `ui/src/App.tsx` maps a navigable leaf to the element the shell
+renders for it, and every entry goes through `React.lazy` — `screen(() =>
+import("@/pages/Foo"))`, or `named(…, "Bar")` for the files that export several
+screens side by side. Vite emits one chunk per lazy boundary, so a screen's
+code is fetched when that screen is first opened.
+
+It used to be one bundle. The dashboard emitted a single 1.26 MB chunk, so the
+first paint of the sign-in screen downloaded the playground, the charts, the
+highlighter grammars and forty-odd screens the reader had not asked for — on a
+slow link to a self-hosted deployment that is the whole wait, and the
+`chunks are larger than 500 kB` warning had been normalised into build noise
+that would have hidden the next regression (#1709). Splitting takes the entry
+chunk to ~374 kB and leaves the build warning-free without touching
+`chunkSizeWarningLimit`.
+
+Two screens stay statically imported on purpose: `Login` and `AcceptInvite`
+*are* the first paint for a signed-out reader, so deferring them would add a
+round trip to the one screen that cannot spare one.
+
+The shell wraps the screen region in a `React.Suspense` whose fallback is a
+`ListSkeleton`, so the first visit to a screen shows the same `role="status"`
+placeholder its own queries use rather than going blank.
+
+Nothing about the air-gapped guarantee changes. Every split chunk is emitted
+into `dist/assets` and served by the control plane from there, exactly as the
+single bundle was — there is no runtime fetch to anything outside the
+deployment.
+
+`ui/src/lib/screens.test.ts` holds this: a static `import Foo from
+"@/pages/Foo"` added for one new screen pulls that screen and everything it
+imports back into the entry chunk, the build still succeeds, and nothing in the
+output says which screen did it. The test names it.
