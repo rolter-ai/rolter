@@ -159,6 +159,18 @@ language = "system"
 files = "^crates/rolter-store/migrations/"
 pass_filenames = false
 
+# the other half of the tree ui/'s `format:check` does not reach. it runs the
+# whole set rather than the staged files so the hook and the ci job can never
+# disagree about what "formatted" means
+[[repos.hooks]]
+id = "format-docs"
+name = "prettier (markdown / json / yaml outside ui/)"
+entry = "bash scripts/format-docs.sh --check"
+language = "system"
+files = "\\.(md|mdx|json|ya?ml)$"
+exclude = "^(ui/|\\.github/workflows/|charts/rolter/templates/|crates/[^/]+/CHANGELOG\\.md$|CLAUDE\\.md$)"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "llms-txt"
 name = "llms.txt tracks the docs nav"

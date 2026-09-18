@@ -461,6 +461,24 @@ jobs:
       - name: build
         run: bun run build
 
+  # ── docs: prose, data and workflow files are formatted ─────────────────────
+  # ui/ has had a prettier config and a `format:check` step since #1667; every
+  # markdown, mdx, json and yaml file outside it had none, so wrapping, table
+  # padding and list markers were whatever each author typed and a one-word
+  # edit showed up in review as a reflowed paragraph (#1695). the style is the
+  # root .prettierrc and the exclusions are .prettierignore — the same pair the
+  # `prettier (markdown / json / yaml outside ui/)` prek hook reads
+  format-docs:
+    name: docs formatting (prettier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: check
+        run: bash scripts/format-docs.sh --check
+
   # ── docs: the agent-facing index tracks the nav ─────────────────────────────
   # llms.txt is generated from docs.json plus each page's frontmatter (#1582).
   # a hand-maintained index goes stale silently — a page is added and the index
