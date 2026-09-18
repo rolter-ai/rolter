@@ -91,6 +91,8 @@ export const AlreadyDisabled: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
+    // story-wait-allow: disabled by its own prop from the first paint, so there
+    // is no gate answer to wait for - that it stays disabled is the point
     await expect(within(canvasElement).getByRole("button")).toBeDisabled();
   },
 };

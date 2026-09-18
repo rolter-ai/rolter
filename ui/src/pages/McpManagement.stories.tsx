@@ -387,7 +387,7 @@ export const CatalogRegistersOAuthClient: Story = {
     // the client fields are the `oauth` branch of the auth picker now, not a
     // section every server shows (#1447)
     await expect(dialog.queryByLabelText("Client ID")).not.toBeInTheDocument();
-    await userEvent.click(dialog.getByRole("radio", { name: /^OAuth consent/ }));
+    await userEvent.click(await dialog.findByRole("radio", { name: /^OAuth consent/ }));
     // the redirect uri is deployment-derived, so it is read back rather than
     // guessed from the browser's origin
     await expect(dialog.getByLabelText("Redirect URI")).toHaveValue(
@@ -435,7 +435,7 @@ export const CatalogRefusesAHalfClient: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Configure server Sentry" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await userEvent.click(dialog.getByRole("radio", { name: /^OAuth consent/ }));
+    await userEvent.click(await dialog.findByRole("radio", { name: /^OAuth consent/ }));
     await userEvent.type(dialog.getByLabelText("Client ID"), "Iv1.abc123");
     await expect(dialog.getByRole("button", { name: "Save server" })).toBeEnabled();
     await userEvent.type(

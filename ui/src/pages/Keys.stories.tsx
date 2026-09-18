@@ -516,7 +516,9 @@ export const NarrowingTheProviderAllowListSendsItsOwnPut: Story = {
     await canvas.findByText("revoked laptop");
     await userEvent.click(await canvas.findByRole("button", { name: /Edit key revoked laptop/i }));
     const form = sheet();
-    await userEvent.click(within(form).getByRole("checkbox", { name: "Anthropic" }));
+    // the provider list is the sheet's own request, so the checkbox arrives
+    // after the dialog does (#1689)
+    await userEvent.click(await within(form).findByRole("checkbox", { name: "Anthropic" }));
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
 
     await expect(await sent.expectSentBody("PUT", "/providers")).toEqual({
