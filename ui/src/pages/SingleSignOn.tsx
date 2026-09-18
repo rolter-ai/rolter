@@ -6,12 +6,18 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
+import {
+  OrgScopePicker,
+  scopeTargetIds,
+  useOrgScope,
+  type OrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -55,6 +61,18 @@ const MAPPABLE_ROLES = ROLES;
 // newer control plane's role is shown rather than rendered as a missing key
 function roleLabel(t: TFunction, role: string): string {
   return t(`shell.roles.${role}`, { defaultValue: role });
+}
+
+// the scope a mapping grants at, as the reader knows it. the most specific
+// non-null id wins, exactly as `create_mapping` in sso.rs resolves it, and the
+// name is looked up org-wide so a mapping onto a project in another team is
+// named rather than shown as a raw id (#1234)
+function scopeLabel(
+  t: TFunction,
+  scope: OrgScope,
+  mapping: SsoGroupMappingRow,
+): string {
+  return scope.nameFor(mapping) ?? t("scope.picker.org");
 }
 
 // a labelled line inside a provider card: mono value, optionally copyable
@@ -316,15 +334,21 @@ function SignInPolicyCard({
 /**
  * The IdP groups this provider turns into roles.
  *
- * Every mapping the dashboard creates is org-scoped: the create endpoint reads
- * an omitted scope as the provider's own org, and a mapping may never grant
- * outside it. Team- and project-scoped grants exist on the API and are not
- * offered here — see #1185.
+ * A mapping grants at the provider's own org by default — the create endpoint
+ * reads an omitted scope that way — but it may also name one team or one
+ * project inside that org (#1234). The scope select is the shared
+ * `OrgScopePicker`, so a project in a team the scope switcher does not
+ * currently have selected can be mapped without moving the switcher first. A
+ * mapping may never grant outside the provider's org, which the control plane
+ * enforces whatever this sends.
  */
 function GroupMappings({ provider }: { provider: SsoProviderRow }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
+  // the provider's own org, not the scope switcher's: a mapping can only ever
+  // reach inside the org that registered the provider
+  const scope = useOrgScope(provider.org_id);
   const mappings = useQuery({
     queryKey: [MAPPINGS_KEY, provider.id],
     queryFn: () => fetchSsoGroupMappings(provider.id),
@@ -336,12 +360,15 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
 
   const [group, setGroup] = React.useState("");
   const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
+  // "" is the provider's own org; otherwise "team:<id>" or "project:<id>"
+  const [target, setTarget] = React.useState<ScopeTarget>("");
 
   const create = useMutation({
     mutationFn: () =>
       createSsoGroupMapping(provider.id, {
         group_name: group.trim(),
         role,
+        ...scopeTargetIds(target),
       }),
     onSuccess: () => {
       toast.push({ tone: "success", title: t("toast.created", { what: group.trim() }) });
@@ -409,6 +436,9 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                 {mapping.group_name}
               </span>
+              <Pill color="var(--text-secondary)" tint="var(--surface-card)">
+                {scopeLabel(t, scope, mapping)}
+              </Pill>
               <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
               <RowIconButton
                 danger
@@ -435,6 +465,12 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
           aria-label={t("pages.sso.mappings.groupLabel")}
           placeholder={t("pages.sso.mappings.groupPlaceholder")}
         />
+        <OrgScopePicker
+          orgId={provider.org_id}
+          value={target}
+          onChange={setTarget}
+          label={t("pages.sso.mappings.scopeLabel")}
+        />
         <Combobox
           size="sm"
           className="w-[132px]"
@@ -443,15 +479,20 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
           aria-label={t("pages.sso.mappings.roleLabel")}
           options={MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
         />
-        <Button
+        <GatedButton
+          gate="sso_group_mapping:create"
           size="sm"
           variant="outline"
+          // every provider card carries one of these, so the label names which
+          // one — "Map group" alone is ambiguous the moment an org registers a
+          // second identity provider
+          aria-label={t("pages.sso.mappings.addNamed", { provider: provider.name })}
           disabled={!group.trim() || create.isPending}
           onClick={() => create.mutate()}
         >
           {create.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {t("pages.sso.mappings.add")}
-        </Button>
+        </GatedButton>
       </div>
       {create.isError && (
         <p role="alert" className="mt-2 text-sm text-[color:var(--status-danger-text)]">
@@ -467,6 +508,9 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
         })}
         description={t("pages.sso.mappings.confirm.body", {
           role: removeTarget ? roleLabel(t, removeTarget.role) : "",
+          // the scope is half of what is being withdrawn: "admin" and "admin on
+          // Gateway" are very different removals
+          scope: removeTarget ? scopeLabel(t, scope, removeTarget) : "",
         })}
         confirmLabel={t("pages.sso.mappings.confirm.confirm")}
         pending={remove.isPending}

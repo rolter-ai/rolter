@@ -5,8 +5,12 @@ import SingleSignOn from "./SingleSignOn";
 import {
   cancelConfirmation,
   clickWhenEnabled,
+  confirmation,
   confirmDestructive,
   expectRefused,
+  openOptions,
+  PROJECT,
+  TEAM,
   expectToast,
   Harness,
   json,
@@ -68,6 +72,19 @@ const MAPPINGS: Record<string, SsoGroupMappingRow[]> = {
       team_id: null,
       project_id: null,
       role: "admin",
+      created_at: NOW,
+    },
+    // #1234: a mapping the API can already write and the dashboard could not.
+    // it grants inside one team, so the row has to say so — listed beside an
+    // org-wide one, it would otherwise read as the same grant
+    {
+      id: "map-2",
+      provider_id: "sso-1",
+      group_name: "gateway-oncall",
+      org_id: null,
+      team_id: TEAM.id,
+      project_id: null,
+      role: "member",
       created_at: NOW,
     },
   ],
@@ -770,6 +787,10 @@ export const RefusedToAMember: Story = {
       canvasElement,
       "Remove the mapping for platform-engineering",
     );
+    // #1234: writing a mapping at a narrower scope is the same capability as
+    // writing an org-wide one, so the new scope select must not come with a
+    // create button that only fails on submit
+    await expectRefused(canvasElement, "Map a group in Acme Okta");
   },
 };
 
@@ -782,5 +803,134 @@ export const RefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add provider");
     await expectRefused(canvasElement, "Delete provider Acme Okta");
+  },
+};
+
+/**
+ * #1234: a mapping that is narrower than the org says so on its row.
+ *
+ * `POST .../group-mappings` has always taken `team_id`/`project_id`, and the
+ * list has always answered with them — the screen read those fields and threw
+ * them away, so a team-scoped mapping written through the API was listed as if
+ * it granted across the whole org.
+ */
+export const ShowsTheScopeOfANarrowMapping: Story = {
+  render: () => (
+    <Harness fetchStub={api()}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = (await canvas.findByText("gateway-oncall")).closest("li");
+    if (!row) throw new Error("the mapping is not rendered as a row");
+    // the team's name, resolved org-wide, not the raw uuid the row carries
+    await waitFor(() => expect(within(row).getByText(TEAM.name)).toBeVisible());
+    await expect(within(row).queryByText(TEAM.id)).toBeNull();
+
+    // and the org-wide one beside it is still marked as org-wide, or "narrower
+    // than the others" would be the absence of a chip rather than a statement
+    const orgRow = canvas.getByText("platform-engineering").closest("li");
+    if (!orgRow) throw new Error("the mapping is not rendered as a row");
+    await expect(within(orgRow).getByText("Whole organization")).toBeVisible();
+  },
+};
+
+/**
+ * #1234: the scope select offers the whole org — every team, and every project
+ * in any of those teams — and the id it picks reaches the create body.
+ */
+const teamScoped = recording(api({ providers: () => [provider()] }));
+
+export const MapsAGroupToATeam: Story = {
+  render: () => (
+    <Harness fetchStub={teamScoped.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Acme Okta")).toBeVisible());
+
+    const picker = await canvas.findByLabelText("Where the role applies");
+    // the org is the default, so an operator who ignores the select writes the
+    // same org-wide mapping the screen wrote before this
+    await expect(picker).toHaveValue("Whole organization");
+    const listbox = await openOptions(picker);
+    await expect(
+      within(listbox).getByRole("option", { name: TEAM.name }),
+    ).toBeVisible();
+    // a project in that team is reachable without moving the scope switcher
+    await expect(
+      within(listbox).getByRole("option", { name: PROJECT.name }),
+    ).toBeVisible();
+    await userEvent.click(
+      within(listbox).getByRole("option", { name: TEAM.name }),
+    );
+
+    await userEvent.type(canvas.getByLabelText("IdP group"), "gateway-oncall");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+
+    const body = await teamScoped.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/api/v1/sso-providers/sso-1/group-mappings",
+    );
+    await expect(body.group_name).toBe("gateway-oncall");
+    // the narrower scope is the whole point: `team_id` set, and `project_id`
+    // left out entirely rather than sent as null, which the server would read
+    // as the more specific scope
+    await expect(body.team_id).toBe(TEAM.id);
+    await expect(body.project_id).toBeUndefined();
+  },
+};
+
+/** The same picker, one level narrower: a project id, and no team id. */
+const projectScoped = recording(api({ providers: () => [provider()] }));
+
+export const MapsAGroupToAProject: Story = {
+  render: () => (
+    <Harness fetchStub={projectScoped.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Acme Okta")).toBeVisible());
+
+    const picker = await canvas.findByLabelText("Where the role applies");
+    await pickOption(picker, PROJECT.name);
+    await userEvent.type(canvas.getByLabelText("IdP group"), "gateway-deployers");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+
+    const body = await projectScoped.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/api/v1/sso-providers/sso-1/group-mappings",
+    );
+    await expect(body.project_id).toBe(PROJECT.id);
+    await expect(body.team_id).toBeUndefined();
+  },
+};
+
+/**
+ * #1234: removing a mapping takes access away from everyone in that group, so
+ * the prompt names *what* is being withdrawn — the scope as well as the role.
+ * "member" and "member on Platform" are very different removals.
+ */
+export const NamesTheScopeWhenRemovingAMapping: Story = {
+  render: () => (
+    <Harness fetchStub={api()}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gateway-oncall")).toBeVisible());
+    await userEvent.click(
+      canvas.getByLabelText("Remove the mapping for gateway-oncall"),
+    );
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(new RegExp(TEAM.name))).toBeVisible();
+    await cancelConfirmation();
   },
 };

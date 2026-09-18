@@ -1825,12 +1825,14 @@
         "groupLabel": "IdP group",
         "groupPlaceholder": "platform-engineering",
         "roleLabel": "Role in this org",
+        "scopeLabel": "Where the role applies",
         "add": "Map group",
+        "addNamed": "Map a group in {{provider}}",
         "remove": "Remove mapping",
         "removeNamed": "Remove the mapping for {{group}}",
         "confirm": {
           "title": "Remove the mapping for {{group}}?",
-          "body": "Members of that group stop being granted {{role}} on their next sign-in. Roles they already hold are not withdrawn.",
+          "body": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn.",
           "confirm": "Remove mapping"
         }
       }

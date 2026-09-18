@@ -132,11 +132,13 @@ the group mappings with it.
 
 ## Map groups to roles
 
-A group arriving from your identity provider grants nothing on its own. **You** decide what it is worth, in the **Group mappings** panel on the provider's card: type the group name exactly as the IdP publishes it, pick `admin`, `member` or `viewer`, and choose **Map group**.
+A group arriving from your identity provider grants nothing on its own. **You** decide what it is worth, in the **Group mappings** panel on the provider's card: type the group name exactly as the IdP publishes it, pick where the role applies — the whole organization, a team, or a project — pick `admin`, `member` or `viewer`, and choose **Map group**.
 
 - Mappings are matched against the claim named in **Group claim** — `groups` unless you changed it.
-- Every mapping the dashboard creates grants at the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends.
-- Removing a mapping stops that group being granted the role on the next sign-in. Roles someone already holds are not withdrawn.
+- **Where the role applies** defaults to the whole organization, which is the common case. Narrow it to grant `admin` on one team, or `member` on a single project, without giving the group anything org-wide. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team that owns it, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself.
+- Every mapping grants inside the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends or what you pick here.
+- Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one.
+- Removing a mapping stops that group being granted the role — at that scope — on the next sign-in. The prompt names both before anything is withdrawn, and roles someone already holds are not taken back.
 
 <Warning>
 A user who matches no mapping falls back to the provider's **Default role**. Leave that unset and they are **refused** instead of quietly admitted with no memberships — which is the safe default, and the reason a provider with neither a mapping nor a default role cannot log anybody in.
