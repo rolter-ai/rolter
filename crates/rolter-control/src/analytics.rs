@@ -138,7 +138,9 @@ impl ClickHouseClient {
         let response = self
             .client
             .post(format!(
-                "{}/?query=INSERT%20INTO%20ui_events%20FORMAT%20JSONEachRow",
+                // best_effort so the per-event RFC 3339 `ts` the browser
+                // stamps, offset and all, parses into DateTime64 (#1224)
+                "{}/?query=INSERT%20INTO%20ui_events%20FORMAT%20JSONEachRow&date_time_input_format=best_effort",
                 self.base
             ))
             .body(body)

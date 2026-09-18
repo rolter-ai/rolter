@@ -24,6 +24,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -62,6 +63,17 @@ const MAX_BATCH: usize = 100;
 /// the mistake most likely to turn a key column into a free-text one.
 const MAX_KEY_LEN: usize = 96;
 
+/// How far ahead of the control plane a browser's own clock may be and still be
+/// believed. A skewed clock is common — a laptop resuming from sleep, a VM with
+/// no NTP — and a row stamped in the future breaks every window query it lands
+/// in, so anything beyond this is treated as unusable rather than trusted.
+const MAX_CLOCK_AHEAD: Duration = Duration::minutes(5);
+
+/// And how far behind. Generous, because the whole point of the queue is that a
+/// tab can be offline for a while and flush later; beyond a day the event says
+/// more about the tab than about the interaction.
+const MAX_CLOCK_BEHIND: Duration = Duration::hours(24);
+
 pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/ui-events", post(ingest))
 }
@@ -74,6 +86,11 @@ struct Batch {
 #[derive(Debug, Deserialize)]
 struct UiEvent {
     event_id: String,
+    /// when the interaction happened, by the browser's clock (RFC 3339).
+    /// absent means "use ingest time", which is what every client sent before
+    /// #1224 — the batcher stamps each event as it is queued
+    #[serde(default)]
+    ts: Option<String>,
     /// stable screen key (a route id), never a URL
     screen: String,
     action: String,
@@ -125,6 +142,32 @@ fn validate_key(value: &str, name: &str, required: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The instant to record, in the RFC 3339 form ClickHouse's `best_effort`
+/// parser reads into `DateTime64(3)`.
+///
+/// The browser's clock is not the server's, so a supplied instant is believed
+/// only inside a window around ingest time: further ahead than
+/// `MAX_CLOCK_AHEAD` or further behind than `MAX_CLOCK_BEHIND` and the ingest
+/// instant is recorded instead. Clamping to the boundary was the alternative
+/// and is worse — it would manufacture a cluster of rows exactly five minutes
+/// out, which reads as real traffic rather than as a bad clock (#1224).
+fn event_ts(supplied: Option<&str>, now: DateTime<Utc>) -> Result<String, String> {
+    let ts = match supplied.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let parsed = DateTime::parse_from_rfc3339(value)
+                .map_err(|_| "ts must be an RFC 3339 timestamp".to_string())?
+                .with_timezone(&Utc);
+            if parsed > now + MAX_CLOCK_AHEAD || parsed < now - MAX_CLOCK_BEHIND {
+                now
+            } else {
+                parsed
+            }
+        }
+        None => now,
+    };
+    Ok(ts.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
 fn validate(event: &UiEvent) -> Result<(), String> {
     validate_key(&event.event_id, "event_id", true)?;
     validate_key(&event.screen, "screen", true)?;
@@ -147,13 +190,23 @@ fn validate(event: &UiEvent) -> Result<(), String> {
     if event.duration_ms > u32::MAX.into() {
         return Err("duration_ms exceeds UInt32 range".to_string());
     }
+    // parsed here rather than at insert time so a malformed instant is a 400
+    // naming the field, like every other bad value in the batch
+    event_ts(event.ts.as_deref(), Utc::now())?;
     Ok(())
 }
 
 /// Build the ClickHouse row. `user_id` is threaded in from the authenticated
 /// principal rather than read off the event, so attribution cannot be forged.
-fn row(event: &UiEvent, user_id: &str) -> Value {
+fn row(event: &UiEvent, user_id: &str, now: DateTime<Utc>) -> Value {
     json!({
+        // when the interaction happened, not when the batch arrived: the
+        // dashboard queues events and flushes on a timer or at unload, so
+        // ingest time collapsed a whole session onto one instant and put the
+        // event minutes away from the request it joins on `trace_id` (#1224)
+        "ts": event_ts(event.ts.as_deref(), now).unwrap_or_else(|_| {
+            now.to_rfc3339_opts(SecondsFormat::Millis, true)
+        }),
         "event_id": event.event_id,
         "trace_id": event.trace_id,
         "session_id": event.session_id,
@@ -204,7 +257,10 @@ async fn ingest(
     }
 
     let user_id = caller.user.id.to_string();
-    let rows: Vec<Value> = batch.events.iter().map(|e| row(e, &user_id)).collect();
+    // one `now` for the batch: the events that fall back to ingest time should
+    // agree with each other rather than drift across the loop
+    let now = Utc::now();
+    let rows: Vec<Value> = batch.events.iter().map(|e| row(e, &user_id, now)).collect();
 
     let ch = client_or_503(&state).map_err(|_| {
         ApiError::Core(rolter_core::Error::Store(
@@ -224,6 +280,7 @@ mod tests {
     fn event() -> UiEvent {
         UiEvent {
             event_id: "01J8Z0".to_string(),
+            ts: None,
             screen: "models".to_string(),
             action: "screen_view".to_string(),
             outcome: None,
@@ -237,6 +294,83 @@ mod tests {
             project_id: String::new(),
             app_version: String::new(),
         }
+    }
+
+    #[test]
+    fn two_events_queued_apart_survive_one_batch_with_distinct_ts() {
+        // the bug: the row was stamped at ingest, so a batch flushed once every
+        // few seconds put every event in it at the same instant (#1224)
+        let mut first = event();
+        first.ts = Some("2026-09-18T10:00:00.250Z".to_string());
+        let mut second = event();
+        second.event_id = "01J8Z1".to_string();
+        second.ts = Some("2026-09-18T10:00:04.750Z".to_string());
+
+        let now = Utc::now();
+        let rows = [row(&first, "user-1", now), row(&second, "user-1", now)];
+        assert_eq!(rows[0]["ts"], "2026-09-18T10:00:00.250Z");
+        assert_eq!(rows[1]["ts"], "2026-09-18T10:00:04.750Z");
+    }
+
+    #[test]
+    fn an_absent_ts_falls_back_to_ingest_time() {
+        let now = DateTime::parse_from_rfc3339("2026-09-18T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            row(&event(), "user-1", now)["ts"],
+            "2026-09-18T10:00:00.000Z"
+        );
+        // an empty string is what a client that stringifies an unset field
+        // sends, and means the same thing
+        let mut e = event();
+        e.ts = Some(String::new());
+        assert_eq!(row(&e, "user-1", now)["ts"], "2026-09-18T10:00:00.000Z");
+    }
+
+    #[test]
+    fn an_offset_ts_is_normalised_to_utc() {
+        let now = Utc::now();
+        let mut e = event();
+        e.ts = Some(
+            (now - Duration::minutes(1))
+                .with_timezone(&chrono::FixedOffset::east_opt(2 * 3600).unwrap())
+                .to_rfc3339(),
+        );
+        let ts = row(&e, "user-1", now)["ts"].as_str().unwrap().to_string();
+        assert!(ts.ends_with('Z'), "{ts} kept its offset");
+    }
+
+    #[test]
+    fn a_skewed_client_clock_is_replaced_by_ingest_time() {
+        let now = DateTime::parse_from_rfc3339("2026-09-18T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for supplied in [
+            // a laptop whose clock is a year fast would otherwise sit at the
+            // top of every "recent events" query forever
+            "2027-09-18T10:00:00Z",
+            "2020-01-01T00:00:00Z",
+        ] {
+            assert_eq!(
+                event_ts(Some(supplied), now).unwrap(),
+                "2026-09-18T10:00:00.000Z",
+                "{supplied} was trusted"
+            );
+        }
+        // just inside the window is still believed
+        assert_eq!(
+            event_ts(Some("2026-09-18T10:04:00Z"), now).unwrap(),
+            "2026-09-18T10:04:00.000Z"
+        );
+    }
+
+    #[test]
+    fn rejects_a_ts_that_is_not_rfc_3339() {
+        let mut e = event();
+        e.ts = Some("18/09/2026 10:00".to_string());
+        let err = validate(&e).unwrap_err();
+        assert!(err.contains("ts"), "{err}");
     }
 
     #[test]
