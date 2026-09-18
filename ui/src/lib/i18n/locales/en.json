@@ -2923,7 +2923,7 @@
       "summary_other": "{{count}} virtual keys · yours to rotate or revoke",
       "generate": "Generate virtual key",
       "selectProject": "Select a project in the sidebar to mint a virtual key",
-      "loading": "Loading…",
+      "emptyTitle": "No virtual keys yet",
       "empty": "You haven't minted a virtual key yet. Create one to start calling the gateway.",
       "delete": {
         "title": "Delete virtual key",

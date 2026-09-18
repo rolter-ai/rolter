@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Plus, RotateCw, Trash2 } from "lucide-react";
+import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -19,6 +19,8 @@ import {
 } from "@/components/KeyMintFields";
 import { KeyProvidersField } from "@/components/KeyAttributionFields";
 import { LoadError } from "@/components/LoadError";
+import { CardGridSkeleton } from "@/components/LoadingState";
+import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
@@ -151,10 +153,11 @@ export default function Account() {
         </Button>
       </div>
 
+      {/* the content below is a card grid, so the placeholder holding its
+          space is one too — and it is a `role="status"` region rather than a
+          grey sentence no screen reader is told about (#1589) */}
       {keys.isLoading && (
-        <p className="text-sm text-muted-foreground">
-          {t("account.keys.loading")}
-        </p>
+        <CardGridSkeleton cards={3} height={168} min={320} testId="own-keys-loading" />
       )}
       {/* open mode is not a failed request, it is a screen this deployment
           cannot serve at all — saying so beats a red line about loading (#942) */}
@@ -166,10 +169,27 @@ export default function Account() {
           onRetry={() => keys.refetch()}
         />
       )}
-      {!keys.isLoading && keys.data?.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          {t("account.keys.empty")}
-        </p>
+      {!keys.isLoading && !keys.error && keys.data?.length === 0 && (
+        <EmptyState
+          data-testid="own-keys-empty"
+          uxTarget="own-keys"
+          icon={<KeyRound />}
+          title={t("account.keys.emptyTitle")}
+          // without a project the mint dialog has nowhere to post, so the
+          // placeholder says what to do instead of offering a dead button
+          description={
+            scope.projectId
+              ? t("account.keys.empty")
+              : t("account.keys.selectProject")
+          }
+          actions={
+            scope.projectId && !selfServiceUnavailable ? (
+              <Button onClick={() => setMintOpen(true)}>
+                {t("account.keys.generate")}
+              </Button>
+            ) : undefined
+          }
+        />
       )}
 
       {usage.error && !!keys.data?.length && (
