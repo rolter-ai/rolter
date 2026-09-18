@@ -67,6 +67,45 @@ The primitives carry the small amount of copy they own under `common.*` in the
 catalogs — `common.aboutField`, `common.lock.*`, `common.noneAvailable`. A
 screen's wording stays in the screen's namespace and arrives as a prop.
 
+## The guard
+
+`bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
+this page from being advice. It runs in the `ui lint / build` job and fails on
+four things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+`prompt`, and a component re-declared under a name `src/components/ui/` already
+exports. The last one is this page's rule — #1044 sat undiscovered for months
+because nothing looked, and seven primitives stayed trapped in one sheet's file.
+
+The shared names are read out of `src/components/ui/*.tsx` rather than listed in
+the script, so a primitive added tomorrow is covered the day it lands.
+
+Three things are exempt, by rule rather than by filename:
+
+- anything under `src/components/ui/` — a primitive necessarily contains the
+  element it wraps, and `CodeBlock` *is* the `<pre>`;
+- `*.stories.tsx` and `*.test.ts(x)`, which are fixtures rather than shipped UI,
+  the same carve-out `check-literals.ts` makes;
+- a file that **imports** the shared component and wraps it. Adapting
+  `Dialog as BaseDialog` under a local `Dialog` is reaching for the primitive,
+  not duplicating it, and failing that would push screens away from the shared
+  component instead of towards it.
+
+A case the rule is genuinely not about carries an inline waiver on the comment
+block directly above it:
+
+```tsx
+/* ui-primitives-allow: prose with its newlines kept, not a payload — it wraps
+ * rather than scrolling sideways, so CodeBlock's copy button and highlighting
+ * would both be answering a question nobody asked */
+<pre className="whitespace-pre-wrap">{reply}</pre>
+```
+
+The reason is mandatory — a marker with nothing after the colon fails the run,
+because an unexplained waiver is indistinguishable from the bug. Waivers live at
+the point of use rather than in a central allow-list file so they cannot outlive
+the code they excuse, and every one is printed on every run so the set stays
+visible instead of growing quietly.
+
 ## Still to do
 
 `ModelSheet` is the only consumer today. `ProviderSheet`, `ProviderGroupSheet`

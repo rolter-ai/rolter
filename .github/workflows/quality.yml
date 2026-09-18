@@ -418,6 +418,15 @@ jobs:
       # notation in ui/src/lib/i18n/literals-allowlist.ts is tolerated (#958)
       - name: no new hardcoded user-facing strings
         run: bun run check:literals
+      # the maintenance matrix's four "never hand-roll this" rules — Combobox
+      # over a bare <select>, CodeBlock over a raw <pre>, ConfirmDialog over
+      # window.confirm, and the shared form primitives over a second copy inside
+      # a sheet. every one of them was convention until #1662; #1044 is what
+      # that costs, seven primitives trapped in one screen because no check
+      # looked. a case the rule is genuinely not about carries an inline
+      # `ui-primitives-allow:` waiver with its reason
+      - name: no hand-rolled shared components
+        run: bun run check:primitives
       - name: unit tests (bun test)
         run: bun run test
       - name: build
