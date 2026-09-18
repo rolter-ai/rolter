@@ -105,6 +105,13 @@ Notes worth knowing before you build on it:
 - `score` is the weighted sum of the components below it; a signal with zero weight scores `0`, while its raw value (`latency_ms`, `cost_per_mtok`, `in_flight`) is still reported so you can judge whether to give it weight.
 - Prometheus users get the same blended score as `rolter_adaptive_routing_target_score{model,target}` on the gateway's `/metrics`.
 
+### When the dashboard is empty
+
+An empty Adaptive Routing screen has two very different causes, and the screen says which one it is:
+
+- **The kill switch is off** — the shipped default. The screen names the switch, lists the routes it is holding back, and links to the settings rather than sending you to debug a gateway that is behaving correctly. Nothing is wrong with the gateway.
+- **The switch is on and nothing is reporting.** Then the gateway is the place to look: a report older than `fresh_window_secs` is hidden, and a gateway that reports without a node id (`ROLTER_NODE_ID`) is dropped by the control plane before it ever reaches this screen.
+
 ---
 
 ## API

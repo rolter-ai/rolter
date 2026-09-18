@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Activity, Network } from "lucide-react";
+import { Activity, Network, PowerOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatCard } from "@/components/ui/stat-card";
 import {
+  fetchAdaptiveRoutingPolicy,
   fetchAdaptiveRoutingTelemetry,
   type AdaptiveDecisionCountsDto,
   type AdaptiveNodeTelemetryDto,
@@ -97,6 +98,11 @@ function targetName(target: AdaptiveTargetTelemetryDto): string {
   return model ? `${provider} / ${model}` : provider;
 }
 
+// the empty state's call to action, shared by both variants so the two never
+// drift apart on screen
+const EMPTY_ACTION =
+  "text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 function AdaptiveDashboardScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -105,6 +111,15 @@ function AdaptiveDashboardScreen() {
     queryFn: fetchAdaptiveRoutingTelemetry,
     retry: false,
     refetchInterval: 15_000,
+  });
+  // read only so the empty state can name the reason it is empty: an operator
+  // sent to debug a gateway that is doing nothing wrong is the bug here
+  // (#1648). It is never what the screen is waiting on, so a failure leaves
+  // the generic copy rather than an error panel over working telemetry
+  const policy = useQuery({
+    queryKey: ["adaptive-routing-policy"],
+    queryFn: fetchAdaptiveRoutingPolicy,
+    retry: false,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -142,6 +157,10 @@ function AdaptiveDashboardScreen() {
     0,
   );
   const engaged = routes.filter((route) => route.engaged).length;
+  // the deployment-wide kill switch, and only when the answer is in: a policy
+  // that failed or has not landed must not accuse a switch of being off
+  const switchedOff = policy.data?.enabled === false;
+  const heldBack = policy.data?.affected_routes ?? [];
 
   return (
     <PageBody>
@@ -163,22 +182,53 @@ function AdaptiveDashboardScreen() {
       </div>
 
       {routes.length === 0 ? (
-        <EmptyState
-          uxTarget="adaptive-routes"
-          icon={<Activity aria-hidden="true" />}
-          title={t("pages.adaptiveDashboard.emptyTitle")}
-          description={t("pages.adaptiveDashboard.emptyBody", {
-            seconds: view?.fresh_window_secs ?? 60,
-          })}
-          actions={
-            <a
-              href="/routing-rules"
-              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {t("pages.adaptiveDashboard.emptyAction")}
-            </a>
-          }
-        />
+        switchedOff ? (
+          <EmptyState
+            uxTarget="adaptive-routes-disabled"
+            icon={<PowerOff aria-hidden="true" />}
+            title={t("pages.adaptiveDashboard.disabledTitle")}
+            description={
+              <>
+                {t("pages.adaptiveDashboard.disabledBody")}
+                {/* the blast radius, named the way the settings screen names
+                    it: these are the routes the switch is holding back */}
+                {heldBack.length > 0 && (
+                  <span className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+                    <span>
+                      {t("pages.adaptiveDashboard.disabledRoutes", {
+                        count: heldBack.length,
+                      })}
+                    </span>
+                    {heldBack.map((model) => (
+                      <Badge key={model} tone="outline" className="font-mono">
+                        {model}
+                      </Badge>
+                    ))}
+                  </span>
+                )}
+              </>
+            }
+            actions={
+              <a href="/adaptive-settings" className={EMPTY_ACTION}>
+                {t("pages.adaptiveDashboard.disabledAction")}
+              </a>
+            }
+          />
+        ) : (
+          <EmptyState
+            uxTarget="adaptive-routes"
+            icon={<Activity aria-hidden="true" />}
+            title={t("pages.adaptiveDashboard.emptyTitle")}
+            description={t("pages.adaptiveDashboard.emptyBody", {
+              seconds: view?.fresh_window_secs ?? 60,
+            })}
+            actions={
+              <a href="/routing-rules" className={EMPTY_ACTION}>
+                {t("pages.adaptiveDashboard.emptyAction")}
+              </a>
+            }
+          />
+        )
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
