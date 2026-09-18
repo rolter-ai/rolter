@@ -29,6 +29,13 @@ export interface RolterRuntimeConfig {
    * only injects this field when it is open (#970).
    */
   openMode?: boolean;
+  /**
+   * Base URL of the user documentation site, e.g. `https://docs.example.com`.
+   * Absent (the default) means this deployment has no documentation host, and
+   * every screen suppresses its documentation links rather than rendering one
+   * that cannot resolve — see `ui/src/lib/docs.ts` (#1164).
+   */
+  docsBaseUrl?: string;
 }
 
 /**

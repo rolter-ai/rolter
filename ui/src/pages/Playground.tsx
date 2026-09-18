@@ -16,6 +16,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
+import { DocsLink } from "@/components/DocsLink";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -205,7 +206,10 @@ function KeyBar() {
       {/* three different credentials in this product answer to "api key";
           say which one this field wants (#943) */}
       <p className="mt-1.5 text-[0.6875rem] leading-snug text-[color:var(--text-subtle)]">
-        {t("playground.key.hint")}
+        {t("playground.key.hint")}{" "}
+        {/* suppressed entirely when no documentation host is configured, so the
+            hint above never trails a dead link (#1164) */}
+        <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
     </div>
   );

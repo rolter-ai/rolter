@@ -76,6 +76,14 @@
       "results_other": "{{count}} options available"
     }
   },
+  "docs": {
+    "link": {
+      "default": "Documentation",
+      "opensInNewTab": "{{label}} (opens in a new tab)",
+      "whichKey": "Which key do I need?",
+      "virtualKeys": "About virtual keys"
+    }
+  },
   "errors": {
     "load": {
       "retry": "Try again",

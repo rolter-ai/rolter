@@ -25,6 +25,9 @@ it never reaches a CDN or `fonts.scalar.com` — a guarantee enforced by the
 `docs_page_is_self_contained` and `scalar_bundle_is_embedded` tests in
 `crates/rolter-gateway/src/openapi.rs`. The dashboard SPA is served as static
 assets by the control plane and loads no third-party scripts, fonts, or styles.
+Its documentation links are off unless you configure a documentation host, so an
+enclave with no mirror of this site simply sees no links — see
+[Documentation links](/deployment/documentation-links).
 
 <Warning>
   If a provider sets `status_page_url`, the gateway periodically fetches that URL

@@ -177,3 +177,43 @@ export const Mobile: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the two states below cannot leak into each other.
+ */
+function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
+}
+
+/** The key field's hint links into `security/which-key` when docs exist (#1164). */
+export const KeyHintLinksToTheDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
+  render: () => (
+    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const link = await canvas.findByRole("link", { name: /Which key do I need/ });
+    await expect(link).toHaveAttribute("href", "https://docs.example.com/security/which-key");
+  },
+};
+
+/** The air-gapped default: the hint stands alone, with nothing to click. */
+export const KeyHintHasNoLinkWithoutADocsHost: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => (
+    <Harness playgroundKey="rolter-test-key" fetchStub={stubFor(async () => json(GATEWAY_MODELS))} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/A rolter virtual key, minted on the Virtual Keys screen/);
+    await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
+  },
+};

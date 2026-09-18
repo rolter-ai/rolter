@@ -31,6 +31,7 @@ import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
+import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -201,7 +202,10 @@ export default function Keys() {
       {/* "api key" names three different credentials in this product; the
           screen says which one it mints (#943) */}
       <p className="text-sm text-muted-foreground">
-        {t("pages.virtualKeys.explainer")}
+        {t("pages.virtualKeys.explainer")}{" "}
+        {/* the explainer stands alone; the link only adds depth, and is absent
+            on a deployment that configured no documentation host (#1164) */}
+        <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <SearchInput

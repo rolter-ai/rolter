@@ -103,6 +103,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
 - [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
 - [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, runtime egress guarantees, an operator checklist, and an offline smoke test.
+- [Documentation links](/deployment/documentation-links): Point the Rolter dashboard at a documentation site so its screens can deep-link the docs, or leave it unset so an air-gapped deployment renders no links at all.
 - [Backup & restore](/deployment/backup-and-restore): How to back up the Rolter control-plane database, restore it safely, verify that ROLTER_KEK still opens your stored credentials, and rotate the key-encryption key without splitting the fleet.
 - [Upgrading](/deployment/upgrading): How Rolter carries your configuration across a version boundary, how to preview an upgrade before you run it, and why skipping releases is safe.
 
