@@ -110,7 +110,7 @@ The refresh button in every screen header re-reads everything on the screen. Scr
 
 Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.
 
-Reading a route's complexity policy takes the same permission as changing it, so a read-only account is told it does not have access rather than being shown the route as unconfigured.
+Reading a route's complexity policy takes the same permission as reading the route itself, so a read-only account sees every policy it can see routes for; changing one still takes an admin. An account that may not read the route at all is told it does not have access rather than being shown the route as unconfigured.
 
 ## Reading structured output
 

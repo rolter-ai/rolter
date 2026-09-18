@@ -9891,3 +9891,143 @@ async fn provider_group_crud_advances_the_version_the_gateway_watches() {
         "deleting a group did not bump config_version"
     );
 }
+
+/// A route's complexity policy reads at the same bar as the route it hangs off
+/// (#1666), and writes at the mutation bar as it always has.
+///
+/// #704 held the GET to `route:update`, which made the policy the one route
+/// attribute a viewer could list but never see — the dashboard's Complexity
+/// Router answered a reader with a permission error covering the whole screen.
+/// The policy is configuration, not a secret: it already travels to the gateway
+/// inside the route's `params`. This asserts both halves at once, because the
+/// value of widening the read depends entirely on the write staying put.
+#[tokio::test]
+async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+
+    let org = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Tiers", "slug": "tiers"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+
+    let team = post_as(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+
+    let project = post_as(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+
+    // a small model to fall back to, and the route the policy hangs off
+    post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o-mini", "strategy": "round_robin"}),
+    )
+    .await;
+    let route = post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().unwrap().to_string();
+
+    let policy = json!({"tiers": [
+        {"name": "small", "max_input_bytes": 4096, "route": "gpt-4o-mini"},
+        {"name": "large", "route": "gpt-4o"},
+    ]});
+    let written = client
+        .put(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth("admintok")
+        .json(&policy)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        written.status().is_success(),
+        "admin writes the policy: {}",
+        written.status()
+    );
+
+    let viewer = seed_user(&pool, "complexity-viewer@example.com", false).await;
+    seed_membership(&pool, viewer, Some(org_uuid), None, None, "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "complexityviewer").await;
+
+    let read = client
+        .get(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        read.status(),
+        200,
+        "a viewer reads the policy of a route it can already list"
+    );
+    let body: Value = read.json().await.unwrap();
+    assert_eq!(
+        body["tiers"].as_array().map(Vec::len),
+        Some(2),
+        "the policy itself comes back, not an empty stand-in: {body}"
+    );
+    assert_eq!(body["tiers"][0]["name"], "small");
+
+    // the write is untouched: a viewer still changes nothing. the body is a
+    // policy the control plane would accept from an admin, so a widened write
+    // bar shows up as a 200 here rather than hiding behind a validation error
+    let refused = client
+        .put(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth(&viewer_token)
+        .json(&json!({"tiers": [{"name": "large", "route": "gpt-4o"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403, "a viewer must not write the policy");
+
+    // and the refusal was a refusal, not a silent no-op
+    let after: Value = client
+        .get(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["tiers"].as_array().map(Vec::len), Some(2));
+}
