@@ -600,6 +600,39 @@ is collector configuration.
 - Counters `rolter_health_events_written_total` and `rolter_health_events_dropped_total` track the writer, mirroring the request-log counters.
 - This event stream feeds uptime %/MTTR rollups and the dashboard health panel.
 
+#### Passive events are per *attempt*, not per request
+
+A `passive` event describes one **upstream attempt**, not one client request. A
+request that fails over makes several, and each one is an independent
+observation of the target it went to.
+
+This used to be per request (#1646). The whole passive funnel — the health
+event, `rolter_target_requests_total{provider,target,outcome}` and
+`rolter_upstream_errors_total` — was derived from the request log row, whose
+`provider`/`target` are those of the attempt that finally *answered the
+caller*. So when a target 503'd a quarter of its requests and the gateway
+failed over, the record read like this:
+
+| surface | what it said | what was true |
+|---|---|---|
+| `GET /api/v1/health/uptime` (target grain) | `ok=23 errors=0 uptime=1` | ~25% of attempts to that target failed |
+| `rolter_target_requests_total{provider="sick",…}` | *no series at all* | 4 failed attempts |
+| `rolter_upstream_errors_total` | `0` | 4 |
+| `GET /api/v1/analytics/summary` | `requests=374 errors=0` | correct — the clients really did get 200s |
+
+Failover doing its job is exactly when an operator most needs to see that a
+target is sick, so a sick target was indistinguishable from a healthy one on
+every Health screen and in every metric. Now each superseded attempt is
+recorded against the target that produced it as it happens, and the same fleet
+reads `ok=23 errors=4` on the target grain with a matching `error` series in
+Prometheus — "served 100%, but 25% of attempts to this target failed".
+
+The request-level row still describes the attempt that answered the caller, and
+the two never double-count: an attempt the failover funnel already recorded is
+logged with the request-level target attribution suppressed. `request_logs` and
+`/api/v1/analytics/summary` are unchanged — they are per request by
+definition, and the client really did get a 200.
+
 ### Stability rollup API
 
 Read-only, window-bounded rollups over `provider_health_events`, served by the control plane when `--clickhouse-url` is set (otherwise `503`). All accept `since`/`until` (RFC3339, default last 7 days); time bounds are passed as ClickHouse query parameters, never interpolated.
