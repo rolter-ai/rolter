@@ -8,6 +8,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import {
   ORG_TARGET,
   OrgScopePicker,
+  OrgScopePill,
   projectTarget,
   scopeTargetIds,
   teamTarget,
@@ -135,18 +136,20 @@ function ProfileCard({
           {narrow.length > 0 && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
               {narrow.map((role) => (
-                <Pill
+                <OrgScopePill
                   key={role.id}
-                  color="var(--text-secondary)"
+                  scope={orgScope}
+                  value={role}
                   tint="var(--surface-subtle)"
-                >
-                  {t("pages.accessProfiles.roleAtScope", {
-                    role:
-                      roleCatalog.find((r) => r.id === role.role_id)?.name ??
-                      role.role_id,
-                    scope: orgScope.nameFor(role) ?? t("scope.picker.org"),
-                  })}
-                </Pill>
+                  format={(scope) =>
+                    t("pages.accessProfiles.roleAtScope", {
+                      role:
+                        roleCatalog.find((r) => r.id === role.role_id)?.name ??
+                        role.role_id,
+                      scope,
+                    })
+                  }
+                />
               ))}
             </div>
           )}

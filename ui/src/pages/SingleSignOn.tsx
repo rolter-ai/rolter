@@ -7,10 +7,11 @@ import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import {
+  orgScopeText,
   OrgScopePicker,
+  OrgScopePill,
   scopeTargetIds,
   useOrgScope,
-  type OrgScope,
   type ScopeTarget,
 } from "@/components/OrgScopePicker";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -61,18 +62,6 @@ const MAPPABLE_ROLES = ROLES;
 // newer control plane's role is shown rather than rendered as a missing key
 function roleLabel(t: TFunction, role: string): string {
   return t(`shell.roles.${role}`, { defaultValue: role });
-}
-
-// the scope a mapping grants at, as the reader knows it. the most specific
-// non-null id wins, exactly as `create_mapping` in sso.rs resolves it, and the
-// name is looked up org-wide so a mapping onto a project in another team is
-// named rather than shown as a raw id (#1234)
-function scopeLabel(
-  t: TFunction,
-  scope: OrgScope,
-  mapping: SsoGroupMappingRow,
-): string {
-  return scope.nameFor(mapping) ?? t("scope.picker.org");
 }
 
 // a labelled line inside a provider card: mono value, optionally copyable
@@ -436,9 +425,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
                 {mapping.group_name}
               </span>
-              <Pill color="var(--text-secondary)" tint="var(--surface-card)">
-                {scopeLabel(t, scope, mapping)}
-              </Pill>
+              <OrgScopePill scope={scope} value={mapping} />
               <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
               <RowIconButton
                 danger
@@ -510,7 +497,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
           role: removeTarget ? roleLabel(t, removeTarget.role) : "",
           // the scope is half of what is being withdrawn: "admin" and "admin on
           // Gateway" are very different removals
-          scope: removeTarget ? scopeLabel(t, scope, removeTarget) : "",
+          scope: removeTarget ? orgScopeText(t, scope, removeTarget) : "",
         })}
         confirmLabel={t("pages.sso.mappings.confirm.confirm")}
         pending={remove.isPending}

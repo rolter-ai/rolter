@@ -2672,6 +2672,7 @@
       "teamProjects": "Projects in {{team}}",
       "empty": "This organization has no teams yet, so the only scope to pick is the organization itself.",
       "unresolved": "Unresolved scope",
+      "unresolvedWithId": "an unresolved scope ({{id}})",
       "unresolvedTitle": "This scope could not be matched to a team or a project. Its stored id is {{id}}."
     },
     "namePlaceholder": {

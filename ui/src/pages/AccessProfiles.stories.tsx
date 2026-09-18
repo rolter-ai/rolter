@@ -539,6 +539,44 @@ export const ShowsAProjectScopedRoleOnTheCard: Story = {
   },
 };
 
+// the two lists `useOrgScope` reads, answered 500. matched before `scoped()`,
+// which is what resolves the chain for every other story here
+const scopeListsFail =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (/^\/api\/v1\/orgs\/[^/]+\/(teams|projects)$/.test(path)) {
+      return json({ error: { message: "scope unavailable" } }, 500);
+    }
+    return inner(input, init);
+  };
+
+/**
+ * A scope the card cannot name says so, instead of drawing its uuid (#1677).
+ *
+ * The card is read-only: there is no picker under it, so the `LoadError` and
+ * the retry the picker owns are nowhere in sight, and `Deploy admin on
+ * 0f3a1c8e-…` reads exactly like a project that happens to be named that.
+ */
+export const ScopeThatCannotBeResolved: Story = {
+  render: () => (
+    <Harness fetchStub={scopeListsFail(narrow())}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the role is still named — only the scope half failed to resolve
+    await waitFor(() =>
+      expect(canvas.getByText("Deploy admin on Unresolved scope")).toBeVisible(),
+    );
+    await expect(canvas.queryByText(PROJECT.id)).not.toBeInTheDocument();
+    // the id stays quotable in a support conversation
+    const chip = canvas.getByTitle(/could not be matched/);
+    await expect(chip.getAttribute("title")).toContain(PROJECT.id);
+  },
+};
+
 // the create path: the scope picked beside the role reaches the POST body
 const composesAtTeamScope = recording(stub(async () => json([])));
 

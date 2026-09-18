@@ -151,7 +151,7 @@ Ticking a role opens **Where _role_ applies** beside it, so the `curl` above —
 - The default is the whole organization, which is the scope the control plane assumes when a composition names none. A profile written without touching the picker is exactly the profile the sheet wrote before.
 - The list covers the whole org: every team, and every project in any of those teams grouped under the team that owns it. A project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so and offers only itself.
 - A scope is never wider than the profile's own org, whatever is picked — the control plane validates it on the way in.
-- An existing composition opens at the scope it was stored with, so editing a profile's name cannot quietly widen a project-scoped role, and a card lists any role that is narrower than the org as `role on scope`.
+- An existing composition opens at the scope it was stored with, so editing a profile's name cannot quietly widen a project-scoped role, and a card lists any role that is narrower than the org as `role on scope`. A scope the dashboard cannot name — the team or project was deleted, or your account cannot see it, or the list failed to load — is marked **Unresolved scope** rather than shown as a bare id, and hovering the chip gives the stored id to quote in a support request.
 
 ## Model and route policy
 
