@@ -186,7 +186,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
     }
 }
 
-/// Same as [`env_or`], but available in every feature build: the throttle
+/// Same as `env_or`, but available in every feature build: the throttle
 /// settings are not postgres-gated the way the pool settings are.
 fn env_or_num<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)

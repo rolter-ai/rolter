@@ -8,7 +8,7 @@
 //! environment promotion, and no config diff.
 //!
 //! [`render`] closes the loop. It emits exactly the sections
-//! [`crate::seed::seed`] consumes, so the document it produces is *importable*
+//! `seed::seed` consumes, so the document it produces is *importable*
 //! rather than merely descriptive — anything the importer would silently drop
 //! is deliberately not written, and the header comment says so in the file
 //! instead of leaving the operator to find out on a promotion.
