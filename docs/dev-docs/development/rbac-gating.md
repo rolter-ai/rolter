@@ -137,6 +137,37 @@ table puts it at `scope: "deployment"`. Cover the roles in a story with
 `<Harness role="viewer">` — the harness stubs both RBAC endpoints from the same
 table this doc names.
 
+## Never hold a control across a re-render
+
+`expectRefused` and `clickWhenEnabled` look their button up again on every poll
+rather than capturing it once, and a story that asserts on a gated control by
+hand has to do the same.
+
+A screen re-renders while its gate is still in flight: the org/team/project
+chain resolving re-keys the query behind the screen, which sends it back to its
+skeleton for a frame, and React builds a *new* button when it returns. A
+reference taken before that frame is detached, and a detached node's attributes
+never change again — so the assertion waits out its whole budget and reports
+`title: null`, which reads as a gate that never resolved even though the live
+control is refused correctly.
+
+That is what #1670 was: `Screens/Rbac › RefusedToAViewer` failed identically at
+50ms of injected latency and at 900ms, and raising the budget from 1s to 5s did
+nothing. `Harness/Gating` stages the ordering deliberately — the control is
+replaced *before* the answer it is waiting for arrives — so the two helpers
+cannot regress to a captured reference.
+
+```tsx
+// wrong: the reference can be detached before the gate answers
+const button = await canvas.findByRole("button", { name: /new role/i });
+await waitFor(() => expect(button).toBeDisabled());
+
+// right: the lookup is part of the wait
+await waitFor(() => {
+  expect(canvas.getByRole("button", { name: /new role/i })).toBeDisabled();
+});
+```
+
 ## A refused row control still has to name its row
 
 A gate answers "may I", never "which one". The two are separate rules and both
