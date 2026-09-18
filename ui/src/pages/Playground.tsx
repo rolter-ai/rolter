@@ -361,6 +361,11 @@ function ChatColumn({
             {m.pending ? (
               <span className="text-[color:var(--text-muted)]">{m.text}</span>
             ) : raw ? (
+              /* ui-primitives-allow: the raw-output toggle, which shows the
+               * model's reply as the characters it sent instead of rendered
+               * markdown. prose with its newlines kept, not a payload: it wraps
+               * rather than scrolling sideways, and `CodeBlock`'s copy button and
+               * highlighting would both be answering a question nobody asked */
               <pre className="whitespace-pre-wrap break-words font-mono text-xs">
                 {m.text}
               </pre>

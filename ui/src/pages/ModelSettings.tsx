@@ -7,6 +7,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -190,27 +191,33 @@ function ModelSettingsScreen() {
         desc={t("pages.modelSettings.sampling.desc")}
         dimmed={!form.enabled}
       >
-        <Field
-          label={t("pages.modelSettings.sampling.temperature")}
-          hint="0 – 2"
-          value={form.temperature}
-          disabled={!form.enabled}
-          onChange={(v) => set({ temperature: v })}
-        />
-        <Field
-          label={t("pages.modelSettings.sampling.topP")}
-          hint="0 – 1"
-          value={form.topP}
-          disabled={!form.enabled}
-          onChange={(v) => set({ topP: v })}
-        />
-        <Field
-          label={t("pages.modelSettings.sampling.maxTokens")}
-          hint={t("pages.modelSettings.sampling.maxTokensHint")}
-          value={form.maxTokens}
-          disabled={!form.enabled}
-          onChange={(v) => set({ maxTokens: v })}
-        />
+        <Field label={t("pages.modelSettings.sampling.temperature")} hint="0 – 2">
+          <Input
+            className="max-w-[160px]"
+            placeholder={t("pages.modelSettings.providerDefault")}
+            value={form.temperature}
+            disabled={!form.enabled}
+            onChange={(e) => set({ temperature: e.target.value })}
+          />
+        </Field>
+        <Field label={t("pages.modelSettings.sampling.topP")} hint="0 – 1">
+          <Input
+            className="max-w-[160px]"
+            placeholder={t("pages.modelSettings.providerDefault")}
+            value={form.topP}
+            disabled={!form.enabled}
+            onChange={(e) => set({ topP: e.target.value })}
+          />
+        </Field>
+        <Field label={t("pages.modelSettings.sampling.maxTokens")} hint={t("pages.modelSettings.sampling.maxTokensHint")}>
+          <Input
+            className="max-w-[160px]"
+            placeholder={t("pages.modelSettings.providerDefault")}
+            value={form.maxTokens}
+            disabled={!form.enabled}
+            onChange={(e) => set({ maxTokens: e.target.value })}
+          />
+        </Field>
       </Card>
 
       <Card
@@ -218,14 +225,15 @@ function ModelSettingsScreen() {
         desc={t("pages.modelSettings.model.desc")}
         dimmed={!form.enabled}
       >
-        <Field
-          label={t("pages.modelSettings.model.defaultModel")}
-          hint={t("pages.modelSettings.model.defaultModelHint")}
-          wide
-          value={form.defaultModel}
-          disabled={!form.enabled}
-          onChange={(v) => set({ defaultModel: v })}
-        />
+        <Field label={t("pages.modelSettings.model.defaultModel")} hint={t("pages.modelSettings.model.defaultModelHint")}>
+          <Input
+            className="min-w-[320px]"
+            placeholder={t("pages.modelSettings.providerDefault")}
+            value={form.defaultModel}
+            disabled={!form.enabled}
+            onChange={(e) => set({ defaultModel: e.target.value })}
+          />
+        </Field>
       </Card>
 
       <p className="text-xs text-muted-foreground">
@@ -245,6 +253,10 @@ function ModelSettingsScreen() {
   );
 }
 
+// ui-primitives-allow: a settings panel — a titled section wrapping a disabled
+// fieldset — not `ui/card.tsx`'s Card, which is a bare bordered div with its own
+// Header/Title/Description parts. Same name, different component; unpicking the
+// collision is #1682
 function Card({
   title,
   desc,
@@ -269,41 +281,6 @@ function Card({
         {children}
       </fieldset>
     </section>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  value,
-  disabled = false,
-  wide = false,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  value: string;
-  disabled?: boolean;
-  wide?: boolean;
-  onChange: (v: string) => void;
-}) {
-  const { t } = useTranslation();
-  const id = React.useId();
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-xs font-medium text-[color:var(--text-secondary)]">
-        {label}
-      </label>
-      <Input
-        id={id}
-        className={wide ? "min-w-[320px]" : "max-w-[160px]"}
-        placeholder={t("pages.modelSettings.providerDefault")}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{hint}</span>
-    </div>
   );
 }
 

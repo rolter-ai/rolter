@@ -289,6 +289,10 @@ function PerformanceScreen() {
   );
 }
 
+// ui-primitives-allow: a settings panel — a titled section wrapping a disabled
+// fieldset — not `ui/card.tsx`'s Card, which is a bare bordered div with its own
+// Header/Title/Description parts. Same name, different component; unpicking the
+// collision is #1682
 function Card({
   title,
   desc,
