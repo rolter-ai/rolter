@@ -1487,13 +1487,24 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 &slug,
                 provider_kind_str(&provider.kind),
                 &provider.api_base,
-                provider.api_key_env.as_deref(),
+                // either credential spelling, so a `[[providers.default]]`
+                // written as `api_keys = [{ env = "..." }]` seeds with its key
+                // instead of none (#1514)
+                provider.api_key_env_name(),
                 provider.egress_proxy.as_deref(),
                 &provider.egress_proxies,
             )
             .await?;
+        if provider.surplus_api_key_count() > 0 {
+            tracing::warn!(
+                provider = %provider.name,
+                dropped = provider.surplus_api_key_count(),
+                "providers.default configures multiple api_keys; the store holds one per \
+                 provider, so only the first is seeded"
+            );
+        }
         // seal an inline api_key at rest; api_key_env stays a plaintext var name
-        if let Some(api_key) = provider.api_key.as_deref() {
+        if let Some(api_key) = provider.inline_api_key() {
             use rolter_store::postgres::crypto::{Kek, KEK_ENV};
             match Kek::from_env() {
                 Some(kek) => {

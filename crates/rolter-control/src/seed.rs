@@ -329,6 +329,25 @@ async fn import_payload_capture(
     Ok(())
 }
 
+/// Warn when a provider configures more keys than the store can hold.
+///
+/// `providers.api_key_env` is a single column and `provider_keys` a single
+/// sealed row per provider, so everything past the first `api_keys` entry is
+/// dropped on import. That is a real loss of configured capacity — providers
+/// cap throughput per key — so it is said out loud rather than swallowed. It is
+/// not fatal: refusing the import would take a deployment down over a weight.
+fn warn_on_surplus_api_keys(p: &rolter_core::ProviderConfig) {
+    let surplus = p.surplus_api_key_count();
+    if surplus > 0 {
+        tracing::warn!(
+            provider = %p.name,
+            dropped = surplus,
+            "provider configures multiple api_keys; the store holds one per provider, \
+             so only the first is imported"
+        );
+    }
+}
+
 /// Upsert an already-parsed bootstrap config. Split out from
 /// [`import_bootstrap_toml`] so the desired-state behaviour can be tested
 /// without going through a file on disk.
@@ -345,6 +364,12 @@ async fn import_config(
     let mut provider_ids = HashMap::new();
     for p in &config.providers {
         let kind = provider_kind_column(p.kind);
+        // both spellings of the credential converge here: the store holds one
+        // plaintext variable name per provider, and reading `api_key_env`
+        // directly made a provider written as `api_keys = [{ env = "..." }]`
+        // import with no credential at all (#1514)
+        let api_key_env = p.api_key_env_name();
+        warn_on_surplus_api_keys(p);
         let existing = providers
             .list(org_id)
             .await?
@@ -359,7 +384,7 @@ async fn import_config(
             Some(row) => {
                 let unchanged = row.kind == kind
                     && row.api_base == p.api_base
-                    && row.api_key_env == p.api_key_env
+                    && row.api_key_env.as_deref() == api_key_env
                     && row.egress_proxy == p.egress_proxy
                     && row.egress_proxies.0 == p.egress_proxies;
                 if unchanged {
@@ -375,7 +400,7 @@ async fn import_config(
                             None,
                             Some(kind),
                             Some(&p.api_base),
-                            Some(p.api_key_env.as_deref()),
+                            Some(api_key_env),
                             Some(p.egress_proxy.as_deref()),
                             Some(&p.egress_proxies),
                         )
@@ -393,7 +418,7 @@ async fn import_config(
                         &slug,
                         kind,
                         &p.api_base,
-                        p.api_key_env.as_deref(),
+                        api_key_env,
                         p.egress_proxy.as_deref(),
                         &p.egress_proxies,
                     )
@@ -801,6 +826,67 @@ api_key_evn = "LOCAL_API_KEY"
         assert_eq!(
             lint_import_file(&tempdir("lint-absent").join("nope.toml")),
             0
+        );
+    }
+
+    /// A provider written in the current plural spelling imported with no
+    /// credential at all: the upsert read `api_key_env` directly, saw `None`,
+    /// and the key was gone (#1514).
+    #[tokio::test]
+    async fn a_plural_form_credential_survives_the_import() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+
+        let dir = tempdir("plural-keys");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+name = "openai-plural"
+kind = "openai"
+api_base = "https://api.openai.com"
+[[providers.api_keys]]
+env = "OPENAI_KEY_A"
+weight = 3
+[[providers.api_keys]]
+env = "OPENAI_KEY_B"
+weight = 1
+"#,
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+
+        let provider = ProviderRepo(&pool)
+            .list(org_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.name == "openai-plural")
+            .expect("the provider must have been created");
+        assert_eq!(
+            provider.api_key_env.as_deref(),
+            Some("OPENAI_KEY_A"),
+            "the plural-form credential was dropped on import"
+        );
+
+        // and the change-detection compares the same spelling, so re-importing
+        // the identical file is a no-op rather than a perpetual rewrite
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let rows = ProviderRepo(&pool).list(org_id).await.unwrap();
+        assert_eq!(rows.iter().filter(|r| r.name == "openai-plural").count(), 1);
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.name == "openai-plural")
+                .and_then(|r| r.api_key_env.as_deref()),
+            Some("OPENAI_KEY_A")
         );
     }
 

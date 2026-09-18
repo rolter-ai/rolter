@@ -158,9 +158,12 @@ fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]
         key(out, "kind", &provider.kind);
         key(out, "api_base", &provider.api_base);
         // the only credential shape that ever leaves: the name of an
-        // environment variable, never a value. `api_key` is not consulted here
-        // at all, so a decrypted key cannot reach the document by accident
-        match &provider.api_key_env {
+        // environment variable, never a value. neither `api_key` nor an
+        // `api_keys` entry's inline `key` is reachable from here, so a
+        // decrypted key cannot reach the document by accident. the accessor is
+        // what makes a provider written in the plural `api_keys` spelling
+        // export its variable name instead of the omission comment (#1514)
+        match provider.api_key_env_name() {
             Some(env) => key(out, "api_key_env", env),
             None => out.push_str(
                 "# api_key: not exported; any credential for this provider stays sealed in \
@@ -542,6 +545,72 @@ models = ["gpt-4o"]
         // and the omission is visible in the file rather than silent
         assert!(rendered.contains("# api_key: not exported"));
         assert!(rendered.contains("api_key_env = \"ANTHROPIC_API_KEY\""));
+    }
+
+    /// A provider written in the plural `api_keys` spelling exported the
+    /// "credential not exported" comment instead of its variable name, so an
+    /// export/import round trip dropped the key (#1514).
+    #[test]
+    fn a_plural_form_credential_exports_its_variable_name() {
+        let mut plural = provider("openai", None);
+        plural.api_keys = vec![
+            rolter_core::ApiKeyConfig {
+                env: Some("OPENAI_KEY_A".to_string()),
+                weight: 3,
+                ..Default::default()
+            },
+            rolter_core::ApiKeyConfig {
+                env: Some("OPENAI_KEY_B".to_string()),
+                weight: 1,
+                ..Default::default()
+            },
+        ];
+        let config = GatewayConfig {
+            providers: vec![plural],
+            ..Default::default()
+        };
+
+        let rendered = render(&config);
+        assert!(
+            rendered.contains("api_key_env = \"OPENAI_KEY_A\""),
+            "the plural credential did not reach the export:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("# api_key: not exported"),
+            "a provider with a credential was marked as having none:\n{rendered}"
+        );
+        // the importer holds one variable name per provider, so the second
+        // entry is genuinely not representable and must not be half-emitted
+        assert!(
+            !rendered.contains("OPENAI_KEY_B"),
+            "the export wrote a key the importer cannot read back:\n{rendered}"
+        );
+    }
+
+    /// The no-secret guarantee has to hold for the plural spelling too: an
+    /// inline `api_keys` entry is as much a secret as `api_key` is.
+    #[test]
+    fn an_inline_plural_key_never_reaches_the_document() {
+        let mut inline = provider("openai", None);
+        inline.api_keys = vec![rolter_core::ApiKeyConfig {
+            key: Some("sk-plural-do-not-export".to_string()),
+            weight: 1,
+            ..Default::default()
+        }];
+        let config = GatewayConfig {
+            providers: vec![inline],
+            ..Default::default()
+        };
+
+        let rendered = render(&config);
+        assert!(
+            !rendered.contains("sk-plural-do-not-export"),
+            "an inline plural key leaked into the export:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("# api_key: not exported"),
+            "the omission is not visible in the file:\n{rendered}"
+        );
     }
 
     /// Ordering is by slug and model, never by insertion, so a diff between two

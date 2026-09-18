@@ -68,6 +68,8 @@ api_base = "http://vllm-1:8000"
 
 On the receiving deployment, set that provider's key through the dashboard or point it at an `api_key_env` before sending traffic. `ROLTER_KEK` is not required to run an export.
 
+Both credential spellings are read. A provider written as `api_keys = [{ env = "OPENAI_API_KEY" }]` exports the variable name just as a provider written with `api_key_env` does — an inline `key` inside `api_keys` is a secret and is never emitted, exactly like a top-level `api_key`. Only one variable name per provider survives, because the control-plane store holds one credential per provider.
+
 <Warning>
   `rolter-seed --import` never overwrites a credential sealed through the dashboard, so re-importing an export into the deployment it came from cannot clear a key that is already there.
 </Warning>

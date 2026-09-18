@@ -147,7 +147,7 @@ api_base = "https://api.x.ai/v1"
 api_key_env = "XAI_API_KEY"
 ```
 
-- `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM
+- `[[providers.api_keys]]` (optional) — multiple weighted API keys for one provider; when present it takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies effective RPM/TPM. The control-plane store holds one credential per provider, so `rolter-seed --import` keeps the first entry that names an `env` and warns about the rest
   - `key` (string, optional) — inline key value; prefer `env`
   - `env` (string, optional) — environment variable to read the key from
   - `weight` (u32, default `1`) — relative selection weight

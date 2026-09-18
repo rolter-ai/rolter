@@ -898,6 +898,20 @@ pub struct ApiKeyConfig {
     pub weight: u32,
 }
 
+/// A defaulted entry carries no secret and the neutral weight the TOML
+/// `#[serde(default)]` would apply, so a fixture can name only the field it
+/// cares about. Derived `Default` would give `weight = 0`, which every sampler
+/// then has to clamp.
+impl Default for ApiKeyConfig {
+    fn default() -> Self {
+        Self {
+            key: None,
+            env: None,
+            weight: default_weight(),
+        }
+    }
+}
+
 impl ApiKeyConfig {
     /// Resolve this entry's key, preferring the inline value then the env var.
     pub fn resolve(&self) -> Option<String> {
@@ -961,6 +975,48 @@ impl ProviderConfig {
             .iter()
             .filter_map(|k| k.resolve().map(|s| (s, k.weight.max(1))))
             .collect()
+    }
+
+    /// Name of the environment variable this provider's key is read from, in
+    /// whichever spelling the document used: the first `api_keys` entry that
+    /// names an `env`, else the legacy `api_key_env`.
+    ///
+    /// Persistence paths use this rather than the field. The control-plane
+    /// store holds one plaintext variable name per provider, and reading
+    /// `api_key_env` directly made a plural-form provider look credential-less,
+    /// so `rolter-seed --import` dropped its key on the floor (#1514).
+    ///
+    /// This deliberately never falls back to an inline `key`: the value it
+    /// returns is written to a database column and rendered into an exported
+    /// document, and neither may ever carry a secret.
+    pub fn api_key_env_name(&self) -> Option<&str> {
+        if !self.api_keys.is_empty() {
+            return self.api_keys.iter().find_map(|k| k.env.as_deref());
+        }
+        self.api_key_env.as_deref()
+    }
+
+    /// The inline secret literal this provider carries, in whichever spelling:
+    /// the first `api_keys` entry with a `key`, else the legacy `api_key`.
+    ///
+    /// This is a secret. It exists for the one caller that seals a credential
+    /// into `provider_keys` at rest; nothing may render it into a document.
+    pub fn inline_api_key(&self) -> Option<&str> {
+        if !self.api_keys.is_empty() {
+            return self.api_keys.iter().find_map(|k| k.key.as_deref());
+        }
+        self.api_key.as_deref()
+    }
+
+    /// How many configured keys a single-credential store cannot hold.
+    ///
+    /// `providers` carries one `api_key_env` and `provider_keys` one sealed
+    /// ciphertext per provider, so a multi-key provider loses everything past
+    /// the first entry on import. Callers warn rather than fail: dropping the
+    /// surplus silently is what made #1514 hard to see, and refusing the whole
+    /// import would take a working deployment down over a weight.
+    pub fn surplus_api_key_count(&self) -> usize {
+        self.api_keys.len().saturating_sub(1)
     }
 
     /// Pick one resolved api key by weight, given a random draw `r` in
@@ -3918,6 +3974,134 @@ mod tests {
             api_keys,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_env_name_comes_from_either_spelling() {
+        let legacy = ProviderConfig {
+            api_key_env: Some("LEGACY_KEY".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(legacy.api_key_env_name(), Some("LEGACY_KEY"));
+
+        let plural = ProviderConfig {
+            api_keys: vec![ApiKeyConfig {
+                env: Some("PLURAL_KEY".to_string()),
+                weight: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            plural.api_key_env_name(),
+            Some("PLURAL_KEY"),
+            "a plural-form provider looked credential-less to the seed (#1514)"
+        );
+
+        // api_keys outranks the legacy pair, matching resolve_api_key
+        let both = ProviderConfig {
+            api_key_env: Some("LEGACY_KEY".to_string()),
+            api_keys: vec![ApiKeyConfig {
+                env: Some("PLURAL_KEY".to_string()),
+                weight: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(both.api_key_env_name(), Some("PLURAL_KEY"));
+
+        // the first entry that actually names a variable wins, not the first entry
+        let inline_first = ProviderConfig {
+            api_keys: vec![
+                ApiKeyConfig {
+                    key: Some("sk-inline".to_string()),
+                    weight: 1,
+                    ..Default::default()
+                },
+                ApiKeyConfig {
+                    env: Some("SECOND_KEY".to_string()),
+                    weight: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(inline_first.api_key_env_name(), Some("SECOND_KEY"));
+    }
+
+    #[test]
+    fn the_env_name_never_returns_a_secret() {
+        // this value is written to a database column and rendered into an
+        // exported document, so an inline key must never surface through it
+        let inline = ProviderConfig {
+            api_key: Some("sk-legacy-secret".to_string()),
+            api_keys: vec![ApiKeyConfig {
+                key: Some("sk-plural-secret".to_string()),
+                weight: 3,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(inline.api_key_env_name(), None);
+        assert_eq!(inline.inline_api_key(), Some("sk-plural-secret"));
+    }
+
+    #[test]
+    fn the_inline_key_comes_from_either_spelling() {
+        let legacy = ProviderConfig {
+            api_key: Some("sk-legacy".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(legacy.inline_api_key(), Some("sk-legacy"));
+
+        let env_only = ProviderConfig {
+            api_keys: vec![ApiKeyConfig {
+                env: Some("PLURAL_KEY".to_string()),
+                weight: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            env_only.inline_api_key(),
+            None,
+            "an env-only plural provider has no literal to seal"
+        );
+    }
+
+    #[test]
+    fn the_surplus_count_is_what_a_single_credential_store_drops() {
+        assert_eq!(ProviderConfig::default().surplus_api_key_count(), 0);
+        assert_eq!(
+            provider_with_keys(vec![ApiKeyConfig {
+                env: Some("A".to_string()),
+                weight: 1,
+                ..Default::default()
+            }])
+            .surplus_api_key_count(),
+            0
+        );
+        assert_eq!(
+            provider_with_keys(vec![
+                ApiKeyConfig {
+                    env: Some("A".to_string()),
+                    weight: 1,
+                    ..Default::default()
+                },
+                ApiKeyConfig {
+                    env: Some("B".to_string()),
+                    weight: 1,
+                    ..Default::default()
+                },
+                ApiKeyConfig {
+                    env: Some("C".to_string()),
+                    weight: 1,
+                    ..Default::default()
+                },
+            ])
+            .surplus_api_key_count(),
+            2
+        );
     }
 
     #[test]
