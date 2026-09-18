@@ -484,6 +484,39 @@ launch and the play tests silently stop running (#737). Keep both on one version
 and install `chromium-headless-shell` alongside `chromium`, since the test-runner
 launches the shell rather than the full build.
 
+The static build is the one that matters. `storybook dev` serves modules
+unbundled and answers from a warm cache, so it is consistently faster than the
+build this job runs — fast enough to hide a story that is racing something.
+**A focus assertion is the usual victim**, which is what #1675 was:
+
+```ts
+await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
+await expect(canvas.getByRole("button", { name: "open" })).toHaveFocus();  // ✗
+```
+
+A dialog, drawer or sheet takes focus from an effect a step after it enters the
+document, and gives it back from that effect's cleanup a step after it leaves.
+The second line above has no retry, so it passes only while the handover lands
+inside the incidental gap between the two statements. Deferring the restoration
+by 600ms makes it fail outright, with `Received element with focus: <body>`.
+
+Wrapping it is the whole fix:
+
+```ts
+await waitFor(() => expect(canvas.getByRole("button", { name: "open" })).toHaveFocus());
+```
+
+`bun run check:focus` (`ui/scripts/check-story-focus.ts`) fails on the unwrapped
+shape and runs in the `ui lint / build` job, so this cannot reach a PR again. An
+assertion straight after `.focus()`, a `userEvent` call or another `expect(…)`
+needs no waiter — those have already settled where focus is, and the check
+allows them.
+
+Note that [#1672](https://github.com/rolter-ai/rolter/pull/1672)'s
+`configure({ asyncUtilTimeout: 5000 })` does **not** cover this. That budget is
+how long `waitFor` and `findBy*` are willing to *wait*; an assertion that never
+polls waits zero milliseconds however high it is set. The two are orthogonal.
+
 The job carries no `continue-on-error`, so it blocks: a failing story fails
 `quality`, which fails `ci-ok`. (This paragraph used to say the opposite —
 `continue-on-error: true` was removed when the job was promoted in #753 and the

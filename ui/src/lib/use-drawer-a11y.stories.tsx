@@ -78,7 +78,11 @@ export const EscapeClosesAndReturnsFocusToTheRow: Story = {
     await waitFor(() => expect(canvas.getByRole("complementary")).toHaveFocus());
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(canvas.queryByRole("complementary")).toBeNull());
-    await expect(canvas.getByRole("button", { name: "row req-1" })).toHaveFocus();
+    // the drawer is gone and focus goes back in the effect's cleanup, which is a
+    // separate step: assert it with a waiter, never on the frame after removal
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "row req-1" })).toHaveFocus(),
+    );
   },
 };
 

@@ -169,9 +169,10 @@ const selected = async (name: string) =>
 export const Default: Story = {
   render: () => <Palette />,
   play: async () => {
-    // it opens ready to be typed into, which is the whole point of a palette
-    const field = await focused();
-    await expect(field).toHaveFocus();
+    // it opens ready to be typed into, which is the whole point of a palette.
+    // `focused()` is the assertion — it waits for the field to take focus, which
+    // the dialog hands over in an effect a step after the field is mounted
+    await focused();
     // the listbox the field drives, named the same way
     await expect(body().getByRole("listbox", { name: palette.label })).toBeVisible();
     // recents come first and in the order they were visited
