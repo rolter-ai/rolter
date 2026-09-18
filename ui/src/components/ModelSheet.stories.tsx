@@ -54,10 +54,9 @@ const ROUTE: RouteRow = {
 };
 
 /**
- * The same route with a populated `advanced` blob. `guardrails` and
- * `additional_fields` are fields the sheet has no editor for: they ride along
- * to prove a save carries them rather than resetting them to the backend's
- * serde default.
+ * The same route with a populated `advanced` blob. `guardrails` is a field the
+ * sheet has no editor for: it rides along to prove a save carries it rather
+ * than resetting it to the backend's serde default.
  */
 const ADVANCED_ROUTE: RouteRow = {
   ...ROUTE,
@@ -70,7 +69,6 @@ const ADVANCED_ROUTE: RouteRow = {
     insecure_tls: false,
     headers: { "X-Tenant": "acme" },
     locked_headers: ["X-Tenant"],
-    additional_fields: { safety_identifier: "acme-prod" },
     visibility: {
       minimum_role: "member",
       allowed_team_ids: [],
@@ -347,7 +345,6 @@ export const SavesTheAdvancedEditor: Story = {
         headers: Record<string, string>;
         locked_headers: string[];
         guardrails: unknown;
-        additional_fields: unknown;
       };
     };
     await expect(body.advanced.limits.rpm).toBe(900);
@@ -357,11 +354,10 @@ export const SavesTheAdvancedEditor: Story = {
     await expect(body.advanced.locked_headers).toEqual(["X-Tenant"]);
     await expect(body.advanced.base_url).toBe("https://api.openai.com/v1");
     await expect(body.advanced.guardrails).toEqual({ rules: ["pii-out"] });
-    // the sheet has no editor for this map, so it goes back exactly as it came
-    // — the switch that used to stand in for one wiped it instead (#1271)
-    await expect(body.advanced.additional_fields).toEqual({
-      safety_identifier: "acme-prod",
-    });
+    // and the key the backend dropped is not written back: `set_route_advanced`
+    // persists the raw body, so the sheet copying it through was the one path
+    // keeping it alive in the stored blob (#1665, #1710)
+    await expect(body.advanced).not.toHaveProperty("additional_fields");
   },
 };
 
@@ -372,9 +368,10 @@ export const SavesTheAdvancedEditor: Story = {
  * whether the stored `additional_fields` map had any keys, so turning it on for
  * a route with an empty map saved nothing and it read as off again on reopen,
  * while turning it off cleared a map the operator was never shown the contents
- * of. `AdvancedModelConfig.additional_fields` is written by the control plane
- * and read by nothing, so even a faithful round trip would have changed no
- * request. The control comes off until there is something for it to do.
+ * of. The map itself was written by the control plane and read by nothing, and
+ * has since been dropped from `AdvancedModelConfig` outright (#1665) — the
+ * sheet no longer copies it back either (#1710), so the stored blob sheds the
+ * key on the next save instead of carrying it forever.
  */
 export const OffersNoAdditionalFieldsSwitch: Story = {
   render: () => <Stage mode="edit" route={ADVANCED_ROUTE} />,

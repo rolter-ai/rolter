@@ -360,12 +360,6 @@ function advancedToApi(
   out.limits = limits;
 
   out.insecure_tls = draft.net.insecureTls;
-  // nothing in the sheet edits `additional_fields` and nothing in the gateway
-  // reads it, so it is carried through exactly as stored. the "allow additional
-  // fields" switch that used to sit here was derived from whether this map had
-  // any keys, which meant turning it on saved nothing and turning it off wiped
-  // a map the operator had never been shown (#1271)
-  out.additional_fields = obj(stored.additional_fields);
 
   const headers: Record<string, string> = {};
   const lockedHeaders: string[] = [];

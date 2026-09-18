@@ -3,7 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import * as React from "react";
 
 import { GatedButton } from "./GatedButton";
-import { Harness, routes } from "@/pages/story-harness";
+import { expectAllowed, Harness, routes } from "@/pages/story-harness";
 
 // The one control that knows whether the caller may press it (#1183).
 //
@@ -33,8 +33,10 @@ export const Allowed: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const button = within(canvasElement).getByRole("button");
-    await waitFor(() => expect(button).toBeEnabled());
+    // not a bare `toBeEnabled`: enabled is where this button starts, so that
+    // assertion is true before the gate has said anything (#1707)
+    await expectAllowed(canvasElement, "Add provider");
+    await expect(within(canvasElement).getByRole("button")).not.toHaveAttribute("title");
   },
 };
 

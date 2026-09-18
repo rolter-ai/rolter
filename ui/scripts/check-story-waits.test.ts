@@ -82,6 +82,73 @@ describe("the gate rule", () => {
   });
 });
 
+describe("the gate-allowed rule", () => {
+  it("flags a one-shot toBeEnabled in a story mounted under a role", () => {
+    const { violations } = checkSource(
+      story(
+        "admin",
+        '    await expect(canvas.getByRole("button", { name: "Add" })).toBeEnabled();',
+      ),
+      "a.stories.tsx",
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].rule).toBe("gate-allowed");
+    expect(violations[0].line).toBe(8);
+  });
+
+  it("flags it inside a waitFor too — retrying an already-true assertion adds nothing", () => {
+    const { violations } = checkSource(
+      story("admin", '    await waitFor(() => expect(canvas.getByRole("button")).toBeEnabled());'),
+      "a.stories.tsx",
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].rule).toBe("gate-allowed");
+  });
+
+  it("flags it inside a multi-line waitFor", () => {
+    const { violations } = checkSource(
+      story(
+        "admin",
+        "    await waitFor(() =>",
+        '      expect(canvas.getByRole("button", { name: "Add" })).toBeEnabled(),',
+        "    );",
+      ),
+      "a.stories.tsx",
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].line).toBe(9);
+  });
+
+  it("leaves an ungated story alone — with no provider every control is enabled anyway", () => {
+    const { violations } = checkSource(
+      story(null, '    await expect(canvas.getByRole("button")).toBeEnabled();'),
+      "a.stories.tsx",
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it("takes the same inline waiver", () => {
+    const { violations, waivers } = checkSource(
+      story(
+        "admin",
+        "    // story-wait-allow: enabled by its own prop, not by the gate",
+        '    await expect(canvas.getByRole("button")).toBeEnabled();',
+      ),
+      "a.stories.tsx",
+    );
+    expect(violations).toEqual([]);
+    expect(waivers).toHaveLength(1);
+  });
+
+  it("says nothing about expectAllowed, which does the waiting itself", () => {
+    const { violations } = checkSource(
+      story("admin", '    await expectAllowed(canvasElement, "Add provider");'),
+      "a.stories.tsx",
+    );
+    expect(violations).toEqual([]);
+  });
+});
+
 describe("the sheet-row rule", () => {
   it("flags a data-shaped getByRole on the statement after a sheet opens", () => {
     const { violations } = checkSource(

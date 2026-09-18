@@ -5,7 +5,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { Toaster } from "@/components/ui/toaster";
 import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
-import { CapabilityProvider } from "@/lib/can";
+import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
 import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
 import { ToastProvider } from "@/lib/toast";
@@ -130,8 +130,46 @@ export function Harness({
     },
     [],
   );
-  const body = role ? <CapabilityProvider>{children}</CapabilityProvider> : children;
+  const body = role ? (
+    <CapabilityProvider>
+      <GateProbe />
+      {children}
+    </CapabilityProvider>
+  ) : (
+    children
+  );
   return <QueryClientProvider client={client}>{body}</QueryClientProvider>;
+}
+
+/**
+ * The testid of the harness's own gate probe.
+ *
+ * Exported for `expectAllowed`; a story never queries it directly.
+ */
+export const GATE_PROBE = "rolter-gate-probe";
+
+/**
+ * How far `/api/v1/rbac/effective` got, published into the DOM (#1707).
+ *
+ * A refusal is visible — the control is disabled and carries a `title` — but
+ * being *allowed* looks exactly like not having asked yet, because `undefined`
+ * renders as allowed by design. So there is nothing on a permitted control for
+ * a play to wait on, and `toBeEnabled()` on it is true from the first paint
+ * however long it retries.
+ *
+ * This is the missing observable, and it is the harness's rather than the
+ * dashboard's: no production component learns a test-only attribute. `answered`
+ * means the query settled *with a payload*, so a story cannot pass against a
+ * control plane that 404s the endpoint and leaves every capability unknown —
+ * which is the case a bare enabled assertion is least able to tell apart.
+ *
+ * The state rides on a data attribute with no text content, so a `getByText`
+ * anywhere in the tree cannot match it.
+ */
+function GateProbe() {
+  const value = useCapabilities();
+  const state = !value?.resolved ? "pending" : value.effective ? "answered" : "unanswered";
+  return <span data-testid={GATE_PROBE} data-gate={state} hidden />;
 }
 
 /** The four kinds of caller the gating stories are written for. */
@@ -316,6 +354,56 @@ export async function expectRefused(
     for (const button of buttons) {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", reason);
+    }
+  });
+}
+
+/**
+ * Every sentence a refused control puts in its `title`.
+ *
+ * Read out of the catalog rather than written out again, and covering all three
+ * shapes the gate can produce, so `expectAllowed` cannot call a refusal it does
+ * not recognise "allowed".
+ */
+const REFUSALS = [NEEDS_ADMIN, NEEDS_MEMBER, NEEDS_SUPERADMIN, en.rbac.needsPermission];
+
+/**
+ * Assert a gated control is *permitted*, once the gate has actually answered.
+ *
+ * The mirror of `expectRefused`, and it needs the extra half for a reason
+ * (#1707): a refusal is a state change a play can wait for, but being allowed
+ * is the state the control is already in — `undefined` is "not known yet" and
+ * renders as allowed on purpose — so `await waitFor(() => expect(button)
+ * .toBeEnabled())` is satisfied on its first poll, before the request has left.
+ * It cannot fail at any latency, which makes it a story that asserts nothing.
+ *
+ * So the gate is awaited through the harness's own probe: `answered` means the
+ * effective-permissions query settled *with a payload*, not merely that it
+ * stopped being pending. Only then is the control read — enabled, and carrying
+ * none of the refusal sentences, because a control disabled by its own form
+ * state would otherwise report as a gate that refused.
+ *
+ * `role` is the ARIA role to look the control up by, for the toggles and row
+ * controls that are not buttons.
+ */
+export async function expectAllowed(
+  canvasElement: HTMLElement,
+  name: RegExp | string,
+  role: string = "button",
+): Promise<void> {
+  const canvas = within(canvasElement);
+  // looked up again on every poll for the reason `expectRefused` is (#1670): a
+  // screen that re-renders while the gate is in flight leaves a captured node
+  // detached, and the detached copy answers forever with the attributes it had
+  await waitFor(() => {
+    const probe = within(document.body).getByTestId(GATE_PROBE);
+    expect(probe).toHaveAttribute("data-gate", "answered");
+    // every match, not the first: a screen repeats its primary action in the
+    // empty state, and half a gate is not an answer
+    const controls = canvas.getAllByRole(role, { name });
+    for (const control of controls) {
+      expect(control).toBeEnabled();
+      expect(REFUSALS).not.toContain(control.getAttribute("title"));
     }
   });
 }

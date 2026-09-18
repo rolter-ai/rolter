@@ -17,6 +17,13 @@
 // reason whenever the control is disabled by its own form state, which is why
 // `expectRefused` waits for the disabled flag and the `title` together.
 //
+// **A `toBeEnabled()` in a gated story**, waiter or not. The mirror image is
+// worse rather than equal (#1707): enabled is the state a gated control is
+// *already* in before the answer lands, so the assertion is satisfied on its
+// first poll and retrying it changes nothing. It cannot fail at any latency.
+// `expectAllowed` waits on the harness's gate probe first, so there is a state
+// change to wait for at all.
+//
 // **A data-shaped `getByRole` on the statement after a sheet opens.** A sheet
 // fires its own query as it opens, so its rows are a request behind the dialog
 // — `findByRole` is the fix. The rule looks only at roles that are rendered
@@ -70,7 +77,7 @@ const DATA_ROLES = ["checkbox", "radio", "row", "cell", "option", "listitem", "t
 /** an inline `story-wait-allow: <reason>` on the line above */
 const WAIVER = /story-wait-allow:\s*(.*)$/;
 
-export type RuleId = "gate" | "sheet-row";
+export type RuleId = "gate" | "gate-allowed" | "sheet-row";
 
 export interface Violation {
   file: string;
@@ -166,6 +173,16 @@ export function checkSource(source: string, file: string): Result {
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
+
+    // checked before the waiter test, and deliberately: wrapping this one in a
+    // `waitFor` buys nothing, because the state it asserts is the state the
+    // control starts in. It is the only rule here that a waiter does not fix
+    if (line.includes("toBeEnabled(") && inGatedStory(lines, i)) {
+      if (!waive(i))
+        violations.push({ file, line: i + 1, rule: "gate-allowed", text: raw[i].trim() });
+      continue;
+    }
+
     // a line that opens or continues a waiter retries by definition
     if (waited.has(i) || line.includes("waitFor(")) continue;
 
@@ -205,6 +222,12 @@ const ADVICE: Record<RuleId, string> = {
     "the wrong reason whenever the control is disabled by its own form state. Use\n" +
     "`expectRefused(canvasElement, name, reason)`, which waits for the disabled\n" +
     "flag and the `title` together.",
+  "gate-allowed":
+    "enabled is the state a gated control is already in before\n" +
+    "`/api/v1/rbac/effective` answers, so `toBeEnabled()` passes on its first\n" +
+    "poll and a `waitFor` around it changes nothing. Use\n" +
+    "`expectAllowed(canvasElement, name, role?)`, which waits for the gate to\n" +
+    "have answered with a payload before it reads the control.",
   "sheet-row":
     "a sheet fires its own query as it opens, so a row it renders out of that\n" +
     "answer is not there the instant the dialog is. Use `await …findByRole(…)`.",

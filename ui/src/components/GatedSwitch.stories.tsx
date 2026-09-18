@@ -3,7 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import * as React from "react";
 
 import { GatedSwitch } from "./GatedSwitch";
-import { Harness, routes } from "@/pages/story-harness";
+import { expectAllowed, Harness, routes } from "@/pages/story-harness";
 
 // The row toggle that knows whether the caller may flip it (#1258).
 //
@@ -34,8 +34,10 @@ export const Allowed: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const toggle = within(canvasElement).getByRole("switch");
-    await waitFor(() => expect(toggle).toBeEnabled());
+    // the switch is enabled before the gate answers, so waiting for that state
+    // proves nothing - `expectAllowed` waits for the answer itself (#1707)
+    await expectAllowed(canvasElement, "Enable openai-prod", "switch");
+    await expect(within(canvasElement).getByRole("switch")).not.toHaveAttribute("title");
   },
 };
 

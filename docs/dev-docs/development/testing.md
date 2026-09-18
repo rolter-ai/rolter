@@ -578,12 +578,32 @@ surface it sits on:
   control is also disabled by its own form state (an empty key, an invalid
   draft). The `title` is what tells a refusal apart from a draft
 
-`bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces both shapes
-from #1700, in the same `ui lint / build` job as `check:focus` and on the same
+And the mirror image is worse rather than equal ([#1707](https://github.com/rolter-ai/rolter/issues/1707)).
+A gated control renders **enabled** before the answer lands, so `toBeEnabled()`
+on it is true from the first paint: it is satisfied on the first poll, a
+`waitFor` around it changes nothing, and it cannot fail at any latency —
+including against a control plane that 404s the endpoint and leaves every
+capability unknown. There is no state change to wait for, which is why the fix
+is not a waiter but `expectAllowed`.
+
+`expectAllowed(canvasElement, name, role?)` waits on the harness's own gate
+probe first: `Harness` renders a hidden `data-gate` span inside the
+`CapabilityProvider` whenever a story carries a `role`, reading `answered` only
+once the effective-permissions query has settled *with a payload*. Only then is
+the control read — enabled, and carrying none of the refusal sentences, so a
+control disabled by its own form state cannot pass for a permitted one. The
+probe is the harness's and never the dashboard's: no production component
+learns a test-only attribute.
+
+`bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces all three
+shapes, in the same `ui lint / build` job as `check:focus` and on the same
 grep-level terms:
 
 - a `toBeDisabled()` outside a waiter, in a story whose harness carries a
   `role` — the only case where a gate is in flight at all
+- a `toBeEnabled()` in such a story, waiter or not. It is the one rule here a
+  `waitFor` does not satisfy, because the state it asserts is the state the
+  control starts in
 - a `getByRole("checkbox" | "radio" | "row" | "cell" | "option" | …)` on the
   statement right after `sheet()` or a `findByRole("dialog")`
 
@@ -603,10 +623,8 @@ waiver. There are three in the tree today, and every run prints them:
 await expect(within(canvasElement).getByRole("button")).toBeDisabled();
 ```
 
-Two things the check deliberately does not see, and which a reviewer still has
-to: a one-shot `toBeEnabled()` on a gated control, which passes *before* the
-gate answers because enabled is the pre-answer default ([#1707](https://github.com/rolter-ai/rolter/issues/1707)),
-and a data query more than one statement after the sheet opened.
+One thing the check deliberately does not see, and which a reviewer still has
+to: a data query more than one statement after the sheet opened.
 
 #### Every story is also an axe test
 
