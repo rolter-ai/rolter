@@ -355,10 +355,17 @@ export const AdminCannotWriteAModelLabel: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
-    const panel = within(await within(document.body).findByRole("dialog"));
-    await expect(await panel.findByText(/a price row exists/)).toBeVisible();
-    await expect(panel.getByRole("button", { name: "Add label" })).toBeDisabled();
-    await expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeDisabled();
+    const panel = await within(document.body).findByRole("dialog");
+    await expect(await within(panel).findByText(/a price row exists/)).toBeVisible();
+    // `expectRefused` rather than a bare `toBeDisabled`, on both counts. The
+    // sheet fires its own label query as it opens and the effective-permissions
+    // answer is a request behind that again, so a one-shot assertion here is
+    // only ever reading whichever of the two happened to land first (#1689) —
+    // and the `title` half is what distinguishes a refusal from `Add label`
+    // being disabled for its own reason, an empty key, which is what made that
+    // line pass while the gate was still in flight
+    await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
+    await expectRefused(panel, "Remove tier=flagship", NEEDS_SUPERADMIN);
   },
 };
 
@@ -374,8 +381,14 @@ export const SuperadminCanWriteAModelLabel: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
     const panel = within(await within(document.body).findByRole("dialog"));
-    await expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeEnabled();
-    // still no way to touch the observation
+    // the sheet reads its own labels, so the chips arrive a request after the
+    // dialog does — until then the body is a skeleton and there is no remove
+    // control to assert on at all (#1689)
+    await waitFor(() =>
+      expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeEnabled(),
+    );
+    // still no way to touch the observation, asked once the list is on screen —
+    // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
   },
 };

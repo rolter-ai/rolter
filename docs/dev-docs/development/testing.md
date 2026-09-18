@@ -551,6 +551,24 @@ in the harness, rebuild, and re-run the file — and restart the static server
 after every rebuild, since a server left running over a replaced
 `storybook-static` keeps serving the build it started with.
 
+A raised budget only helps an assertion that *retries*. `getByRole` and a bare
+`expect` do not: they read the DOM once, so they wait zero milliseconds at any
+budget and pass only while the stub answers inside the same tick. That is what
+#1689 was — three plays acting on a control whose data is a request behind the
+surface it sits on:
+
+- a sheet fires its own query as it opens, so its rows are not there the instant
+  the dialog is. `await form.findByRole(…)`, never `form.getByRole(…)` on the
+  line after the sheet opened
+- a gated control renders **enabled** until `/api/v1/rbac/effective` answers —
+  `undefined` is "not known yet" and only an explicit `false` disables — so
+  `expect(button).toBeDisabled()` asserted once is reading the gate before it
+  spoke. Use `expectRefused`, which waits for the disabled flag and the `title`
+  together
+- and `toBeDisabled()` on its own passes for the wrong reason whenever the
+  control is also disabled by its own form state (an empty key, an invalid
+  draft). The `title` is what tells a refusal apart from a draft
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
