@@ -9547,3 +9547,130 @@ async fn org_projects_lists_every_team_in_the_org_and_no_other() {
         .unwrap();
     assert_eq!(refused.status(), 403);
 }
+
+/// #1643: a group created through this API was carried by `/internal/snapshot`
+/// and still 404'd at the gateway until someone restarted it. The gateway's
+/// watcher refetches on a `config_version` change, and neither group table had
+/// a `bump_config_version()` trigger — so `publish_config_change` republished
+/// the *same* version and nothing downstream moved. Any later write to another
+/// config table masked it, which made the failure look intermittent.
+///
+/// This pins the operator-visible path rather than the trigger alone: each CRUD
+/// call an operator makes on a group has to leave a version the data plane can
+/// notice, and the snapshot that version names has to carry the group.
+#[tokio::test]
+async fn provider_group_crud_advances_the_version_the_gateway_watches() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.expect("app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    let mut provider_ids = Vec::new();
+    for n in 1..=2 {
+        let provider = post(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/providers"),
+            json!({
+                "name": format!("vllm-a100-0{n}"),
+                "kind": "openai",
+                "api_base": "http://vllm.internal",
+            }),
+        )
+        .await;
+        provider_ids.push(provider["id"].as_str().expect("provider id").to_string());
+    }
+
+    let before = config_version(&pool).await;
+    let group = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/provider-groups"),
+        json!({
+            "name": "Llama fleet",
+            "slug": "llama-fleet",
+            "strategy": "weighted",
+            "members": [
+                {"provider_id": provider_ids[0], "weight": 3},
+                {"provider_id": provider_ids[1], "weight": 1},
+            ],
+        }),
+    )
+    .await;
+    let group_id = group["id"].as_str().expect("group id").to_string();
+    assert!(
+        config_version(&pool).await > before,
+        "creating a group left config_version at {before}: the gateway never refetches, so \
+         `llama-fleet/<model>` 404s until someone restarts it"
+    );
+
+    // the version is only worth publishing if the snapshot it names carries the
+    // group — a bump pointing at a snapshot without it fails identically
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let groups = snapshot["config"]["provider_groups"]
+        .as_array()
+        .expect("snapshot carries provider_groups");
+    let served = groups
+        .iter()
+        .find(|g| g["slug"] == "llama-fleet")
+        .expect("the group is not in the snapshot its version serves");
+    assert_eq!(
+        served["members"].as_array().map(Vec::len),
+        Some(2),
+        "the snapshot dropped a member: {served}"
+    );
+
+    // retuning membership is the write an operator repeats most often
+    let before = config_version(&pool).await;
+    let resp = client
+        .put(format!("{base}/api/v1/provider-groups/{group_id}"))
+        .json(&json!({
+            "strategy": "round_robin",
+            "members": [{"provider_id": provider_ids[0], "weight": 1}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
+    assert!(
+        config_version(&pool).await > before,
+        "editing a group did not bump config_version: the fleet keeps the old strategy and \
+         keeps sending traffic to a member the operator removed"
+    );
+
+    let before = config_version(&pool).await;
+    let resp = client
+        .delete(format!("{base}/api/v1/provider-groups/{group_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
+    assert!(
+        config_version(&pool).await > before,
+        "deleting a group did not bump config_version"
+    );
+}

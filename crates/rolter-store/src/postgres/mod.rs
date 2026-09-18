@@ -1693,6 +1693,160 @@ mod tests {
         );
     }
 
+    /// #1643: a provider group created through the dashboard was reachable in
+    /// `/internal/snapshot` yet 404'd at the gateway until someone restarted it.
+    /// The data plane indexes `config.provider_groups` for `group-slug/model`
+    /// addressing, so the group's tables feed the snapshot — but neither had a
+    /// `bump_config_version()` trigger, leaving the gateway's watcher with no
+    /// version change to refetch on. Any later write to another config table
+    /// masked it, which is what made it look intermittent.
+    ///
+    /// Every write shape gets its own assertion because each is a separate
+    /// operator action: creating the group, adding members, retuning a weight
+    /// or the strategy, and removing a member all have to reach the fleet.
+    #[tokio::test]
+    async fn provider_group_writes_bump_the_version_and_land_in_the_next_snapshot() {
+        let Some(_) = database_url() else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut provider_ids = Vec::new();
+        for n in 1..=2 {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $3, 'openai', 'http://vllm.internal') returning id",
+            )
+            .bind(org_id)
+            .bind(format!("vllm-a100-0{n}"))
+            .bind(format!("vllm-a100-0{n}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            provider_ids.push(id);
+        }
+
+        let before = current_version(&pool).await.unwrap();
+        let group_id: Uuid = sqlx::query_scalar(
+            "insert into provider_groups (org_id, name, slug, strategy)
+             values ($1, 'Llama fleet', 'llama-fleet', 'weighted') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "creating a provider group left config_version at {before}: the gateway has \
+             nothing to refetch on, so the group 404s until someone restarts it"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        for (position, provider_id) in provider_ids.iter().enumerate() {
+            sqlx::query(
+                "insert into provider_group_members (group_id, provider_id, weight, position)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(group_id)
+            .bind(provider_id)
+            .bind(3 - position as i32)
+            .bind(position as i32)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "adding members to a group did not bump config_version: an empty group never \
+             routes, so the group stays dead at the gateway"
+        );
+
+        // retuning a member's weight is the write an operator repeats most, and
+        // it is invisible unless it bumps too
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update provider_group_members set weight = 7 where group_id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "changing a member weight did not bump config_version"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update provider_groups set strategy = 'round_robin' where id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "changing a group strategy did not bump config_version"
+        );
+
+        // a rolled-back write must not bump, the same as every other table
+        let rolled_back_from = current_version(&pool).await.unwrap();
+        let mut txn = pool.begin().await.unwrap();
+        sqlx::query(
+            "insert into provider_groups (org_id, name, slug) values ($1, 'ghost', 'ghost')",
+        )
+        .bind(org_id)
+        .execute(&mut *txn)
+        .await
+        .unwrap();
+        txn.rollback().await.unwrap();
+        assert_eq!(
+            current_version(&pool).await.unwrap(),
+            rolled_back_from,
+            "a rolled-back group insert bumped config_version"
+        );
+
+        // the bump is only worth anything if the snapshot that version names
+        // carries the group — a version pointing at a snapshot without it fails
+        // exactly the same way
+        let store = PostgresConfigStore::new(pool.clone());
+        let snapshot = store.load().await.unwrap();
+        let group = snapshot
+            .provider_groups
+            .iter()
+            .find(|g| g.slug.as_deref() == Some("llama-fleet"))
+            .expect("the group bumped the version but is not in the snapshot it serves");
+        assert_eq!(group.members.len(), 2, "the snapshot dropped a member");
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("delete from provider_group_members where group_id = $1 and provider_id = $2")
+            .bind(group_id)
+            .bind(provider_ids[1])
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "removing a member did not bump config_version: the gateway keeps sending traffic \
+             to a box the operator took out of the fleet"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("delete from provider_groups where id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            current_version(&pool).await.unwrap() > before,
+            "deleting a group did not bump config_version"
+        );
+    }
+
     /// org → team → project → user, with a virtual key the user owns.
     /// Returns `(user_id, project_id)`.
     async fn tenancy_with_owned_key(pool: &PgPool, key_hash: &str) -> (Uuid, Uuid) {
