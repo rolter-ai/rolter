@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
 import { useDiscardGuard } from "@/components/DiscardGuard";
+import { DocsLink } from "@/components/DocsLink";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -381,9 +382,14 @@ export function ProviderSheet({
         <Field
           label={t("providerSheet.fields.providerKey")}
           hint={
-            mode === "add"
-              ? t("providerSheet.fields.providerKeyHintAdd")
-              : t("providerSheet.fields.providerKeyHintEdit")
+            <>
+              {mode === "add"
+                ? t("providerSheet.fields.providerKeyHintAdd")
+                : t("providerSheet.fields.providerKeyHintEdit")}{" "}
+              {/* the hint stands alone; the link only adds depth, and is absent
+                  on a deployment that configured no documentation host (#1164) */}
+              <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
+            </>
           }
         >
           <Input

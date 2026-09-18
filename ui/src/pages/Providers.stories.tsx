@@ -371,3 +371,61 @@ export const LabelsUnavailable: Story = {
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the two states below cannot leak into each other.
+ */
+function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
+}
+
+/**
+ * Open the add-provider sheet, where the provider-key field explains which of
+ * the three credentials it wants (#943).
+ */
+async function openTheProviderKeyField(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("button", { name: "+ Add provider" }));
+  return within(await within(document.body).findByRole("dialog"));
+}
+
+/** The hint carries a link into `security/which-key` when docs exist (#1164). */
+export const ProviderKeyHintLinksToTheDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const sheet = await openTheProviderKeyField(canvasElement);
+    const link = await sheet.findByRole("link", { name: /Which key do I need/ });
+    await expect(link).toHaveAttribute("href", "https://docs.example.com/security/which-key");
+  },
+};
+
+/**
+ * The air-gapped default: no documentation host, so the hint stands alone and
+ * there is no link to click into nothing.
+ */
+export const ProviderKeyHintHasNoLinkWithoutADocsHost: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const sheet = await openTheProviderKeyField(canvasElement);
+    // the hint itself is still there — only the link is suppressed
+    await sheet.findByText(/the credential this provider issued to rolter/);
+    await expect(sheet.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
+  },
+};

@@ -13,7 +13,9 @@ export interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
    * to its child, so the label is never left dangling */
   htmlFor?: string;
   error?: string;
-  hint?: string;
+  /** helper text below the control; a node so a hint can carry a `DocsLink`
+   * (#1164) — it is only rendered and tested for emptiness, never read */
+  hint?: React.ReactNode;
   // optional explanatory note surfaced via an (i) button beside the label:
   // what the field is and what values to use
   info?: React.ReactNode;
@@ -73,6 +75,9 @@ export function Field({
   // an error also flips aria-invalid, so a screen reader hears both the state
   // and the reason rather than a control that silently refuses to submit
   const message = error ?? hint;
+  // a node-valued hint is a fresh element on every render, so the effect below
+  // depends on whether there *is* a description rather than on the node itself
+  const hasMessage = !!message;
   const described: ControlProps = {};
   if (control && !control.props.id && !htmlFor) described.id = controlId;
   if (message && control && !control.props["aria-describedby"]) {
@@ -118,7 +123,7 @@ export function Field({
       }
       setWrapped(node.id);
     }
-    if (message && !node.hasAttribute("aria-describedby")) {
+    if (hasMessage && !node.hasAttribute("aria-describedby")) {
       node.setAttribute("aria-describedby", messageId);
       added.push("aria-describedby");
     }
@@ -129,7 +134,7 @@ export function Field({
     return () => {
       for (const attribute of added) node.removeAttribute(attribute);
     };
-  }, [byHand, children, error, generated, htmlFor, label, message, messageId, multi]);
+  }, [byHand, children, error, generated, hasMessage, htmlFor, label, messageId, multi]);
 
   return (
     <div ref={root} className={cn("space-y-1.5", className)} {...props}>
