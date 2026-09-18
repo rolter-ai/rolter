@@ -85,12 +85,53 @@ clobbering each other.
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
-a database they may write to:
+a Postgres they may write to. The role wants `CREATEDB`, since each worktree
+gets a database of its own (below); without it the tests still run, they just
+share the database the url names:
 
 ```bash
 ROLTER_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/rolter_test \
   cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
+
+### One database per worktree
+
+`ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
+up writing to. The database is derived from the workspace the test binary was
+compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
+[`rolter_store::postgres::test_database`](../../crates/rolter-store/src/postgres/test_database.rs).
+A new worktree is therefore isolated without exporting anything, which is the
+point: this repository expects several agents working several worktrees at once
+(see [worktrees.md](worktrees.md)), so concurrent suites against one database is
+the normal case rather than an edge case, and an isolation scheme that has to be
+opted into is forgotten exactly when it is needed (#1430).
+
+Two things that used to be true stop being true:
+
+- a suite in another worktree no longer creates and drops `test_*` schemas
+  underneath the one you are measuring — the 396 foreign schemas that appeared
+  mid-session while #1364 was being verified
+- a worktree on an older commit no longer applies its migration set to the
+  database another worktree is reading
+
+The worktree's path is stored as the database's comment, which is the whole
+cleanup story: the next run drops any `rolter_test_wt_*` database whose recorded
+directory no longer exists, so a removed worktree takes its database with it and
+no hook has to run. List them with `\l rolter_test_wt*`, or:
+
+```sql
+select datname, shobj_description(oid, 'pg_database')
+from pg_database where datname like 'rolter_test_wt%';
+```
+
+Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
+exactly as given — a throwaway database that is already private, or a deliberate
+reproduction of the shared-database behaviour. The derivation also steps aside
+when it cannot create a database (a role without `CREATEDB`, for instance): it
+prints why and falls back to the configured url, because losing isolation is
+better than losing the suite.
+
+### One schema per test
 
 Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
 `search_path`, because plain `cargo test` — which the coverage job runs — puts
@@ -161,6 +202,27 @@ issue describes is reachable at far fewer schemas than it sounds.
 When a failing test's rows *are* the evidence, set `ROLTER_TEST_KEEP_SCHEMA=1`:
 the guard then keeps every schema it creates (printing each name) and skips the
 sweep, so nothing is reclaimed until you drop it yourself.
+
+### What keeps all of this honest
+
+Three rules hold the isolation together, and
+[`crates/rolter-store/tests/db_test_isolation.rs`](../../crates/rolter-store/tests/db_test_isolation.rs)
+fails the build when a new test breaks one — the same shape of source-level
+drift guard as the gateway's `lock_discipline.rs`:
+
+- the database comes from `test_database::url()`, never from
+  `ROLTER_TEST_DATABASE_URL` read directly
+- the schema comes from `TestSchema`, never from a hand-rolled `create schema`
+- no test in these suites installs a process-wide environment value only it
+  wants — the one exception is the shared `TEST_KEK` every call site in
+  `control_integration.rs` installs, which exists precisely so the race has
+  nothing to observe (#1351)
+
+That last rule is what `cargo test -p rolter-control -p rolter-store --features
+postgres` used to break (#1444): the environment is process-wide and the
+coverage job runs every test in a binary as a thread, so a value one test wanted
+was read by another test's in-flight request. Pass it into the app under test
+instead — `test_app_with_public_url` is the model.
 
 ## Layout
 

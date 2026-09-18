@@ -4261,17 +4261,18 @@ mod tests {
     /// An isolated, migrated schema of this test's own. Bind the guard for the
     /// whole test: the schema is dropped with it.
     async fn fresh_db() -> super::super::test_schema::TestSchema {
-        let url = std::env::var("ROLTER_TEST_DATABASE_URL")
+        let url = super::super::test_database::url()
+            .await
             .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
         super::super::test_schema::TestSchema::migrated(&url).await
     }
 
     #[tokio::test]
     async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
-        let Ok(_) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -4411,10 +4412,10 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_template_versions_publish_and_scope_round_trip() {
-        let Ok(_) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
@@ -4498,10 +4499,10 @@ mod tests {
 
     #[tokio::test]
     async fn skill_versions_publish_and_retire_round_trip() {
-        let Ok(_) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
@@ -4587,10 +4588,10 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_instances_round_trip_at_org_and_project_scope() {
-        let Ok(_) = std::env::var("ROLTER_TEST_DATABASE_URL") else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let org = OrgRepo(&pool).create("plugins", "plugins").await.unwrap();
@@ -4658,8 +4659,8 @@ mod tests {
 
     #[tokio::test]
     async fn audit_log_keyset_pages_filter_without_shifting_boundaries() {
-        if std::env::var("ROLTER_TEST_DATABASE_URL").is_err() {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
             return;
         }
         let db = fresh_db().await;

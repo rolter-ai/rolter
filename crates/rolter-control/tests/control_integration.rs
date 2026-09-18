@@ -10,8 +10,13 @@ use std::net::SocketAddr;
 use rolter_store::postgres::test_schema::TestSchema;
 use serde_json::{json, Value};
 
-fn database_url() -> Option<String> {
-    std::env::var("ROLTER_TEST_DATABASE_URL").ok()
+use rolter_store::postgres::test_database;
+
+/// The database this worktree owns. `ROLTER_TEST_DATABASE_URL` names the
+/// server; the database itself is derived from the workspace path, so parallel
+/// worktrees do not share one (#1430).
+async fn database_url() -> Option<String> {
+    test_database::url().await
 }
 
 /// Create a fresh isolated schema and return the guard owning it, so a test
@@ -21,7 +26,9 @@ fn database_url() -> Option<String> {
 /// out with `db.pool().clone()`; tests that only need a router use
 /// [`fresh_app`].
 async fn fresh_db() -> TestSchema {
-    let url = database_url().expect("ROLTER_TEST_DATABASE_URL checked by caller");
+    let url = database_url()
+        .await
+        .expect("ROLTER_TEST_DATABASE_URL checked by caller");
     TestSchema::create(&url).await
 }
 
@@ -88,8 +95,8 @@ const TEST_KEK: &str = "integration-test-kek";
 
 macro_rules! skip_without_db {
     () => {
-        if database_url().is_none() {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
         }
     };

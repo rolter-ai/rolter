@@ -401,8 +401,10 @@ mod tests {
 
     use sqlx::PgPool;
 
-    fn database_url() -> Option<String> {
-        std::env::var("ROLTER_TEST_DATABASE_URL").ok()
+    /// The database this worktree owns, or `None` when none is configured and
+    /// the caller should skip.
+    async fn database_url() -> Option<String> {
+        crate::postgres::test_database::url().await
     }
 
     /// Seal `secret` for a freshly created provider, as the dashboard does.
@@ -473,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_restore_carrying_its_kek_still_opens_every_secret() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -509,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_restore_onto_the_wrong_kek_is_caught_and_names_what_was_lost() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -538,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_store_with_nothing_sealed_yet_reports_nothing_sampled() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -557,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_column_in_the_inventory_exists_in_the_schema() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -612,7 +614,7 @@ mod tests {
     /// missing client binary is not a defect in rolter.
     #[tokio::test]
     async fn a_pg_dump_restored_into_a_fresh_database_keeps_its_secrets_readable() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -702,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotation_hands_the_store_to_the_new_kek_and_takes_it_from_the_old() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -743,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rotation_from_the_wrong_old_kek_changes_nothing_at_all() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -786,7 +788,7 @@ mod tests {
     /// is a secret a restore would silently lose without warning.
     #[tokio::test]
     async fn the_schema_holds_no_sealed_column_the_audit_does_not_know_about() {
-        let Some(url) = database_url() else {
+        let Some(url) = database_url().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };

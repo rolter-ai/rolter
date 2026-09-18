@@ -73,6 +73,11 @@ Every agent must own exactly one branch and worktree. Never let two agents push
 the same feature branch. Worktrees isolate files and indexes, but branch refs
 and remote-tracking refs are shared by the repository.
 
+Each worktree runs its Postgres tests against a database of its own, derived
+from the worktree path rather than configured, so two agents' suites never share
+one (#1430). `ROLTER_TEST_DATABASE_URL` names the server; see
+[testing.md](testing.md#one-database-per-worktree).
+
 ## Dependent tasks
 
 Use an explicit parent branch as the base:
@@ -165,6 +170,13 @@ wt remove <branch>
 The shared `pre-remove` hook runs `cargo clean` inside that worktree before
 Worktrunk deletes it. This reclaims the copied `target/` cache while the path
 still exists; source files and other worktrees are unaffected.
+
+The worktree's Postgres test database is reclaimed too, but lazily: it is named
+after the worktree path and carries that path as its comment, so the next test
+run in any worktree drops every `rolter_test_wt_*` database whose directory is
+gone. Nothing has to run at removal time, and a worktree that is merely idle
+keeps its database. See
+[testing.md](testing.md#one-database-per-worktree).
 
 Worktrunk deletes a branch only when it can prove the branch adds no changes to
 the default branch. When the merge state is uncertain, preserve the branch:
