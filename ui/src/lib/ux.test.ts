@@ -93,6 +93,43 @@ describe("ux event emitters", () => {
       expect(event.project_id).toBe("proj-1");
     });
 
+    it("stamps each event when it is queued, not when the batch flushes", async () => {
+      // the bug this guards: stamping at flush time put every event of a
+      // burst at the same instant, seconds away from when it happened (#1224)
+      const realNow = Date.now;
+      let clock = Date.parse("2026-09-18T10:00:00.000Z");
+      Date.now = () => clock;
+      // Date's constructor reads the real clock, not Date.now, so the stamp
+      // has to come from a fake the whole test agrees on
+      const RealDate = globalThis.Date;
+      class FrozenDate extends RealDate {
+        constructor(value?: number | string | Date) {
+          super(value ?? clock);
+        }
+      }
+      globalThis.Date = FrozenDate as unknown as DateConstructor;
+      try {
+        trackScreenView("dashboard");
+        clock += 4_500;
+        trackScreenView("logs");
+        const [a, b] = pendingUxEvents();
+        expect(a.ts).toBe("2026-09-18T10:00:00.000Z");
+        expect(b.ts).toBe("2026-09-18T10:00:04.500Z");
+
+        // and the gap survives the batch they share
+        clock += 30_000;
+        await flush();
+        const sent = sentBatch(fetchMock);
+        expect(sent.map((event) => event.ts)).toEqual([
+          "2026-09-18T10:00:00.000Z",
+          "2026-09-18T10:00:04.500Z",
+        ]);
+      } finally {
+        globalThis.Date = RealDate;
+        Date.now = realNow;
+      }
+    });
+
     it("gives every event a distinct id", () => {
       trackScreenView("dashboard");
       trackScreenView("logs");
@@ -182,6 +219,7 @@ describe("ux event emitters", () => {
         "screen",
         "action",
         "outcome",
+        "ts",
         "target",
         "from_screen",
         "duration_ms",

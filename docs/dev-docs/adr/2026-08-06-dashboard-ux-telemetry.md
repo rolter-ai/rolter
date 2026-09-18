@@ -42,6 +42,15 @@ construction. `logging.payload_capture` already exists for the case where
 someone genuinely wants raw bodies, and it is off by default; this stream is
 deliberately not that.
 
+**Client-stamped time, server-bounded.** The interaction's instant can only
+come from the browser — the batch that carries it may be seconds or hours
+younger — so each event is stamped as it is queued and the endpoint accepts
+that `ts`. Trusting it outright would let one laptop with a wrong clock sit at
+the top of every recent-events query forever, so a supplied instant is used
+only within a window around ingest time and otherwise replaced by it (#1224).
+The two instants are therefore not interchangeable, and a row is only ever as
+accurate as the clock that produced it.
+
 **Server-side attribution.** `user_id` is taken from the authenticated session
 and a client-supplied one is ignored, so a caller cannot file events against
 another user.

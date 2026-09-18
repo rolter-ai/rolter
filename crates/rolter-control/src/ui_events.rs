@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn the_row_takes_user_id_from_the_principal_not_the_event() {
-        let built = row(&event(), "11111111-2222-3333-4444-555555555555");
+        let built = row(&event(), "11111111-2222-3333-4444-555555555555", Utc::now());
         assert_eq!(
             built["user_id"],
             json!("11111111-2222-3333-4444-555555555555")
@@ -449,8 +449,9 @@ mod tests {
 
     #[test]
     fn the_row_carries_every_column_the_table_declares() {
-        let built = row(&event(), "u");
+        let built = row(&event(), "u", Utc::now());
         for column in [
+            "ts",
             "event_id",
             "trace_id",
             "session_id",
