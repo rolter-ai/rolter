@@ -8,6 +8,7 @@ import {
   expectEmptyState,
   expectForbidden,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -195,14 +196,27 @@ export const RejectsInvalidConfiguration: Story = {
 
 // the delete was a bare window.confirm, so the confirm path had never been
 // exercised by a story at all (#1179)
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the toast, the row gone — rather than that the request left. A stub that
+// answers the full list forever passes either way, which is how a 204 fixture
+// that threw went unnoticed (#1260)
+let pluginDeleted = false;
 const deletes = recording(async (input, init) => {
   const scoped = scopeResponse(String(input));
   if (scoped) return scoped;
-  return init?.method === "DELETE" ? json({}, 204) : json(PLUGINS);
+  if (init?.method === "DELETE") {
+    pluginDeleted = true;
+    return json({}, 204);
+  }
+  return json(pluginDeleted ? PLUGINS.filter((row) => row.id !== "plugin-redact") : PLUGINS);
 });
 
 export const ConfirmsBeforeDeletingAPlugin: Story = {
-  render: () => <Harness fetchStub={deletes.stub} />,
+  render: () => {
+    pluginDeleted = false;
+    return <Harness fetchStub={deletes.stub} toasted />;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // by name, not by index: each row control names its own plugin (#1214)
@@ -216,6 +230,12 @@ export const ConfirmsBeforeDeletingAPlugin: Story = {
     await userEvent.click(await del());
     await confirmDestructive(/PII redaction/, "Delete");
     await deletes.expectSent("DELETE", "/plugins/plugin-redact");
+
+    // the outcome, not just the request: the confirmation closes, the queue
+    // announces it, and the row is gone from the list
+    await expectSheetClosed();
+    await expectToast(canvasElement, /PII redaction deleted/);
+    await waitFor(() => expect(canvas.queryByText("PII redaction")).not.toBeInTheDocument());
   },
 };
 

@@ -10,8 +10,10 @@ import {
   expectEmptyState,
   expectLoadError,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   Harness as GatedHarness,
+  json,
   NEEDS_ADMIN,
   recording,
 } from "./story-harness";
@@ -51,7 +53,6 @@ const GROUPS: McpToolGroupRow[] = [{ id: "group-1", org_id: ORG.id, name: "Triag
 const SETTINGS: McpGatewaySettingsRow = { org_id: ORG.id, default_transport: "streamable_http", connect_timeout_ms: 5000, request_timeout_ms: 30000, max_retries: 1, default_failure_mode: "fail_closed", allow_unlisted_tools: false, updated_at: ORG.created_at };
 
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const urlOf = (input: RequestInfo | URL) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
 // both oauth routes sit *under* /mcp-servers/{id}, so they are matched before
@@ -616,9 +617,25 @@ export const ToolGroupSelectsTools: Story = { render: () => <Harness fetchStub={
 
 // the group delete was the last window.confirm on this screen, and it could not
 // even name the group it was about (#1179)
-const groupDeletes = recording(routed({ groups: async (_input, init) => init?.method === "DELETE" ? json({}, 204) : json(GROUPS) }));
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the dialog closed, the card gone — rather than that the request left. The
+// tool-group delete pushes no toast, so the empty state is what it leaves
+// behind. A stub that answers the full list forever passes either way, which
+// is how a 204 fixture that threw went unnoticed (#1260)
+let groupDeleted = false;
+const groupDeletes = recording(routed({ groups: async (_input, init) => {
+  if (init?.method === "DELETE") {
+    groupDeleted = true;
+    return json({}, 204);
+  }
+  return json(groupDeleted ? [] : GROUPS);
+} }));
 export const ToolGroupConfirmsBeforeDeleting: Story = {
-  render: () => <Harness fetchStub={groupDeletes.stub}><ToolGroups /></Harness>,
+  render: () => {
+    groupDeleted = false;
+    return <Harness fetchStub={groupDeletes.stub}><ToolGroups /></Harness>;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Triage")).toBeVisible());
@@ -632,6 +649,12 @@ export const ToolGroupConfirmsBeforeDeleting: Story = {
     await userEvent.click(del());
     await confirmDestructive(/Triage/, "Delete");
     await groupDeletes.expectSent("DELETE", "/mcp/tool-groups/group-1");
+
+    // the outcome, not just the request: the confirmation closes and the card
+    // is gone, leaving the screen on its empty state
+    await expectSheetClosed();
+    await waitFor(() => expect(canvas.queryByText("Triage")).not.toBeInTheDocument());
+    await expectEmptyState(canvasElement, /No tool groups/);
   },
 };
 
