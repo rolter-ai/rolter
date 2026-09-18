@@ -27,6 +27,7 @@ erDiagram
 - **Routes** belong to a project and map a public `model` to `route_targets` with a `strategy`.
 - **Virtual keys** belong to a project, store only a hash of the key plus a display prefix, and carry an optional model allow-list.
 - **MCP servers** belong to an org and declare required OAuth scopes and exposed tool names. Only enabled servers reach gateway snapshots. Grants bind a user to a server; sealed token sessions belong to a grant. **MCP tool groups** persist named server/tool manifests, while **MCP gateway settings** hold organization defaults for registration and MCP-aware clients; neither is currently a request-path authorization boundary.
+- **Provider groups** (`provider_groups`, `provider_group_members`) are org-scoped and address a fleet of same-kind providers as one `group-slug/model` name. The slug shares the provider slug namespace; a member's `weight` and `position` feed the group's balancing strategy, and a null `upstream_model` forwards the requested model unchanged.
 - **Labels** (`labels`) attach a `(key, value?)` fact to a provider, provider group, route or model. `source` separates an operator's `custom` label from an `auto` one Rolter derived, and is part of the uniqueness constraint so the two never overwrite each other; `auto` rows additionally carry `observed_at`/`observation`. `subject_id` is text because a model is addressed by name, which rules out a foreign key — three `after delete` triggers sweep a subject's labels instead. See [labels.md](labels.md).
 
 ## Cost & limits
@@ -40,6 +41,8 @@ erDiagram
 `config_version` holds a single monotonic counter the gateways watch for reload-free updates ([config-and-hot-reload.md](config-and-hot-reload.md)). `audit_log` records who changed what.
 
 The RBAC tables are split on exactly this question. `access_profile_policies`, `access_profile_assignments`, `access_profiles` and `memberships` all carry a `bump_config_version()` trigger, because the gateway resolves the model/route policy of each virtual key's owner from them and enforces it on the request path (#791, [ADR-0023](../adr/2026-08-04-access-policy-propagation.md)). `custom_roles` and `custom_role_grants` do not and must not: they decide control-plane authorization, which is evaluated live per request, so a bump would wake the fleet for a change it cannot observe.
+
+`provider_groups` and `provider_group_members` carry one too. The data plane indexes `config.provider_groups` to resolve `group-slug/model` addressing, so a group is data-plane-visible the moment it exists — and until #1643 neither table bumped, which meant a group created in the dashboard was present in `/internal/snapshot` and still 404'd at the gateway until it was restarted or an unrelated config write happened to bump the counter for it.
 
 `plugin_instances` is the control-plane registry for desired request/response middleware configuration. A row belongs to an org and may narrow to a project; slugs are unique within that scope. Endpoint credentials are environment-variable references and `config` is always a JSON object. The table deliberately has no `bump_config_version()` trigger until the allocation-light gateway dispatcher in #509 consumes it—an enabled registry row is configuration, not a false claim that middleware is running.
 
