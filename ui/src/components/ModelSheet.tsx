@@ -97,7 +97,6 @@ interface ModelDraft {
   };
   net: {
     insecureTls: boolean;
-    allowAdditional: boolean;
     rpm: string;
     tpm: string;
     concurrency: string;
@@ -199,7 +198,6 @@ function blankDraft(providerId: string): ModelDraft {
     price: { input: "", output: "", cacheWrite: "", cacheRead: "", perRequest: "", currency: "USD" },
     net: {
       insecureTls: false,
-      allowAdditional: false,
       rpm: "",
       tpm: "",
       concurrency: "",
@@ -263,7 +261,6 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
   draft.net.context = num(limits.context_window);
   draft.net.maxOutput = num(limits.output_tokens);
   draft.net.insecureTls = advanced.insecure_tls === true;
-  draft.net.allowAdditional = Object.keys(obj(advanced.additional_fields)).length > 0;
 
   const locked = new Set(strings(advanced.locked_headers));
   draft.headers = Object.entries(obj(advanced.headers)).map(([key, value]) => ({
@@ -357,10 +354,12 @@ function advancedToApi(
   out.limits = limits;
 
   out.insecure_tls = draft.net.insecureTls;
-  // the switch has no field of its own on the wire — `seedAdvanced` reads it
-  // off whether the stored map has anything in it — so the map is carried
-  // through untouched rather than invented here (#1271)
-  out.additional_fields = draft.net.allowAdditional ? obj(stored.additional_fields) : {};
+  // nothing in the sheet edits `additional_fields` and nothing in the gateway
+  // reads it, so it is carried through exactly as stored. the "allow additional
+  // fields" switch that used to sit here was derived from whether this map had
+  // any keys, which meant turning it on saved nothing and turning it off wiped
+  // a map the operator had never been shown (#1271)
+  out.additional_fields = obj(stored.additional_fields);
 
   const headers: Record<string, string> = {};
   const lockedHeaders: string[] = [];
@@ -1463,14 +1462,6 @@ export function ModelSheet({
             checked={draft.net.insecureTls}
             disabled={readonly}
             onChange={(v) => setDeep("net", { insecureTls: v })}
-          />
-          <SwitchRow
-            title={t("modelSheet.net.allowAdditional")}
-            hint={t("modelSheet.net.allowAdditionalHint")}
-            info={t("modelSheet.net.allowAdditionalInfo")}
-            checked={draft.net.allowAdditional}
-            disabled={readonly}
-            onChange={(v) => setDeep("net", { allowAdditional: v })}
           />
         </FormSection>
 
