@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor } from "storybook/test";
 
-import type { AdaptiveRoutingTelemetryDto } from "@/lib/api";
+import type { AdaptiveRoutingPolicyDto, AdaptiveRoutingTelemetryDto } from "@/lib/api";
 import AdaptiveDashboard from "./AdaptiveDashboard";
 import {
   expectForbidden,
@@ -166,11 +166,104 @@ export const Loading: Story = {
   },
 };
 
+/**
+ * The deployment-wide kill switch, as the dashboard reads it (#1648).
+ *
+ * The screen only reaches for this to explain an empty list, so every story
+ * below drives it: an empty screen that blames the gateway while the switch is
+ * off is the bug, and it is invisible unless both answers are stubbed.
+ */
+const POLICY: AdaptiveRoutingPolicyDto = {
+  enabled: true,
+  latency_weight: 0.55,
+  cost_weight: 0.25,
+  load_weight: 0.2,
+  exploration_ratio: 0.05,
+  min_samples: 100,
+  updated_at: "2026-08-02T01:00:00Z",
+  affected_routes: ["deepseek-r1"],
+};
+
+/** Answer the two queries the screen makes, and nothing else. */
+function stub(
+  telemetry: AdaptiveRoutingTelemetryDto,
+  policy: Partial<AdaptiveRoutingPolicyDto> = {},
+): FetchStub {
+  return async (input) =>
+    String(input).includes("adaptive-routing-policy")
+      ? json({ ...POLICY, ...policy } satisfies AdaptiveRoutingPolicyDto)
+      : json(telemetry);
+}
+
+const NOTHING: AdaptiveRoutingTelemetryDto = { ...TELEMETRY, routes: [] };
+
+/**
+ * Nothing reporting while the switch is *on* — the gateway really is the place
+ * to look, and the copy says what makes a report invisible here.
+ */
 export const Empty: Story = {
+  render: () => <Harness fetchStub={stub(NOTHING, { enabled: true })} />,
+  play: async ({ canvas }) => {
+    await waitFor(() =>
+      expect(canvas.getByText("No fresh adaptive routing telemetry")).toBeVisible(),
+    );
+    // a gateway with no node id is dropped by the control plane, which looked
+    // exactly like a gateway that never reported (#1644)
+    await expect(canvas.getByText(/without a node id is dropped/)).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "Review routing rules" })).toHaveAttribute(
+      "href",
+      "/routing-rules",
+    );
+  },
+};
+
+/**
+ * The switch is off, which is the shipped default: the screen names the switch
+ * and the routes it is holding back instead of sending the operator to debug a
+ * gateway that is behaving correctly (#1648).
+ */
+export const SwitchedOff: Story = {
+  render: () => <Harness fetchStub={stub(NOTHING, { enabled: false })} />,
+  play: async ({ canvas }) => {
+    await waitFor(() =>
+      expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible(),
+    );
+    // the gateway is not at fault here, so it is not named
+    await expect(canvas.queryByText("No fresh adaptive routing telemetry")).toBeNull();
+    await expect(canvas.getByText("1 route is held back:")).toBeVisible();
+    await expect(canvas.getByText("deepseek-r1")).toBeVisible();
+    // and the CTA goes where the switch is, not to the routing rules
+    await expect(
+      canvas.getByRole("link", { name: "Open adaptive routing settings" }),
+    ).toHaveAttribute("href", "/adaptive-settings");
+  },
+};
+
+/** The switch is off and no route asks for the strategy — nothing to list. */
+export const SwitchedOffWithNoAdaptiveRoutes: Story = {
+  render: () => (
+    <Harness fetchStub={stub(NOTHING, { enabled: false, affected_routes: [] })} />
+  ),
+  play: async ({ canvas }) => {
+    await waitFor(() =>
+      expect(canvas.getByText("Adaptive routing is switched off")).toBeVisible(),
+    );
+    await expect(canvas.queryByText(/held back:/)).toBeNull();
+  },
+};
+
+/**
+ * The policy read failed. It is never what this screen waits on, so the empty
+ * state falls back to the generic copy rather than accusing a switch it could
+ * not read of being off.
+ */
+export const SwitchStateUnknown: Story = {
   render: () => (
     <Harness
-      fetchStub={async () =>
-        json({ ...TELEMETRY, routes: [] } satisfies AdaptiveRoutingTelemetryDto)
+      fetchStub={async (input) =>
+        String(input).includes("adaptive-routing-policy")
+          ? json({ error: { message: "forbidden" } }, 403)
+          : json(NOTHING)
       }
     />
   ),
@@ -178,10 +271,9 @@ export const Empty: Story = {
     await waitFor(() =>
       expect(canvas.getByText("No fresh adaptive routing telemetry")).toBeVisible(),
     );
-    await expect(canvas.getByRole("link", { name: "Review routing rules" })).toHaveAttribute(
-      "href",
-      "/routing-rules",
-    );
+    await expect(canvas.queryByText("Adaptive routing is switched off")).toBeNull();
+    // and no error panel over a screen whose own query answered fine
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
 
