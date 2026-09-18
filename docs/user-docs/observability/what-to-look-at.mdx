@@ -200,6 +200,49 @@ ORDER BY p95_ms DESC;
 **Healthy shape:** under ~1s. Past about 2s people press save twice, so this
 number predicts duplicate writes.
 
+## Where people get stuck
+
+Three actions record what somebody could _not_ do, which is the part a support
+ticket usually starts from.
+
+```sql
+SELECT
+    action,
+    screen,
+    target,
+    count() AS hits
+FROM ui_events
+WHERE action IN ('retry_submit', 'refused_click', 'abandon_dirty')
+  AND ts > now() - INTERVAL 7 DAY
+GROUP BY action, screen, target
+ORDER BY hits DESC
+LIMIT 20;
+```
+
+**How to read it.** A `retry_submit` is somebody who did not understand why the
+first save failed — pair it with `validation_error` on the same form to see
+whether the message was the problem. An `abandon_dirty` is somebody who filled
+the form in and gave up, which is a much stronger signal than the plain
+`form_abandon` beside it. A `refused_click` is a reach for a control the
+caller's role denies, and its `target` is `<control>:<resource>:<action>`, so
+the capability is right there:
+
+```sql
+SELECT
+    splitByChar(':', target)[-2] || ':' || splitByChar(':', target)[-1] AS capability,
+    count() AS refusals
+FROM ui_events
+WHERE action = 'refused_click'
+  AND ts > now() - INTERVAL 30 DAY
+GROUP BY capability
+ORDER BY refusals DESC;
+```
+
+A capability at the top of that list is one your role model puts in people's
+way repeatedly. The row deliberately carries no identity beyond the session and
+scope ids every event has, so it answers "which boundary is in the way", not
+"who kept trying".
+
 ## Joining the two: a slow screen and the request behind it
 
 This is the reason both streams carry `trace_id`. When a screen is slow, this

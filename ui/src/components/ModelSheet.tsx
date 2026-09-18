@@ -745,7 +745,7 @@ export function ModelSheet({
   // limits, headers and visibility travel together as the route's `advanced`
   // blob (#1189).
   // form lifecycle for the UX stream (#805); names the form, never its contents
-  const ux = useFormTelemetry(mode === "add" ? "model-create" : "model-edit", open);
+  const ux = useFormTelemetry(mode === "add" ? "model-create" : "model-edit", open, { dirty });
   // the advanced blob is the last write of the save, so a rejection there means
   // the rest already landed — the footer has to say which half failed rather
   // than print `validate_advanced`'s message with nothing around it

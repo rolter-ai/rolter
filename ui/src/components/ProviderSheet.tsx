@@ -196,7 +196,9 @@ export function ProviderSheet({
   // form lifecycle for the UX stream (#805). the target names the form and the
   // mode, never anything the operator typed into it — this sheet holds provider
   // credentials, so the distinction is not academic
-  const ux = useFormTelemetry(mode === "add" ? "provider-create" : "provider-edit", open);
+  const ux = useFormTelemetry(mode === "add" ? "provider-create" : "provider-edit", open, {
+    dirty,
+  });
 
   // probes the *stored* row, so it answers "does what I saved work", not "does
   // what I have typed work". that is the honest question — the credential is

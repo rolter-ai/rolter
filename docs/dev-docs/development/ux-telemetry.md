@@ -81,6 +81,94 @@ The queue is never flushed under a story, so it can be read directly.
 
 Run them with `bun run test:stories <file>` from `ui/`.
 
+## The struggle signals
+
+Three of the actions record what the operator _could not_ do (#1731). They are
+the reason the stream is worth pointing at a dogfood week at all — everything
+else says what happened, and these say where it went wrong.
+
+| Action          | Emitted from                                    | What it means                                         |
+| --------------- | ----------------------------------------------- | ----------------------------------------------------- |
+| `retry_submit`  | `useFormTelemetry` — a submit after a failure   | somebody did not understand why the first save failed |
+| `refused_click` | `useRefusedClick` — the disabled-control path   | somebody reached for a control RBAC denies            |
+| `abandon_dirty` | `useFormTelemetry` — a close with a draft in it | somebody filled the form in and gave up               |
+
+`form_abandon` keeps its old meaning and is now only the clean case — a form
+closed untouched, which is a misclick rather than a design problem. The two are
+separate actions rather than one action with a flag precisely so the existing
+series is still comparable across the change.
+
+A retry is state the hook carries: `failed()` arms it, the next `submitted()`
+spends it. A third save after a success is a fresh attempt, not a retry of a
+failure two saves ago.
+
+### Why a refused click takes a wrapper
+
+A `disabled` button is inert. The HTML spec has the user agent withhold the
+`click` event from a disabled form control, so the one interaction worth
+measuring is the one the DOM refuses to report — and every alternative to
+`disabled` is worse. `aria-disabled` with a swallowed handler makes a screen
+reader announce a control that is not one; removing the control takes away the
+explanation of why it is missing.
+
+So the control stays genuinely disabled and `useRefusedClick` catches
+`pointerdown` in the **capture** phase on a `display: contents` wrapper beside
+it. Capture runs on every node on the event's path before the target, and a
+pointer event is dispatched to a disabled control where a mouse or click event
+is not, so the wrapper sees the reach the button never will. The wrapper
+generates no box, so the control keeps its place in the parent's layout.
+
+A disabled control is not focusable, so there is no keyboard path to miss, and
+nothing is deduplicated: reaching for the same refused control four times is
+the signal, not noise.
+
+`GatedButton`, `GatedSwitch` and `RowIconButton` are wired, which is every
+shared gated control. Each takes an optional `control` — a stable slug such as
+`provider-new`, never the label — and falls back to the control's kind, so an
+un-named call site still records the capability and the screen.
+
+### What a refused row carries, and why it is on by default
+
+This one is a privacy-shaped call, so the reasoning is written down rather than
+left in a review thread. The row records that a _control_ was reached for and
+refused:
+
+```
+screen  = providers
+action  = refused_click
+target  = provider-new:provider:create
+outcome = error
+```
+
+plus the `session_id`, `org_id`/`team_id`/`project_id` and `app_version` every
+event in this stream already carries, and the `user_id` the server fills from
+the session for every event alike. No label, no message, no identity beyond
+that. It says "this permission boundary is in somebody's way", not "this person
+tried to do something they should not have" — which is the same structural-only
+bar the rest of the stream is held to, and what makes shipping it on by default
+defensible rather than surveillance.
+
+`sanitizeKey` is what holds that line, and it is deliberately asymmetric. The
+capability is the signal, so one that is not a plausible key drops the event
+entirely; a control key that is not one — a call site that passed the button's
+text — drops only the control and still records which boundary was hit.
+
+### Adding an action
+
+The `action` enum is a ClickHouse `Enum8`, where the ordinal _is_ the stored
+value. It is append-only: renumbering an existing value rewrites the meaning of
+every row already written rather than migrating it. Adding one means
+
+1. a new `clickhouse/NNN_*.sql` that re-declares the enum with the existing
+   ordinals untouched and the new value appended,
+2. the value appended to `ACTIONS` in
+   [`crates/rolter-control/src/ui_events.rs`](../../../crates/rolter-control/src/ui_events.rs),
+   in the same order — `the_action_list_is_the_enum8_in_ordinal_order` pins it,
+   so a value sorted into the middle is a failing test rather than a silent
+   remapping,
+3. the value added to the `UiEvent["action"]` union in `ui/src/lib/api.ts` and
+   a named emitter in `ux.ts`, so a typo at a call site is a type error.
+
 ## Proving the pipeline end to end
 
 Stories assert what the dashboard _emits_. They say nothing about whether a row
@@ -141,12 +229,3 @@ which is why it is filed separately.
 The last row is the only deliberate one, and it is only reachable from a
 bootstrap TOML: `logging.ui_events` is not projected out of the Postgres store,
 so a database-backed deployment always runs with it on.
-
-## What is not here yet
-
-A clean abandon and a dirty one are different findings — one is a misclick, the
-other is somebody who filled the form in and gave up — and `EditorSheet` knows
-which it was. Recording it needs a new `action` enum value and therefore a
-ClickHouse migration, so it is tracked separately in
-[#1731](https://github.com/rolter-ai/rolter/issues/1731) rather than smuggled in
-as a routine change.

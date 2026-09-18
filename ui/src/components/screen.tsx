@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { useGate, type Capability } from "@/lib/can";
+import { useRefusedClick } from "@/lib/ux-react";
 import { cn } from "@/lib/utils";
 
 // shared building blocks for the control-plane screens ported from the design
@@ -232,28 +233,34 @@ export function RowIconButton({
   danger,
   className,
   gate,
+  control = "row-action",
   disabled,
   title,
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   danger?: boolean;
   gate?: Capability;
+  /** names this control in the UX stream when it is refused (#1731) */
+  control?: string;
 }) {
   const { denied, reason } = useGate(gate);
+  const refusal = useRefusedClick(denied, control, gate);
   return (
-    <button
-      type="button"
-      disabled={disabled || denied}
-      title={denied ? reason : title}
-      className={cn(
-        denied && "cursor-not-allowed opacity-50",
-        "flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] bg-transparent p-[5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        danger
-          ? "text-[color:var(--status-danger-text)] hover:bg-[color:var(--red-tint)]"
-          : "text-muted-foreground hover:text-foreground",
-        className,
-      )}
-      {...props}
-    />
+    <span className="contents" {...refusal}>
+      <button
+        type="button"
+        disabled={disabled || denied}
+        title={denied ? reason : title}
+        className={cn(
+          denied && "cursor-not-allowed opacity-50",
+          "flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] bg-transparent p-[5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          danger
+            ? "text-[color:var(--status-danger-text)] hover:bg-[color:var(--red-tint)]"
+            : "text-muted-foreground hover:text-foreground",
+          className,
+        )}
+        {...props}
+      />
+    </span>
   );
 }

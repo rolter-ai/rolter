@@ -5,6 +5,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
 import {
   UxScreenProvider,
+  type FormTelemetry,
   useEmptyState,
   useErrorState,
   useFormTelemetry,
@@ -48,9 +49,18 @@ function Screen({ screen = "providers" }: { screen?: string }) {
   const [failed, setFailed] = React.useState(false);
   const [empty, setEmpty] = React.useState(false);
   const [open, setOpen] = React.useState(false);
+  const [dirty, setDirty] = React.useState(false);
+  const form = React.useRef<FormTelemetry | null>(null);
   const body = (
     <>
-      <Reporter ready={ready} failed={failed} empty={empty} open={open} />
+      <Reporter
+        ready={ready}
+        failed={failed}
+        empty={empty}
+        open={open}
+        dirty={dirty}
+        expose={form}
+      />
     </>
   );
   return (
@@ -71,6 +81,15 @@ function Screen({ screen = "providers" }: { screen?: string }) {
         <button type="button" onClick={() => setOpen(false)}>
           close the sheet
         </button>
+        <button type="button" onClick={() => setDirty(true)}>
+          type into the sheet
+        </button>
+        <button type="button" onClick={() => form.current?.submitted()}>
+          save
+        </button>
+        <button type="button" onClick={() => form.current?.failed()}>
+          fail the save
+        </button>
       </div>
       {screen ? <UxScreenProvider screen={screen}>{body}</UxScreenProvider> : body}
       <Queue />
@@ -83,15 +102,22 @@ function Reporter({
   failed,
   empty,
   open,
+  dirty,
+  expose,
 }: {
   ready: boolean;
   failed: boolean;
   empty: boolean;
   open: boolean;
+  dirty: boolean;
+  expose: React.RefObject<FormTelemetry | null>;
 }) {
   useScreenReady(ready);
   useErrorState(failed, "list");
-  useFormTelemetry("provider", open);
+  // the story drives `submitted`/`failed` from its buttons, which is the only
+  // way to exercise the retry edge: the hook is the thing under test, not a
+  // sheet that happens to call it
+  expose.current = useFormTelemetry("provider", open, { dirty });
   return empty ? <EmptyProbe /> : null;
 }
 
@@ -176,5 +202,54 @@ export const OutsideAProviderNothingIsEmitted: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "fail the load" }));
     await userEvent.click(canvas.getByRole("button", { name: "render the empty state" }));
     await waitFor(() => expect(lines(canvasElement)).toEqual([]));
+  },
+};
+
+/**
+ * A form filled in and then closed is a different finding from one closed
+ * untouched: the first is somebody who gave up, the second is a misclick. They
+ * want different fixes, so they are different actions (#1731).
+ */
+export const SeparatesADirtyAbandonFromAClean: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "close the sheet" }));
+    await waitFor(() => expect(lines(canvasElement)).toContain("form_abandon:providers:provider"));
+
+    await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "type into the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "close the sheet" }));
+    await waitFor(() => expect(lines(canvasElement)).toContain("abandon_dirty:providers:provider"));
+    // and the clean one did not turn into a dirty one retroactively
+    await expect(lines(canvasElement).filter((l) => l.startsWith("form_abandon"))).toHaveLength(1);
+  },
+};
+
+/**
+ * The submit after a failed one is a retry. It used to be a second identical
+ * `form_submit`, so the moment somebody did not understand the first failure
+ * had to be reconstructed from two rows and their timestamps.
+ */
+export const ReportsARetryAfterAFailedSave: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "save" }));
+    await waitFor(() => expect(lines(canvasElement)).toContain("form_submit:providers:provider"));
+    // the first attempt is a plain submit, never a retry
+    await expect(lines(canvasElement).filter((l) => l.startsWith("retry_submit"))).toHaveLength(0);
+
+    await userEvent.click(canvas.getByRole("button", { name: "fail the save" }));
+    await userEvent.click(canvas.getByRole("button", { name: "save" }));
+    await waitFor(() => expect(lines(canvasElement)).toContain("retry_submit:providers:provider"));
+
+    // and the retry flag is spent: a third save after a success is a fresh
+    // attempt, not a retry of a failure two saves ago
+    await userEvent.click(canvas.getByRole("button", { name: "save" }));
+    await waitFor(() =>
+      expect(lines(canvasElement).filter((l) => l.startsWith("form_submit"))).toHaveLength(3),
+    );
+    await expect(lines(canvasElement).filter((l) => l.startsWith("retry_submit"))).toHaveLength(1);
   },
 };

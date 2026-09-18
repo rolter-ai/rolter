@@ -217,6 +217,7 @@ export function ProviderGroupSheet({
   const ux = useFormTelemetry(
     mode === "add" ? "provider-group-create" : "provider-group-edit",
     open,
+    { dirty },
   );
 
   const save = useMutation({

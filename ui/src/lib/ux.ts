@@ -328,9 +328,66 @@ export const trackFormSubmit = (
   durationMs?: number,
 ) => track(screen, "form_submit", { target, outcome, durationMs });
 
-/** A form was opened and closed without submitting. */
-export const trackFormAbandon = (screen: string, target: string, durationMs?: number) =>
-  track(screen, "form_abandon", { target, outcome: "cancelled", durationMs });
+/**
+ * A form was opened and closed without submitting.
+ *
+ * `dirty` splits the finding in two (#1731). Closing a form you never touched
+ * is a misclick; closing one you filled in is somebody who tried and gave up.
+ * They want different fixes, and an abandon rate that mixes them answers
+ * neither — so they are two actions rather than one action with a flag, which
+ * keeps the existing `form_abandon` series meaning what it always meant.
+ */
+export const trackFormAbandon = (
+  screen: string,
+  target: string,
+  durationMs?: number,
+  dirty = false,
+) =>
+  track(screen, dirty ? "abandon_dirty" : "form_abandon", {
+    target,
+    outcome: "cancelled",
+    durationMs,
+  });
+
+/**
+ * A save was attempted again after one failed.
+ *
+ * Distinct from the second `form_submit` it used to be: the retry is the moment
+ * somebody did not understand why the first attempt failed, and reconstructing
+ * it from two identical rows and their timestamps loses exactly that.
+ */
+export const trackRetrySubmit = (screen: string, target: string, durationMs?: number) =>
+  track(screen, "retry_submit", { target, outcome: "error", durationMs });
+
+/**
+ * Someone reached for a control RBAC denies.
+ *
+ * This is the clearest "the permission model does not match this person's
+ * mental model" signal the dashboard can produce, and it ships on by default
+ * rather than behind a flag — which is only defensible because of what it does
+ * *not* carry. The row records a control key and the capability that refused
+ * it, and nothing else: no label, no message, no identity beyond the session
+ * and scope ids every event in this stream already has. It says "this
+ * permission boundary is in somebody's way", never "this person tried to do
+ * something they should not have".
+ *
+ * `sanitizeKey` is what holds that line, and the two arguments are sanitised
+ * separately on purpose. The capability is the signal, so an unusable one drops
+ * the event entirely; an unusable control key — a call site that passed the
+ * button's *label* — drops only the control and still records which boundary
+ * was hit. Failing soft in one direction and hard in the other is what keeps a
+ * mistake at a call site from turning a `LowCardinality` column into free text.
+ */
+export const trackRefusedClick = (screen: string, control: string, capability: string): void => {
+  const gate = sanitizeKey(capability);
+  if (!gate) return;
+  const key = sanitizeKey(control);
+  // the composite has to survive the same rule the parts did: two keys that
+  // each fit can still be too long joined, and dropping the whole target would
+  // lose the capability along with the control
+  const composite = key ? sanitizeKey(`${key}:${gate}`) : "";
+  track(screen, "refused_click", { target: composite || gate, outcome: "error" });
+};
 
 /** A validation rule rejected input. `rule` is the rule's name, not the value. */
 export const trackValidationError = (screen: string, rule: string) =>

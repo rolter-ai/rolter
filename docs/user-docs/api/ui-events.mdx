@@ -79,7 +79,8 @@ most **100** events per request; a larger batch is rejected with `400`.
 
 `action` is one of `screen_view`, `time_to_interactive`, `navigate`,
 `back_out`, `form_submit`, `form_abandon`, `validation_error`, `empty_state`,
-`error_state`, `save_confirmed`.
+`error_state`, `save_confirmed`, `retry_submit`, `refused_click`,
+`abandon_dirty`.
 
 <Warning>
   `screen`, `target` and `from_screen` are `LowCardinality` ClickHouse columns
@@ -103,8 +104,19 @@ dead end.
 `empty_state` is emitted by the shared placeholder component, so every zero-data
 screen reports itself.
 
+Three actions record what the operator could _not_ do. `retry_submit` is a save
+attempted again after one failed — the moment somebody did not understand the
+first failure. `abandon_dirty` is a form closed with a draft in it, as against
+`form_abandon`, which is now only a form closed untouched: giving up and
+misclicking are different findings. `refused_click` is a reach for a control
+your role denies; its `target` is the control key joined to the capability that
+refused it, such as `provider-new:provider:create`, and it carries no label and
+no message — the row says which permission boundary is in somebody's way, not
+what the control said or who pressed it.
+
 `time_to_interactive`, `error_state` and the form lifecycle (`form_submit`,
-`form_abandon`, `validation_error`, `save_confirmed`) are per-screen, because
+`form_abandon`, `abandon_dirty`, `retry_submit`, `validation_error`,
+`save_confirmed`) are per-screen, because
 only the screen knows which of its several requests is the one the user is
 actually waiting for. Screens are being wired progressively; an unwired screen
 is silent for those actions rather than wrong.
