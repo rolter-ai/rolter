@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Layers, Loader2, Trash2 } from "lucide-react";
+import { Building2, Layers, Loader2, Tag, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import {
   type ProviderGroupSheetMode,
 } from "@/components/ProviderGroupSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
@@ -87,6 +88,9 @@ export default function ProviderGroups() {
     group?: ProviderGroupRow | null;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderGroupRow | null>(null);
+  const [labelFilter, setLabelFilter] = React.useState("");
+  const [labelling, setLabelling] = React.useState<ProviderGroupRow | null>(null);
+  const labels = useSubjectLabels(scope.orgId, "provider_group");
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // a group is edited and deleted by the same admin that may add one (#1258)
@@ -95,11 +99,13 @@ export default function ProviderGroups() {
   const q = search.trim().toLowerCase();
   const filtered = (groups.data ?? []).filter(
     (g) =>
-      !q ||
-      g.name.toLowerCase().includes(q) ||
-      g.slug.toLowerCase().includes(q) ||
-      g.strategy.toLowerCase().includes(q),
+      (!q ||
+        g.name.toLowerCase().includes(q) ||
+        g.slug.toLowerCase().includes(q) ||
+        g.strategy.toLowerCase().includes(q)) &&
+      labels.matches(g.id, labelFilter),
   );
+  const filtering = !!q || !!labelFilter;
   const rows = apply(filtered, {
     name: (g) => g.name,
     strategy: (g) => g.strategy,
@@ -114,6 +120,11 @@ export default function ProviderGroups() {
           placeholder={t("pages.providerGroups.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+        />
+        <LabelFilterSelect
+          value={labelFilter}
+          onChange={setLabelFilter}
+          options={labels.options}
         />
         <GatedButton
           gate="provider_group:create"
@@ -177,7 +188,10 @@ export default function ProviderGroups() {
         {groups.isLoading && <ListSkeleton rows={4} className="p-3" />}
         {rows.map((group) => (
           <ListRow key={group.id} grid={GRID}>
-            <span className="truncate font-mono text-sm">{group.name}</span>
+            <span className="flex min-w-0 flex-col gap-1">
+              <span className="truncate font-mono text-sm">{group.name}</span>
+              <LabelChips labels={labels.bySubject(group.id)} />
+            </span>
             <span>
               <Badge tone="outline">{group.strategy}</Badge>
             </span>
@@ -216,6 +230,15 @@ export default function ProviderGroups() {
               >
                 {t("pages.providerGroups.edit")}
               </GatedButton>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-[30px]"
+                aria-label={t("labels.labelsOf", { name: group.name })}
+                onClick={() => setLabelling(group)}
+              >
+                <Tag className="h-3.5 w-3.5" />
+              </Button>
               <button
                 type="button"
                 title={
@@ -238,13 +261,25 @@ export default function ProviderGroups() {
           <EmptyState
             uxTarget="provider-groups"
             icon={<Layers />}
-            title={q ? t("pages.providerGroups.noMatchTitle") : t("pages.providerGroups.emptyTitle")}
+            title={
+              filtering
+                ? t("pages.providerGroups.noMatchTitle")
+                : t("pages.providerGroups.emptyTitle")
+            }
             description={
-              q ? t("pages.providerGroups.noMatchBody") : t("pages.providerGroups.emptyBody")
+              filtering
+                ? t("pages.providerGroups.noMatchBody")
+                : t("pages.providerGroups.emptyBody")
             }
             actions={
-              q ? (
-                <Button variant="outline" onClick={() => setSearch("")}>
+              filtering ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    setLabelFilter("");
+                  }}
+                >
                   {t("common.clearSearch")}
                 </Button>
               ) : (
@@ -260,6 +295,17 @@ export default function ProviderGroups() {
           />
         )}
       </ListTable>
+
+      {scope.orgId && labelling && (
+        <LabelSheet
+          open
+          onOpenChange={(open) => !open && setLabelling(null)}
+          orgId={scope.orgId}
+          subjectType="provider_group"
+          subjectId={labelling.id}
+          subjectName={labelling.name}
+        />
+      )}
 
       <ProviderGroupSheet
         open={!!sheet}

@@ -15,7 +15,7 @@ import {
   Toasted,
   expectToast,
 } from "./story-harness";
-import type { ProviderGroupRow } from "@/lib/api";
+import type { LabelRow, ProviderGroupRow } from "@/lib/api";
 
 const GROUPS: ProviderGroupRow[] = [
   {
@@ -191,5 +191,112 @@ export const DeleteRejectedByTheServer: Story = {
       expect(dialog.getByText(/still the target of 3 routes/)).toBeVisible(),
     );
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+// ------------------------------------------------------------- labels (#1329)
+
+const GROUP_LABELS: LabelRow[] = [
+  {
+    id: "gl-1",
+    subject_type: "provider_group",
+    subject_id: "g-1",
+    key: "tier",
+    value: "frontier",
+    source: "custom",
+    created_at: "2026-03-01T00:00:00Z",
+    updated_at: "2026-03-01T00:00:00Z",
+  },
+  {
+    id: "gl-2",
+    subject_type: "provider_group",
+    subject_id: "g-1",
+    key: "tier",
+    value: "observed-frontier",
+    source: "auto",
+    observed_at: "2026-03-02T10:00:00Z",
+    observation: "every member priced in the last day",
+    created_at: "2026-03-02T10:00:00Z",
+    updated_at: "2026-03-02T10:00:00Z",
+  },
+];
+
+const withLabels = scoped(async (input) => {
+  const url = new URL(String(input), "http://localhost");
+  if (url.pathname.endsWith("/labels")) {
+    const subject = url.searchParams.get("subject_id");
+    return json(subject ? GROUP_LABELS.filter((l) => l.subject_id === subject) : GROUP_LABELS);
+  }
+  if (url.pathname.endsWith("/provider-groups")) return json(GROUPS);
+  return json([]);
+});
+
+/** both sources on one key, told apart by name rather than by colour */
+export const Labelled: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=frontier, your label")).toBeVisible());
+    await expect(
+      canvas.getByLabelText("tier=observed-frontier, automatic label"),
+    ).toBeVisible();
+  },
+};
+
+// a label on a group that is not in the list — the shape a label left behind by
+// a deleted group, or one on a group another filter is hiding, actually has
+const ORPHAN_LABEL: LabelRow[] = [
+  { ...GROUP_LABELS[0], id: "gl-9", subject_id: "g-missing", value: "legacy" },
+];
+
+/** a label filter that matches nothing blames the filter, not an empty org */
+export const NoLabelMatch: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname.endsWith("/labels")) return json(ORPHAN_LABEL);
+        if (url.pathname.endsWith("/provider-groups")) return json(GROUPS);
+        return json([]);
+      })}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("frontier").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "tier=legacy" }),
+    );
+    await waitFor(() => expect(canvas.getByText(/No provider groups match/i)).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    // both narrowings went, so the group is back
+    await waitFor(() => expect(canvas.getAllByText("frontier").length).toBeGreaterThan(0));
+  },
+};
+
+/** the panel opens on the group it names, and the observation is read-only */
+export const LabelPanel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels}>
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("frontier").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on frontier" }));
+    const panel = within(await within(document.body).findByRole("dialog"));
+    await expect(await panel.findByText(/every member priced/)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Remove tier=frontier" })).toBeVisible();
+    await expect(
+      panel.queryByRole("button", { name: "Remove tier=observed-frontier" }),
+    ).toBeNull();
   },
 };

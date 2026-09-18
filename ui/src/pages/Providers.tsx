@@ -8,13 +8,7 @@ import {
   type ProviderSheetMode,
 } from "@/components/ProviderSheet";
 import { GatedButton } from "@/components/GatedButton";
-import {
-  LABELS_QUERY_KEY,
-  LabelChips,
-  LabelSheet,
-  labelOptions,
-  labelText,
-} from "@/components/Labels";
+import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { UnservedConfigNotice } from "@/components/UnservedConfigNotice";
@@ -28,7 +22,6 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
@@ -41,9 +34,7 @@ import { CopyButton } from "@/components/CopyButton";
 import {
   deleteProvider,
   fetchConfigProblems,
-  fetchLabels,
   fetchProviders,
-  type LabelRow,
   type ProviderRow,
 } from "@/lib/api";
 import { useGate } from "@/lib/can";
@@ -103,22 +94,7 @@ export default function Providers() {
   const [labelFilter, setLabelFilter] = React.useState("");
   const [labelling, setLabelling] = React.useState<ProviderRow | null>(null);
 
-  // every provider label in the org in one request, rather than one per row
-  const labels = useQuery({
-    queryKey: [...LABELS_QUERY_KEY, scope.orgId, "provider"],
-    queryFn: () => fetchLabels(scope.orgId as string, { subject_type: "provider" }),
-    enabled: !!scope.orgId,
-    // a viewer without label:read gets a 403 that will not improve on a retry,
-    // and the screen is about providers — it keeps working without them
-    retry: false,
-  });
-  const byProvider = React.useMemo(() => {
-    const map = new Map<string, LabelRow[]>();
-    for (const label of labels.data ?? []) {
-      map.set(label.subject_id, [...(map.get(label.subject_id) ?? []), label]);
-    }
-    return map;
-  }, [labels.data]);
+  const labels = useSubjectLabels(scope.orgId, "provider");
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!providers.isLoading);
@@ -137,8 +113,7 @@ export default function Providers() {
         p.name.toLowerCase().includes(q) ||
         p.kind.toLowerCase().includes(q) ||
         p.slug.toLowerCase().includes(q)) &&
-      (!labelFilter ||
-        (byProvider.get(p.id) ?? []).some((l) => labelText(l) === labelFilter)),
+      labels.matches(p.id, labelFilter),
   );
   const filtering = !!q || !!labelFilter;
 
@@ -154,15 +129,10 @@ export default function Providers() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <Combobox
-          size="sm"
-          clearable
-          className="w-56"
+        <LabelFilterSelect
           value={labelFilter}
           onChange={setLabelFilter}
-          placeholder={t("pages.providers.labelFilter")}
-          aria-label={t("pages.providers.labelFilter")}
-          options={labelOptions(labels.data ?? []).map((l) => ({ value: l, label: l }))}
+          options={labels.options}
         />
         <GatedButton
           gate="provider:create"
@@ -209,7 +179,7 @@ export default function Providers() {
           <ListRow key={provider.id} grid={GRID}>
             <span className="flex min-w-0 flex-col gap-1">
               <span className="truncate font-mono text-sm">{provider.name}</span>
-              <LabelChips labels={byProvider.get(provider.id) ?? []} />
+              <LabelChips labels={labels.bySubject(provider.id)} />
             </span>
             <span>
               <Badge tone="outline">{provider.kind}</Badge>
@@ -245,7 +215,7 @@ export default function Providers() {
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
-                aria-label={t("pages.providers.labelsOf", { name: provider.name })}
+                aria-label={t("labels.labelsOf", { name: provider.name })}
                 onClick={() => setLabelling(provider)}
               >
                 <Tag className="h-3.5 w-3.5" />
