@@ -30,7 +30,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST | `/v1/audio/translations` | OpenAI audio translation; `multipart/form-data` upload |
 | GET | `/v1/realtime?model=…` | OpenAI-compatible Realtime API; WebSocket relay. **Experimental** — see below |
 | GET, POST, DELETE | `/mcp/{server}/{path…}` | authenticated Streamable HTTP/SSE MCP proxy |
-| GET | `/v1/models` | lists configured public model names |
+| GET | `/v1/models` | lists route names, provider-pinned and group addresses (see [Model listing](#model-listing)) |
 | GET | `/openapi.json` | OpenAPI 3.1 description of this request surface (self-contained, no external assets) |
 | GET | `/docs` | interactive Scalar API reference (assets embedded in the binary — works air-gapped) |
 | GET | `/` | service-info landing (version + links to docs/openapi/health) |
@@ -139,6 +139,51 @@ This applies to every client dialect (Chat Completions, Messages, Responses) and
 covers new part types a client SDK starts sending. Only `text`/`input_text` and
 `image_url`/`input_image` have Gemini equivalents today; route models that need
 other modalities to a provider whose dialect carries them.
+
+## Model listing
+
+`GET /v1/models` answers with three kinds of id, filtered to what the caller's
+virtual key may reach:
+
+| Id | `owned_by` | Where it comes from |
+| --- | --- | --- |
+| a route name (`chat`) | `rolter` | every configured route, plus the built-in `fake-llm` unless a route shadows it |
+| `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
+| `group-slug/model` | the group's name | the union of its member providers' models (a member with an explicit model rewrite contributes that one) |
+
+The provider-pinned half used to be derived from route targets alone, which
+under-reported a fleet: `provider-slug/model` resolves for **any** model the
+provider serves (ADR-0017), so a provider with five models behind one route
+answered `200` for all five but listed two. A client that builds a model picker
+from `/v1/models` could not offer the rest (#1647).
+
+The catalogue comes from the probe the health sweep already sends. For every
+provider kind whose liveness endpoint is a model list — everything except TEI,
+and except a provider whose `health.path` was overridden — the sweep now parses
+that response instead of discarding it, and caches the model ids per provider.
+Two consequences follow from reusing the probe:
+
+- **The wider listing needs `[health] enabled = true`.** Without active probing
+  nothing ever asks a provider what it serves, and the listing stays exactly
+  route-derived. Addressing is unaffected either way: an unlisted
+  `provider-slug/model` still routes.
+- **It costs no extra upstream traffic and no new configuration.** The probe
+  interval is the refresh interval; the cache survives config reloads and drops
+  a provider a reload removed.
+
+Two bounds keep the listing from growing without limit, since it is the product
+of the fleet and each provider's catalogue:
+
+- at most **200 models per provider** are kept from a catalogue, which is where
+  an aggregator's several-hundred-entry `/v1/models` is cut. The cap is per
+  provider so no single one crowds out the others, and it never removes a model
+  a route target names — that set is listed regardless
+- at most **1 MiB** of a probe response is read before the body is abandoned
+  unparsed, so a liveness probe can never pull an unbounded response into the
+  gateway
+
+Both dialects read the same endpoint: rolter serves one `/v1/models` for the
+OpenAI and Anthropic surfaces alike.
 
 ## OpenAI Responses
 

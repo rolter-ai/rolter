@@ -548,6 +548,108 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
     assert_eq!(slug_entry["owned_by"], "vLLM SPB");
 }
 
+/// A provider serves five models; one configured route names one of them. The
+/// other four are addressable as `provider-slug/model` and answer `200`, so the
+/// listing has to show them once the catalogue probe has seen them (#1647).
+#[tokio::test]
+async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
+    async fn upstream_catalogue() -> Json<Value> {
+        Json(json!({"object": "list", "data": [
+            {"id": "gpt-4o"},
+            {"id": "gpt-4o-mini"},
+            {"id": "gpt-4.1"},
+            {"id": "gpt-4.1-mini"},
+            {"id": "o3-mini"},
+        ]}))
+    }
+
+    let upstream = serve(
+        Router::new()
+            .route("/v1/models", get(upstream_catalogue))
+            .route("/v1/chat/completions", post(mock_openai)),
+    )
+    .await;
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "openai-edge".to_string(),
+        slug: Some("openai-edge".to_string()),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "chat".to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "openai-edge".to_string(),
+            model: Some("gpt-4o".to_string()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+    });
+    // the catalogue rides the health sweep's existing probe, so probing is what
+    // turns the wider listing on
+    config.health.enabled = true;
+    config.health.interval_secs = 1;
+
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    rolter_gateway::health::spawn_prober(state.clone());
+    let app = rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    );
+    let gw = serve(app).await;
+
+    // poll until the first sweep has landed rather than sleeping a fixed span
+    let client = reqwest::Client::new();
+    let mut ids: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        let models: Value = client
+            .get(format!("http://{gw}/v1/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        if ids.iter().any(|id| id == "openai-edge/o3-mini") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for id in [
+        "openai-edge/gpt-4o",
+        "openai-edge/gpt-4o-mini",
+        "openai-edge/gpt-4.1",
+        "openai-edge/gpt-4.1-mini",
+        "openai-edge/o3-mini",
+    ] {
+        assert!(ids.contains(&id.to_string()), "{id} missing from {ids:?}");
+    }
+    // the route id is still listed, and still owned by rolter
+    assert!(ids.contains(&"chat".to_string()), "{ids:?}");
+
+    // and a listed address is one the gateway actually routes
+    let resp = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "openai-edge/o3-mini", "messages": [{"role": "user", "content": "ping"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
 #[tokio::test]
 async fn provider_slug_model_pins_provider_and_rewrites_upstream_model() {
     // a mock that echoes back the `model` field it received, so the test can

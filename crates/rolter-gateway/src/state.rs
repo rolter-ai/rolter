@@ -703,6 +703,10 @@ pub struct AppState {
     pub loads: crate::load::LoadTracker,
     /// provider health registry populated by the background prober
     pub health: crate::health::Health,
+    /// per-provider model catalogues the same prober parses out of its
+    /// catalogue probe, so `/v1/models` can list what a provider serves and not
+    /// only what a route target names (#1647)
+    pub model_catalog: crate::model_catalog::ModelCatalog,
     /// per-target circuit breaker registry, shared across requests and reloads
     pub breaker: crate::breaker::Breaker,
     /// upstream engine metrics snapshot populated by the background scraper
@@ -848,6 +852,9 @@ impl AppState {
             // store to populate; while probing is disabled the prober leaves the
             // map empty and every provider reads healthy (fail open)
             health: crate::health::Health::new(),
+            // always live for the same reason as `health`: a hot-reload that
+            // enables probing needs a store to populate
+            model_catalog: crate::model_catalog::ModelCatalog::new(),
             // always a reconfigurable breaker (even when currently disabled) so a
             // config hot-reload can enable/disable and re-tune it in place without
             // discarding accumulated per-target state; see reload()
