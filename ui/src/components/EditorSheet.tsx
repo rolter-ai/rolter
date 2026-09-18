@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 
 // shared shell for a create/edit form (#584): every editor sheet in the
 // dashboard (ModelSheet, ProviderSheet, ProviderGroupSheet) hand-assembles the
@@ -53,9 +53,7 @@ export function EditorSheet({
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>{children}</SheetBody>
       <SheetFooter>
-        {errorMessage && (
-          <p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">{errorMessage}</p>
-        )}
+        <SheetError message={errorMessage} />
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
           <Button variant="ghost" disabled={locked} onClick={close}>
             {cancelLabel ?? t("common.cancel")}

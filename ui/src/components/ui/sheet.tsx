@@ -107,6 +107,27 @@ export function SheetBody({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The failure line above a sheet's buttons.
+ *
+ * Five sheets rendered this `<p>` byte for byte and only `ModelSheet` carried
+ * `role="alert"`, so the same save failure was announced in one sheet and
+ * silent in the other four — a difference nothing on screen shows, which is the
+ * shape #1044 and #1658 are both about. One component, so the live region
+ * cannot be present in one copy and missing from the next.
+ *
+ * Renders nothing without a message, so a caller can pass its error straight
+ * through rather than guarding at every call site.
+ */
+export function SheetError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <p role="alert" className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
+      {message}
+    </p>
+  );
+}
+
 export function SheetFooter({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex-none border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-base)]">
