@@ -71,5 +71,5 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `ModelSheet` is the only consumer today. `ProviderSheet`, `ProviderGroupSheet`
 and `EditorSheet` solve the same layout problems separately and should move
-onto these primitives; that migration is tracked separately from the extraction
-so each sheet can be diffed on its own.
+onto these primitives; that migration is #1658, tracked separately from the
+extraction so each sheet can be diffed on its own.
