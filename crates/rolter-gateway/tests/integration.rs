@@ -2252,6 +2252,153 @@ async fn transient_upstream_failure_fails_over_to_healthy_target() {
     assert_eq!(body["choices"][0]["message"]["content"], "pong");
 }
 
+/// #1646: a failure the gateway recovers from is still a failure of the target
+/// that produced it. Before this test the whole passive funnel — per-target
+/// counters, `provider_health_events`, `rolter_upstream_errors_total` — was
+/// driven off the *request* log, whose provider/target are those of the attempt
+/// that finally succeeded, so a sick target behind a working failover was
+/// indistinguishable from a perfect one on every operator surface.
+#[tokio::test]
+async fn a_failure_hidden_by_failover_is_counted_against_the_target_that_failed() {
+    // the sick target always 503s (retryable); its peer always answers
+    let sick = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    ))
+    .await;
+    let healthy = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+
+    let mut config = config_for("test-model", vec![("sick", sick), ("healthy", healthy)]);
+    // pin the first pick to the sick target so every request fails over once,
+    // and keep it in rotation so all four requests really attempt it — the
+    // point here is the per-attempt record, not the cooldown that hides it
+    config.routes[0].targets[0].weight = 1_000;
+    config.routes[0].strategy = BalancingStrategy::Weighted;
+    config.cooldown.base_secs = 0;
+    config.breaker.enabled = false;
+    let gw = serve_gateway(&config).await;
+
+    let client = reqwest::Client::new();
+    for _ in 0..4 {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .json(&json!({"model": "test-model", "messages": []}))
+            .send()
+            .await
+            .unwrap();
+        // the client never sees the 503 — that is failover working
+        assert_eq!(resp.status(), 200);
+    }
+
+    let metrics = client
+        .get(format!("http://{gw}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let line = |needle: &str| -> u64 {
+        metrics
+            .lines()
+            .find(|l| l.starts_with(needle))
+            .and_then(|l| l.rsplit(' ').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no series {needle} in:\n{metrics}"))
+    };
+
+    // the recovered 503s are attributed to the target that produced them
+    assert_eq!(
+        line(
+            r#"rolter_target_requests_total{provider="sick",target="test-model",outcome="error"}"#
+        ),
+        4,
+        "the sick target's failures were not counted:\n{metrics}"
+    );
+    // ... and the healthy peer is not blamed for them
+    assert_eq!(
+        line(r#"rolter_target_requests_total{provider="sick",target="test-model",outcome="ok"}"#),
+        0,
+        "the sick target was credited with a success:\n{metrics}"
+    );
+    assert_eq!(
+        line(
+            r#"rolter_target_requests_total{provider="healthy",target="test-model",outcome="ok"}"#
+        ),
+        4
+    );
+    assert_eq!(
+        line(
+            r#"rolter_target_requests_total{provider="healthy",target="test-model",outcome="error"}"#
+        ),
+        0
+    );
+    // and the aggregate counters see them too
+    assert_eq!(
+        line("rolter_upstream_errors_total"),
+        4,
+        "recovered upstream failures were not counted:\n{metrics}"
+    );
+    assert_eq!(
+        line("rolter_retries_total"),
+        4,
+        "the failovers were not counted as retries:\n{metrics}"
+    );
+}
+
+/// The other half of #1646: an attempt must be counted *once*. When the loop
+/// runs out of targets to fail over to, the request's own error row describes
+/// the same attempt the per-attempt funnel already recorded, so counting both
+/// would inflate the target's error rate instead of fixing it.
+#[tokio::test]
+async fn a_superseded_attempt_is_not_counted_twice_by_the_error_row() {
+    // two dead ports: every attempt is a connection failure, and the loop runs
+    // out of untried targets before it runs out of retries
+    async fn dead_port() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+    let a = dead_port().await;
+    let b = dead_port().await;
+
+    let mut config = config_for("test-model", vec![("a", a), ("b", b)]);
+    config.cooldown.base_secs = 0;
+    config.breaker.enabled = false;
+    let gw = serve_gateway(&config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+
+    let metrics = client
+        .get(format!("http://{gw}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    // one attempt per target, so exactly one error each
+    for provider in ["a", "b"] {
+        let needle = format!(
+            r#"rolter_target_requests_total{{provider="{provider}",target="test-model",outcome="error"}} 1"#
+        );
+        assert!(
+            metrics.lines().any(|l| l == needle),
+            "expected exactly one error for {provider}:\n{metrics}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn round_robin_spreads_across_healthy_targets() {
     // two healthy targets, each counting its hits; round-robin over several

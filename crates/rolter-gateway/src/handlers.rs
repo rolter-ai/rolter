@@ -1767,6 +1767,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         inflight_guard,
         chosen_variant,
         last_key_fingerprint,
+        last_attempt_recorded,
     ) = if entry.route.has_variants() {
         let fwd = forward_variants(
             &state,
@@ -1790,6 +1791,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             fwd.inflight_guard,
             fwd.variant,
             fwd.provider_key_fingerprint,
+            fwd.last_attempt_recorded,
         )
     } else {
         let retry = &snap.retry;
@@ -1812,6 +1814,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
         let mut inflight_guard: Option<crate::load::LoadGuard> = None;
         let mut last_key_fingerprint: Option<String> = None;
+        // whether the most recent attempt was already funnelled by
+        // `record_failed_attempt`, so the error row must not count it twice
+        let mut last_attempt_recorded = false;
 
         for attempt in 0..=retry.max_retries {
             let idx = match pick_untried(
@@ -1924,6 +1929,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 &trace_headers
             };
 
+            // per-attempt clock: `started` is the whole request, and a superseded
+            // attempt's own duration is what the health funnel records (#1646)
+            last_attempt_recorded = false;
+            let attempt_started = Instant::now();
             match state
                 .provider_queues
                 .forward_json(
@@ -1966,6 +1975,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         // let the same target be re-picked with a fresh key
                         tried.pop();
                         if attempt < retry.max_retries {
+                            // the caller will never see this failure, so record it against the
+                            // target that produced it before superseding the attempt (#1646)
+                            state
+                                .log
+                                .record_failed_attempt(&crate::logging::FailedAttempt {
+                                    provider: &last_provider,
+                                    target: &last_target,
+                                    status,
+                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                    error: "",
+                                });
+                            last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
                                 retry,
@@ -1988,6 +2009,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                         }
                         if attempt < retry.max_retries {
+                            // the caller will never see this failure, so record it against the
+                            // target that produced it before superseding the attempt (#1646)
+                            state
+                                .log
+                                .record_failed_attempt(&crate::logging::FailedAttempt {
+                                    provider: &last_provider,
+                                    target: &last_target,
+                                    status,
+                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                    error: "",
+                                });
+                            last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
                                 retry,
@@ -2036,6 +2069,18 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < retry.max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646)
+                        state
+                            .log
+                            .record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status: 0,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: last_error.as_deref().unwrap_or_default(),
+                            });
+                        last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(
                             retry.backoff_ms(attempt + 1, jitter(started)),
@@ -2055,6 +2100,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             inflight_guard,
             String::new(),
             last_key_fingerprint,
+            last_attempt_recorded,
         )
     };
 
@@ -2263,9 +2309,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             if last_error.is_none() {
                 return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
             }
-            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
             let message = last_error.unwrap_or_default();
-            state.log.log(RequestLog {
+            let row = RequestLog {
                 ts: crate::logging::started_at(started),
                 request_id,
                 trace_id,
@@ -2285,7 +2330,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 error: message.clone(),
                 sample_rate: snap.logging.sample_rate,
                 ..Default::default()
-            });
+            };
+            // the loop ran out of targets after a superseded attempt: that
+            // attempt is already counted against its target, so this row
+            // carries the request only (#1646)
+            if last_attempt_recorded {
+                state.log.log_recorded_attempt(row);
+            } else {
+                state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+                state.log.log(row);
+            }
             upstream_error_response(&message)
         }
     }
@@ -2480,6 +2534,9 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
     let mut last_provider = String::new();
     let mut last_target = model.clone();
+    // see the chat path: guards the error row against double-counting an
+    // attempt the per-attempt funnel already recorded
+    let mut last_attempt_recorded = false;
     let mut last_error: Option<String> = None;
     let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
     let mut inflight_guard: Option<crate::load::LoadGuard> = None;
@@ -2525,6 +2582,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         });
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
 
+        // per-attempt clock: `started` is the whole request, and a superseded
+        // attempt's own duration is what the health funnel records (#1646)
+        last_attempt_recorded = false;
+        let attempt_started = Instant::now();
         match state
             .provider_queues
             .forward_raw(
@@ -2552,6 +2613,18 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     }
                     tried.pop();
                     if attempt < retry.max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646)
+                        state
+                            .log
+                            .record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                        last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
                             retry,
@@ -2572,6 +2645,18 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < retry.max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646)
+                        state
+                            .log
+                            .record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                        last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
                             retry,
@@ -2610,6 +2695,18 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < retry.max_retries {
+                    // the caller will never see this failure, so record it against the
+                    // target that produced it before superseding the attempt (#1646)
+                    state
+                        .log
+                        .record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status: 0,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: last_error.as_deref().unwrap_or_default(),
+                        });
+                    last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
                         retry.backoff_ms(attempt + 1, jitter(started)),
@@ -2682,9 +2779,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
             if last_error.is_none() {
                 return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
             }
-            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
             let message = last_error.unwrap_or_default();
-            state.log.log(RequestLog {
+            let row = RequestLog {
                 ts: crate::logging::started_at(started),
                 request_id,
                 trace_id,
@@ -2704,7 +2800,14 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 error: message.clone(),
                 sample_rate: snap.logging.sample_rate,
                 ..Default::default()
-            });
+            };
+            // as on the chat path: a superseded attempt is already counted
+            if last_attempt_recorded {
+                state.log.log_recorded_attempt(row);
+            } else {
+                state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+                state.log.log(row);
+            }
             upstream_error_response(&message)
         }
     }
@@ -2716,6 +2819,8 @@ struct ForwardOutcome {
     outcome: Option<(reqwest::Response, u16, bool)>,
     last_provider: String,
     last_target: String,
+    /// whether the last attempt was already recorded against its target
+    last_attempt_recorded: bool,
     last_error: Option<String>,
     inflight_guard: Option<crate::load::LoadGuard>,
     /// chosen variant name for attribution
@@ -2814,6 +2919,7 @@ async fn forward_variants(
         outcome: None,
         last_provider: String::new(),
         last_target: model.to_string(),
+        last_attempt_recorded: false,
         last_error: None,
         inflight_guard: None,
         variant: String::new(),
@@ -2883,6 +2989,10 @@ async fn forward_variants(
         out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
         let upstream_model = target.model.as_deref();
 
+        // per-attempt clock: `started` is the whole request, and a superseded
+        // attempt's own duration is what the health funnel records (#1646)
+        out.last_attempt_recorded = false;
+        let attempt_started = Instant::now();
         match state
             .provider_queues
             .forward_json(
@@ -2912,6 +3022,18 @@ async fn forward_variants(
                     }
                     tried.pop();
                     if attempt < retry.max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646)
+                        state
+                            .log
+                            .record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &out.last_provider,
+                                target: &out.last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                        out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
                             retry,
@@ -2932,6 +3054,18 @@ async fn forward_variants(
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < retry.max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646)
+                        state
+                            .log
+                            .record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &out.last_provider,
+                                target: &out.last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                        out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
                             retry,
@@ -2973,6 +3107,18 @@ async fn forward_variants(
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < retry.max_retries {
+                    // the caller will never see this failure, so record it against the
+                    // target that produced it before superseding the attempt (#1646)
+                    state
+                        .log
+                        .record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &out.last_provider,
+                            target: &out.last_target,
+                            status: 0,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: out.last_error.as_deref().unwrap_or_default(),
+                        });
+                    out.last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
                         retry.backoff_ms(attempt + 1, jitter(started)),

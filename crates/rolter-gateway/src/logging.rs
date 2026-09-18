@@ -813,34 +813,38 @@ impl Drop for UsageLoggingStream {
     }
 }
 
-/// Derive a passive [`HealthEvent`](crate::health_events::HealthEvent) from a
-/// completed request. A 2xx is `ok`; a timed-out upstream is `timeout`; anything
-/// else is `error`. `status` 0 means the request never reached the upstream
-/// (connect failure), so no status code is reported.
-fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEvent {
-    use crate::health_events::{HealthEvent, HealthOutcome, HealthSource};
-    let ok = (200..300).contains(&record.status);
-    let timed_out = record.error.contains("timed out") || record.error.contains("timeout");
-    let outcome = if ok {
-        HealthOutcome::Ok
-    } else if timed_out {
-        HealthOutcome::Timeout
+/// Classify an upstream outcome for the health funnel. A 2xx is `ok`; a
+/// timed-out upstream is `timeout`; anything else is `error`. `status` 0 means
+/// the attempt never got a response (connect failure).
+fn classify_health(
+    status: u16,
+    error: &str,
+) -> (crate::health_events::HealthOutcome, Option<String>) {
+    use crate::health_events::HealthOutcome;
+    if (200..300).contains(&status) {
+        return (HealthOutcome::Ok, None);
+    }
+    if error.contains("timed out") || error.contains("timeout") {
+        return (HealthOutcome::Timeout, Some("timeout".to_string()));
+    }
+    let kind = if status == 429 {
+        "rate_limited"
+    } else if status >= 500 {
+        "upstream_error"
+    } else if status == 0 {
+        "connect_error"
     } else {
-        HealthOutcome::Error
+        "error"
     };
-    let error_kind = match outcome {
-        HealthOutcome::Ok => None,
-        HealthOutcome::Timeout => Some("timeout".to_string()),
-        HealthOutcome::Error => Some(if record.status == 429 {
-            "rate_limited".to_string()
-        } else if record.status >= 500 {
-            "upstream_error".to_string()
-        } else if record.status == 0 {
-            "connect_error".to_string()
-        } else {
-            "error".to_string()
-        }),
-    };
+    (HealthOutcome::Error, Some(kind.to_string()))
+}
+
+/// Derive a passive [`HealthEvent`](crate::health_events::HealthEvent) from a
+/// completed request. Describes the attempt that answered the caller; every
+/// attempt before it is funnelled by [`LogSink::record_failed_attempt`].
+fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEvent {
+    use crate::health_events::{HealthEvent, HealthSource};
+    let (outcome, error_kind) = classify_health(record.status, &record.error);
     HealthEvent {
         // the request's own instant, so an uptime rollup and the request row it
         // was derived from agree on when the observation happened
@@ -851,6 +855,41 @@ fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEven
         outcome,
         status_code: (record.status > 0).then_some(record.status),
         latency_ms: record.latency_ms,
+        error_kind,
+    }
+}
+
+/// One upstream attempt that failed and was superseded by another attempt —
+/// a retry against a sibling key, or a failover to another target (#1646).
+///
+/// The caller never sees these: the gateway recovers and answers 200. That is
+/// exactly why they have to be recorded, since a target dropping a quarter of
+/// its requests behind a working failover is otherwise indistinguishable from
+/// a healthy one on every operator surface.
+pub struct FailedAttempt<'a> {
+    pub provider: &'a str,
+    /// upstream model the attempt asked for, matching `RequestLog::target`
+    pub target: &'a str,
+    /// upstream status, or `0` when the attempt never got a response
+    pub status: u16,
+    pub latency_ms: u32,
+    pub error: &'a str,
+}
+
+/// Build the health event for a superseded attempt. Emitted under the same
+/// `passive` source as the request-level one, since both are observations made
+/// by real traffic rather than by the prober.
+fn failed_attempt_health_event(attempt: &FailedAttempt<'_>) -> crate::health_events::HealthEvent {
+    use crate::health_events::{HealthEvent, HealthSource};
+    let (outcome, error_kind) = classify_health(attempt.status, attempt.error);
+    HealthEvent {
+        ts: Utc::now(),
+        target_id: attempt.target.to_string(),
+        provider: attempt.provider.to_string(),
+        source: HealthSource::Passive,
+        outcome,
+        status_code: (attempt.status > 0).then_some(attempt.status),
+        latency_ms: attempt.latency_ms,
         error_kind,
     }
 }
@@ -944,12 +983,48 @@ impl LogSink {
         }
     }
 
+    /// Record one upstream attempt that failed and was superseded by another
+    /// attempt (#1646).
+    ///
+    /// The request row for the whole exchange is written later and describes
+    /// whichever attempt answered the caller, so this is the only place a
+    /// recovered failure is attributed to the target that produced it. Cheap
+    /// enough for the attempt loop: two relaxed atomics and a bounded-channel
+    /// `try_send` that drops rather than blocks.
+    pub fn record_failed_attempt(&self, attempt: &FailedAttempt<'_>) {
+        if attempt.provider.is_empty() || attempt.target.is_empty() {
+            return;
+        }
+        self.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+        self.metrics
+            .observe_target(attempt.provider, attempt.target, false);
+        self.health_events
+            .emit(failed_attempt_health_event(attempt));
+    }
+
+    /// Enqueue a record whose attempt was already funnelled by
+    /// [`LogSink::record_failed_attempt`], so only the request-level signals
+    /// are taken from it. Used when the loop ran out of targets to fail over
+    /// to: the row still describes the request, but counting its target again
+    /// would double-count the one attempt it made.
+    pub fn log_recorded_attempt(&self, record: RequestLog) {
+        self.observe(&record, false);
+        self.enqueue(record);
+    }
+
     /// Enqueue a record without blocking. Drops (and counts) the record if the
     /// queue is full or the writer has stopped.
     pub fn log(&self, record: RequestLog) {
         // observe latency/ttft histograms + passive per-target outcome for every
         // completed request, even when clickhouse logging is disabled (metrics
         // are always present)
+        self.observe(&record, true);
+        self.enqueue(record);
+    }
+
+    /// The metrics half of [`LogSink::log`]. `attribute_target` is false when
+    /// the attempt this row describes was already counted against its target.
+    fn observe(&self, record: &RequestLog, attribute_target: bool) {
         self.metrics.observe_request(
             &record.provider,
             &record.model,
@@ -957,17 +1032,24 @@ impl LogSink {
             record.ttft_ms,
             record.completion_tokens,
         );
+        self.metrics.observe_variant(&record.model, &record.variant);
+        if !attribute_target {
+            return;
+        }
         self.metrics.observe_target(
             &record.provider,
             &record.target,
             (200..300).contains(&record.status),
         );
-        self.metrics.observe_variant(&record.model, &record.variant);
         // funnel a passive health event for every real upstream target (skip the
         // builtin fake-llm and any row without a provider/target)
         if !record.provider.is_empty() && !record.target.is_empty() {
-            self.health_events.emit(passive_health_event(&record));
+            self.health_events.emit(passive_health_event(record));
         }
+    }
+
+    /// The ClickHouse half of [`LogSink::log`].
+    fn enqueue(&self, record: RequestLog) {
         if !should_sample_request(&record.request_id, record.sample_rate) {
             return;
         }
@@ -1573,6 +1655,68 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         });
         assert_eq!(ce.outcome, HealthOutcome::Error);
         assert_eq!(ce.error_kind.as_deref(), Some("connect_error"));
+    }
+
+    /// #1646: a superseded attempt lands in `provider_health_events` as a
+    /// passive observation of the target that produced it, classified the same
+    /// way the request-level event would classify it.
+    #[test]
+    fn a_failed_attempt_becomes_a_passive_health_event_for_its_own_target() {
+        use crate::health_events::{HealthOutcome, HealthSource};
+
+        let e = failed_attempt_health_event(&FailedAttempt {
+            provider: "vllm-spot-02",
+            target: "llama-3.1-8b",
+            status: 503,
+            latency_ms: 41,
+            error: "",
+        });
+        // the sick target, not the peer that rescued the request
+        assert_eq!(e.provider, "vllm-spot-02");
+        assert_eq!(e.target_id, "llama-3.1-8b");
+        assert_eq!(e.source, HealthSource::Passive);
+        assert_eq!(e.outcome, HealthOutcome::Error);
+        assert_eq!(e.status_code, Some(503));
+        assert_eq!(e.error_kind.as_deref(), Some("upstream_error"));
+        assert_eq!(e.latency_ms, 41);
+
+        // a connection-level attempt never got a status
+        let dead = failed_attempt_health_event(&FailedAttempt {
+            provider: "vllm-spot-02",
+            target: "llama-3.1-8b",
+            status: 0,
+            latency_ms: 3,
+            error: "connection refused",
+        });
+        assert_eq!(dead.status_code, None);
+        assert_eq!(dead.error_kind.as_deref(), Some("connect_error"));
+
+        // and a timeout is a timeout, not a generic error
+        let slow = failed_attempt_health_event(&FailedAttempt {
+            provider: "vllm-spot-02",
+            target: "llama-3.1-8b",
+            status: 0,
+            latency_ms: 30_000,
+            error: "upstream request timed out after 30s",
+        });
+        assert_eq!(slow.outcome, HealthOutcome::Timeout);
+        assert_eq!(slow.error_kind.as_deref(), Some("timeout"));
+    }
+
+    /// An attempt with no provider or target is the builtin `fake-llm` or a
+    /// route that never reached an upstream: nothing to attribute it to.
+    #[test]
+    fn an_attempt_without_a_target_is_not_recorded() {
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::disabled(metrics.clone());
+        sink.record_failed_attempt(&FailedAttempt {
+            provider: "",
+            target: "",
+            status: 503,
+            latency_ms: 1,
+            error: "",
+        });
+        assert_eq!(metrics.upstream_errors_total.load(Relaxed), 0);
     }
 
     #[test]
