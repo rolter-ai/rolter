@@ -2963,6 +2963,7 @@
     },
     "shortcuts": {
       "title": "Keyboard shortcuts",
+      "open": "Keyboard shortcuts ({{chord}})",
       "description": "Press these anywhere in the dashboard, as long as you are not typing in a field.",
       "items": {
         "palette": "Open the command palette",

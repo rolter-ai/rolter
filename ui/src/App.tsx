@@ -1,4 +1,4 @@
-import { Bug, KeyRound, LogOut, Search } from "lucide-react";
+import { Bug, Keyboard, KeyRound, LogOut, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -468,6 +468,16 @@ function Shell() {
               }),
               icon: <Search />,
               onClick: () => setPaletteOpen(true),
+            },
+            {
+              // the mouse path to the sheet `?` opens (#1697): without it the
+              // shortcuts are discoverable only by already knowing the chord
+              key: "shortcuts",
+              title: t("shell.shortcuts.open", {
+                chord: chordText(shortcutChord("help")),
+              }),
+              icon: <Keyboard />,
+              onClick: () => setShortcutsOpen(true),
             },
             {
               key: "github",
