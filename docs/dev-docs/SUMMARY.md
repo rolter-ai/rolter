@@ -65,6 +65,7 @@
 - [Dashboard theme](development/dashboard-theme.md)
 - [Dashboard code highlighting](development/highlighting.md)
 - [Dashboard dropdowns and the Combobox](development/combobox.md)
+- [Dashboard form primitives](development/form-primitives.md)
 - [Commit conventions](development/commit-conventions.md)
 - [Issue tracking](development/issue-tracking.md)
 - [Merge protection on master](development/merge-protection.md)

@@ -1,25 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Check,
-  ChevronDown,
-  Lock,
-  LockOpen,
-  Plug,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { Check, Lock, Plug, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
+import { ChipGroup } from "@/components/ui/chip-group";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
-import { InfoHint } from "@/components/ui/info-hint";
+import { describedBy, FieldError } from "@/components/ui/field-error";
+import { FieldLabel } from "@/components/ui/field-label";
+import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
+import { LockButton } from "@/components/ui/lock-button";
+import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRoute,
@@ -502,275 +499,6 @@ function buildPreview(
     advanced,
   };
   return JSON.stringify(obj, null, 2);
-}
-
-// ---------------------------------------------------------------------------
-// small presentational pieces
-// ---------------------------------------------------------------------------
-
-function FieldLabel({
-  label,
-  required,
-  info,
-  htmlFor,
-  id,
-}: {
-  label: string;
-  required?: boolean;
-  info?: string;
-  /** the control this names, so no label dangles */
-  htmlFor?: string;
-  /** for a group (a segmented control) that is `aria-labelledby` this id */
-  id?: string;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center gap-1.5">
-      <label
-        id={id}
-        htmlFor={htmlFor}
-        className="text-xs font-medium text-[color:var(--text-secondary)]"
-      >
-        {label}
-      </label>
-      {required && <span className="text-xs text-[color:var(--status-danger-text)]">*</span>}
-      {info && <InfoHint text={info} label={t("common.aboutField", { label })} />}
-    </div>
-  );
-}
-
-// the error carries an id so its control can point at it: a screen reader then
-// hears the reason when it reaches the field, not only in the footer (#1527)
-function FieldError({ id, error }: { id: string; error?: string }) {
-  if (!error) return null;
-  return (
-    <p id={id} className="text-xs leading-snug text-[color:var(--status-danger-text)]">
-      {error}
-    </p>
-  );
-}
-
-// a control's description: the hint under it plus its error when it has one
-function describedBy(...ids: (string | false | undefined)[]): string | undefined {
-  return ids.filter(Boolean).join(" ") || undefined;
-}
-
-function Section({
-  title,
-  info,
-  open,
-  onToggle,
-  children,
-  className,
-}: {
-  title: string;
-  info?: string;
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="rounded-[10px] border border-[color:var(--border-subtle)]">
-      {/* the toggle is a real button and the InfoHint sits beside it rather
-          than inside it: this used to be a `div role="button"` wrapping the
-          hint's own button, which is a nested interactive control — invalid
-          HTML that a screen reader announces as one confused thing, and an
-          axe `nested-interactive` failure (#1201) */}
-      <div className="flex w-full items-center gap-2.5 px-[15px]">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 py-[13px] text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <span className="text-sm font-semibold">{title}</span>
-          <ChevronDown
-            className={cn(
-              "ml-auto h-4 w-4 text-[color:var(--text-subtle)] transition-transform duration-[120ms]",
-              open && "rotate-180",
-            )}
-          />
-        </button>
-        {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
-      </div>
-      {open && (
-        <div
-          className={cn(
-            "border-t border-[color:var(--border-subtle)] px-[15px] pb-4 pt-3.5",
-            className,
-          )}
-        >
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled,
-  labelledBy,
-  ariaLabel,
-}: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-  disabled?: boolean;
-  /** id of the FieldLabel naming this group */
-  labelledBy?: string;
-  /** a name for a group with no visible label */
-  ariaLabel?: string;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-labelledby={labelledBy}
-      aria-label={ariaLabel}
-      className="inline-flex w-fit rounded-md bg-[color:var(--surface-subtle)] p-0.5"
-    >
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={value === o.value}
-          disabled={disabled}
-          onClick={() => onChange(o.value)}
-          className={cn(
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            "rounded px-2.5 py-1 text-xs font-medium transition-colors duration-[120ms] disabled:cursor-not-allowed disabled:opacity-50",
-            value === o.value
-              ? "bg-[color:var(--surface-base)] text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function LockButton({
-  locked,
-  onToggle,
-  disabled,
-}: {
-  locked: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  const label = locked ? t("modelSheet.lock.buttonLocked") : t("modelSheet.lock.buttonUnlocked");
-
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onToggle}
-      aria-pressed={locked}
-      title={label}
-      aria-label={label}
-      className={cn(
-        "flex h-8 w-8 flex-none items-center justify-center rounded-md border transition-colors duration-[120ms] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        locked
-          ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)] text-[color:var(--red-folk-text)]"
-          : "border-[color:var(--border-subtle)] bg-transparent text-[color:var(--text-subtle)]",
-      )}
-    >
-      {locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-    </button>
-  );
-}
-
-function ChipGroup({
-  label,
-  options,
-  selected,
-  onToggle,
-  disabled,
-}: {
-  label: string;
-  /**
-   * the rows to pick from. `id` is what the draft stores and what
-   * `visibility.allowed_*_ids` carries — the control plane parses each one as
-   * a uuid — while `name` is what the operator reads (#1189)
-   */
-  options: { id: string; name: string }[];
-  selected: string[];
-  onToggle: (v: string) => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  const id = React.useId();
-  return (
-    <div className="space-y-1.5" role="group" aria-labelledby={id}>
-      <span id={id} className="text-xs font-medium text-[color:var(--text-secondary)]">
-        {label}
-      </span>
-      <div className="flex flex-wrap gap-1.5">
-        {options.length === 0 && (
-          <p className="text-xs text-muted-foreground">{t("modelSheet.noneAvailable")}</p>
-        )}
-        {options.map((o) => {
-          const on = selected.includes(o.id);
-          return (
-            <button
-              key={o.id}
-              type="button"
-              disabled={disabled}
-              onClick={() => onToggle(o.id)}
-              aria-pressed={on}
-              className={cn(
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                "inline-flex h-7 items-center rounded-full border px-2.5 font-mono text-xs transition-colors duration-[120ms] disabled:cursor-not-allowed disabled:opacity-50",
-                on
-                  ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)] text-foreground"
-                  : "border-[color:var(--border-subtle)] bg-transparent text-muted-foreground",
-              )}
-            >
-              {o.name}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SwitchRow({
-  title,
-  hint,
-  info,
-  checked,
-  onChange,
-  disabled,
-}: {
-  title: string;
-  hint?: string;
-  info?: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-sm">{title}</span>
-          {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
-        </div>
-        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} aria-label={title} />
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,7 +1022,7 @@ export function ModelSheet({
         )}
 
         {/* ===== General ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.general")}
           open={secOpen.general}
           onToggle={() => toggleSec("general")}
@@ -1434,10 +1162,10 @@ export function ModelSheet({
             disabled={readonly}
             onChange={(v) => set({ enabled: v })}
           />
-        </Section>
+        </FormSection>
 
         {/* ===== Default parameters ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.params")}
           info={t("modelSheet.sections.paramsInfo")}
           open={secOpen.params}
@@ -1564,11 +1292,11 @@ export function ModelSheet({
               {t("modelSheet.params.add")}
             </Button>
           )}
-        </Section>
+        </FormSection>
 
         {/* ===== Capabilities (chat + audio only) ===== */}
         {showCaps && (
-          <Section
+          <FormSection
             title={t("modelSheet.sections.caps")}
             info={t("modelSheet.sections.capsInfo")}
             open={secOpen.caps}
@@ -1610,11 +1338,11 @@ export function ModelSheet({
                 />
               </>
             )}
-          </Section>
+          </FormSection>
         )}
 
         {/* ===== Pricing override ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.pricing")}
           info={t("modelSheet.sections.pricingInfo")}
           open={secOpen.pricing}
@@ -1690,10 +1418,10 @@ export function ModelSheet({
               })}
             </p>
           )}
-        </Section>
+        </FormSection>
 
         {/* ===== Limits & network ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.advanced")}
           open={secOpen.advanced}
           onToggle={() => toggleSec("advanced")}
@@ -1744,10 +1472,10 @@ export function ModelSheet({
             disabled={readonly}
             onChange={(v) => setDeep("net", { allowAdditional: v })}
           />
-        </Section>
+        </FormSection>
 
         {/* ===== Custom request headers ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.headers")}
           info={t("modelSheet.sections.headersInfo")}
           open={secOpen.headers}
@@ -1828,10 +1556,10 @@ export function ModelSheet({
               {t("modelSheet.headers.add")}
             </Button>
           )}
-        </Section>
+        </FormSection>
 
         {/* ===== Access & permissions ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.sections.rbac")}
           open={secOpen.rbac}
           onToggle={() => toggleSec("rbac")}
@@ -1915,10 +1643,10 @@ export function ModelSheet({
               />
             </div>
           )}
-        </Section>
+        </FormSection>
 
         {/* ===== Config preview ===== */}
-        <Section
+        <FormSection
           title={t("modelSheet.configPreview")}
           open={secOpen.preview}
           onToggle={() => toggleSec("preview")}
@@ -1933,7 +1661,7 @@ export function ModelSheet({
             maxHeight={280}
             density="compact"
           />
-        </Section>
+        </FormSection>
       </SheetBody>
 
       <SheetFooter>
