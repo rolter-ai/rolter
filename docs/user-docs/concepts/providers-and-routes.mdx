@@ -159,6 +159,14 @@ the sheet, with the rest of the model already saved.
   a change takes effect without restarting the gateway.
 </Note>
 
+The block also carries an `additional_fields` map that the dashboard has no
+editor for. Nothing reads it yet — a request field Rolter does not model is
+already forwarded to the upstream as-is — so the sheet neither shows it nor
+touches it, and a value put there through the API survives every save from the
+dashboard. The "Allow additional fields" switch that used to stand in for an
+editor was removed in #1271: it had no field of its own on the wire, so turning
+it on saved nothing and turning it off wiped the map.
+
 ---
 
 ## Variants

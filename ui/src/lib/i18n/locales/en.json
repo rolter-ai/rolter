@@ -312,10 +312,7 @@
       "maxOutput": "Max output tokens",
       "insecureTls": "Allow insecure TLS",
       "insecureTlsHint": "Disables cert verification for this model's endpoint.",
-      "insecureTlsInfo": "Skip TLS certificate verification. Only for self-signed or private-CA endpoints you trust — never for public providers.",
-      "allowAdditional": "Allow additional fields",
-      "allowAdditionalHint": "Forward unknown fields instead of stripping them.",
-      "allowAdditionalInfo": "Pass through request fields not in Rolter's schema straight to the provider — for provider-specific options Rolter doesn't model yet."
+      "insecureTlsInfo": "Skip TLS certificate verification. Only for self-signed or private-CA endpoints you trust — never for public providers."
     },
     "headers": {
       "name": "Header name",
