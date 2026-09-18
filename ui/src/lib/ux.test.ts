@@ -199,6 +199,22 @@ describe("ux event emitters", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it("drops a batch the server rejected without disabling itself", async () => {
+      // 400 is what the control plane answers when one event in the batch is
+      // malformed, and it rejects the batch whole (verified end to end in
+      // `crates/rolter-control/tests/ux_pipeline.rs`, #1728). so the cost of a
+      // bad key is every interaction that shared its flush — but the stream
+      // survives, which is why 400 must not join the terminal set
+      fetchMock.mockResolvedValueOnce(new Response("bad", { status: 400 }));
+      trackScreenView("models");
+      await flush();
+      expect(pendingUxEvents()).toHaveLength(0);
+
+      trackScreenView("logs");
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it("keeps trying after a transient failure", async () => {
       fetchMock.mockResolvedValueOnce(new Response("boom", { status: 503 }));
       trackScreenView("models");
