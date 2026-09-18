@@ -836,6 +836,51 @@ export const ShowsTheScopeOfANarrowMapping: Story = {
   },
 };
 
+// the two lists `useOrgScope` reads, answered 500. matched before `scoped()`
+// gets to them, since that helper *is* what resolves the chain for every other
+// story here
+const scopeListsFail =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (/^\/api\/v1\/orgs\/[^/]+\/(teams|projects)$/.test(path)) {
+      return json({ error: { message: "scope unavailable" } }, 500);
+    }
+    return inner(input, init);
+  };
+
+/**
+ * A scope the screen cannot name says so, instead of drawing its uuid (#1677).
+ *
+ * The mapping row is read-only — no picker under it, so no `LoadError` and no
+ * retry — and a chip reading `team-1` there is indistinguishable from a team
+ * actually called that.
+ */
+export const ScopeThatCannotBeResolved: Story = {
+  render: () => (
+    <Harness fetchStub={scopeListsFail(api())}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = (await canvas.findByText("gateway-oncall")).closest("li");
+    if (!row) throw new Error("the mapping is not rendered as a row");
+    await waitFor(() =>
+      expect(within(row).getByText("Unresolved scope")).toBeVisible(),
+    );
+    await expect(within(row).queryByText(TEAM.id)).toBeNull();
+    // the id stays quotable in a support conversation
+    const chip = within(row).getByTitle(/could not be matched/);
+    await expect(chip.getAttribute("title")).toContain(TEAM.id);
+
+    // an org-wide mapping never had a scope to resolve, so it is untouched
+    const orgRow = canvas.getByText("platform-engineering").closest("li");
+    if (!orgRow) throw new Error("the mapping is not rendered as a row");
+    await expect(within(orgRow).getByText("Whole organization")).toBeVisible();
+  },
+};
+
 /**
  * #1234: the scope select offers the whole org — every team, and every project
  * in any of those teams — and the id it picks reaches the create body.

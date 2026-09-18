@@ -137,7 +137,7 @@ A group arriving from your identity provider grants nothing on its own. **You** 
 - Mappings are matched against the claim named in **Group claim** — `groups` unless you changed it.
 - **Where the role applies** defaults to the whole organization, which is the common case. Narrow it to grant `admin` on one team, or `member` on a single project, without giving the group anything org-wide. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team that owns it, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself.
 - Every mapping grants inside the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends or what you pick here.
-- Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one.
+- Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one. A scope the dashboard cannot name is marked **Unresolved scope** instead of being drawn as a bare id; the id stays in the chip's tooltip, and the removal prompt names it inline.
 - Removing a mapping stops that group being granted the role — at that scope — on the next sign-in. The prompt names both before anything is withdrawn, and roles someone already holds are not taken back.
 
 <Warning>

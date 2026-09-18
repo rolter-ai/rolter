@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -195,6 +196,24 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
 }
 
 /**
+ * The scope as a sentence fragment, for copy that interpolates it.
+ *
+ * The chip below carries the id in a tooltip; a confirmation body has nowhere
+ * to put one, so the unresolved case names the id inline instead — a dialog
+ * that says what is being withdrawn has to be quotable on its own (#1677).
+ */
+export function orgScopeText(
+  t: TFunction,
+  scope: OrgScope,
+  value: { team_id?: string | null; project_id?: string | null },
+): string {
+  const resolved = scope.resolve(value);
+  if (resolved.kind === "org") return t("scope.picker.org");
+  if (resolved.kind === "named") return resolved.name;
+  return t("scope.picker.unresolvedWithId", { id: resolved.id });
+}
+
+/**
  * The chip a read-only surface draws a stored scope as.
  *
  * Three surfaces read a mapping's or a profile's scope without a picker under
@@ -203,36 +222,46 @@ export function useOrgScope(orgId: string | undefined): OrgScope {
  * and reads exactly like a scope that happens to be named that, so the
  * unresolved case gets its own copy and the warning tone, with the id kept in
  * the tooltip for a support conversation to quote (#1671).
+ *
+ * `format` is for a chip that says more than the scope — the access profile
+ * card's "Admin on Gateway" — so the tone, the icon and the tooltip stay in one
+ * place rather than being rebuilt per screen (#1677).
  */
 export function OrgScopePill({
   scope,
   value,
   className,
+  tint = "var(--surface-card)",
+  format,
 }: {
   scope: OrgScope;
   value: { team_id?: string | null; project_id?: string | null };
   className?: string;
+  tint?: string;
+  /** wrap the scope's own label in the sentence the chip is really about */
+  format?: (scope: string) => string;
 }) {
   const { t } = useTranslation();
   const resolved = scope.resolve(value);
+  const label = (text: string) => (format ? format(text) : text);
 
   if (resolved.kind === "unresolved") {
     return (
       <Pill
         color="var(--status-warning-text)"
-        tint="var(--surface-card)"
+        tint={tint}
         className={className}
         title={t("scope.picker.unresolvedTitle", { id: resolved.id })}
       >
         <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-        {t("scope.picker.unresolved")}
+        {label(t("scope.picker.unresolved"))}
       </Pill>
     );
   }
 
   return (
-    <Pill color="var(--text-secondary)" tint="var(--surface-card)" className={className}>
-      {resolved.kind === "named" ? resolved.name : t("scope.picker.org")}
+    <Pill color="var(--text-secondary)" tint={tint} className={className}>
+      {label(resolved.kind === "named" ? resolved.name : t("scope.picker.org"))}
     </Pill>
   );
 }
