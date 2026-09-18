@@ -6,10 +6,11 @@ import { EditorSheet } from "./EditorSheet";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
+  answerDiscardPrompt,
+  discardPrompt,
   expectClosesWithoutPrompting,
   expectSheetClosed,
   sheet,
-  withConfirm,
 } from "@/pages/story-harness";
 
 /**
@@ -150,17 +151,29 @@ export const ClosesCleanWithoutPrompting: Story = {
   },
 };
 
-/** A dirty draft asks first, and "cancel" means the sheet stays open. */
+/**
+ * A dirty draft asks first — through the product dialog, not `window.confirm`
+ * (#1463) — and "cancel" means the sheet, the draft and the focus all stay put.
+ */
 export const DiscardGuardKeepsTheDraft: Story = {
   render: () => <Editor />,
   play: async () => {
     const dialog = within(sheet());
     await userEvent.type(dialog.getByLabelText("Name"), "-eu");
-    await withConfirm(false, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-    });
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    await userEvent.click(cancel);
+
+    // the prompt is the dashboard's own dialog, and it says what is lost
+    const prompt = await discardPrompt();
+    await expect(
+      within(prompt).getByText("The edits in this form have not been saved and will be lost."),
+    ).toBeVisible();
+
+    await answerDiscardPrompt(false);
     await expect(screen().getByRole("dialog")).toBeVisible();
     await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
+    // and the keyboard is back where it left off, not on the body
+    await waitFor(() => expect(cancel).toHaveFocus());
   },
 };
 
@@ -170,9 +183,8 @@ export const DiscardGuardThrowsItAway: Story = {
   play: async () => {
     const dialog = within(sheet());
     await userEvent.type(dialog.getByLabelText("Name"), "-eu");
-    await withConfirm(true, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
     await expectSheetClosed();
   },
 };
@@ -183,9 +195,84 @@ export const HeaderCloseRunsTheGuard: Story = {
   play: async () => {
     const dialog = within(sheet());
     await userEvent.type(dialog.getByLabelText("Name"), "-eu");
-    await withConfirm(true, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: /close/i }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: /close/i }));
+    await answerDiscardPrompt(true);
     await expectSheetClosed();
+  },
+};
+
+/**
+ * Escape is a dismissal like any other, so it prompts rather than dropping the
+ * draft — and a second Escape answers the *prompt*, which is the topmost modal,
+ * leaving the editor exactly where it was.
+ */
+export const EscapePromptsAndEscapeAgainKeepsEditing: Story = {
+  render: () => <Editor />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.type(dialog.getByLabelText("Name"), "-eu");
+    await userEvent.keyboard("{Escape}");
+    await discardPrompt();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        screen().queryByRole("dialog", { name: /discard unsaved changes/i }),
+      ).not.toBeInTheDocument(),
+    );
+    await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
+  },
+};
+
+/** The scrim dismisses too, and it goes through the same prompt. */
+export const ScrimClickRunsTheGuard: Story = {
+  render: () => <Editor />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.type(dialog.getByLabelText("Name"), "-eu");
+    await userEvent.click(screen().getByTestId("sheet-scrim"));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * Two dismissals in a row raise one prompt, not a queue of them: the old
+ * `window.confirm` serialised for free, a rendered dialog has to say so.
+ */
+export const RepeatedDismissalsRaiseOnePrompt: Story = {
+  render: () => <Editor />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.type(dialog.getByLabelText("Name"), "-eu");
+    await userEvent.keyboard("{Escape}");
+    await discardPrompt();
+    await userEvent.click(screen().getByTestId("sheet-scrim"));
+    await expect(
+      screen().getAllByRole("dialog", { name: /discard unsaved changes/i }),
+    ).toHaveLength(1);
+  },
+};
+
+/**
+ * Dismissal during an in-flight save is refused, and the controls that offer it
+ * say so. A sheet that vanished here would leave the operator with no way to
+ * tell whether the mutation landed.
+ */
+export const SavingRefusesDismissal: Story = {
+  render: () => <Editor saving />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.type(dialog.getByLabelText("Name"), "-eu");
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: /close/i })).toBeDisabled();
+
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen().getByTestId("sheet-scrim"));
+    // no prompt, and the editor is still up with the draft in it
+    await expect(
+      screen().queryByRole("dialog", { name: /discard unsaved changes/i }),
+    ).not.toBeInTheDocument();
+    await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
   },
 };

@@ -13,7 +13,7 @@ import {
   pickOption,
   recording,
   sheet,
-  withConfirm,
+  answerDiscardPrompt,
   type FetchStub,
 } from "@/pages/story-harness";
 import type { EffectiveModelDto, ProviderRow, RouteRow } from "@/lib/api";
@@ -440,9 +440,8 @@ export const DiscardGuardKeepsTheDraft: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
-    await withConfirm(false, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: /close/i }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: /close/i }));
+    await answerDiscardPrompt(false);
     await expect(dialog.getByLabelText("Upstream model name")).toHaveValue("llama-3.1-70b");
   },
 };
@@ -454,9 +453,8 @@ export const DiscardGuardThrowsItAway: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
-    await withConfirm(true, async () => {
-      await userEvent.click(dialog.getByRole("button", { name: /close/i }));
-    });
+    await userEvent.click(dialog.getByRole("button", { name: /close/i }));
+    await answerDiscardPrompt(true);
     await expectSheetClosed();
   },
 };

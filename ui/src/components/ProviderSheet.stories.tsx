@@ -7,6 +7,7 @@ import { ProviderSheet } from "./ProviderSheet";
 import { Toaster } from "./ui/toaster";
 import type { ProviderRow, ProviderTestResult } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
+import { answerDiscardPrompt, discardPrompt } from "@/pages/story-harness";
 
 const PROVIDER: ProviderRow = {
   id: "prov-1",
@@ -396,6 +397,51 @@ export const SaveRejectedByTheServer: Story = {
     // never asked to close, and the draft is still in the fields
     await expect(closeRequests).toEqual([]);
     await expect(screen().getByLabelText("Name")).toHaveValue("openai-primary");
+  },
+};
+
+/**
+ * Dismissing a dirty provider draft goes through the shared prompt, not
+ * `window.confirm` (#1463). Cancelling keeps the typing *and* leaves the sheet
+ * unasked to close — which is the half "is the dialog still there" cannot see,
+ * because this harness renders `open` unconditionally.
+ */
+export const DiscardGuardKeepsTheDraft: Story = {
+  render: () => {
+    const closes: boolean[] = [];
+    closeRequests = closes;
+    return <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />;
+  },
+  play: async () => {
+    // the name is fixed once a provider exists, so the editable field is the
+    // base url. wait for the seed: typing that lands before it is overwritten
+    await waitFor(() =>
+      expect(screen().getByLabelText("API base")).toHaveValue("https://api.openai.com"),
+    );
+    await userEvent.type(screen().getByLabelText("API base"), "/eu");
+    await userEvent.click(screen().getByRole("button", { name: /close/i }));
+    await discardPrompt();
+    await answerDiscardPrompt(false);
+    await expect(screen().getByLabelText("API base")).toHaveValue("https://api.openai.com/eu");
+    await expect(closeRequests).toEqual([]);
+  },
+};
+
+/** Confirming is the only path that asks the sheet to close. */
+export const DiscardGuardThrowsItAway: Story = {
+  render: () => {
+    const closes: boolean[] = [];
+    closeRequests = closes;
+    return <Harness onOpenChange={(open) => closes.push(open)} fetchStub={stub(async () => json({}))} />;
+  },
+  play: async () => {
+    await waitFor(() =>
+      expect(screen().getByLabelText("API base")).toHaveValue("https://api.openai.com"),
+    );
+    await userEvent.type(screen().getByLabelText("API base"), "/eu");
+    await userEvent.click(screen().getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await waitFor(() => expect(closeRequests).toEqual([false]));
   },
 };
 

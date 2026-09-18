@@ -17,7 +17,7 @@ import {
   sheet,
   type FetchStub,
   type Recorder,
-  withConfirm,
+  answerDiscardPrompt,
   expectEmptyState,
 } from "./story-harness";
 import type {
@@ -335,17 +335,15 @@ export const KeepsADirtyDraftWhenDiscardIsDeclined: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "half typed");
 
-    await withConfirm(false, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      // declining the discard keeps the sheet — and the typing — alive
-      await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-      await expect(within(form).getByLabelText("Name")).toHaveValue("half typed");
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    // declining the discard keeps the sheet — and the typing — alive
+    await answerDiscardPrompt(false);
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(form).getByLabelText("Name")).toHaveValue("half typed");
 
-    await withConfirm(true, async () => {
-      await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-      await expectSheetClosed();
-    });
+    await userEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
   },
 };
 
