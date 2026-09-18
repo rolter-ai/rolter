@@ -49,12 +49,15 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     </Tip>
   </Step>
   <Step title="Send a chat completions request">
-    With the gateway up, call the built-in `fake-llm` model. It needs no API key and is intended for smoke tests and local development.
+    With the gateway up, call the built-in `fake-llm` model. It needs no *provider* account and is intended for smoke tests and local development.
+
+    It does need a rolter virtual key: the config `easy-up` writes on first run ships one, `sk-rolter-dev`. Every command below presents it. If you edited `rolter.toml`, use the key from your own `[[virtual_keys]]` section — `easy-up` prints a ready-to-run command with it at startup.
 
     <CodeGroup>
 
     ```bash cURL
     curl -s http://localhost:4000/v1/chat/completions \
+      -H "Authorization: Bearer sk-rolter-dev" \
       -H "Content-Type: application/json" \
       -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
     ```
@@ -64,7 +67,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
 
     client = OpenAI(
         base_url="http://localhost:4000/v1",
-        api_key="unused",
+        api_key="sk-rolter-dev",
     )
 
     response = client.chat.completions.create(
@@ -76,6 +79,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
 
     ```bash cURL (Anthropic)
     curl -s http://localhost:4000/v1/messages \
+      -H "Authorization: Bearer sk-rolter-dev" \
       -H "Content-Type: application/json" \
       -d '{"model":"fake-llm","max_tokens":256,"messages":[{"role":"user","content":"hello"}]}'
     ```
@@ -92,7 +96,7 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     Confirm the gateway is healthy and listing its built-in route:
 
     ```bash
-    curl -s http://localhost:4000/v1/models
+    curl -s http://localhost:4000/v1/models -H "Authorization: Bearer sk-rolter-dev"
     ```
 
     The response includes `fake-llm`. When you mount `rolter.toml`, it will also list the public model names you configure.
