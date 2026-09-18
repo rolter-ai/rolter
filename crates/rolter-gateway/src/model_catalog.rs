@@ -3,7 +3,7 @@
 //! under `provider-slug/model` — not only the ones a configured route target
 //! happens to name (#1647).
 //!
-//! The models were always routable: [`Snapshot::resolve_pinned`] turns any
+//! The models were always routable: `Snapshot::resolve_pinned` turns any
 //! `provider-slug/model` into a pinned single-target route, so a caller who
 //! already knew the name got a `200`. Only the listing was narrower than the
 //! addressing, which made a whole fleet invisible to any client that builds its
@@ -15,8 +15,6 @@
 //! instead of discarded. That adds no upstream request and no configuration —
 //! but it does mean the catalogue is only populated while active health checks
 //! are enabled, which the API docs state.
-//!
-//! [`Snapshot::resolve_pinned`]: crate::state::Snapshot::resolve_pinned
 
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
