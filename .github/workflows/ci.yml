@@ -17,6 +17,14 @@ on:
   # which is the release PR's head. `release-plz.yml` dispatches it — see
   # `dispatch-release-pr-ci` there.
   workflow_dispatch:
+  # the merge queue builds a synthetic branch holding master plus every pr
+  # ahead of this one in the queue, and asks for the same required check
+  # against *that* tree. this is the trigger that closes #1318: `ci-ok` is
+  # evaluated per pr against whatever base each branched from, so a set of
+  # individually-green prs could combine into a red master and nothing saw it
+  # until master's own push run (#1150, #1310/#1311/#1299). a merge_group run
+  # is the only run that sees the tree that will actually exist.
+  merge_group:
 
 # commit-driven runs supersede each other, but an `edited` run must not: it
 # skips `quality` (see below) on the assumption the gate already ran for this
@@ -33,8 +41,16 @@ on:
 # cancels the *pending* one, so the middle commit is still ungated. a per-run
 # group is what actually keeps every merge commit's run. the cost is more
 # concurrent runs on a busy merge day.
+#
+# merge_group joins that list for a third reason. a cancelled run is not a
+# passing required check, so cancelling a merge-group run dequeues the pr it
+# was testing and everything batched behind it. github does give each queue
+# entry its own ref, so `github.ref` alone would already be unique in practice
+# — but the queue re-forms that ref whenever an entry ahead fails, and the new
+# run must not shoot down the old one while it is still reporting. a per-run
+# group makes that impossible rather than unlikely.
 concurrency:
-  group: ci-${{ github.ref }}-${{ (github.event.action == 'edited' || github.event_name == 'push') && github.run_id || 'gate' }}
+  group: ci-${{ github.ref }}-${{ (github.event.action == 'edited' || github.event_name == 'push' || github.event_name == 'merge_group') && github.run_id || 'gate' }}
   cancel-in-progress: true
 
 # least-privilege GITHUB_TOKEN by default; jobs widen their own scope as needed.
@@ -52,8 +68,16 @@ jobs:
     # (or is still running — see the concurrency group above, which keeps an
     # `edited` run from cancelling it) and never needs re-running for a
     # metadata change. `ci-ok` verifies that claim against the api before it
-    # accepts this skip, so "still running" means red rather than green
-    if: github.event.action != 'edited'
+    # accepts this skip, so "still running" means red rather than green.
+    #
+    # the condition is scoped to `pull_request` on purpose. only that event
+    # carries `action: edited`, so the extra clause changes nothing today — it
+    # exists so no future event can inherit the fast path by accident. that
+    # matters most for `merge_group` (`action: checks_requested`), whose whole
+    # value is running the gate on a tree no pr head ever had: a merge-group
+    # run that skipped the gate on the strength of some earlier run would
+    # reintroduce #1318 inside the mechanism meant to fix it
+    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
 
   # the pr-body half of the agent-session-url check (#1406) lives here rather
@@ -76,9 +100,16 @@ jobs:
   # from the api instead means the dispatch path gets a real verdict rather
   # than a tolerated skip, and the release PR (the reason the trigger exists at
   # all, #1025) is checked like any other.
+  #
+  # a merge_group run gets the same treatment, for the reason that makes this
+  # check unfixable-after-the-fact in the first place: a squash merge writes
+  # the pr body into the commit message, and the queue is what performs that
+  # merge. its ref is synthetic and belongs to no pr head, so the pr is
+  # resolved by the number embedded in `gh-readonly-queue/<base>/pr-<n>-<sha>`
+  # (#1318).
   session-urls:
     name: no agent session urls (pr body)
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -99,6 +130,10 @@ jobs:
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
+          elif [ "${EVENT_NAME}" = "merge_group" ]; then
+            # queued: the ref is synthetic, so the pr is resolved by the number
+            # inside it rather than by head ref
+            bash scripts/check-agent-session-urls.sh --pr-for-queue-ref "${REPO}" "${REF_NAME}"
           else
             # dispatched: no pr in the payload, so the script resolves one by
             # head ref. that lookup lives in the script rather than inline here
@@ -125,9 +160,13 @@ jobs:
   #
   # a dispatch carries no pull request in its payload, so the range is resolved
   # by head ref through the same lookup #1523 added for the body.
+  # it covers the merge queue too, and there the range needs no api call at
+  # all: the payload names both endpoints, and `base_sha..head_sha` is exactly
+  # the set of commits the queue is about to put on master — including any
+  # batched ahead of this pr, which no per-pr run ever read (#1318).
   dispatch-commit-urls:
-    name: no agent session urls (commits, dispatch)
-    if: github.event_name == 'workflow_dispatch'
+    name: no agent session urls (commits, dispatch/queue)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -141,10 +180,20 @@ jobs:
           fetch-depth: 0
       - name: check commit messages
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF_NAME: ${{ github.ref_name }}
-        run: bash scripts/check-agent-session-urls.sh --commit-range-for-ref "${REPO}" "${REF_NAME}"
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "merge_group" ]; then
+            bash scripts/check-agent-session-urls.sh \
+              --commit-range "${MERGE_GROUP_BASE}..${MERGE_GROUP_HEAD}"
+          else
+            bash scripts/check-agent-session-urls.sh --commit-range-for-ref "${REPO}" "${REF_NAME}"
+          fi
 
   pr-title:
     if: github.event_name == 'pull_request'
@@ -195,7 +244,9 @@ jobs:
   # the extractor the crate sources it needs to resolve calls. see #484.
   codeql:
     name: codeql (${{ matrix.language }})
-    if: github.event.action != 'edited'
+    # scoped to `pull_request` for the same reason `quality` is: no other event
+    # may inherit the title-edit fast path
+    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -252,7 +303,7 @@ jobs:
     name: gate-ok
     # a metadata-only run does not exercise the gate, so it has no verdict to
     # record and must not leave one behind
-    if: github.event.action != 'edited'
+    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     needs: [quality, codeql]
     runs-on: ubuntu-latest
     steps:
@@ -262,10 +313,14 @@ jobs:
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
   # required status check on master; it turns green only when the quality
   # workflow, pr-title and codeql all succeed (a skipped pr-title is fine on a
-  # push build and on the `workflow_dispatch` run that gates the release PR). adding/removing jobs then never requires touching branch protection
-  # settings. see ROL-124. the rules this job enforces, and why the `edited`
-  # fast-path exists at all, are written up in
-  # `docs/dev-docs/development/ci-gating.md`.
+  # push build, on the `workflow_dispatch` run that gates the release PR, and
+  # on a `merge_group` run, whose pr was title-checked before it was queued).
+  # adding/removing jobs then never requires touching branch protection
+  # settings — and `ci-ok` being the one required check is also what makes it
+  # the check the merge queue asks for, so enabling the queue needed no second
+  # name anywhere (#1318). see ROL-124. the rules this job enforces, why the
+  # `edited` fast-path exists at all, and why a merge-group ref may never take
+  # it, are written up in `docs/dev-docs/development/ci-gating.md`.
   ci-ok:
     name: ci-ok
     if: always()
@@ -287,7 +342,11 @@ jobs:
       # only report green when a real gate run for this exact sha has already
       # completed successfully and nothing else is still running on it.
       - name: assert the gate already ran for this commit
-        if: github.event.action == 'edited'
+        # the fast path is a pull-request affordance and nothing else. a
+        # merge-group ref must never reach it: its entire purpose is to gate a
+        # tree that has no prior run, so "some earlier run passed" is not a
+        # question that has a meaningful answer there
+        if: github.event_name == 'pull_request' && github.event.action == 'edited'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -378,7 +437,7 @@ jobs:
           # gate and codeql are intentionally skipped — the step above has
           # already proven they ran and passed on this exact head sha, so
           # skipped is acceptable here and only pr-title re-runs
-          if [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
             if [ "${{ needs.quality.result }}" != "success" ] \
                && [ "${{ needs.quality.result }}" != "skipped" ]; then
               echo "::error::quality gate did not pass"
@@ -421,9 +480,12 @@ jobs:
             echo "::error::a coding-agent session url was found in this pr's commit messages"
             exit 1
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+          # the same job owns the merge-queue range, and there it is the only
+          # thing that ever reads the commits being batched onto master, so a
+          # skip is no more acceptable than on a dispatch (#1318)
+          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; } \
              && [ "${{ needs.dispatch-commit-urls.result }}" != "success" ]; then
-            echo "::error::the commit messages were not confirmed free of coding-agent session urls on this dispatched build (dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }})"
+            echo "::error::the commit messages were not confirmed free of coding-agent session urls on this ${GITHUB_EVENT_NAME} build (dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }})"
             exit 1
           fi
           # pr-title still cannot run on a dispatch — the action it uses reads
@@ -434,6 +496,12 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
              && [ "${{ needs.pr-title.result }}" = "skipped" ]; then
             echo "::warning::pr-title did not run on this dispatched build; the pr title is unvalidated (see #1523)"
+          fi
+          # a merge_group payload carries no pr title either, and unlike the
+          # dispatch path this one is not a gap: nothing enters the queue
+          # without a green `ci-ok` on the pr itself, where `pr-title` did run
+          if [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; then
+            echo "pr-title skipped: the title was validated on the pull request before it was queued"
           fi
           echo "all required checks green"
         env:

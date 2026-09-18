@@ -231,10 +231,26 @@ docs(architecture): document reload-free config propagation
 
 Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre-commit` hook in `prek.toml`.
 
+### Merging through the queue
+
+`master` is behind a **merge queue** ([ADR-0033](docs/dev-docs/adr/2026-09-18-merge-queue.md)).
+`gh pr merge` on a PR targeting `master` *enqueues* it rather than merging it:
+GitHub builds `master` + the queued entries, runs `ci-ok` against that tree, and
+merges only if it passes. So a PR is not merged when the command returns — check
+with `gh pr view <n> --json state,mergedAt` before reporting it landed. If the
+merge-group run fails, the PR is dequeued with a comment and `master` is
+untouched; fix the branch and requeue. Details, including what the queue means
+for the `merge_group` trigger in `ci.yml`, are in
+[`docs/dev-docs/development/merge-protection.md`](docs/dev-docs/development/merge-protection.md).
+
 ### Merging a stacked PR
 
 GitHub's stacked pull requests are enabled on this repository, and they change
-how a chain of dependent PRs must be merged. Both rules below cost a PR when
+how a chain of dependent PRs must be merged. The queue does not change any of
+this: a stacked child targets its parent's branch, which is neither protected nor
+queued, so children merge exactly as below. Only the bottom PR of a stack targets
+`master`, and it goes through the queue like anything else — which means the
+children retarget onto `master` a few minutes later than they used to. Both rules below cost a PR when
 they are broken, and the loss is silent and irreversible.
 
 - **`gh pr merge` does not work on a stacked PR.** Both the GraphQL path and
@@ -317,7 +333,7 @@ implementation suggests.
 
 ## CI
 
-- `ci-ok` is the single required status check; it aggregates `quality`, `pr-title` and `codeql`. The heavy gate lives in the reusable `.github/workflows/quality.yml`, so the release paths enforce exactly the same checks.
+- `ci-ok` is the single required status check; it aggregates `quality`, `pr-title` and `codeql`. The heavy gate lives in the reusable `.github/workflows/quality.yml`, so the release paths enforce exactly the same checks. It is also the check the merge queue asks for, which is why enabling the queue needed no second name anywhere.
 - Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows, both blocking — a zizmor finding at `medium` or above fails `ci-ok` (#1456), so fix it rather than suppressing it; see [`docs/dev-docs/development/testing.md`](docs/dev-docs/development/testing.md). `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
 - PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs `pr-title` alone and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/dev-docs/development/ci-gating.md`](docs/dev-docs/development/ci-gating.md).
 

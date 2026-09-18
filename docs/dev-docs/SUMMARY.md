@@ -44,6 +44,7 @@
   - [ADR-0030 — Control-plane OpenAPI document](adr/2026-09-08-control-plane-openapi-document.md)
   - [ADR-0031 — Feature-enablement model](adr/2026-09-08-feature-enablement-model.md)
   - [ADR-0032 — What 1.0.0 guarantees, surface by surface](adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
+  - [ADR-0033 — The merge queue is how master stays green](adr/2026-09-18-merge-queue.md)
 
 # API
 

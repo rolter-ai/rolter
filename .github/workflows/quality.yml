@@ -239,7 +239,13 @@ jobs:
       - name: check migrations are append-only
         env:
           CI: "true"
-        run: bash scripts/check-migrations-immutable.sh origin/master
+          # on a merge-queue run the checkout is a synthetic ref and
+          # `origin/master` is not fetched, which would make the script skip
+          # itself with a message nobody reads. the payload names the base the
+          # group was built on, and it is an ancestor of HEAD, so it is in the
+          # clone — use it there and fall back to the branch elsewhere (#1318)
+          BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
+        run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
   # ── release handoff: release-plz must still dispatch release.yml ────────────
   # a token-created tag does not fire `push: tags`, so the dispatch in
