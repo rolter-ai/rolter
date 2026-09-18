@@ -6,6 +6,7 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectAllowed,
   expectRefused,
   expectSkeleton,
   json,
@@ -235,10 +236,10 @@ export const DeleteRefusedToAnAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
-    // the route half of the screen is still theirs
-    await waitFor(() => expect(canvas.getByRole("button", { name: "Edit gpt-4o" })).toBeEnabled());
+    // the route half of the screen is still theirs, read after the gate has
+    // answered rather than before it (#1707)
+    await expectAllowed(canvasElement, "Edit gpt-4o");
   },
 };
 
@@ -380,13 +381,13 @@ export const SuperadminCanWriteAModelLabel: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
-    const panel = within(await within(document.body).findByRole("dialog"));
+    const dialog = await within(document.body).findByRole("dialog");
+    const panel = within(dialog);
     // the sheet reads its own labels, so the chips arrive a request after the
     // dialog does — until then the body is a skeleton and there is no remove
-    // control to assert on at all (#1689)
-    await waitFor(() =>
-      expect(panel.getByRole("button", { name: "Remove tier=flagship" })).toBeEnabled(),
-    );
+    // control to assert on at all (#1689) — and the gate is a request behind
+    // that again, which a bare `toBeEnabled` would never notice (#1707)
+    await expectAllowed(dialog, "Remove tier=flagship");
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();

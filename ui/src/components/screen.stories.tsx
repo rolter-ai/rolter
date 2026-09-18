@@ -16,7 +16,7 @@ import {
   StatusDot,
   useSort,
 } from "./screen";
-import { Harness, routes } from "@/pages/story-harness";
+import { expectAllowed, Harness, routes } from "@/pages/story-harness";
 
 // the grid every list screen is assembled from: a template shared by the
 // header and the rows, so a column cannot drift between the two
@@ -231,8 +231,11 @@ export const RowIconButtonAllowed: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
+    // `expectAllowed`, because an icon button is enabled before the gate has
+    // answered too - waiting for the enabled state alone would pass at any
+    // latency, including against a control plane that never answers (#1707)
+    await expectAllowed(canvasElement, "Delete openai-prod");
     const button = within(canvasElement).getByRole("button", { name: "Delete openai-prod" });
-    await waitFor(() => expect(button).toBeEnabled());
     await expect(button).not.toHaveAttribute("title");
   },
 };

@@ -8,6 +8,7 @@ import {
   clickWhenEnabled,
   expectClosesWithoutPrompting,
   expectEmptyState,
+  expectAllowed,
   expectRefused,
   expectSheetClosed,
   expectSkeleton,
@@ -287,9 +288,10 @@ export const EditRefusedToAnAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
-    // the invitation half of the screen is still theirs
-    await waitFor(() => expect(canvas.getByRole("button", { name: "Invite user" })).toBeEnabled());
+    // the invitation half of the screen is still theirs, asserted through
+    // `expectAllowed` so it is the gate's answer being read and not the
+    // enabled state the button was in before it (#1707)
+    await expectAllowed(canvasElement, "Invite user");
   },
 };
