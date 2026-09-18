@@ -139,8 +139,19 @@ type Story = StoryObj<typeof meta>;
 /** the palette portals to the body, so the canvas is not where it lands */
 const body = () => within(document.body);
 
-const input = async () =>
-  body().findByRole("combobox", { name: palette.label });
+const input = async () => body().findByRole("combobox", { name: palette.label });
+
+/**
+ * The dialog hands focus to the field in an effect, one frame after the field
+ * itself is in the document, so a story that read the field and acted on it
+ * straight away typed into the body instead. Every story that drives the
+ * palette from the keyboard waits here first.
+ */
+const focused = async () => {
+  const field = await input();
+  await waitFor(() => expect(field).toHaveFocus());
+  return field;
+};
 
 const options = () => body().getAllByRole("option");
 
@@ -158,7 +169,8 @@ const selected = async (name: string) =>
 export const Default: Story = {
   render: () => <Palette />,
   play: async () => {
-    const field = await input();
+    // it opens ready to be typed into, which is the whole point of a palette
+    const field = await focused();
     await expect(field).toHaveFocus();
     // the listbox the field drives, named the same way
     await expect(body().getByRole("listbox", { name: palette.label })).toBeVisible();
@@ -207,7 +219,7 @@ export const KeyboardSelection: Story = {
   render: () => <Palette recent={[]} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const field = await input();
+    const field = await focused();
     const first = options()[0];
     await expect(field).toHaveAttribute("aria-activedescendant", first.id);
 
@@ -241,7 +253,7 @@ export const EscapeCloses: Story = {
     const canvas = within(canvasElement);
     const opener = canvas.getByRole("button", { name: /open the palette/i });
     await userEvent.click(opener);
-    await expect(await input()).toHaveFocus();
+    await expect(await focused()).toHaveFocus();
 
     await userEvent.keyboard("{Escape}");
     await waitFor(() =>
