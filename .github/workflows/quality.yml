@@ -427,6 +427,14 @@ jobs:
       # `ui-primitives-allow:` waiver with its reason
       - name: no hand-rolled shared components
         run: bun run check:primitives
+      # focus moves from an effect, a step after a dialog or drawer enters or
+      # leaves the document, so a story that asserts it with no waiter is
+      # reading a value that may not be written yet. two such assertions passed
+      # against `storybook dev` and failed against the static build this
+      # workflow runs (#1675); #1672's 5s budget does not reach them, because an
+      # assertion that never polls waits zero milliseconds at any budget
+      - name: story focus assertions wait for the handover
+        run: bun run check:focus
       - name: unit tests (bun test)
         run: bun run test
       - name: build

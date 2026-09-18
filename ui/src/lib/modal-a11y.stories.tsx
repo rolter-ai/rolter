@@ -154,7 +154,11 @@ export const EscapeClosesAndReturnsFocus: Story = {
     await waitFor(() => expect(canvas.getByRole("dialog")).toBeInTheDocument());
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
-    await expect(canvas.getByRole("button", { name: "open the panel" })).toHaveFocus();
+    // the panel is gone and focus goes back in the effect's cleanup, which is a
+    // separate step: assert it with a waiter, never on the frame after removal
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "open the panel" })).toHaveFocus(),
+    );
   },
 };
 
