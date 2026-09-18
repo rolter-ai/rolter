@@ -82,6 +82,14 @@
       "results_other": "Доступно {{count}} варианта"
     }
   },
+  "docs": {
+    "link": {
+      "default": "Документация",
+      "opensInNewTab": "{{label}} (откроется в новой вкладке)",
+      "whichKey": "Какой ключ мне нужен?",
+      "virtualKeys": "О виртуальных ключах"
+    }
+  },
   "errors": {
     "load": {
       "retry": "Повторить",

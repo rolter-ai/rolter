@@ -31,6 +31,7 @@ These variables control the control-plane process (`rolter-control`), which mana
 | `ROLTER_CONTROL_HOST` | Listen host for the control-plane HTTP server. |
 | `ROLTER_CONTROL_PORT` | Listen port for the control-plane HTTP server. |
 | `ROLTER_UI_DIR` | Filesystem path to the built UI assets served by the control plane. |
+| `ROLTER_UI_DOCS_BASE_URL` | Base URL of the documentation site the dashboard deep-links into, e.g. `https://docs.example.com`. Unset by default, which suppresses every documentation link in the dashboard — see [Documentation links](/deployment/documentation-links). |
 | `ROLTER_KEK` | AES-256-GCM master key used to encrypt provider credentials at rest in PostgreSQL. It is not part of a database dump — see [Backup, restore and KEK rotation](/deployment/backup-and-restore). |
 | `ROLTER_KEK_OLD` | Read only by `rolter kek rotate`: the KEK being rotated away from. Never set it on a running gateway or control plane. |
 | `DATABASE_URL` | PostgreSQL connection string, e.g. `postgres://user:pass@localhost:5432/rolter`. |

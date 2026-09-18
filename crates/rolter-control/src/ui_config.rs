@@ -41,6 +41,14 @@ pub(crate) struct UiRuntimeConfig {
     /// dashboard reads a missing field as "gated".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub open_mode: bool,
+    /// base URL of the user documentation site the dashboard deep-links into,
+    /// e.g. `https://docs.example.com` (#1164). Absent — the default — means
+    /// this deployment has no documentation host, and the dashboard suppresses
+    /// every documentation link rather than rendering one that cannot resolve.
+    /// An air-gapped operator mirroring the site internally points this at the
+    /// mirror; nothing else in the dashboard reaches the documentation host
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs_base_url: Option<String>,
 }
 
 impl UiRuntimeConfig {
@@ -101,6 +109,7 @@ mod tests {
             otel_service_name: Some("rolter-ui".to_string()),
             version: Some("1.4.2".to_string()),
             open_mode: false,
+            docs_base_url: None,
         }
     }
 
@@ -166,6 +175,26 @@ mod tests {
         };
         let out = inject("<head></head>", &open);
         assert!(out.contains("\"openMode\":true"), "{out}");
+    }
+
+    #[test]
+    fn the_docs_base_url_reaches_the_dashboard_only_when_it_is_set() {
+        // unset is the default and the air-gapped case: the dashboard reads a
+        // missing field as "no documentation host" and renders no link
+        let out = inject("<head></head>", &config());
+        assert!(!out.contains("docsBaseUrl"), "{out}");
+
+        let documented = UiRuntimeConfig {
+            docs_base_url: Some("https://docs.example.com".to_string()),
+            ..Default::default()
+        };
+        let out = inject("<head></head>", &documented);
+        assert!(
+            out.contains("\"docsBaseUrl\":\"https://docs.example.com\""),
+            "{out}"
+        );
+        // snake_case would read as undefined in the dashboard
+        assert!(!out.contains("docs_base_url"), "{out}");
     }
 
     #[test]

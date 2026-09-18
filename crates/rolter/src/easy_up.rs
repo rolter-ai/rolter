@@ -148,6 +148,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         // `rolter control` — and local dev is exactly where it gets set (#805)
         ui_otel_endpoint: std::env::var("ROLTER_UI_OTEL_ENDPOINT").ok(),
         ui_otel_service_name: std::env::var("ROLTER_UI_OTEL_SERVICE_NAME").ok(),
+        ui_docs_base_url: std::env::var("ROLTER_UI_DOCS_BASE_URL").ok(),
         gateway_url: format!("http://127.0.0.1:{}", args.gateway_port),
         config: Some(args.config.clone()),
         #[cfg(feature = "postgres")]

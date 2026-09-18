@@ -1,0 +1,64 @@
+---
+title: "Documentation Links in the Dashboard"
+sidebarTitle: "Documentation links"
+description: "Point the Rolter dashboard at a documentation site so its screens can deep-link the docs, or leave it unset so an air-gapped deployment renders no links at all."
+---
+
+Several dashboard screens can link into this documentation — the Virtual Keys
+screen and the Playground both point at
+[Which key do I need?](/security/which-key), for example.
+
+Where that documentation lives is a property of your deployment, not of the
+build, so the dashboard never hard-codes a hostname. It is told one, or it is
+told nothing.
+
+## Setting the base URL
+
+Set `ROLTER_UI_DOCS_BASE_URL` on the control plane (or pass
+`--ui-docs-base-url`):
+
+```bash
+ROLTER_UI_DOCS_BASE_URL=https://docs.example.com rolter control
+```
+
+The control plane injects the value into the served `index.html` as
+`window.__ROLTER_CONFIG__.docsBaseUrl`, the same mechanism the dashboard's
+browser tracing uses. The dashboard is built ahead of time and shipped as
+static assets, so this is a restart, not a rebuild.
+
+<Note>
+  Building the dashboard yourself? `VITE_DOCS_BASE_URL` bakes a default into the
+  bundle at build time. `ROLTER_UI_DOCS_BASE_URL` overrides it at run time, so a
+  distribution build can carry a sensible default that an operator can still
+  redirect at an internal mirror.
+</Note>
+
+A page path is appended to the base, so the value may include a path prefix if
+you serve the documentation under a subdirectory:
+
+| `ROLTER_UI_DOCS_BASE_URL` | Resulting link |
+| --- | --- |
+| `https://docs.example.com` | `https://docs.example.com/security/which-key` |
+| `https://intra.example/rolter/docs/` | `https://intra.example/rolter/docs/security/which-key` |
+
+Only `http` and `https` are accepted. Anything else — a mistyped value, a
+scheme that is not a URL — is treated as "no documentation host" rather than
+placed in a link.
+
+## Leaving it unset
+
+Unset is the default, and it is a working configuration: **the dashboard renders
+no documentation links at all**. Nothing is greyed out and nothing points at a
+placeholder — the surrounding explanation stands on its own, because the link
+only ever added depth to copy that was already complete.
+
+This is what an air-gapped deployment with no internal documentation host wants.
+A link that cannot resolve is worse than no link: it looks actionable, costs a
+click, and ends in a browser error page. See
+[Air-gapped installation](/deployment/air-gapped) for the rest of the offline
+guarantees.
+
+If you mirror this documentation site inside the enclave, point
+`ROLTER_UI_DOCS_BASE_URL` at the mirror and the links come back — still without
+the dashboard itself reaching anything, since the link is only followed when a
+user clicks it.

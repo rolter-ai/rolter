@@ -153,6 +153,15 @@ pub struct Args {
     /// back to `rolter-ui` when this is unset
     #[arg(long, env = "ROLTER_UI_OTEL_SERVICE_NAME")]
     pub ui_otel_service_name: Option<String>,
+    /// base URL of the user documentation site the *dashboard* deep-links into,
+    /// e.g. `https://docs.example.com`. Injected into the served HTML as
+    /// `window.__ROLTER_CONFIG__.docsBaseUrl`; unset (the default) suppresses
+    /// every documentation link in the dashboard rather than rendering one that
+    /// cannot resolve, which is what an air-gapped deployment with no
+    /// documentation host wants. Point it at an internal mirror to turn the
+    /// links back on
+    #[arg(long, env = "ROLTER_UI_DOCS_BASE_URL")]
+    pub ui_docs_base_url: Option<String>,
     /// base URL of the rolter-gateway data plane; the dashboard Playground's
     /// `/gw/*` calls are reverse-proxied here (see `crate::proxy`)
     #[arg(
@@ -299,6 +308,7 @@ impl Default for Args {
             ui_dir: PathBuf::from("ui/dist"),
             ui_otel_endpoint: None,
             ui_otel_service_name: None,
+            ui_docs_base_url: None,
             gateway_url: "http://localhost:4000".to_string(),
             config: None,
             #[cfg(feature = "postgres")]
@@ -699,6 +709,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         otel_service_name: args.ui_otel_service_name.clone(),
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
         open_mode: open_mode.is_open(),
+        docs_base_url: args.ui_docs_base_url.clone(),
     };
     if ui_runtime.is_configured() {
         tracing::info!(
@@ -2165,6 +2176,7 @@ mod tests {
         assert!(args.config.is_none());
         assert!(args.ui_otel_endpoint.is_none());
         assert!(args.ui_otel_service_name.is_none());
+        assert!(args.ui_docs_base_url.is_none());
         assert!(!args.allow_open_mode);
         #[cfg(feature = "postgres")]
         assert!(args.database_url.is_none());
