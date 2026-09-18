@@ -16,11 +16,12 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 
 ## What is here
 
-| File           | What it is                                                                           |
-| -------------- | ------------------------------------------------------------------------------------ |
-| `fleet.ts`     | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  |
-| `dogfood.toml` | the matching rolter config — fifteen providers, three provider groups, eleven routes |
-| `keys.env`     | the API keys the fleet expects (fake, loopback-only, checked in on purpose)          |
+| File            | What it is                                                                           |
+| --------------- | ------------------------------------------------------------------------------------ |
+| `fleet.ts`      | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  |
+| `dogfood.toml`  | the matching rolter config — fifteen providers, three provider groups, eleven routes |
+| `keys.env`      | the API keys the fleet expects (fake, loopback-only, checked in on purpose)          |
+| `ux-capture.sh` | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)    |
 
 ## The fleet
 
@@ -89,6 +90,29 @@ OTEL_SERVICE_NAME=rolter-gateway \
 `[logging].clickhouse_url` in `dogfood.toml` is what makes the dashboard's
 analytics screens fill; the control plane's `CLICKHOUSE_URL` only lets it
 _read_ the table (#929).
+
+## Proving the UX capture before a week of it
+
+```bash
+just dogfood-ux   # or ./integration/dogfood/ux-capture.sh
+```
+
+Signs in, posts a probe event through the real `POST /api/v1/ui-events`, reads it
+back out of ClickHouse and says which hop broke if any did. Run it before
+starting a capture week and again at the end of a session: `ui/src/lib/ux.ts`
+swallows every failure by design, so a pipeline that stopped working looks
+exactly like one nobody used.
+
+It applies `clickhouse/*.sql` first. That directory is mounted into ClickHouse's
+`docker-entrypoint-initdb.d`, which runs **only when the data directory is first
+created** — so a `chdata` volume older than a migration has never seen it, and a
+stack with no `ui_events` table captures nothing for the entire week while every
+screen looks healthy. `just dogfood` applies them on every boot now for the same
+reason; running the script by hand is for a stack that is already up.
+
+What a mid-week outage costs, and which failures disable the stream permanently
+rather than dropping one batch, is tabulated in
+[`docs/dev-docs/development/ux-telemetry.md`](../../docs/dev-docs/development/ux-telemetry.md#failure-modes-and-who-notices).
 
 ## Browser tracing
 

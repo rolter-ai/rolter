@@ -74,8 +74,24 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # and a real ClickHouse, for the same reason: the dashboard UX stream
+      # writes there and nowhere else, so a pipeline test without one proves
+      # only that the handler did not panic (#1728). the tests create the
+      # `ui_events` table themselves from clickhouse/008_ui_events.sql — a
+      # service container cannot mount the repo, since it starts before the
+      # checkout
+      clickhouse:
+        image: clickhouse/clickhouse-server:24-alpine@sha256:82499fdb60e5bfaefb1e8f06f00a8857d61643fd6081c3f476ab6c7ff6d78766
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       ROLTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rolter_test
+      ROLTER_TEST_CLICKHOUSE_URL: http://localhost:8123
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

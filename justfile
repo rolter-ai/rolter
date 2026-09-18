@@ -200,6 +200,14 @@ dogfood:
       up -d postgres redis clickhouse signoz-zookeeper signoz-clickhouse \
             signoz-schema-migrator signoz-otel-collector signoz signoz-mcp
 
+    # clickhouse only runs clickhouse/*.sql when its data directory is first
+    # created, so a volume older than a migration has never seen it — and a
+    # stack with no `ui_events` table captures no dashboard UX at all while
+    # looking perfectly healthy (#1728). every file there is idempotent
+    echo "[dogfood] applying clickhouse schema"
+    for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8123/ping >/dev/null 2>&1 && break; sleep 1; done
+    ./integration/dogfood/ux-capture.sh apply-schema
+
     echo "[dogfood] waiting for postgres"
     for _ in $(seq 1 60); do docker exec rolter-postgres-1 pg_isready -U rolter >/dev/null 2>&1 && break; sleep 1; done
 
@@ -256,6 +264,10 @@ dogfood:
     ./"$d"/provision-signoz.sh || true
     ./"$d"/sheet.sh
     wait
+
+# prove the dashboard UX capture works end to end before relying on it
+dogfood-ux:
+    ./integration/dogfood/ux-capture.sh
 
 # print every url, login and fleet endpoint for the dogfooding stack
 dogfood-sheet:

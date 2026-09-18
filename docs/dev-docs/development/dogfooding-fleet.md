@@ -42,6 +42,7 @@ just dogfood        # datastores, fleet, control, gateway, SigNoz, then the shee
 just dogfood-sheet  # re-print every url, login, endpoint and model
 just dogfood-key    # mint another gateway virtual key
 just dogfood-seed   # re-import dogfood.toml over a running stack
+just dogfood-ux     # prove the dashboard UX capture works, before relying on it
 ```
 
 `--import` is desired state, so re-importing an edited `dogfood.toml` updates
@@ -117,6 +118,55 @@ chart on their own defaults.
 - **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
   control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).
+
+## Before a week of capture: prove the UX stream
+
+A dogfooding week is worth what it captures. The dashboard's own UX stream —
+screen views, time-to-interactive, form abandons, error states — is the half
+that cannot be reconstructed afterwards from traces, and it is also the half
+with no failure signal: `ui/src/lib/ux.ts` swallows every error on purpose, so a
+stack that is storing nothing looks exactly like a stack nobody clicked. A week
+run on a broken pipeline is a week that has to be run again.
+
+So start it by proving the pipeline instead of assuming it:
+
+```bash
+just dogfood-ux
+```
+
+That signs in, posts a probe event through the real
+`POST /api/v1/ui-events`, reads it back out of ClickHouse, and fails loudly with
+the reason if any hop is broken. It first applies `clickhouse/*.sql` to the
+running server, which is not a formality: docker-compose mounts that directory
+into ClickHouse's `docker-entrypoint-initdb.d`, and those scripts run **only
+when the data directory is first created**. A `chdata` volume older than a given
+migration has never seen it, so a machine that has been running this stack for a
+while may have no `ui_events` table at all — and then every batch is a `500` and
+the week captures nothing. `just dogfood` now applies them on every boot for the
+same reason.
+
+### What a mid-week ClickHouse hiccup costs
+
+Every row here was produced by breaking the running stack and watching it, and
+the full table with the server's status codes is in
+[UX telemetry](ux-telemetry.md#failure-modes-and-who-notices).
+
+- **ClickHouse restarts under you**: the events queued during the outage are
+  gone, and the stream resumes by itself afterwards. Bounded loss, no action
+  needed — the browser gets a `500`, drops that batch, and keeps flushing.
+- **The `ui_events` table is missing**: the same `500`, but it never clears, so
+  the whole week is lost. This is the one `just dogfood-ux` exists to catch.
+- **Your dashboard session lapses while a tab is open**: the stream disables
+  itself for the life of that tab. The screens keep working, so nothing hints at
+  it — reload the tab after re-authenticating, and prefer to close tabs you are
+  no longer using rather than leave one open overnight.
+- **A batch is rejected**: everything that shared that flush is dropped, not
+  just the offending event. A flush is at most five seconds of interaction.
+
+In every case except the last the loss is silent from both ends: the dashboard
+shows nothing and the control plane logs nothing. Re-running `just dogfood-ux`
+at the end of a session is the cheapest way to know the capture was still alive
+when the session ended.
 
 ## Using it
 

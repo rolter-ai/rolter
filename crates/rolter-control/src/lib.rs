@@ -1147,6 +1147,26 @@ pub async fn test_app_with_public_url(
     ))
 }
 
+/// [`test_app`] pointed at a live ClickHouse, for the UX-event pipeline test
+/// (#1728).
+///
+/// Every other test app leaves `clickhouse` unset, which is right for them —
+/// nothing else in the control plane needs the column store to answer. The UX
+/// stream is the exception: `/api/v1/ui-events` writes to ClickHouse and
+/// nowhere else, so a test that stops at the handler proves only that the
+/// handler did not panic. Handing the real client in is what lets the rows be
+/// read back out again.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_clickhouse(
+    pool: sqlx::PgPool,
+    clickhouse_url: &str,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.clickhouse = Some(analytics::ClickHouseClient::new(clickhouse_url));
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
