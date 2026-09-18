@@ -1,4 +1,4 @@
-import { Bug, KeyRound, LogOut } from "lucide-react";
+import { Bug, KeyRound, LogOut, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -10,6 +10,7 @@ import {
   useNavigate,
 } from "react-router";
 
+import { CommandPalette } from "@/components/CommandPalette";
 import { ForbiddenScreen } from "@/components/ForbiddenScreen";
 import { LocalePicker } from "@/components/LocalePicker";
 import { OpenModeBanner } from "@/components/OpenModeBanner";
@@ -18,10 +19,17 @@ import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
 import {
+  NAV_SEARCH_ID,
   NavSidebar,
   type NavGroup,
   type NavItem,
 } from "@/components/ui/nav-sidebar";
+import {
+  isNavSearchShortcut,
+  isPaletteShortcut,
+  readRecentScreens,
+  rememberScreen,
+} from "@/lib/command-palette";
 import {
   findLeaf,
   leafKeys,
@@ -169,6 +177,9 @@ const LEGACY: Record<string, string> = {
 };
 
 const LEAVES = new Set(leafKeys());
+
+/** the scroll container the skip link jumps over the rail to (#1198) */
+const MAIN_CONTENT_ID = "main-content";
 
 // lucide's github glyph inlined — typescript 7 drops the deprecated brand-icon
 // exports from lucide-react's types, so the named import no longer resolves
@@ -338,6 +349,39 @@ function Shell() {
   const [navOpen, setNavOpen] = React.useState(false);
   React.useEffect(() => setNavOpen(false), [location.pathname]);
 
+  // the command palette and the screens it offers before a query narrows
+  // anything (#1198). the visit is recorded from the shell rather than from
+  // each screen, so every way into a route — the rail, a bookmark, the back
+  // button, the palette itself — counts the same
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [recent, setRecent] = React.useState<string[]>(() => readRecentScreens());
+  React.useEffect(() => {
+    if (!email) return;
+    setRecent(rememberScreen(activeKey));
+  }, [activeKey, email]);
+
+  // ⌘K/Ctrl-K opens the palette from anywhere, `/` puts the caret in the rail's
+  // search box — but never while the caller is typing, where both are
+  // characters someone meant to write
+  React.useEffect(() => {
+    if (!email) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (isPaletteShortcut(e)) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (isNavSearchShortcut(e)) {
+        const box = document.getElementById(NAV_SEARCH_ID);
+        if (!box) return;
+        e.preventDefault();
+        box.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [email]);
+
   // the navigation half of the UX stream (#805): screen_view, navigate and
   // back_out for the whole dashboard, emitted once from the shell rather than
   // per screen. an empty key while signed out is dropped by `track`, which is
@@ -383,8 +427,9 @@ function Shell() {
 
   const redirect = LEGACY[key];
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
+  const visible = visibleNav(can);
   const navGroups: NavGroup[] = [
-    { items: visibleNav(can).map((def) => toNavItem(def, t, experimental)) },
+    { items: visible.map((def) => toNavItem(def, t, experimental)) },
   ];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
   const role = orgName
@@ -397,8 +442,35 @@ function Shell() {
     // sitting inside a screen: it is a property of the control plane, not of
     // whatever screen happens to be open (#970)
     <div className="flex h-screen flex-col bg-[color:var(--surface-app)] text-foreground">
+      {/* the first stop in the document, ahead of the rail's forty-odd
+          entries: a keyboard user Tabs once and is in the screen (#1198).
+          `preventDefault` and an explicit focus rather than letting the hash
+          land, so the router's url is not rewritten and focus moves in every
+          browser rather than only the ones that honour a fragment target */}
+      {/* a landmark of its own: page content outside one is a11y-invisible to
+          a reader navigating by region, and this link is the first content on
+          the page */}
+      <header>
+        <a
+          href={`#${MAIN_CONTENT_ID}`}
+          onClick={(e) => {
+            e.preventDefault();
+            document.getElementById(MAIN_CONTENT_ID)?.focus();
+          }}
+          className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] focus:rounded-md focus:border focus:border-[color:var(--border-default)] focus:bg-[color:var(--surface-elevated)] focus:px-3 focus:py-1.5 focus:text-sm focus:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          {t("shell.skipToContent")}
+        </a>
+      </header>
       <OpenModeBanner open={isOpenMode()} />
       <Toaster />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        nav={visible}
+        recent={recent}
+        onNavigate={(k) => navigate(`/${k}`)}
+      />
       <div className="flex min-h-0 flex-1">
         <NavSidebar
           groups={navGroups}
@@ -412,6 +484,12 @@ function Shell() {
           collapsible
           resizable
           footerLinks={[
+            {
+              key: "palette",
+              title: t("shell.palette.open"),
+              icon: <Search />,
+              onClick: () => setPaletteOpen(true),
+            },
             {
               key: "github",
               title: t("shell.githubRepo"),
@@ -479,7 +557,11 @@ function Shell() {
             </div>
           )}
         />
-        <main className="min-w-0 flex-1 overflow-hidden border-l border-[color:var(--border-subtle)] bg-background">
+        <main
+          id={MAIN_CONTENT_ID}
+          tabIndex={-1}
+          className="min-w-0 flex-1 overflow-hidden border-l border-[color:var(--border-subtle)] bg-background focus-visible:outline-none"
+        >
           {redirect != null ? (
             <Navigate to={`/${redirect}`} replace />
           ) : (

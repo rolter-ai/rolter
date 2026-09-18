@@ -108,6 +108,60 @@ Stories: `Resizable`, `DraggedNarrow`, `DraggedWide` and
 `CollapsedHasNoSplitter` in `nav-sidebar.stories.tsx` cover the bounds, the
 keyboard path, the ARIA contract and the collapsed case.
 
+## Keyboard: the command palette, `/` and the skip link
+
+Three keyboard affordances live in the shell rather than in the rail (#1198),
+because each of them has to work whatever screen is open.
+
+| Key | What it does | Where it lives |
+|---|---|---|
+| `⌘K` / `Ctrl-K` | toggles the command palette | `isPaletteShortcut` in `ui/src/lib/command-palette.ts`, listened for in `Shell` |
+| `/` | puts the caret in the rail's search box | `isNavSearchShortcut`, which focuses `NAV_SEARCH_ID` |
+| `Tab` from the top of the page | reveals the skip link, which focuses `<main>` | the first child of the shell in `ui/src/App.tsx` |
+
+`/` is ignored while the caller is typing — `isTextEntry` checks the event
+target — or the character would be unwritable in every field in the dashboard,
+model names and URLs included. The rule is duck-typed rather than an
+`instanceof HTMLElement` check so `command-palette.test.ts` can exercise it
+without a DOM.
+
+The skip link is an anchor whose `href` is the `<main>` id, but it calls
+`preventDefault` and focuses the element itself: letting the fragment land
+would rewrite the router's URL, and a fragment target only takes focus in some
+browsers. `<main>` therefore carries `tabIndex={-1}`, which is what makes it a
+focusable target at all. The link sits inside a `<header>` so it is content
+within a landmark — axe's `region` rule is on for `Shell/App`, and a bare
+anchor above the rail fails it.
+
+`ui/src/components/CommandPalette.tsx` is not built on the `Combobox`
+primitive: that one is a value picker that writes a pick back into a form,
+while the palette navigates and edits nothing. It owes the same roles all the
+same — a `combobox` input over a `listbox` of `option`s, moved with
+`aria-activedescendant` so focus never leaves the field being typed into. The
+container drops the `listbox` role while there is nothing in it, since a
+`listbox` with no `option` inside fails `aria-required-children`.
+
+The record half is deliberately cheap: virtual keys, providers and routes, read
+with the same endpoints their screens use, only once the palette is open and
+only for a caller whose capabilities do not say no. There is no search
+endpoint, and the palette must not grow one without one being built first.
+
+Ranking lives in `ui/src/lib/command-palette.ts` and is unit-tested there:
+subsequence matching, so "rr" reaches Routing Rules, with word-boundary and
+head-of-label bonuses that keep initialisms above incidental hits. Recently
+visited screens are remembered per browser under `rolter.recent-screens`;
+storage is passed in rather than reached for, so the same test covers a browser
+that refuses it.
+
+Stories: `CommandPaletteShortcut`, `NavSearchShortcut` and `SkipLink` in
+`App.stories.tsx` pin the three keys against the assembled shell;
+`Shell/CommandPalette` pins the palette's own keyboard, its records, and its
+loading, error and empty states; `SearchMatchesGroupLabel` and
+`SearchMatchesNothing` in `nav-sidebar.stories.tsx` pin the two nav-search bugs
+#1198 named — a group-label match used to expand the group and then filter
+every child out of it, and a query matching nothing used to empty the rail
+rather than say so.
+
 ## Every leaf is a screen
 
 `NAV` in `ui/src/lib/nav.tsx` names the entries; `SCREENS` in `ui/src/App.tsx`

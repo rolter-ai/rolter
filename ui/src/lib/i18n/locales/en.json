@@ -191,7 +191,8 @@
       "promptTemplates": "prompt templates",
       "skills": "skills",
       "complexityPolicies": "complexity policies",
-      "complexityPolicy": "this route's complexity policy"
+      "complexityPolicy": "this route's complexity policy",
+      "paletteRecords": "searchable records"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2930,7 +2931,30 @@
       "body": "No admin token is set, so every request to this control plane is served as superadmin — anyone who can reach it can read keys and change providers, routing and budgets. Set ROLTER_ADMIN_TOKEN to close it."
     },
     "navLabel": "Main navigation",
-    "userMenuLabel": "Account and scope"
+    "userMenuLabel": "Account and scope",
+    "skipToContent": "Skip to content",
+    "noNavMatches": "No screens match",
+    "palette": {
+      "title": "Command palette",
+      "description": "Jump to a screen, or to a key, provider or route by name.",
+      "label": "Search screens and records",
+      "placeholder": "Type a screen or record name…",
+      "open": "Search screens and records (⌘K)",
+      "noMatches": "No screens match",
+      "noMatchesBody": "Nothing here is called “{{query}}”. Try fewer letters, or a word from the screen's name.",
+      "results_one": "{{count}} result",
+      "results_other": "{{count}} results",
+      "sections": {
+        "recent": "Recent",
+        "screens": "Screens",
+        "records": "Records"
+      },
+      "kinds": {
+        "virtualKey": "Virtual key",
+        "provider": "Provider",
+        "route": "Route"
+      }
+    }
   },
   "providers": {
     "unserved": {

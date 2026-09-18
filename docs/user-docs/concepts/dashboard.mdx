@@ -52,13 +52,33 @@ Everything lives under one of these groups. Screens you cannot read with your ro
 
 The effective config viewer also exports the deployment's configuration as an importable `rolter.toml` — see [Config Export](/configuration/config-export).
 
-The search box at the top of the rail filters the entries by name.
+The search box at the top of the rail filters the entries by name; press `/` from anywhere to jump into it. Matching a group's own name keeps everything filed under it, and a query that matches nothing says so rather than leaving the rail blank.
 
 ### Experimental entries
 
 Some entries carry a small **Experimental** badge beside their name. That marks a subsystem which is usable but not yet settled: it may change shape, or be removed, in a minor release, and it is exempt from the compatibility promise the rest of the surface makes. Hover the badge to read what specifically is unfinished, in the language the dashboard is set to. When the rail is folded to icons the badge becomes a small dot on the entry's icon, and hovering the entry names it.
 
 The list comes from the running control plane, not from the browser, so it is always the truth about the build you are using: an entry loses its badge as soon as you upgrade to a release where that subsystem has settled. Entries with no badge are stable.
+
+## Keyboard shortcuts
+
+| Key | What it does |
+|---|---|
+| `⌘K` (`Ctrl-K` on Windows and Linux) | Opens the **command palette**. |
+| `/` | Puts the caret in the rail's search box. Ignored while you are typing in a field, so a slash in a model name or a prompt stays a slash. |
+| `Tab`, from the top of the page | Reveals **Skip to content**, which jumps focus past the rail into the screen. |
+
+The command palette searches two things at once. Screens first: every entry in
+the rail, matched loosely, so `rr` finds Routing Rules and `audlog` finds Audit
+Logs. Then records — virtual keys, providers and routes in the current scope,
+by name — each labelled with what it is, opening the screen that lists it. With
+nothing typed, the palette offers the screens you opened last.
+
+Arrow keys move the selection, Enter opens it, Escape closes the palette and
+puts focus back where it was. The magnifier at the bottom of the rail opens the
+same palette with the mouse. The palette only searches what your account may
+read, and only the record lists the dashboard already loads — it is not a
+full-text search over logs or requests.
 
 ## The scope switcher
 
