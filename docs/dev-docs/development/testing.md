@@ -432,6 +432,45 @@ which fails `ci-ok`. Locally:
 ```bash
 cd ui
 bunx playwright install --with-deps chromium chromium-headless-shell
+bun run test:stories                            # every story file
+bun run test:stories src/pages/Keys.stories.tsx # or just these
+```
+
+#### Why `test:stories` rather than the two commands by hand
+
+`storybook dev -p <port>` **does not fail when the port is taken.** It logs
+`Starting...`, exits, and leaves whatever was already listening in place —
+another worktree's Storybook, or a stale `python3 -m http.server --directory
+storybook-static` from an earlier session. `test-storybook --url
+http://localhost:<port>` then runs against *that* server and reports a green
+suite for a build that never contained the stories under test. Nothing in the
+output says so. This has happened twice in one day (#1648, #1684), and both
+times the only thing that caught it was fetching `/index.json` by hand.
+
+`bun run test:stories` (`ui/scripts/run-story-tests.ts`) closes that hole:
+
+- it picks a free port itself, or **fails** when the one passed to `--port` is
+  taken. The probe *connects* rather than binding — `python3 -m http.server` and
+  `Bun.serve` both set `SO_REUSEADDR`, so a second bind on a squatted port
+  succeeds and a bind-only probe calls it free
+- it starts `storybook dev --ci` and waits for `/index.json`
+- **it checks that index against the story files it was asked to run**: the file
+  must be indexed under its own import path, and every `export const … : Story`
+  in it must be present. A Storybook from another worktree fails here even when
+  it is serving the same project, and so does a stale build of a file whose
+  newest story is missing
+- only then does it run the tests, one file per invocation — the positional
+  pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
+  dies with a shell syntax error
+
+Running the two commands by hand still works and is sometimes what you want
+(driving the same server through several runs, say). If you do, check
+`/index.json` for your story ids first; that is the whole difference between a
+green run and a meaningless one.
+
+Under the hood it is still:
+
+```bash
 bun run build-storybook
 python3 -m http.server 6006 --directory storybook-static &
 bun run test-storybook --url http://127.0.0.1:6006
@@ -583,7 +622,7 @@ the CSS selector and the HTML of each offending node. `color-contrast` also
 names the measured foreground, background and ratio, which is usually enough to
 pick the right token straight from
 [Dashboard theme](dashboard-theme.md) without opening a browser. Narrow a run
-to one screen with `bun run test-storybook --url … -- -t "Keys"`.
+to one screen by naming its file: `bun run test:stories src/pages/Keys.stories.tsx`.
 
 A story can opt out with `parameters: { a11y: { disable: true } }` and a comment
 saying why. None currently does — treat needing one as a signal that the screen,
