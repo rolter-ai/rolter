@@ -1,0 +1,12 @@
+# revisions that only reformatted, never changed meaning. tell git about this
+# file once and `git blame` walks straight past them:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# github honours it automatically. only add a commit here whose diff is the
+# verbatim output of a formatter, and only once that commit exists on master:
+# this repository squash-merges, so the sha a branch carries is not the sha that
+# lands, and an entry naming a sha master has never seen is ignored in silence.
+
+# build(docs): one-time prettier reformat of the tree outside ui/ (#1695). its
+# sha goes here once it is on master -- see #1741

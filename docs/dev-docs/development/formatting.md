@@ -39,8 +39,8 @@ build and a dependabot bump moves both halves at once.
 ```
 
 Derived from the tree rather than imposed on it, the same way `ui/.prettierrc`
-was — each candidate was applied to all 164 markdown and MDX files outside
-`ui/` and scored by the size of the diff it produced:
+was — each candidate was applied to every markdown and MDX file outside `ui/`
+and scored by the size of the diff it produced:
 
 | `proseWrap` | `embeddedLanguageFormatting` | Files touched | Lines changed |
 | ----------- | ---------------------------- | ------------- | ------------- |
@@ -95,21 +95,28 @@ workflows stay unformatted; `actionlint` and `zizmor` already own them.
 ## The one-time reformat
 
 The reformat is a single commit of its own, separate from the commit that added
-the tooling, and its SHA is listed in `.git-blame-ignore-revs`. Configure git
-once and `git blame` skips it:
+the tooling, so `git blame` can be told to walk past it. That is what
+`.git-blame-ignore-revs` is for — GitHub reads it with no setup, and git does
+after one config:
 
 ```
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
+
+The reformat's own SHA is not in it yet, and deliberately so: this repository
+squash-merges, so the SHA a branch carries is not the SHA that lands on master,
+and an entry naming a commit master has never seen is ignored in silence — which
+reads as done while blaming exactly as badly as before. Filling it in after the
+merge is #1741.
 
 Gating only _changed_ files was the alternative and was rejected: a
 per-file-changed gate leaves the tree permanently half-formatted, so the
 "reformatted paragraph" diffs keep arriving one file at a time forever, and the
 hook has to grow a notion of which files are in the club.
 
-Nothing in that commit changes what a page means. It was verified by parsing all
-164 files before and after with `remark-parse` + `remark-gfm` + `remark-mdx` and
-comparing the resulting document trees: headings, link targets, code-block
+Nothing in that commit changes what a page means. It was verified by parsing
+every one of those files before and after with `remark-parse` + `remark-gfm` +
+`remark-mdx` and comparing the resulting document trees: headings, link targets, code-block
 contents, list nesting and every MDX element name and attribute are identical.
 That is the check that matters for the two navs — `docs/dev-docs/SUMMARY.md` for
 mdBook and `docs/user-docs/docs.json` for Mintlify — since a reflow that moved a
