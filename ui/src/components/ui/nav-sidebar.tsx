@@ -152,6 +152,15 @@ function matches(it: NavItem, q: string): boolean {
   return (it.children ?? []).some((c) => matches(c, q));
 }
 
+/**
+ * The nav search box, so `/` can put the caret in it from anywhere (#1198).
+ *
+ * An id rather than a ref handed down from the shell: the rail is mounted
+ * three different ways by viewport — drawer, icon strip, full rail — and only
+ * one of them is in the document at a time.
+ */
+export const NAV_SEARCH_ID = "rolter-nav-search";
+
 export function NavSidebar({
   brand = "rolter",
   logoSrc,
@@ -314,8 +323,13 @@ export function NavSidebar({
     q !== "" ||
     (open[it.key] ?? (it.children ?? []).some((c) => c.key === activeKey));
 
-  const renderItem = (it: NavItem, depth: number) => {
-    if (q && !matches(it, q)) return null;
+  // `forced`: an ancestor matched on its own label, so this subtree is part of
+  // that match and is shown whole. searching for a group's name used to expand
+  // the group and then filter every child out of it, leaving a heading over
+  // nothing (#1198)
+  const renderItem = (it: NavItem, depth: number, forced = false) => {
+    const selfMatch = forced || (q !== "" && it.label.toLowerCase().includes(q));
+    if (q && !selfMatch && !matches(it, q)) return null;
     const hasKids = (it.children?.length ?? 0) > 0;
     const active = it.key === activeKey;
     const expanded = hasKids && isOpen(it);
@@ -386,12 +400,32 @@ export function NavSidebar({
         </button>
         {expanded && !folded && (
           <div className="ml-[15px] flex flex-col gap-0.5 border-l border-[color:var(--border-subtle)] pl-1.5">
-            {it.children!.map((c) => renderItem(c, depth + 1))}
+            {it.children!.map((c) => renderItem(c, depth + 1, selfMatch))}
           </div>
         )}
       </React.Fragment>
     );
   };
+
+  // built before the rail so the "nothing matched" line can be decided from
+  // what the groups actually produced rather than guessed at again
+  const renderedGroups = groups
+    .map((g, gi) => {
+      const items = g.items.map((it) => renderItem(it, 0)).filter(Boolean);
+      if (q && items.length === 0) return null;
+      return (
+        <div className="flex flex-col gap-0.5" key={g.label || gi}>
+          {g.label && !folded && (
+            <div className="px-2 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
+              {g.label}
+            </div>
+          )}
+          {items}
+        </div>
+      );
+    })
+    .filter(Boolean);
+  const noMatches = q !== "" && renderedGroups.length === 0;
 
   // below `md` the rail is out of the flow entirely: a closed drawer takes no
   // width, which is the whole of #959 — the old rail kept its 232px and left a
@@ -484,6 +518,7 @@ export function NavSidebar({
         <label className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 transition-colors focus-within:border-[color:var(--border-default)] focus-within:ring-1 focus-within:ring-ring">
           <Search className="h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]" />
           <input
+            id={NAV_SEARCH_ID}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("common.search")}
@@ -504,20 +539,14 @@ export function NavSidebar({
       )}
 
       <div className="flex flex-1 flex-col gap-4 overflow-y-auto">
-        {groups.map((g, gi) => {
-          const items = g.items.map((it) => renderItem(it, 0)).filter(Boolean);
-          if (q && items.length === 0) return null;
-          return (
-            <div className="flex flex-col gap-0.5" key={g.label || gi}>
-              {g.label && !folded && (
-                <div className="px-2 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
-                  {g.label}
-                </div>
-              )}
-              {items}
-            </div>
-          );
-        })}
+        {renderedGroups}
+        {/* a query that matches nothing used to render an empty rail, which
+            reads as "the navigation broke" rather than "try another word" */}
+        {noMatches && (
+          <p className="px-2 py-1.5 text-sm text-[color:var(--text-subtle)]">
+            {t("shell.noNavMatches")}
+          </p>
+        )}
       </div>
 
       {(footerLinks?.length || footerExtra || version || update) && (

@@ -365,3 +365,36 @@ export const ExperimentalItemsNarrow: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+// searching for a group's own name used to expand the group and then filter
+// every one of its children out of it, leaving a heading over nothing: the
+// match was on the parent, and the children were re-tested against a query
+// none of them contains (#1198)
+export const SearchMatchesGroupLabel: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole("textbox", { name: /search/i }), "analytics");
+    const parent = await canvas.findByRole("button", { name: "Analytics" });
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+    // the subtree the match is about, whole
+    await expect(canvas.getByRole("button", { name: "Usage" })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Costs" })).toBeVisible();
+    // and nothing else: this is still a filter
+    await expect(canvas.queryByRole("button", { name: "Playground" })).toBeNull();
+  },
+};
+
+// a query nothing matches used to empty the rail, which reads as "navigation
+// broke" rather than "try another word" (#1198)
+export const SearchMatchesNothing: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole("textbox", { name: /search/i }), "zzzz");
+    await expect(await canvas.findByText(en.shell.noNavMatches)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Playground" })).toBeNull();
+    // clearing the box brings the whole rail back
+    await userEvent.click(canvas.getByRole("button", { name: en.common.clearSearch }));
+    await expect(await canvas.findByRole("button", { name: "Playground" })).toBeVisible();
+    await expect(canvas.queryByText(en.shell.noNavMatches)).toBeNull();
+  },
+};

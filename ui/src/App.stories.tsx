@@ -248,3 +248,95 @@ export const ExperimentalMarkerOnIconRail: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+/**
+ * ⌘K from anywhere in the shell (#1198): the palette opens with focus already
+ * in its field, a screen picked there navigates, and the palette closes behind
+ * it. The shortcut is the whole feature — a palette only a mouse can open is
+ * the gap the issue was filed over.
+ */
+export const CommandPaletteShortcut: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await railOf(canvasElement);
+    const body = within(document.body);
+    await expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull();
+
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    const field = await body.findByRole("combobox", { name: en.shell.palette.label });
+    await waitFor(() => expect(field).toHaveFocus());
+
+    await userEvent.keyboard("playg");
+    const hit = await body.findByRole("option", { name: new RegExp(nav.playground, "i") });
+    await userEvent.click(hit);
+
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("heading", { level: 1, name: screens.playground.title }),
+      ).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull(),
+    );
+  },
+};
+
+/**
+ * `/` puts the caret in the rail's search box — but only when the caller is
+ * not already typing somewhere, or the character would be unwritable in every
+ * field in the dashboard (#1198).
+ */
+export const NavSearchShortcut: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
+    await expect(search).not.toHaveFocus();
+
+    await userEvent.keyboard("/");
+    await waitFor(() => expect(search).toHaveFocus());
+    // the keystroke moved focus, it did not also land in the box
+    await expect(search).toHaveValue("");
+
+    // and inside a field a slash is just a slash
+    await userEvent.type(search, "a/b");
+    await expect(search).toHaveValue("a/b");
+  },
+};
+
+/**
+ * The skip link (#1198): the first stop in the document, ahead of the rail's
+ * forty-odd entries, and it actually moves focus into the screen rather than
+ * only changing the url.
+ */
+export const SkipLink: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rail = await railOf(canvasElement);
+    const link = canvas.getByRole("link", { name: en.shell.skipToContent });
+
+    // it precedes the navigation it skips…
+    await expect(
+      link.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …is clipped out of the way until it is reached…
+    await expect(link.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    await expect(getComputedStyle(link).overflow).toBe("hidden");
+
+    // …and is the first thing the Tab key finds, revealed rather than merely
+    // focused: a skip link still clipped to a pixel is one nobody can read
+    await userEvent.tab();
+    await expect(link).toHaveFocus();
+    await expect(link.getBoundingClientRect().width).toBeGreaterThan(1);
+    await expect(getComputedStyle(link).overflow).toBe("visible");
+
+    const main = canvasElement.querySelector("main") as HTMLElement;
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(main).toHaveFocus());
+    // focus moved without the fragment landing: letting the default action
+    // through would rewrite the url out from under the router
+    await expect(window.location.hash).toBe("");
+  },
+};
