@@ -17,6 +17,7 @@ pub mod currency;
 pub mod error;
 pub mod guardrail_webhook;
 pub mod guardrails;
+pub mod node_identity;
 pub mod pii_sanitizer;
 pub mod plugin_dispatch;
 pub mod probe;
@@ -55,6 +56,7 @@ pub use guardrails::{
     BuiltinRule, CompiledGuardrails, GuardAction, GuardStage, GuardrailReport, GuardrailRule,
     GuardrailsConfig, ScanOutcome, StreamingPostCall,
 };
+pub use node_identity::{node_id, node_identity, NodeIdSource, NodeIdentity};
 pub use pii_sanitizer::{
     Finding, PiiSanitizerConfig, RestorationPolicy, RestorationTicket, RestoreRequest,
     RestoreResponse, SanitizeDirection, SanitizeRequest, SanitizeResponse, StreamingResponse,

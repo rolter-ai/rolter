@@ -72,13 +72,20 @@ chart on their own defaults.
   checked in beside the other local credentials, and why the gateway is given
   the *same* `ROLTER_KEY_PEPPER` as the control plane — the snapshot carries no
   pepper, so a mismatch rejects every key with `401 invalid api key`.
-- **The gateway needs a node id.** Without `ROLTER_NODE_ID` (and without a
-  `HOSTNAME`, which a shell-launched process does not have — a container gets
-  one from the runtime) the gateway posts its cluster heartbeat and its
-  adaptive-routing telemetry with no node header. The control plane drops both
-  with a `204`, nothing is logged on either side, and the Cluster and Adaptive
-  Routing screens stay empty forever. `just dogfood` sets it; a hand-rolled run
-  must too. See #1644.
+- **The gateway names itself, and says so.** `ROLTER_NODE_ID` still wins, but
+  a gateway that has none now falls back to `HOSTNAME` and then to the
+  `gethostname` syscall — which a shell-launched process does have, even though
+  it has no `HOSTNAME` in its environment. It logs which one it used at boot
+  (`node identity resolved`), and warns when nothing answered. Set
+  `ROLTER_NODE_ID` anyway when running more than one gateway on one host, since
+  otherwise both heartbeat as the same node. `just dogfood` sets it.
+
+  This used to be silent: no id meant no node header, the control plane dropped
+  both the cluster heartbeat and the adaptive-routing report with a `204`,
+  nothing was logged on either side, and the Cluster and Adaptive Routing
+  screens stayed empty forever. The telemetry ingest now answers `400` to a
+  report it cannot key on, which the gateway's reporter logs as
+  `adaptive-routing telemetry report failed`. See #1644.
 - **Everything in `dogfood.toml` is in the explicit `readonly` tier.** Providers
   and groups alike are written `[[providers.readonly]]` / `[[provider_groups.readonly]]`
   rather than as the deprecated bare arrays (ADR-0022), because this file is

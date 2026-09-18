@@ -262,4 +262,78 @@ mod tests {
         assert_eq!(ingest_url("http://control:4001/"), None);
         assert_eq!(ingest_url("http://control:4001/internal/snapshots"), None);
     }
+
+    /// Serve one request, answering with `status`, and hand back what the
+    /// reporter sent.
+    async fn capture_one_report(status: axum::http::StatusCode) -> (String, anyhow::Result<()>) {
+        use std::sync::Arc;
+
+        use axum::{extract::State, http::HeaderMap, routing::post, Router};
+        use tokio::sync::oneshot;
+
+        let (tx, rx) = oneshot::channel::<String>();
+        let tx = Arc::new(parking_lot::Mutex::new(Some(tx)));
+        let app = Router::new()
+            .route(
+                "/internal/adaptive-telemetry",
+                post(
+                    move |State(tx): State<
+                        Arc<parking_lot::Mutex<Option<oneshot::Sender<String>>>>,
+                    >,
+                          headers: HeaderMap| async move {
+                        let seen = headers
+                            .get(NODE_ID_HEADER)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string();
+                        if let Some(tx) = tx.lock().take() {
+                            let _ = tx.send(seen);
+                        }
+                        status
+                    },
+                ),
+            )
+            .with_state(tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let outcome = report_once(
+            &Client::new(),
+            &format!("http://{addr}/internal/adaptive-telemetry"),
+            None,
+            TelemetryReport { routes: Vec::new() },
+        )
+        .await;
+        let seen = rx.await.expect("the server saw a request");
+        (seen, outcome)
+    }
+
+    #[tokio::test]
+    async fn a_report_from_a_process_with_no_configured_id_still_names_its_node() {
+        // a gateway started from a shell has no HOSTNAME in its environment;
+        // before #1644 it sent no node header at all and the control plane
+        // dropped the report without a word
+        let (seen, outcome) = capture_one_report(axum::http::StatusCode::NO_CONTENT).await;
+        assert!(outcome.is_ok());
+        assert!(
+            !seen.is_empty(),
+            "the report must carry a node id, got an empty header"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_report_is_surfaced_as_an_error() {
+        // the reporter only logs when the round trip fails, so the control
+        // plane refusing an unidentified report is what makes the drop audible
+        let (_, outcome) = capture_one_report(axum::http::StatusCode::BAD_REQUEST).await;
+        let err = outcome.expect_err("a 400 must not look like a delivered report");
+        assert!(
+            err.to_string().contains("400"),
+            "expected the status in the error, got {err}"
+        );
+    }
 }

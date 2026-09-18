@@ -18,6 +18,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 rustls-pki-types.workspace = true
+# `gethostname`, the only portable way to ask the host its own name; there is
+# no std wrapper and a shell-launched process has no `HOSTNAME` to read (#1644)
+libc.workspace = true
 
 # opentelemetry otlp export, behind the default `otlp` feature so a build can
 # opt out of the tonic/prost/reqwest exporter stack when it is not needed

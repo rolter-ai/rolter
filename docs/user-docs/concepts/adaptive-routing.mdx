@@ -110,7 +110,7 @@ Notes worth knowing before you build on it:
 An empty Adaptive Routing screen has two very different causes, and the screen says which one it is:
 
 - **The kill switch is off** — the shipped default. The screen names the switch, lists the routes it is holding back, and links to the settings rather than sending you to debug a gateway that is behaving correctly. Nothing is wrong with the gateway.
-- **The switch is on and nothing is reporting.** Then the gateway is the place to look: a report older than `fresh_window_secs` is hidden, and a gateway that reports without a node id (`ROLTER_NODE_ID`) is dropped by the control plane before it ever reaches this screen.
+- **The switch is on and nothing is reporting.** Then the gateway is the place to look: a report older than `fresh_window_secs` is hidden, and a gateway that cannot name itself is refused by the control plane before it ever reaches this screen. That refusal is not silent — the gateway logs `adaptive-routing telemetry report failed`, and it warns at boot when no node identity could be resolved. Set `ROLTER_NODE_ID` to fix it.
 
 ---
 
