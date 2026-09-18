@@ -15,6 +15,17 @@
 //! traffic on its own. When the blend is engaged, a bounded `exploration_ratio`
 //! share of picks is made uniformly at random so a target the blend has learned
 //! to avoid keeps producing fresh latency samples instead of going dark.
+//!
+//! Condition 3 cannot be reached by waiting alone (#1645). The fallback stack
+//! is free to send every pick to one target — configured weight, session
+//! affinity or prefix affinity all do this legitimately — and the peer it
+//! skips then never earns the latency sample the evidence check is counting,
+//! so the route stays on the fallback forever and `adaptive` is silently equal
+//! to the strategy it replaced. A bounded warm-up therefore runs *before*
+//! engagement: while the evidence is thin, up to [`MAX_WARMUP_PROBES`] picks
+//! per target are steered to the targets that have no latency sample yet. The
+//! budget is what keeps an unreachable target from swallowing the route — it
+//! costs at most `MAX_WARMUP_PROBES` picks in total, not a permanent share.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
@@ -31,6 +42,16 @@ use crate::{AdaptiveTelemetry, DecisionCounts, LoadBalancer, RouteContext, Targe
 /// Latency samples needed before the blend is trusted to rank targets: ranking
 /// is relative, so a single sampled target says nothing about the others.
 const MIN_LATENCY_SAMPLES: usize = 2;
+
+/// Warm-up picks a single target may be given before the route gives up on
+/// sampling it and leaves it to the fallback stack.
+///
+/// A latency sample lands only when the request *finishes*, so a budget of one
+/// or two would be spent on picks that are still in flight and the warm-up
+/// would give up on a healthy target under any concurrency. Eight is enough to
+/// outlast that lag on a busy route while keeping the cost of a target that
+/// never answers bounded and small.
+const MAX_WARMUP_PROBES: u64 = 8;
 
 pub struct Adaptive {
     cfg: AdaptiveRoutingConfig,
@@ -57,6 +78,9 @@ pub struct Adaptive {
     costs: Vec<f64>,
     /// picks each target has served, index-aligned with the route targets
     target_samples: Vec<AtomicU64>,
+    /// warm-up picks already spent on each target, bounded by
+    /// [`MAX_WARMUP_PROBES`] so an unreachable target cannot absorb the route
+    warmup_probes: Vec<AtomicU64>,
     /// milliseconds since [`Adaptive::built`] at each target's last pick;
     /// meaningless until that target's sample count is non-zero
     target_last_seen: Vec<AtomicU64>,
@@ -105,6 +129,7 @@ impl Adaptive {
             costs,
             target_samples: (0..n).map(|_| AtomicU64::new(0)).collect(),
             target_last_seen: (0..n).map(|_| AtomicU64::new(0)).collect(),
+            warmup_probes: (0..n).map(|_| AtomicU64::new(0)).collect(),
             built: Instant::now(),
         }
     }
@@ -198,6 +223,40 @@ impl Adaptive {
             >= MIN_LATENCY_SAMPLES
     }
 
+    /// A target to spend this pre-engagement pick on so the blend can ever
+    /// gather the evidence [`Adaptive::evidence_ready`] demands, or `None` to
+    /// leave the pick to the fallback stack.
+    ///
+    /// Returns the least-probed target that still has no latency sample, so a
+    /// wide route warms its targets evenly instead of draining one budget at a
+    /// time. Only reached while the blend is disengaged, and only until the
+    /// evidence is in, so it costs the hot path nothing in steady state.
+    fn warmup_probe(&self) -> Option<usize> {
+        if !self.cfg.enabled || !self.cfg.has_signal() || self.cfg.latency_weight <= 0.0 {
+            return None;
+        }
+        let latencies = self.latency.as_ref()?.latencies(self.n);
+        if latencies.iter().filter(|v| **v > 0.0).count() >= MIN_LATENCY_SAMPLES {
+            // disengaged for some other reason (min_samples, say) — the
+            // evidence is already there, so steering traffic buys nothing
+            return None;
+        }
+        let candidate = latencies
+            .iter()
+            .enumerate()
+            .filter(|(_, ms)| **ms <= 0.0)
+            .filter_map(|(i, _)| {
+                let spent = self.warmup_probes.get(i)?.load(Relaxed);
+                (spent < MAX_WARMUP_PROBES).then_some((spent, i))
+            })
+            .min()?;
+        let (_, target) = candidate;
+        if let Some(spent) = self.warmup_probes.get(target) {
+            spent.fetch_add(1, Relaxed);
+        }
+        Some(target)
+    }
+
     /// Whether this pick is spent on exploration rather than exploitation.
     fn explore(&self) -> bool {
         self.cfg.exploration_ratio > 0.0
@@ -215,6 +274,12 @@ impl LoadBalancer for Adaptive {
         let engaged = self.engaged();
         self.engaged_now.store(engaged, Relaxed);
         if !engaged {
+            // a warm-up probe is exploration in the same sense as the ratio
+            // below — a pick spent on evidence rather than on the best target
+            if let Some(target) = self.warmup_probe() {
+                self.exploration_picks.fetch_add(1, Relaxed);
+                return Some(target);
+            }
             self.fallback_picks.fetch_add(1, Relaxed);
             return self.fallback.pick(ctx, loads);
         }
@@ -290,6 +355,109 @@ mod tests {
             Some(Arc::new(FixedLatency(vec![500.0, 10.0]))),
             cfg,
         )
+    }
+
+    /// A latency source that only knows a target after it has served a
+    /// request, which is what a real one does.
+    #[derive(Default)]
+    struct WarmingLatency(Vec<AtomicU64>);
+
+    impl WarmingLatency {
+        fn new(n: usize) -> Self {
+            Self((0..n).map(|_| AtomicU64::new(0)).collect())
+        }
+
+        fn record(&self, target: usize, ms: u64) {
+            if let Some(slot) = self.0.get(target) {
+                slot.store(ms, Relaxed);
+            }
+        }
+    }
+
+    impl LatencySource for WarmingLatency {
+        fn latencies(&self, n: usize) -> Vec<f64> {
+            let mut out: Vec<f64> = self.0.iter().map(|v| v.load(Relaxed) as f64).collect();
+            out.resize(n, 0.0);
+            out
+        }
+    }
+
+    /// #1645: the fallback stack can pin every pick to one target, and the
+    /// unsampled peer then never earns the latency sample `evidence_ready`
+    /// needs — so the blend could never engage on its own.
+    #[test]
+    fn warm_up_samples_every_target_when_the_fallback_pins_one() {
+        let latency = Arc::new(WarmingLatency::new(2));
+        // target 0 outweighs target 1 by 100x, so every fallback pick is 0
+        let lb = Adaptive::new(
+            &[100, 1],
+            &[1.0, 1.0],
+            Some(latency.clone() as Arc<dyn LatencySource>),
+            &cfg(true, 5),
+        );
+        let mut picks = [0usize; 2];
+        for _ in 0..50 {
+            let Some(target) = lb.pick(&RouteContext::default(), &[]) else {
+                panic!("adaptive returned no target");
+            };
+            picks[target] += 1;
+            lb.observe(target, &RouteContext::default());
+            latency.record(target, if target == 0 { 3300 } else { 200 });
+        }
+        assert!(
+            picks[1] > 0,
+            "the unsampled target never received a warm-up probe: {picks:?}"
+        );
+        assert!(
+            lb.engaged(),
+            "adaptive never engaged after 50 requests: {:?}",
+            lb.decision_counts()
+        );
+    }
+
+    /// The warm-up must not become a permanent tax on a route whose target is
+    /// simply gone: a target that never answers never earns a latency sample,
+    /// so only the probe budget stops it absorbing every pick.
+    #[test]
+    fn an_unreachable_target_costs_a_bounded_number_of_probes() {
+        let latency = Arc::new(WarmingLatency::new(2));
+        latency.record(0, 200);
+        let lb = Adaptive::new(
+            &[1, 1],
+            &[1.0, 1.0],
+            Some(latency.clone() as Arc<dyn LatencySource>),
+            &cfg(true, 1_000),
+        );
+        // target 1 is dead: picked, but never reports a latency. The fallback
+        // stack still sends it its share, so only the warm-up picks are
+        // counted here — those are the ones the route steers deliberately
+        for _ in 0..200 {
+            lb.pick(&RouteContext::default(), &[]);
+            lb.observe(0, &RouteContext::default());
+        }
+        let probes = lb.decision_counts().exploration;
+        assert!(
+            probes <= MAX_WARMUP_PROBES,
+            "a dead target absorbed {probes} warm-up picks, budget is {MAX_WARMUP_PROBES}"
+        );
+        assert_eq!(probes, MAX_WARMUP_PROBES, "the budget was not spent at all");
+    }
+
+    /// The kill switch outranks the warm-up: a disabled policy must move no
+    /// traffic at all, evidence or no evidence.
+    #[test]
+    fn a_disabled_policy_never_probes() {
+        let latency = Arc::new(WarmingLatency::new(2));
+        let lb = Adaptive::new(
+            &[100, 1],
+            &[1.0, 1.0],
+            Some(latency as Arc<dyn LatencySource>),
+            &cfg(false, 0),
+        );
+        for _ in 0..50 {
+            assert_eq!(lb.pick(&RouteContext::default(), &[]), Some(0));
+        }
+        assert_eq!(lb.decision_counts().exploration, 0);
     }
 
     #[test]
