@@ -90,6 +90,17 @@ means; rows written before #1210 carry flush time.
   navigation and back-outs, form submit/abandon and which validation rules fire,
   empty- and error-state impressions, save-to-confirmation latency. Carries
   `trace_id`, so a UX event and the gateway request it caused are one join apart.
+  `ts` is the instant the interaction happened, stamped by the browser as the
+  event is queued rather than when the batch reaches the control plane (#1224):
+  the dashboard flushes on a timer and at unload, so ingest time collapsed a
+  whole burst onto one instant and pushed an event minutes away from the request
+  it joins on `trace_id`. Because that instant comes from a clock the server does
+  not own, it is believed only within a window around ingest time — more than
+  five minutes ahead or more than a day behind and the ingest instant is
+  recorded instead. The window is deliberately not a clamp: pinning a skewed
+  clock to the boundary would manufacture a cluster of rows exactly five minutes
+  out, which reads as real traffic. Rows written before #1224, and any client
+  that sends no `ts`, carry ingest time.
 
 `ui_events` is **structurally incapable** of holding content: every column is a
 key, an enum, a duration or an id, so "no form values, no prompt text" is a

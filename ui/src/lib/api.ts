@@ -4089,6 +4089,12 @@ export const deleteGuardrailProvider = (id: string) =>
  */
 export interface UiEvent {
   event_id: string;
+  /**
+   * when the interaction happened, RFC 3339, stamped as the event is queued
+   * rather than when the batch flushes. Omitted means "use ingest time"; a
+   * clock too far from the server's is ignored there (#1224).
+   */
+  ts?: string;
   /** stable screen key (a route id), never a URL — URLs carry ids and filters */
   screen: string;
   action:

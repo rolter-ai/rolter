@@ -179,6 +179,10 @@ export function track(
 
   const event: UiEvent = {
     event_id: randomId(),
+    // stamped here, not in flush(): the queue holds events for up to
+    // FLUSH_INTERVAL_MS and far longer while the tab is offline, so flush time
+    // collapsed a whole session onto one instant (#1224)
+    ts: new Date().toISOString(),
     screen: screenKey,
     action,
     session_id: getSessionId(),
