@@ -407,6 +407,13 @@ jobs:
         run: bun install --frozen-lockfile
       - name: lint (tsc --noEmit)
         run: bun run lint
+      # ui/ had no formatter config at all until #1667, so `npx prettier` on a
+      # file it just edited rewrote the whole thing to prettier's 80 columns and
+      # turned a 30-line change into a 300-line diff. .prettierrc pins the style
+      # the tree already had (printWidth 100, everything else prettier's
+      # default) and this step keeps it from drifting again
+      - name: formatting (prettier --check)
+        run: bun run format:check
       # every locale must match the en base catalog: a missing key falls back to
       # english mid-sentence, an orphan is copy nothing renders (#489)
       - name: i18n catalog parity
