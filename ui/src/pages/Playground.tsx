@@ -48,6 +48,7 @@ import {
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the built-in fake-llm always works with no upstream/secrets, so it's a safe
 // default for every modality in local dev.
@@ -81,7 +82,7 @@ export type ModelSource = "gateway" | "no-key" | "unreachable";
  * substituting a strictly smaller list was the bug: a provider group simply
  * vanished, with nothing on screen to say why.
  */
-function useModelCatalog(): { options: ModelOption[]; source: ModelSource } {
+function useModelCatalog(): { options: ModelOption[]; source: ModelSource; ready: boolean } {
   // the key is read through the store rather than once at render, so the list
   // re-fetches the moment the screen mints one (#944)
   const key = usePlaygroundKeyState().key;
@@ -103,7 +104,12 @@ function useModelCatalog(): { options: ModelOption[]; source: ModelSource } {
   const withFake = options.some((o) => o.id === FAKE)
     ? options
     : [{ id: FAKE, ownedBy: "rolter" }, ...options];
-  return { options: withFake, source };
+  // the catalog is what the screen waits on before anything can be sent, so
+  // it is the query `time_to_interactive` should be measured against. the
+  // gateway probe only counts when there is a key to make it with — an
+  // `enabled: false` query stays pending forever and would suppress the event
+  const ready = !routes.isPending && (!key || !gateway.isPending);
+  return { options: withFake, source, ready };
 }
 
 /** Routes have bare ids; pins and groups are addressed `owner/model`. */
@@ -1186,7 +1192,12 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
 export default function Playground() {
   const { t } = useTranslation();
   const [mode, setMode] = React.useState("chat");
-  const { options: models, source } = useModelCatalog();
+  const { options: models, source, ready } = useModelCatalog();
+
+  // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
+  // Playground is the screen an evaluator spends the most time in, so its
+  // time-to-interactive is the number most worth having (#1730)
+  useScreenReady(ready);
 
   return (
     <div className="flex flex-col gap-5 p-[22px]">

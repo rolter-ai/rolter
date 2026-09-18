@@ -1294,6 +1294,7 @@ function ServerDialog({
         </DialogFooter>
       </BaseDialog>
       <ConfirmDialog
+        name="mcp-credential-clear"
         open={confirming !== null}
         onOpenChange={(open) => !open && setConfirming(null)}
         title={t("pages.mcpCatalog.confirm.clearCredentialTitle", { name })}
@@ -1541,6 +1542,7 @@ export function ToolGroups() {
         </div>
       )}
       <ConfirmDialog
+        name="tool-group-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.tool-groups.confirm.title", { name: deleteTarget?.name })}

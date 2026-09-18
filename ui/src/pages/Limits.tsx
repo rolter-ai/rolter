@@ -547,6 +547,7 @@ function AddBudgetDialog({
 
   return (
     <EditorSheet
+      name="budget-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.limits.budgetSheetTitle")}
@@ -648,6 +649,7 @@ function AddRateLimitDialog({
 
   return (
     <EditorSheet
+      name="rate-limit-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.limits.rateLimitSheetTitle")}

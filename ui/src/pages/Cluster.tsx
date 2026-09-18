@@ -213,6 +213,7 @@ function ClusterScreen() {
       </div>
 
       <ConfirmDialog
+        name="cluster-node-forget"
         open={!!forgetTarget}
         onOpenChange={(open) => !open && setForgetTarget(null)}
         title={t("pages.cluster.confirm.title", { id: forgetTarget?.id })}

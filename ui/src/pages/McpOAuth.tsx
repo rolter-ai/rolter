@@ -549,6 +549,7 @@ export function AuthSessions() {
             </ListTable>
           )}
           <ConfirmDialog
+            name="mcp-oauth-session-revoke"
             open={confirming !== null}
             onOpenChange={(open) => !open && setConfirming(null)}
             title={t("pages.mcpOAuth.confirm.sessionTitle", {

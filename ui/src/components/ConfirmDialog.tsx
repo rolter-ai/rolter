@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useFormTelemetry } from "@/lib/ux-react";
 
 // one confirmation for every destructive action (#1179).
 //
@@ -24,6 +25,15 @@ import {
 // dialog open with `error` rendered beside the button that caused it. Closing on
 // click would drop the only place the failure could be reported.
 export interface ConfirmDialogProps {
+  /**
+   * Stable key for this confirmation in the UX stream (#1730) —
+   * `provider-delete`, `session-revoke`. Required for the same reason
+   * `EditorSheet` requires one: the dialog backs the destructive action on
+   * fifteen screens, and an optional name would leave whichever call site was
+   * added last silently uninstrumented. Never the row's own name — that is
+   * data, not a key.
+   */
+  name: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** already translated, and names the thing: "Delete channel ops-slack?" */
@@ -58,6 +68,7 @@ export interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({
+  name,
   open,
   onOpenChange,
   title,
@@ -71,6 +82,33 @@ export function ConfirmDialog({
   confirmDisabled = false,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+
+  // UX stream (#805, #1730). A confirmation raised and then dismissed is the
+  // record of a delete somebody thought better of, which is exactly the signal
+  // a dialog that emitted nothing threw away: `open` going false without a
+  // confirm is the abandon, and the dwell time says whether it was a misclick
+  // or a decision.
+  const ux = useFormTelemetry(name, open);
+
+  // the caller owns the mutation, so the only outcome visible from here is
+  // `error` arriving after `pending` — the dialog deliberately stays open on
+  // failure, which is what makes that observable at all
+  const wasPending = React.useRef(false);
+  const failed = error !== undefined && error !== null;
+  React.useEffect(() => {
+    if (pending) {
+      wasPending.current = true;
+      return;
+    }
+    if (!wasPending.current) return;
+    wasPending.current = false;
+    if (failed) ux.failed();
+  }, [pending, failed, ux]);
+
+  const confirm = () => {
+    ux.submitted();
+    onConfirm();
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -95,7 +133,7 @@ export function ConfirmDialog({
         <Button
           variant={tone === "danger" ? "destructive" : "default"}
           disabled={pending || confirmDisabled}
-          onClick={onConfirm}
+          onClick={confirm}
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {confirmLabel}

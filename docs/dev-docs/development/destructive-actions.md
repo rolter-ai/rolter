@@ -28,6 +28,8 @@ const startDelete = (channel: ChannelRow) => {
 };
 
 <ConfirmDialog
+  // stable key for the UX stream; never the row's own name (#1730)
+  name="alert-channel-delete"
   open={!!target}
   onOpenChange={(open) => !open && setTarget(null)}
   title={t("pages.alerting.confirm.channelTitle", { name: target?.name })}

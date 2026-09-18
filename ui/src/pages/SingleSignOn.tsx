@@ -266,6 +266,7 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
       </footer>
 
       <ConfirmDialog
+        name="sso-mfa-policy"
         open={confirming}
         onOpenChange={(open) => !open && setConfirming(false)}
         title={t("pages.sso.policy.mfaConfirm.title")}
@@ -463,6 +464,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
       )}
 
       <ConfirmDialog
+        name="sso-group-mapping-remove"
         open={!!removeTarget}
         onOpenChange={(open) => !open && setRemoveTarget(null)}
         title={t("pages.sso.mappings.confirm.title", {
@@ -772,6 +774,7 @@ function ProviderSheet({
 
   return (
     <EditorSheet
+      name={editing ? "sso-connection-edit" : "sso-connection-create"}
       open={open}
       onOpenChange={onOpenChange}
       title={editing ? t("pages.sso.edit.title") : t("pages.sso.create.title")}
@@ -1063,6 +1066,7 @@ export default function SingleSignOn() {
       )}
 
       <ConfirmDialog
+        name="sso-secret-clear"
         open={!!secretTarget}
         onOpenChange={(open) => !open && setSecretTarget(null)}
         title={t("pages.sso.clearSecret.title", { name: secretTarget?.name })}
@@ -1093,6 +1097,7 @@ export default function SingleSignOn() {
       />
 
       <ConfirmDialog
+        name="sso-connection-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.sso.confirm.title", { name: deleteTarget?.name })}

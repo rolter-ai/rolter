@@ -341,6 +341,7 @@ export function LabelSheet({
       </Sheet>
 
       <ConfirmDialog
+        name="label-delete"
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
         title={t("labels.confirm.title", { label: deleting ? labelText(deleting) : "" })}

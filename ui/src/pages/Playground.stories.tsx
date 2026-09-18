@@ -15,6 +15,8 @@ import {
 } from "./story-harness";
 import { setPlaygroundKey } from "@/lib/gateway";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
+import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
 
 /** What the gateway serves: a route, a provider pin, and a provider group. */
 const GATEWAY_MODELS = {
@@ -107,6 +109,8 @@ const meta = {
   title: "Screens/Playground",
   component: Playground,
   parameters: { layout: "fullscreen" },
+  // every story starts from an empty UX queue and leaves one behind (#1730)
+  beforeEach: recordUxEvents,
 } satisfies Meta<typeof Playground>;
 
 export default meta;
@@ -389,5 +393,31 @@ export const KeyHintHasNoLinkWithoutADocsHost: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Use a specific key" }));
     await canvas.findByText(/A rolter virtual key, minted on the Virtual Keys screen/);
     await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
+  },
+};
+
+/**
+ * Playground reports when it became usable (#1730).
+ *
+ * It is the screen an evaluator spends the most time in and the last one still
+ * missing `useScreenReady`, so its time-to-interactive is the number most worth
+ * having. The catalog is what the screen waits on — until it lands there is
+ * nothing to send a request to — and the gateway probe only counts once there
+ * is a key to make it with, otherwise a query that is `enabled: false` stays
+ * pending forever and the event never fires.
+ */
+const interactive = recording(deployment(async () => json(minted())));
+
+export const ReportsTimeToInteractive: Story = {
+  render: () => (
+    <UxScreenProvider screen="playground">
+      <Screen fetchStub={interactive.stub} />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("combobox", { name: "Model" });
+    const event = await expectUxEvent("time_to_interactive");
+    await expect(event.screen).toBe("playground");
+    await expect(typeof event.duration_ms).toBe("number");
   },
 };

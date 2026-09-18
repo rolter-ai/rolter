@@ -682,6 +682,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
       )}
 
       <ConfirmDialog
+        name="custom-role-delete"
         open={!!deleteTarget}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title={t("pages.rbac.custom.confirm.title", { name: deleteTarget?.name })}
@@ -732,6 +733,7 @@ function RoleSheet({
 
   return (
     <EditorSheet
+      name={draft.id ? "custom-role-edit" : "custom-role-create"}
       open
       onOpenChange={(open) => !open && onClose()}
       title={

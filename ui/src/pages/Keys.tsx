@@ -515,9 +515,6 @@ function AddKeyDialog({
   // sheet is open, since a closed sheet has nothing to populate
   const routes = useRouteModels(projectId, open);
 
-  // names the form, never its contents — this dialog mints a credential
-  const ux = useFormTelemetry("virtual-key-create", open);
-
   React.useEffect(() => {
     if (open) {
       setName("");
@@ -551,15 +548,14 @@ function AddKeyDialog({
       return created;
     },
     onSuccess: (key) => {
-      ux.saved();
       onOpenChange(false);
       onCreated(key);
     },
-    onError: () => ux.failed(),
   });
 
   return (
     <EditorSheet
+      name="virtual-key-create"
       open={open}
       onOpenChange={onOpenChange}
       title={t("pages.virtualKeys.createTitle")}
@@ -576,10 +572,7 @@ function AddKeyDialog({
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
       canSave={keyNameProblem(name) === null}
       saving={create.isPending}
-      onSave={() => {
-        ux.submitted();
-        create.mutate();
-      }}
+      onSave={() => create.mutate()}
     >
       <div className="space-y-3">
         <KeyNameField value={name} onChange={setName} />
@@ -644,7 +637,6 @@ function EditKeyDialog({
   const [providerSel, setProviderSel] = React.useState<string[]>([]);
   const [unitId, setUnitId] = React.useState(UNATTRIBUTED);
   const [customerId, setCustomerId] = React.useState(UNATTRIBUTED);
-  const ux = useFormTelemetry("virtual-key-attribution", !!target);
 
   // seeded from the row every time the sheet opens on a different key, so a
   // draft abandoned on one key cannot leak into the next one
@@ -674,7 +666,6 @@ function EditKeyDialog({
       }
     },
     onSuccess: () => {
-      ux.saved();
       // the sheet closes on success, taking any inline confirmation with it,
       // so the outcome is announced where it survives that (#1197)
       toast.push({
@@ -685,7 +676,6 @@ function EditKeyDialog({
       onSaved();
     },
     onError: (error) => {
-      ux.failed();
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
@@ -696,6 +686,7 @@ function EditKeyDialog({
 
   return (
     <EditorSheet
+      name="virtual-key-attribution"
       open={!!target}
       onOpenChange={onOpenChange}
       title={t("pages.virtualKeys.editTitle")}
@@ -705,10 +696,7 @@ function EditKeyDialog({
       saveLabel={save.isPending ? t("pages.virtualKeys.saving") : t("pages.virtualKeys.save")}
       canSave={providersChanged || attributionChanged}
       saving={save.isPending}
-      onSave={() => {
-        ux.submitted();
-        save.mutate();
-      }}
+      onSave={() => save.mutate()}
     >
       <div className="space-y-3">
         <p className="text-xs text-muted-foreground">{t("pages.virtualKeys.editSubtitleHint")}</p>

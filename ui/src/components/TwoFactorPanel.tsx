@@ -205,6 +205,7 @@ export function TwoFactorPanel() {
       <RecoveryCodesDialog codes={codes} onClose={() => setCodes(null)} />
 
       <ConfirmDialog
+        name="mfa-recovery-regenerate"
         open={regenerating}
         onOpenChange={(open) => !open && setRegenerating(false)}
         title={t("account.mfa.confirm.regenerateTitle")}
@@ -218,6 +219,7 @@ export function TwoFactorPanel() {
       {/* removal asks for a code as well as for consent: the server refuses it
           without one, so a plain confirmation would only ever produce a 400 */}
       <ConfirmDialog
+        name="mfa-remove"
         open={removing}
         onOpenChange={(open) => !open && setRemoving(false)}
         title={t("account.mfa.confirm.removeTitle")}

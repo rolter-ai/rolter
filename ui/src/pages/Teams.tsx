@@ -175,6 +175,7 @@ export default function Teams() {
       </div>
 
       <EditorSheet
+        name="team-create"
         open={addOpen}
         onOpenChange={(open) => {
           setAddOpen(open);
