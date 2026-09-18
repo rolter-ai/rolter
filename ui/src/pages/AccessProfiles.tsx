@@ -5,6 +5,15 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
+import {
+  ORG_TARGET,
+  OrgScopePicker,
+  projectTarget,
+  scopeTargetIds,
+  teamTarget,
+  useOrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -40,11 +49,14 @@ import { useErrorState, useScreenReady } from "@/lib/ux-react";
 /// worth batching.
 function ProfileCard({
   profile,
+  roleCatalog,
   onEdit,
   onDelete,
   deleting,
 }: {
   profile: AccessProfileRow;
+  /** the org's custom roles, so a composition can be named rather than shown as an id */
+  roleCatalog: CustomRoleRow[];
   onEdit: (detail: AccessProfileDetail) => void;
   onDelete: (profile: AccessProfileRow) => void;
   deleting: boolean;
@@ -55,6 +67,16 @@ function ProfileCard({
     queryFn: () => fetchAccessProfile(profile.id),
     retry: false,
   });
+  // shares react-query's cache with the sheet's picker, so a screen full of
+  // cards pays for one teams request and one projects request
+  const orgScope = useOrgScope(profile.org_id);
+
+  // only the compositions that are *narrower* than the profile's org: an
+  // org-wide one is what the count already says, and repeating it for every
+  // role would bury the one that is pinned to a single project
+  const narrow = (detail.data?.roles ?? []).filter(
+    (role) => role.team_id || role.project_id,
+  );
 
   const users = detail.data?.assignments.filter((a) => a.user_id).length ?? 0;
   const teams = detail.data?.assignments.filter((a) => a.team_id).length ?? 0;
@@ -110,6 +132,24 @@ function ProfileCard({
               </span>
             </div>
           )}
+          {narrow.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              {narrow.map((role) => (
+                <Pill
+                  key={role.id}
+                  color="var(--text-secondary)"
+                  tint="var(--surface-subtle)"
+                >
+                  {t("pages.accessProfiles.roleAtScope", {
+                    role:
+                      roleCatalog.find((r) => r.id === role.role_id)?.name ??
+                      role.role_id,
+                    scope: orgScope.nameFor(role) ?? t("scope.picker.org"),
+                  })}
+                </Pill>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex flex-none items-center gap-1">
           <GatedButton
@@ -151,8 +191,22 @@ interface ProfileDraft {
   name: string;
   slug: string;
   description: string;
-  /** the custom roles composed into it, at org scope */
+  /** the custom roles composed into it, in the order they were picked */
   roleIds: string[];
+  /**
+   * where each composed role applies, keyed by role id (#1251).
+   *
+   * Only the roles pinned to a team or a project are in here: an absent entry
+   * is the profile's own org, which is both the default and what an omitted
+   * scope means on the wire. Keeping the org out rather than writing `""` for
+   * it is what lets the sheet compare drafts — the whole draft is stringified
+   * against the one it opened with, so an entry added by a toggle the operator
+   * undid would make an untouched form ask to discard changes nobody made.
+   *
+   * Kept beside `roleIds` rather than inside it so unticking a role and
+   * ticking it again does not silently reset a scope somebody chose.
+   */
+  roleScopes: Record<string, ScopeTarget>;
   /** one pattern per line, exactly as typed */
   allowedModels: string;
   deniedModels: string;
@@ -165,6 +219,7 @@ const emptyDraft = (): ProfileDraft => ({
   slug: "",
   description: "",
   roleIds: [],
+  roleScopes: {},
   allowedModels: "",
   deniedModels: "",
   allowedRoutes: "",
@@ -177,6 +232,17 @@ const draftFrom = (detail: AccessProfileDetail): ProfileDraft => ({
   slug: detail.slug,
   description: detail.description ?? "",
   roleIds: detail.roles.map((r) => r.role_id),
+  // the detail carries the scope of every composition and the sheet used to
+  // read it and throw it away, so an edit rewrote a project-scoped role as an
+  // org-wide one (#1251)
+  roleScopes: Object.fromEntries(
+    detail.roles
+      .filter((r) => r.team_id || r.project_id)
+      .map((r) => [
+        r.role_id,
+        r.project_id ? projectTarget(r.project_id) : teamTarget(r.team_id as string),
+      ]),
+  ),
   allowedModels: (detail.policy?.allowed_models ?? []).join("\n"),
   deniedModels: (detail.policy?.denied_models ?? []).join("\n"),
   allowedRoutes: (detail.policy?.allowed_routes ?? []).join("\n"),
@@ -231,7 +297,12 @@ export default function AccessProfiles() {
     mutationFn: (draft: ProfileDraft) => {
       // roles and policy replace wholesale, so both go in the one request that
       // saves the profile — a profile is never assignable half-written
-      const roleBodies = draft.roleIds.map((role_id) => ({ role_id }));
+      const roleBodies = draft.roleIds.map((role_id) => ({
+        role_id,
+        // an org-wide composition sends neither id, which the control plane
+        // reads as the profile's own org — the scope it would have defaulted to
+        ...scopeTargetIds(draft.roleScopes[role_id] ?? ORG_TARGET),
+      }));
       return draft.id
         ? updateAccessProfile(draft.id, {
             name: draft.name.trim(),
@@ -340,6 +411,7 @@ export default function AccessProfiles() {
           <ProfileCard
             key={profile.id}
             profile={profile}
+            roleCatalog={roles.data ?? []}
             deleting={remove.isPending && remove.variables?.id === profile.id}
             onEdit={startEdit}
             onDelete={startDelete}
@@ -362,6 +434,7 @@ export default function AccessProfiles() {
         <ProfileSheet
           draft={draft}
           dirty={JSON.stringify(draft) !== seed}
+          orgId={orgId}
           roles={roles.data ?? []}
           saving={save.isPending}
           errorMessage={save.error ? errorDetail(save.error) : undefined}
@@ -377,6 +450,7 @@ export default function AccessProfiles() {
 function ProfileSheet({
   draft,
   dirty,
+  orgId,
   roles,
   saving,
   errorMessage,
@@ -386,6 +460,8 @@ function ProfileSheet({
 }: {
   draft: ProfileDraft;
   dirty: boolean;
+  /** the profile's own org — every scope on offer sits inside it */
+  orgId: string | undefined;
   roles: CustomRoleRow[];
   saving: boolean;
   errorMessage?: string;
@@ -398,10 +474,22 @@ function ProfileSheet({
   const toggleRole = (id: string) =>
     onChange({
       ...draft,
+      // the scope map is deliberately untouched: a role composed for the first
+      // time is org-scoped by having no entry at all, and unticking one keeps
+      // whatever scope was picked in case the tick comes back
       roleIds: draft.roleIds.includes(id)
         ? draft.roleIds.filter((r) => r !== id)
         : [...draft.roleIds, id],
     });
+
+  // the org is stored as the absence of an entry, so picking it back removes
+  // the role from the map rather than writing the empty target into it
+  const setRoleScope = (id: string, target: ScopeTarget) => {
+    const roleScopes = { ...draft.roleScopes };
+    if (target === ORG_TARGET) delete roleScopes[id];
+    else roleScopes[id] = target;
+    onChange({ ...draft, roleScopes });
+  };
 
   const policyField = (
     label: string,
@@ -482,23 +570,39 @@ function ProfileSheet({
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
               {roles.map((role) => (
-                <label
+                <div
                   key={role.id}
-                  className="flex cursor-pointer items-start gap-2 rounded-lg border border-[color:var(--border-subtle)] p-2.5 text-sm hover:bg-[color:var(--surface-hover)]"
+                  className="flex flex-col gap-2 rounded-lg border border-[color:var(--border-subtle)] p-2.5"
                 >
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
-                    checked={draft.roleIds.includes(role.id)}
-                    onChange={() => toggleRole(role.id)}
-                  />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">{role.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {t("pages.accessProfiles.roleExtends", { role: role.base_role })}
+                  <label className="flex cursor-pointer items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
+                      checked={draft.roleIds.includes(role.id)}
+                      onChange={() => toggleRole(role.id)}
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{role.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {t("pages.accessProfiles.roleExtends", { role: role.base_role })}
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                  {/* the scope is only a question once the role is actually
+                      composed, and it is per role: "auditor across the org, and
+                      deploy admin on one project" is one profile */}
+                  {draft.roleIds.includes(role.id) && (
+                    <OrgScopePicker
+                      orgId={orgId}
+                      value={draft.roleScopes[role.id] ?? ORG_TARGET}
+                      onChange={(target) => setRoleScope(role.id, target)}
+                      label={t("pages.accessProfiles.roleScopeLabel", {
+                        role: role.name,
+                      })}
+                      className="w-full"
+                    />
+                  )}
+                </div>
               ))}
             </div>
           )}
