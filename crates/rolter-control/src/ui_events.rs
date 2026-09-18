@@ -33,7 +33,8 @@ use crate::auth::CurrentUser;
 use crate::crud::{ApiError, ApiResult};
 use crate::ControlState;
 
-/// The `action` enum in `008_ui_events.sql`. ClickHouse rejects a value outside
+/// The `action` enum in `008_ui_events.sql`, widened by
+/// `010_ui_events_struggle_signals.sql`. ClickHouse rejects a value outside
 /// its `Enum8`, but failing here gives the caller a 400 naming the field
 /// instead of a 500 from the database.
 const ACTIONS: &[&str] = &[
@@ -47,6 +48,12 @@ const ACTIONS: &[&str] = &[
     "empty_state",
     "error_state",
     "save_confirmed",
+    // the struggle signals (#1731): what the operator could *not* do. appended
+    // rather than sorted in, so this list reads in the same order as the
+    // `Enum8` ordinals it mirrors
+    "retry_submit",
+    "refused_click",
+    "abandon_dirty",
 ];
 
 /// The `outcome` enum in the same migration.
@@ -385,6 +392,61 @@ mod tests {
             let mut e = event();
             e.action = (*action).to_string();
             assert!(validate(&e).is_ok(), "{action} rejected");
+        }
+    }
+
+    #[test]
+    fn the_action_list_is_the_enum8_in_ordinal_order() {
+        // an `Enum8` ordinal *is* the stored value, so the migrations may only
+        // append. this pins the order rather than the membership: a value moved
+        // up the list here is a value that would have to be renumbered there,
+        // which rewrites the meaning of every row already written (#1731)
+        assert_eq!(
+            ACTIONS,
+            &[
+                "screen_view",
+                "time_to_interactive",
+                "navigate",
+                "back_out",
+                "form_submit",
+                "form_abandon",
+                "validation_error",
+                "empty_state",
+                "error_state",
+                "save_confirmed",
+                "retry_submit",
+                "refused_click",
+                "abandon_dirty",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_struggle_signal_round_trips_with_its_control_and_capability() {
+        // refused_click is the one with a shape of its own: the target is the
+        // control key joined to the capability that refused it, and nothing
+        // else. no label, no message, no identity beyond the ids every event
+        // already carries
+        let mut e = event();
+        "refused_click".clone_into(&mut e.action);
+        "providers-new:provider:create".clone_into(&mut e.target);
+        e.outcome = Some("error".to_string());
+        assert!(validate(&e).is_ok());
+
+        let built = row(&e, "user-1", Utc::now());
+        assert_eq!(built["action"], json!("refused_click"));
+        assert_eq!(built["target"], json!("providers-new:provider:create"));
+        assert_eq!(built["outcome"], json!("error"));
+
+        for action in ["retry_submit", "abandon_dirty"] {
+            let mut e = event();
+            action.clone_into(&mut e.action);
+            "provider-create".clone_into(&mut e.target);
+            e.duration_ms = 4_200;
+            assert!(validate(&e).is_ok(), "{action} rejected");
+            let built = row(&e, "user-1", Utc::now());
+            assert_eq!(built["action"], json!(action));
+            assert_eq!(built["duration_ms"], json!(4_200));
         }
     }
 

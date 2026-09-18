@@ -3778,7 +3778,11 @@ export interface UiEvent {
     | "validation_error"
     | "empty_state"
     | "error_state"
-    | "save_confirmed";
+    | "save_confirmed"
+    // the struggle signals (#1731): what the operator could not do
+    | "retry_submit"
+    | "refused_click"
+    | "abandon_dirty";
   outcome?: "ok" | "error" | "cancelled";
   /** the name of the form, control or validation rule — never its value */
   target?: string;

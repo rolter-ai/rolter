@@ -58,32 +58,48 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply the shipped `ui_events` DDL.
+/// Apply the shipped `ui_events` DDL, and every migration that has widened it.
 ///
-/// Read from `clickhouse/008_ui_events.sql` rather than repeated here on
-/// purpose: a copy would let the table this test writes to drift away from the
-/// one a deployment gets, which is precisely the class of failure the test
-/// exists to catch. The file is `create table if not exists`, so this is also
-/// the repair for the failure mode a dogfood stack is most likely to hit — a
+/// Read from `clickhouse/` rather than repeated here on purpose: a copy would
+/// let the table this test writes to drift away from the one a deployment gets,
+/// which is precisely the class of failure the test exists to catch. Every
+/// statement is `create table if not exists` or an `alter`, so this is also the
+/// repair for the failure mode a dogfood stack is most likely to hit — a
 /// ClickHouse volume created before #805 landed never ran the init scripts
 /// again and has no `ui_events` table at all.
+///
+/// All of them, not just the `create`: the `action` column is an `Enum8` that
+/// `010_*` appended to, and a test that only ran the `create` would reject
+/// every value added since while the deployment accepted it (#1731).
 async fn ensure_table(client: &reqwest::Client, base: &str) {
-    let ddl = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../clickhouse/008_ui_events.sql"
-    ))
-    .expect("read the shipped ui_events DDL");
-    let response = client
-        .post(format!("{base}/"))
-        .body(ddl)
-        .send()
-        .await
-        .expect("reach clickhouse");
-    assert!(
-        response.status().is_success(),
-        "ui_events DDL failed: {}",
-        response.text().await.unwrap_or_default()
-    );
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("read the clickhouse migration directory")
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            // the numeric prefix is the order, and it is why these are sorted
+            // by file name rather than taken as the directory hands them over
+            name.contains("ui_events").then_some((name, path))
+        })
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no ui_events DDL found in clickhouse/");
+
+    for (name, path) in files {
+        let ddl = std::fs::read_to_string(&path).expect("read the shipped ui_events DDL");
+        let response = client
+            .post(format!("{base}/"))
+            .body(ddl)
+            .send()
+            .await
+            .expect("reach clickhouse");
+        assert!(
+            response.status().is_success(),
+            "{name} failed: {}",
+            response.text().await.unwrap_or_default()
+        );
+    }
 }
 
 /// The rows this session wrote, oldest first.
@@ -239,6 +255,85 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
         assert_eq!(row["user_id"], user_id.to_string());
         assert_eq!(row["app_version"], "0.0.0-test");
     }
+}
+
+/// Every action the server accepts is an action the `Enum8` accepts.
+///
+/// This is the round trip that the Rust-side list cannot do on its own:
+/// `ACTIONS` in `ui_events.rs` is a mirror of the enum in `clickhouse/`, and
+/// nothing but a real insert proves the two agree. Drift is silent and
+/// expensive — a value the validator passes and the column rejects is a 500 on
+/// a whole batch, in the deployment rather than in CI (#1731).
+#[tokio::test]
+async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
+    let ch_url = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_table(&http, &ch_url).await;
+
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse(pool.clone(), &ch_url)
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let (_user_id, token) = seed_session(&pool, "ux-actions@example.com").await;
+
+    let session = session_id();
+    // the struggle signals, which are what `010_*` widened the enum for, plus
+    // one of the originals so a wholesale enum replacement cannot pass either
+    let actions = [
+        "screen_view",
+        "form_abandon",
+        "retry_submit",
+        "refused_click",
+        "abandon_dirty",
+    ];
+    let events: Vec<Value> = actions
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            json!({
+                "event_id": format!("ux-action-{i}"),
+                "screen": "providers",
+                "action": action,
+                // the shape a refused control emits: the control key joined to
+                // the capability that refused it, and nothing else
+                "target": "provider-new:provider:create",
+                "outcome": "error",
+                "session_id": session,
+            })
+        })
+        .collect();
+
+    let response = http
+        .post(format!("http://{addr}/api/v1/ui-events"))
+        .bearer_auth(&token)
+        .json(&json!({ "events": events }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+
+    let rows = rows_for_session(&http, &ch_url, &session).await;
+    assert_eq!(rows.len(), actions.len(), "an action was refused: {rows:?}");
+    let stored: Vec<&str> = rows
+        .iter()
+        .map(|row| row["action"].as_str().unwrap_or_default())
+        .collect();
+    for action in actions {
+        assert!(
+            stored.contains(&action),
+            "{action} did not land: {stored:?}"
+        );
+    }
+    // the refusal carries the control and the capability, and nothing a label
+    // or a message could have travelled in
+    let refusal = rows
+        .iter()
+        .find(|row| row["action"] == "refused_click")
+        .expect("no refused_click row");
+    assert_eq!(refusal["target"], "provider-new:provider:create");
+    assert_eq!(refusal["outcome"], "error");
 }
 
 /// One malformed event costs the whole batch, and nothing partial is written.

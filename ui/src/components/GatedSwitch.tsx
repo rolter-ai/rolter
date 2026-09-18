@@ -1,5 +1,6 @@
 import { Switch, type SwitchProps } from "@/components/ui/switch";
 import { useGate, type Capability } from "@/lib/can";
+import { useRefusedClick } from "@/lib/ux-react";
 
 /**
  * The `Switch` a row toggle uses, refused the same way a button is (#1258).
@@ -12,13 +13,21 @@ import { useGate, type Capability } from "@/lib/can";
  * The track carries no text, so the `title` is the only thing that can say
  * why — and unlike `Button`, the switch's disabled styling does not set
  * `pointer-events-none`, so the native tooltip survives without help.
+ *
+ * `control` names the toggle in the UX stream when it is refused (#1731).
  */
 export function GatedSwitch({
   gate,
+  control = "switch",
   disabled,
   title,
   ...props
-}: SwitchProps & { gate: Capability }) {
+}: SwitchProps & { gate: Capability; control?: string }) {
   const { denied, reason } = useGate(gate);
-  return <Switch {...props} disabled={disabled || denied} title={denied ? reason : title} />;
+  const refusal = useRefusedClick(denied, control, gate);
+  return (
+    <span className="contents" {...refusal}>
+      <Switch {...props} disabled={disabled || denied} title={denied ? reason : title} />
+    </span>
+  );
 }

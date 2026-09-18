@@ -62,9 +62,10 @@ export function EditorSheet({
   // UX stream (#805, #1730); the screen key comes from the enclosing
   // UxScreenProvider, so a sheet rendered outside one is silent rather than
   // mislabelled. `open` is what makes abandonment measurable: closed without a
-  // submit is an abandon, and the dwell time separates "opened by mistake"
-  // from "filled it in and gave up".
-  const ux = useFormTelemetry(name, open);
+  // submit is an abandon, and `dirty` is what says which kind — a sheet closed
+  // untouched is a misclick, one closed with a draft in it is somebody who
+  // filled it in and gave up (#1731)
+  const ux = useFormTelemetry(name, open, { dirty });
 
   // the outcome of a save the caller owns, read off the only two props that
   // report it. `saving` falling back to false is the round trip settling;

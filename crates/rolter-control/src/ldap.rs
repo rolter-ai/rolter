@@ -115,7 +115,7 @@ pub enum DirectoryError {
 ///
 /// Extracted as a trait so every rule below — filter escaping, group mapping,
 /// error normalization — is unit-tested against a fake, with no live server and
-/// no network. `ldap3` lives behind [`Ldap3Directory`] and nowhere else.
+/// no network. `ldap3` lives behind `Ldap3Directory` and nowhere else.
 #[async_trait]
 pub trait Directory: Send + Sync {
     /// Find the entry for `login`, then bind as it with `password`. Returns the

@@ -3,7 +3,16 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import * as React from "react";
 
 import { GatedButton } from "./GatedButton";
-import { expectAllowed, Harness, routes } from "@/pages/story-harness";
+import {
+  expectAllowed,
+  expectNoUxEvent,
+  expectUxEvent,
+  Harness,
+  recordUxEvents,
+  routes,
+  uxEvents,
+} from "@/pages/story-harness";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 // The one control that knows whether the caller may press it (#1183).
 //
@@ -21,6 +30,7 @@ const meta = {
   // every story supplies its own `render`; these are the args the docs page
   // introspects, and `gate` is required so they cannot be left off
   args: { gate: "provider:create", children: "Add provider" },
+  beforeEach: recordUxEvents,
 } satisfies Meta<typeof GatedButton>;
 
 export default meta;
@@ -121,5 +131,58 @@ export const RefusedSwallowsTheClick: Story = {
     await waitFor(() => expect(button).toBeDisabled());
     await userEvent.click(button, { pointerEventsCheck: 0 });
     await expect(canvas.getByTestId("clicks")).toHaveTextContent("0");
+  },
+};
+
+// A refused reach is recorded, and the `disabled` button is exactly why it takes
+// work: the HTML spec has the user agent withhold `click` from a disabled form
+// control, so the interaction worth measuring is the one the DOM refuses to
+// report. The wrapper catches `pointerdown` in the capture phase instead (#1731).
+export const RefusedRecordsTheReach: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="viewer">
+      <UxScreenProvider screen="providers">
+        <GatedButton gate="provider:create" control="provider-new">
+          Add provider
+        </GatedButton>
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button");
+    await waitFor(() => expect(button).toBeDisabled());
+    await userEvent.click(button, { pointerEventsCheck: 0 });
+
+    const event = await expectUxEvent("refused_click", "provider-new:provider:create");
+    await expect(event.screen).toBe("providers");
+    await expect(event.outcome).toBe("error");
+    // the label is on the button and never on the event: the row says which
+    // boundary is in somebody's way, not who reached for it or what it said
+    await expect(JSON.stringify(event)).not.toContain("Add provider");
+    await expect(JSON.stringify(event)).not.toContain("Admin");
+
+    // reaching again is the signal, not noise — nothing is deduplicated
+    await userEvent.click(button, { pointerEventsCheck: 0 });
+    await waitFor(() =>
+      expect(uxEvents().filter((e) => e.action === "refused_click")).toHaveLength(2),
+    );
+  },
+};
+
+// An allowed button emits nothing: the stream records refusals, not presses.
+export const AllowedRecordsNothing: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="admin">
+      <UxScreenProvider screen="providers">
+        <GatedButton gate="provider:create" control="provider-new">
+          Add provider
+        </GatedButton>
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Add provider");
+    await userEvent.click(within(canvasElement).getByRole("button"));
+    expectNoUxEvent("refused_click");
   },
 };

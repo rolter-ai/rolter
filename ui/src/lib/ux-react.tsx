@@ -21,6 +21,8 @@ import {
   trackFormAbandon,
   trackFormSubmit,
   trackNavigate,
+  trackRefusedClick,
+  trackRetrySubmit,
   trackSaveConfirmed,
   trackScreenView,
   trackTimeToInteractive,
@@ -165,7 +167,7 @@ export function useErrorState(isError: boolean, target?: string, screen?: string
 }
 
 export interface FormTelemetry {
-  /** Call when the user submits. */
+  /** Call when the user submits. The first attempt after a failure is a retry. */
   submitted: () => void;
   /** Call when a save round-trips successfully. */
   saved: () => void;
@@ -193,11 +195,33 @@ export interface FormTelemetry {
  * `target` is the form's stable name (`provider-create`, `virtual-key`), never
  * anything derived from what was typed into it.
  */
-export function useFormTelemetry(target: string, open: boolean, screen?: string): FormTelemetry {
+export interface FormTelemetryOptions {
+  /** overrides the screen key from the enclosing `UxScreenProvider` */
+  screen?: string;
+  /**
+   * whether the draft differs from what it was seeded with. Read at the moment
+   * the form goes away, which is what makes the abandon distinction possible: a
+   * form closed clean is a misclick, a form closed dirty is somebody who filled
+   * it in and gave up (#1731).
+   */
+  dirty?: boolean;
+}
+
+export function useFormTelemetry(
+  target: string,
+  open: boolean,
+  options: FormTelemetryOptions = {},
+): FormTelemetry {
   const contextScreen = useUxScreen();
-  const key = screen ?? contextScreen;
+  const key = options.screen ?? contextScreen;
   const openedAt = React.useRef<number>(0);
   const submitted = React.useRef(false);
+  const failed = React.useRef(false);
+  // read on the edge the form goes away, so it must not be an effect
+  // dependency: adding it would re-run the effect — and restart the deferred
+  // abandon below — on every keystroke that flips the draft
+  const dirty = React.useRef(false);
+  dirty.current = options.dirty ?? false;
   // an abandon the cleanup below has deferred, still cancellable. a token
   // rather than a boolean so a stale timer can never silence a later one
   const deferred = React.useRef<{ cancelled: boolean } | null>(null);
@@ -218,6 +242,7 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
       if (!openedAt.current) {
         openedAt.current = Date.now();
         submitted.current = false;
+        failed.current = false;
       }
       return () => {
         // the form went away while open. whether this is a real unmount or
@@ -229,13 +254,16 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
         // in `bun run dev`
         if (!openedAt.current || submitted.current || !key) return;
         const duration = Date.now() - openedAt.current;
+        // captured now rather than read in the timer: by the time it fires the
+        // form is gone and a later render could have reset the ref
+        const wasDirty = dirty.current;
         const token = { cancelled: false };
         deferred.current = token;
         setTimeout(() => {
           if (token.cancelled) return;
           deferred.current = null;
           openedAt.current = 0;
-          trackFormAbandon(key, target, duration);
+          trackFormAbandon(key, target, duration, wasDirty);
         }, 0);
       };
     }
@@ -244,7 +272,7 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
     // opened has no dwell to report, and one that was submitted already told
     // its own story
     if (openedAt.current && !submitted.current && key) {
-      trackFormAbandon(key, target, Date.now() - openedAt.current);
+      trackFormAbandon(key, target, Date.now() - openedAt.current, dirty.current);
     }
     openedAt.current = 0;
   }, [open, key, target]);
@@ -255,13 +283,21 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
     () => ({
       submitted: () => {
         submitted.current = true;
-        if (key) trackFormSubmit(key, target, "ok", dwell());
+        // a submit after a failed one is a retry, not a second first attempt:
+        // it is the moment somebody did not understand why the first failed,
+        // and two identical form_submit rows hid that behind their timestamps
+        const retry = failed.current;
+        failed.current = false;
+        if (!key) return;
+        if (retry) trackRetrySubmit(key, target, dwell());
+        else trackFormSubmit(key, target, "ok", dwell());
       },
       saved: () => {
         if (key) trackSaveConfirmed(key, target, dwell());
       },
       failed: () => {
         submitted.current = true;
+        failed.current = true;
         if (key) trackFormSubmit(key, target, "error", dwell());
       },
       invalid: (rule: string) => {
@@ -270,4 +306,46 @@ export function useFormTelemetry(target: string, open: boolean, screen?: string)
     }),
     [key, target],
   );
+}
+
+/**
+ * The handler a refused control hangs on its wrapper so a denied reach is
+ * recorded (#1731).
+ *
+ * The problem this solves is that a `disabled` button is inert: the HTML spec
+ * has the user agent withhold the `click` event from a disabled form control,
+ * so the one interaction worth measuring is the one the DOM refuses to report.
+ * Every alternative to `disabled` was worse — `aria-disabled` plus a swallowed
+ * handler makes a screen reader announce a control that is not one, and
+ * removing the control entirely takes away the explanation of why it is
+ * missing — so the control stays genuinely disabled and the event is caught
+ * beside it instead.
+ *
+ * `pointerdown` in the **capture** phase on a wrapper is what catches it.
+ * Capture runs on every node on the event's path before the target, and a
+ * pointer event is dispatched to a disabled control where a mouse or click
+ * event is not, so the wrapper sees the reach even though the button never
+ * will. The wrapper is `display: contents`, so it is on the DOM path and
+ * generates no box of its own — the button keeps its place in the parent's
+ * layout exactly as before.
+ *
+ * A disabled control is not focusable, so there is no keyboard path to miss.
+ * Nothing is deduplicated: reaching for the same refused control four times is
+ * the signal, not noise.
+ */
+export function useRefusedClick(
+  denied: boolean,
+  control: string,
+  capability: string | undefined,
+  screen?: string,
+): { onPointerDownCapture?: React.PointerEventHandler } {
+  const contextScreen = useUxScreen();
+  const key = screen ?? contextScreen;
+
+  return React.useMemo(() => {
+    if (!denied || !capability || !key) return {};
+    return {
+      onPointerDownCapture: () => trackRefusedClick(key, control, capability),
+    };
+  }, [denied, capability, control, key]);
 }

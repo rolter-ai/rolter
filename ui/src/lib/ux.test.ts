@@ -10,6 +10,8 @@ import {
   track,
   trackErrorState,
   trackFormAbandon,
+  trackRefusedClick,
+  trackRetrySubmit,
   trackScreenView,
   trackValidationError,
 } from "./ux";
@@ -223,6 +225,85 @@ describe("ux event emitters", () => {
       trackScreenView("logs");
       await flush();
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("the struggle signals", () => {
+    it("splits a dirty abandon from a clean one", () => {
+      // a form closed untouched is a misclick; one closed with a draft in it is
+      // somebody who filled it in and gave up. two actions, not one with a flag,
+      // so the existing form_abandon series keeps meaning what it always meant
+      trackFormAbandon("providers", "provider-create", 400);
+      trackFormAbandon("providers", "provider-create", 90_000, true);
+      const [clean, gaveUp] = pendingUxEvents();
+      expect(clean.action).toBe("form_abandon");
+      expect(gaveUp.action).toBe("abandon_dirty");
+      // both stay cancellations: the user did not submit either one
+      expect(gaveUp.outcome).toBe("cancelled");
+      expect(gaveUp.duration_ms).toBe(90_000);
+    });
+
+    it("records a retry as its own action, not a second first attempt", () => {
+      trackRetrySubmit("providers", "provider-create", 2_500);
+      const [event] = pendingUxEvents();
+      expect(event.action).toBe("retry_submit");
+      expect(event.target).toBe("provider-create");
+      expect(event.outcome).toBe("error");
+    });
+
+    it("records a refusal as the control and the capability that refused it", () => {
+      trackRefusedClick("providers", "provider-new", "provider:create");
+      const [event] = pendingUxEvents();
+      expect(event.action).toBe("refused_click");
+      expect(event.target).toBe("provider-new:provider:create");
+      expect(event.outcome).toBe("error");
+    });
+
+    it("carries no identity beyond the session and scope ids", () => {
+      // this is what makes shipping it on by default defensible: the row says
+      // "this permission boundary is in somebody's way", never who reached for
+      // it. the user id is filled server-side from the session and nothing here
+      // narrows the event to a person
+      setUxContext({ orgId: "org-1", teamId: "team-1", projectId: "proj-1" });
+      trackRefusedClick("providers", "provider-new", "provider:create");
+      const [event] = pendingUxEvents();
+      expect(Object.keys(event).sort()).toEqual(
+        [
+          "action",
+          "event_id",
+          "org_id",
+          "outcome",
+          "project_id",
+          "screen",
+          "session_id",
+          "target",
+          "team_id",
+          "ts",
+        ].sort(),
+      );
+    });
+
+    it("drops a refusal whose capability is not a key", () => {
+      // the capability is the whole signal, so an unusable one costs the event
+      trackRefusedClick("providers", "provider-new", "you need the admin role");
+      expect(pendingUxEvents()).toHaveLength(0);
+    });
+
+    it("keeps the capability when the control key is a label rather than a key", () => {
+      // failing soft in this direction only: a call site that passed the
+      // button's text still tells us which boundary was hit, and the label
+      // itself never reaches the wire
+      trackRefusedClick("providers", "Add provider", "provider:create");
+      const [event] = pendingUxEvents();
+      expect(event.target).toBe("provider:create");
+    });
+
+    it("falls back to the capability when the joined key would not fit", () => {
+      // two keys that each fit can still be too long joined, and dropping the
+      // whole target would lose the capability along with the control
+      trackRefusedClick("providers", "c".repeat(90), "provider:create");
+      const [event] = pendingUxEvents();
+      expect(event.target).toBe("provider:create");
     });
   });
 
