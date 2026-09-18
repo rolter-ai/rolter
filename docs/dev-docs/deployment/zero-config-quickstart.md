@@ -25,6 +25,15 @@ curl http://localhost:4000/v1/chat/completions \
 `rolter.toml`; delete the `[[virtual_keys]]` section to run open, or replace
 it before exposing the gateway anywhere.
 
+`easy-up` prints this exact command at startup, with the key read back out of
+the config it just wrote rather than hardcoded — so an edited key, a renamed
+key or a deleted `[[virtual_keys]]` section all still print something that runs
+as shown (#1615). In database mode there is nothing truthful to print: virtual
+keys live in the store, the seed mints none, and a database-backed gateway
+treats an empty key set as locked rather than open. There the hint carries
+`$ROLTER_API_KEY` and says to mint a key on the dashboard's Virtual Keys screen
+first.
+
 ## 2. Switch on runtime management (Postgres mode)
 
 Runtime CRUD over providers/models/keys needs the database-backed control

@@ -21,6 +21,8 @@ rolter-store = { workspace = true, optional = true }
 tokio.workspace = true
 clap.workspace = true
 rand.workspace = true
+# `VirtualKeyConfig::is_active` takes an instant, for the `try it` hint (#1615)
+chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 # the update notice's cache file and its bounded request (#901)

@@ -260,7 +260,15 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     let admin_note: Option<String> = None;
 
     let db_mode = database_url.is_some();
-    print_summary(&args, db_mode, admin_note.as_deref());
+    // read the config back rather than assuming the bundled example's key: the
+    // printed command has to work against whatever is actually on disk (#1615)
+    let loaded = rolter_core::GatewayConfig::load(&args.config).ok();
+    print_summary(
+        &args,
+        db_mode,
+        admin_note.as_deref(),
+        &hint_auth(loaded.as_ref(), db_mode),
+    );
 
     let control = rolter_control::run(control_args(&args, database_url));
     let gateway = rolter_gateway::run(gateway_args(&args, db_mode));
@@ -271,7 +279,91 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&str>) {
+/// The public model name the printed `try it` command asks for. Built in, so
+/// it answers with no provider key and no database.
+const HINT_MODEL: &str = "fake-llm";
+
+/// What the printed command should present as its credential.
+#[derive(Debug, PartialEq, Eq)]
+enum HintAuth {
+    /// the gateway's key set is empty and nothing requires one, so the command
+    /// succeeds bare
+    Open,
+    /// a virtual key read back out of the config `easy-up` just wrote, so an
+    /// edited config still prints a command that works
+    Key(String),
+    /// database mode: keys live in the store and none is seeded, so no literal
+    /// can be printed that would authenticate
+    Minted,
+}
+
+/// Pick the credential the `try it` command should carry.
+///
+/// Read back from the config rather than hardcoded: the bundled example ships
+/// `sk-rolter-dev`, but an operator who edited the file, renamed the key or
+/// deleted the section must still be handed a command that works (#1615).
+///
+/// In database mode the gateway authenticates against the store, the seed
+/// mints no virtual key, and `managed_auth` makes an empty key set a locked
+/// door rather than an open one — so there is nothing truthful to print but a
+/// placeholder and the instruction to mint one.
+fn hint_auth(config: Option<&rolter_core::GatewayConfig>, db_mode: bool) -> HintAuth {
+    if db_mode {
+        return HintAuth::Minted;
+    }
+    let Some(config) = config else {
+        // the config did not parse; the gateway is about to say so much more
+        // loudly than this line can, and a placeholder beats a wrong key
+        return HintAuth::Minted;
+    };
+    let now = chrono::Utc::now();
+    let usable = config.virtual_keys.iter().find(|key| {
+        key.is_active(now)
+            && !key.key.trim().is_empty()
+            && (key.models.is_empty() || key.models.iter().any(|model| model == HINT_MODEL))
+    });
+    match usable {
+        Some(key) => HintAuth::Key(key.key.clone()),
+        // every key is revoked, expired or scoped away from the builtin: the
+        // gateway still requires one, so a bare command would 401 just as the
+        // old hint did
+        None if !config.virtual_keys.is_empty() => HintAuth::Minted,
+        None => HintAuth::Open,
+    }
+}
+
+/// The `try it` block: an optional note, then a command that succeeds exactly
+/// as printed wherever one can be.
+fn try_it_lines(host: &str, gateway_port: u16, auth: &HintAuth) -> Vec<String> {
+    let auth_header = match auth {
+        HintAuth::Open => String::new(),
+        HintAuth::Key(key) => format!(" -H 'Authorization: Bearer {key}'"),
+        HintAuth::Minted => " -H \"Authorization: Bearer $ROLTER_API_KEY\"".to_string(),
+    };
+    let mut lines = Vec::new();
+    if matches!(auth, HintAuth::Minted) {
+        lines.push(
+            "  try it (mint a virtual key on the dashboard's Virtual Keys screen, then \
+             export it as ROLTER_API_KEY):"
+                .to_string(),
+        );
+    } else {
+        lines.push("  try it:".to_string());
+    }
+    lines.push(format!(
+        "  curl http://{host}:{gateway_port}/v1/chat/completions{auth_header} \
+-H 'Content-Type: application/json' \
+-d '{{\"model\":\"{HINT_MODEL}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}'"
+    ));
+    lines
+}
+
+fn print_summary(
+    args: &EasyUpArgs,
+    db_mode: bool,
+    admin_created_email: Option<&str>,
+    auth: &HintAuth,
+) {
     let mode = if db_mode { "database" } else { "file" };
     let display_host = match args.host.as_str() {
         "0.0.0.0" | "::" => "localhost",
@@ -293,11 +385,10 @@ fn print_summary(args: &EasyUpArgs, db_mode: bool, admin_created_email: Option<&
     if let Some(email) = admin_created_email {
         eprintln!("  admin user created:          {email}");
     }
-    eprintln!("\n  try it:");
-    eprintln!(
-        "  curl http://{display_host}:{}/v1/chat/completions -H 'Content-Type: application/json' -d '{{\"model\":\"fake-llm\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}'",
-        args.gateway_port
-    );
+    eprintln!();
+    for line in try_it_lines(display_host, args.gateway_port, auth) {
+        eprintln!("{line}");
+    }
     eprintln!();
 }
 
@@ -349,6 +440,100 @@ mod tests {
                 .map(rolter_core::config_lint::describe)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// The `try it` command as `easy-up` prints it for a given config.
+    fn printed_command(toml: &str, db_mode: bool) -> String {
+        let config = rolter_core::GatewayConfig::from_toml_str(toml).expect("config parses");
+        let auth = hint_auth(Some(&config), db_mode);
+        try_it_lines("127.0.0.1", 4000, &auth).join("\n")
+    }
+
+    #[test]
+    fn the_printed_command_carries_the_key_from_the_bundled_config() {
+        // this is the first command a new user runs, against the very file
+        // easy-up just wrote; without the key it answers 401 (#1615)
+        let command = printed_command(EXAMPLE_CONFIG, false);
+        assert!(
+            command.contains("-H 'Authorization: Bearer sk-rolter-dev'"),
+            "the bundled example ships a virtual key, so the hint must present it: {command}"
+        );
+        assert!(command.contains("\"model\":\"fake-llm\""));
+    }
+
+    #[test]
+    fn the_printed_command_follows_an_edited_key_rather_than_hardcoding_one() {
+        let command = printed_command(
+            r#"
+[[virtual_keys]]
+key = "sk-rolter-my-own"
+name = "mine"
+"#,
+            false,
+        );
+        assert!(command.contains("Bearer sk-rolter-my-own"), "{command}");
+        assert!(!command.contains("sk-rolter-dev"), "{command}");
+    }
+
+    #[test]
+    fn a_config_with_no_keys_prints_a_bare_command() {
+        // deleting the section is the documented way to run open locally, and
+        // then an auth header is noise rather than help
+        let command = printed_command("", false);
+        assert!(!command.contains("Authorization"), "{command}");
+        assert_eq!(
+            hint_auth(None::<&rolter_core::GatewayConfig>, false),
+            HintAuth::Minted
+        );
+    }
+
+    #[test]
+    fn a_key_that_cannot_reach_the_builtin_model_is_not_offered() {
+        // a disabled, expired or scoped-away key would 401 exactly like no key
+        for toml in [
+            r#"
+[[virtual_keys]]
+key = "sk-rolter-dead"
+disabled = true
+"#,
+            r#"
+[[virtual_keys]]
+key = "sk-rolter-old"
+expires_at = "2020-01-01T00:00:00Z"
+"#,
+            r#"
+[[virtual_keys]]
+key = "sk-rolter-scoped"
+models = ["gpt-4o"]
+"#,
+        ] {
+            let command = printed_command(toml, false);
+            assert!(
+                command.contains("$ROLTER_API_KEY"),
+                "a key that cannot answer for fake-llm must not be printed as if it could: \
+                 {command}"
+            );
+            assert!(command.contains("Virtual Keys screen"), "{command}");
+        }
+        // a key scoped *to* the builtin is offered
+        let command = printed_command(
+            r#"
+[[virtual_keys]]
+key = "sk-rolter-fake"
+models = ["fake-llm"]
+"#,
+            false,
+        );
+        assert!(command.contains("Bearer sk-rolter-fake"), "{command}");
+    }
+
+    #[test]
+    fn database_mode_asks_for_a_minted_key_instead_of_a_literal() {
+        // the seed mints no virtual key and a managed gateway treats an empty
+        // key set as locked, so no literal would authenticate here
+        let command = printed_command(EXAMPLE_CONFIG, true);
+        assert!(!command.contains("sk-rolter-dev"), "{command}");
+        assert!(command.contains("$ROLTER_API_KEY"), "{command}");
     }
 
     #[test]
