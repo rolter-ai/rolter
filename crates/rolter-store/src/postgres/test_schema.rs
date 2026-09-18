@@ -352,20 +352,20 @@ mod tests {
     /// Comfortably above any `kernel.pid_max`, so it can never be live.
     const DEAD_PID: u32 = 4_000_000_000;
 
-    fn database_url() -> Option<String> {
-        std::env::var("ROLTER_TEST_DATABASE_URL").ok()
+    async fn database_url() -> Option<String> {
+        crate::postgres::test_database::url().await
     }
 
     /// The database url, unless the run asked for schemas to be kept: every
     /// test below asserts that something was reclaimed, which is exactly what
     /// `ROLTER_TEST_KEEP_SCHEMA` switches off, and a developer debugging with
     /// it set should not be handed four failures of their own making.
-    fn database_url_with_cleanup() -> Option<String> {
+    async fn database_url_with_cleanup() -> Option<String> {
         if keep_schemas() {
             eprintln!("skipping: ROLTER_TEST_KEEP_SCHEMA keeps schemas by design");
             return None;
         }
-        database_url()
+        database_url().await
     }
 
     async fn schema_exists(url: &str, schema: &str) -> bool {
@@ -398,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_schema_goes_when_the_guard_does() {
-        let Some(url) = database_url_with_cleanup() else {
+        let Some(url) = database_url_with_cleanup().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -426,7 +426,7 @@ mod tests {
     /// drop finishes at all.
     #[tokio::test]
     async fn an_unfinished_transaction_cannot_wedge_the_cleanup() {
-        let Some(url) = database_url_with_cleanup() else {
+        let Some(url) = database_url_with_cleanup().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -461,7 +461,7 @@ mod tests {
     /// path.
     #[tokio::test]
     async fn a_panicking_test_still_drops_its_schema() {
-        let Some(url) = database_url_with_cleanup() else {
+        let Some(url) = database_url_with_cleanup().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };
@@ -482,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_sweep_takes_dead_schemas_and_spares_live_ones() {
-        let Some(url) = database_url_with_cleanup() else {
+        let Some(url) = database_url_with_cleanup().await else {
             eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
             return;
         };

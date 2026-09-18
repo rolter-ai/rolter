@@ -901,10 +901,12 @@ models = ["gpt-4o"]
         /// `cargo test` against a shared database and would otherwise race.
         /// The guard drops the schema when the test finishes (#1364).
         async fn scratch_db() -> Option<TestSchema> {
-            let url = std::env::var("ROLTER_TEST_DATABASE_URL").ok().or_else(|| {
-                eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
-                None
-            })?;
+            let url = rolter_store::postgres::test_database::url()
+                .await
+                .or_else(|| {
+                    eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+                    None
+                })?;
             Some(TestSchema::migrated(&url).await)
         }
 

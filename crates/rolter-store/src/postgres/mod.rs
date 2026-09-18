@@ -164,6 +164,12 @@ pub async fn pending_migrations(pool: &PgPool) -> Result<Vec<i64>> {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_schema;
 
+/// Test-only resolution of *which* database the postgres tests run against: a
+/// database per worktree, derived from the workspace path rather than
+/// configured, so parallel worktrees stop sharing one (#1430).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_database;
+
 #[derive(FromRow)]
 struct ProviderRow {
     name: String,
@@ -1482,10 +1488,6 @@ mod tests {
         literal.parse().expect("a valid decimal literal")
     }
 
-    fn database_url() -> Option<String> {
-        std::env::var("ROLTER_TEST_DATABASE_URL").ok()
-    }
-
     /// Every strategy the enum has, as the string stored in the `strategy`
     /// column.
     ///
@@ -1564,16 +1566,18 @@ mod tests {
     /// An isolated, migrated schema of this test's own. Bind the guard for the
     /// whole test: the schema is dropped with it.
     async fn fresh_db() -> super::test_schema::TestSchema {
-        let url = database_url().expect("ROLTER_TEST_DATABASE_URL not set; skipping");
+        let url = test_database::url()
+            .await
+            .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
         super::test_schema::TestSchema::migrated(&url).await
     }
 
     #[tokio::test]
     async fn triggers_bump_version_atomically_with_writes() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
@@ -1633,10 +1637,10 @@ mod tests {
     /// bump, and the key being in the snapshot the bumped version serves.
     #[tokio::test]
     async fn a_virtual_key_write_bumps_the_version_and_lands_in_the_next_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let (_user_id, project_id) = tenancy_with_owned_key(&pool, "unrelated-existing-key").await;
@@ -1706,10 +1710,10 @@ mod tests {
     /// or the strategy, and removing a member all have to reach the fleet.
     #[tokio::test]
     async fn provider_group_writes_bump_the_version_and_land_in_the_next_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -1946,10 +1950,10 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_carries_the_key_owners_access_policy() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let store = PostgresConfigStore {
@@ -1979,10 +1983,10 @@ mod tests {
 
     #[tokio::test]
     async fn several_profiles_union_onto_one_key() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let store = PostgresConfigStore {
@@ -2014,10 +2018,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_team_assigned_profile_reaches_the_keys_owner() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let store = PostgresConfigStore {
@@ -2080,10 +2084,10 @@ mod tests {
 
     #[tokio::test]
     async fn access_policy_writes_bump_version() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let (user_id, project_id) = tenancy_with_owned_key(&pool, "hash-bump").await;
@@ -2135,10 +2139,10 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_template_writes_bump_version() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
@@ -2199,10 +2203,10 @@ mod tests {
 
     #[tokio::test]
     async fn skills_writes_bump_version() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let v0 = current_version(&pool).await.unwrap();
@@ -2245,10 +2249,10 @@ mod tests {
 
     #[tokio::test]
     async fn loads_providers_and_routes_from_db() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2322,10 +2326,10 @@ mod tests {
 
     #[tokio::test]
     async fn feature_flags_gate_supported_snapshot_subsystems() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2406,10 +2410,10 @@ mod tests {
 
     #[tokio::test]
     async fn logging_settings_project_into_snapshot_logging_policy() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         sqlx::query(
@@ -2447,10 +2451,10 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_policy_projects_into_snapshot_runtime_controls() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         sqlx::query(
@@ -2490,10 +2494,10 @@ mod tests {
     // as soon as any model_prices row exists
     #[tokio::test]
     async fn loads_model_prices_from_db() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2520,10 +2524,10 @@ mod tests {
 
     #[tokio::test]
     async fn loads_published_prompt_templates_from_db() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2687,10 +2691,10 @@ mod tests {
     // every polling gateway freezes on its last config the moment any budget exists
     #[tokio::test]
     async fn loads_budgets_from_db() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2721,10 +2725,10 @@ mod tests {
     // a customer rate limit must survive the snapshot projection (#539)
     #[tokio::test]
     async fn loads_governance_scoped_budgets_and_limits() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2788,10 +2792,10 @@ mod tests {
     // owned, so an operator change must reach the polling gateway (#544)
     #[tokio::test]
     async fn adaptive_routing_policy_projects_into_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -2819,10 +2823,10 @@ mod tests {
 
     #[tokio::test]
     async fn guardrail_registry_projects_into_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         sqlx::query(
@@ -2871,10 +2875,10 @@ mod tests {
     // dispatch runtime, so an enabled instance must now reach the snapshot
     #[tokio::test]
     async fn plugin_registry_projects_enabled_instances_into_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
@@ -2967,10 +2971,10 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_instances_writes_bump_config_version() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let org_id: Uuid = sqlx::query_scalar(
@@ -3012,10 +3016,10 @@ mod tests {
     // persisted policy must reach the snapshot the gateway polls (#546)
     #[tokio::test]
     async fn compatibility_policy_projects_into_snapshot() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
 
@@ -3039,10 +3043,10 @@ mod tests {
 
     #[tokio::test]
     async fn save_is_read_only() {
-        let Some(_) = database_url() else {
-            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
             return;
-        };
+        }
         let db = fresh_db().await;
         let pool = db.pool().clone();
         let store = PostgresConfigStore::new(pool);
