@@ -10,23 +10,28 @@ import {
   expectLoadError,
   expectRefused,
   expectClosesWithoutPrompting,
+  expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   Harness,
   json,
   openOptions,
   pending,
   pickOption,
   PROJECT,
+  recordUxEvents,
   recording,
   scoped,
   sheet,
   TEAM,
   Toasted,
   expectToast,
+  uxEvents,
   type FetchStub,
 } from "./story-harness";
 import type { AccessProfileDetail, AccessProfileRow, CustomRoleRow } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "org-1";
 
@@ -703,5 +708,41 @@ export const TogglingARoleOffLeavesTheDraftClean: Story = {
     await waitFor(() => expect(role()).not.toBeChecked());
 
     await expectClosesWithoutPrompting();
+  },
+};
+
+/**
+ * Opening the profile editor and giving up is a `form_abandon` — on this
+ * screen, the one that used to be lost (#1739).
+ *
+ * This screen holds the draft in state and mounts `ProfileSheet` only while it
+ * exists, so cancelling *unmounts* the sheet rather than closing it and there
+ * is no `open` falling to false anywhere. Instrumentation that only read that
+ * edge reported this screen, and four others shaped like it, as zero
+ * abandonments — which reads as "nobody ever gives up here" rather than as a
+ * gap. The screen key comes from the shell in `App.tsx`, so the provider is
+ * spelled out here the way the route supplies it.
+ */
+export const AbandoningTheEditorIsReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={stub(async () => json([]))}>
+      <UxScreenProvider screen="access-profiles">
+        <AccessProfiles />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await within(sheet()).findByLabelText("Name");
+
+    await expectClosesWithoutPrompting();
+
+    const event = await expectUxEvent("form_abandon", "access-profile-create");
+    await expect(event.screen).toBe("access-profiles");
+    await expect(typeof event.duration_ms).toBe("number");
+    // and it is an abandonment, not a save that got mislabelled
+    expectNoUxEvent("form_submit", "access-profile-create");
+    await expect(uxEvents().filter((e) => e.action === "form_abandon")).toHaveLength(1);
   },
 };

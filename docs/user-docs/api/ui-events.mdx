@@ -109,6 +109,12 @@ only the screen knows which of its several requests is the one the user is
 actually waiting for. Screens are being wired progressively; an unwired screen
 is silent for those actions rather than wrong.
 
+`form_abandon` counts both ways an editor can go away without a save: the panel
+closing, and the screen dropping it altogether. `duration_ms` carries the dwell,
+which is what separates a form opened by mistake from one somebody filled in and
+gave up on. It is emitted at most once per opening, and never for a form that
+was submitted or one that was never opened.
+
 Events are queued in the browser and flushed every few seconds, when a full
 batch accumulates, and when the tab is hidden. If the endpoint answers `401`,
 `403`, `404` or `405` the dashboard stops sending for the life of the tab, so an

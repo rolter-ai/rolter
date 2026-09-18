@@ -6,18 +6,24 @@ import {
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectClosesWithoutPrompting,
+  expectNoUxEvent,
   expectRefused,
+  expectUxEvent,
   Harness,
   json,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
   sheet,
   Toasted,
   expectToast,
+  uxEvents,
 } from "./story-harness";
 import type { AccessProfileDetail, CustomRoleRow, MembershipRow, RbacMatrix } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 // a slice of the real CAPABILITIES table, chosen for the four things a cell can
 // say: a plain minimum role, a superadmin-only deployment setting, an action
@@ -639,5 +645,38 @@ export const RefusedToAMember: Story = {
     await openCustomTab(canvasElement);
     await expectRefused(canvasElement, /new role/i);
     await expectRefused(canvasElement, "Delete Support engineer");
+  },
+};
+
+/**
+ * Opening the role editor and giving up is a `form_abandon` here too (#1739).
+ *
+ * The second of the five screens that mount the sheet only while the draft
+ * exists — cancelling unmounts it, so there is no `open` falling to false for
+ * the old instrumentation to read and this screen reported no abandonments at
+ * all. The screen key is supplied by the shell in `App.tsx`, so the provider is
+ * spelled out here the way the route supplies it.
+ */
+export const AbandoningTheRoleEditorIsReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={creates.stub}>
+      <UxScreenProvider screen="rbac">
+        <Rbac />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await clickWhenEnabled(canvasElement, "+ New role");
+    await within(sheet()).findByLabelText("Name");
+
+    await expectClosesWithoutPrompting();
+
+    const event = await expectUxEvent("form_abandon", "custom-role-create");
+    await expect(event.screen).toBe("rbac");
+    await expect(typeof event.duration_ms).toBe("number");
+    expectNoUxEvent("form_submit", "custom-role-create");
+    await expect(uxEvents().filter((e) => e.action === "form_abandon")).toHaveLength(1);
   },
 };
