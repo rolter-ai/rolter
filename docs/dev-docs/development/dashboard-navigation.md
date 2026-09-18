@@ -108,22 +108,48 @@ Stories: `Resizable`, `DraggedNarrow`, `DraggedWide` and
 `CollapsedHasNoSplitter` in `nav-sidebar.stories.tsx` cover the bounds, the
 keyboard path, the ARIA contract and the collapsed case.
 
-## Keyboard: the command palette, `/` and the skip link
+## Keyboard: the shortcut table
 
-Three keyboard affordances live in the shell rather than in the rail (#1198),
-because each of them has to work whatever screen is open.
+Every shortcut the dashboard binds is declared once, in `SHORTCUTS` in
+`ui/src/lib/shortcuts.ts` (#1676). The shell dispatches by walking that table
+and the reference sheet renders by mapping it, so neither side names a key of
+its own — a shortcut that works cannot be missing from the sheet, and a row in
+the sheet cannot name a keystroke nothing listens for.
 
 | Key | What it does | Where it lives |
 |---|---|---|
-| `⌘K` / `Ctrl-K` | toggles the command palette | `isPaletteShortcut` in `ui/src/lib/command-palette.ts`, listened for in `Shell` |
+| `⌘K` / `Ctrl-K` | toggles the command palette | `isPaletteShortcut` in `ui/src/lib/command-palette.ts` |
 | `/` | puts the caret in the rail's search box | `isNavSearchShortcut`, which focuses `NAV_SEARCH_ID` |
-| `Tab` from the top of the page | reveals the skip link, which focuses `<main>` | the first child of the shell in `ui/src/App.tsx` |
+| `?` | opens the keyboard shortcut reference | `isHelpShortcut`, which opens `ShortcutHelp` |
+| `Tab` from the top of the page | reveals the skip link, which focuses `<main>` | the first child of the shell in `ui/src/App.tsx`; not a chord, so not in the table |
 
-`/` is ignored while the caller is typing — `isTextEntry` checks the event
-target — or the character would be unwritable in every field in the dashboard,
-model names and URLs included. The rule is duck-typed rather than an
-`instanceof HTMLElement` check so `command-palette.test.ts` can exercise it
-without a DOM.
+**Adding one** is three edits in one file plus its copy: a `ShortcutId`, a row
+in `SHORTCUTS`, and the action in the shell's `ShortcutHandlers` — a `Record`
+over the id union, so the build fails until the shell handles it. The name goes
+under `shell.shortcuts.items.<id>` in **every** catalog;
+`ui/src/lib/shortcuts.test.ts` fails on a locale that is short one, and on copy
+left behind for a shortcut that has been removed.
+
+`/` and `?` are ignored while the caller is typing — `isTextEntry` checks the
+event target — or the characters would be unwritable in every field in the
+dashboard, model names and prompts included. The rule is duck-typed rather than
+an `instanceof HTMLElement` check so the unit tests can exercise it without a
+DOM. `?` rejects Meta, Control and Alt but *not* Shift: on most layouts Shift is
+how `?` is typed at all.
+
+The printed chord is the same table's data. `MOD` resolves to `⌘` on an Apple
+keyboard and `Ctrl` elsewhere (`isApplePlatform` reads `userAgentData.platform`
+and the deprecated `navigator.platform`, and guesses `Ctrl` when it has
+neither), and `KbdChord` in `ui/src/components/ui/kbd.tsx` prints it — one
+`<kbd>` per key, with the whole group carrying `⌘K` as its accessible name.
+Getting the platform wrong only changes a label: the matchers accept Meta *and*
+Control regardless. Stories pin `apple` rather than letting the runner's own
+platform decide what they assert.
+
+The hints beside the controls read their chord from the table too:
+`shortcutChord("palette")` inside the palette's own field, and
+`shortcutChord("navSearch")` in the rail's search box, where it gives way to the
+clear button once there is a query.
 
 The skip link is an anchor whose `href` is the `<main>` id, but it calls
 `preventDefault` and focuses the element itself: letting the fragment land

@@ -11,7 +11,9 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
+import { KbdChord } from "@/components/ui/kbd";
 import { useModalA11y } from "@/lib/modal-a11y";
+import { shortcutChord } from "@/lib/shortcuts";
 import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
@@ -517,6 +519,11 @@ export function NavSidebar({
             aria-label={t("shell.searchNav")}
             className="w-full min-w-0 bg-transparent text-sm text-foreground outline-none placeholder:text-[color:var(--text-subtle)]"
           />
+          {/* the keystroke that puts the caret here, printed where it is
+              relevant (#1676). it gives way to the clear button rather than
+              sitting beside it: a rail folded to 180px has room for one, and
+              once there is a query the hint has already done its job */}
+          {!query && <KbdChord chord={shortcutChord("navSearch")} className="-mr-0.5" />}
           {query && (
             <button
               onClick={() => setQuery("")}

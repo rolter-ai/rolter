@@ -2945,7 +2945,7 @@
       "description": "Jump to a screen, or to a key, provider or route by name.",
       "label": "Search screens and records",
       "placeholder": "Type a screen or record name…",
-      "open": "Search screens and records (⌘K)",
+      "open": "Search screens and records ({{chord}})",
       "noMatches": "No screens match",
       "noMatchesBody": "Nothing here is called “{{query}}”. Try fewer letters, or a word from the screen's name.",
       "results_one": "{{count}} result",
@@ -2959,6 +2959,15 @@
         "virtualKey": "Virtual key",
         "provider": "Provider",
         "route": "Route"
+      }
+    },
+    "shortcuts": {
+      "title": "Keyboard shortcuts",
+      "description": "Press these anywhere in the dashboard, as long as you are not typing in a field.",
+      "items": {
+        "palette": "Open the command palette",
+        "navSearch": "Filter the navigation rail",
+        "help": "Show this list"
       }
     }
   },

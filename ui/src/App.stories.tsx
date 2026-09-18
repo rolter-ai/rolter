@@ -5,6 +5,7 @@ import App from "./App";
 import { AppShell, EXPERIMENTAL_SUBSYSTEM, shellStubWithStability } from "./pages/shell-harness";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { SHORTCUTS, chordText, shortcutChord } from "@/lib/shortcuts";
 import { withPageA11y } from "@/lib/story-a11y";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -24,6 +25,7 @@ const NAV_LABEL = en.shell.navLabel;
 const OPEN_NAV = en.shell.openNav;
 const nav = en.nav as Record<string, string>;
 const screens = en.screens as Record<string, { title: string }>;
+const shortcuts = en.shell.shortcuts;
 
 // this is the one story file that mounts the whole page, so it is where the
 // three page-level axe rules the runner defaults off are actually gated —
@@ -282,6 +284,91 @@ export const NavSearchShortcut: Story = {
     // and inside a field a slash is just a slash
     await userEvent.type(search, "a/b");
     await expect(search).toHaveValue("a/b");
+  },
+};
+
+/**
+ * `?` from anywhere in the shell opens the reference (#1676), and the sheet
+ * lists the shortcuts the shell actually binds — the list is `SHORTCUTS`
+ * mapped on both sides, so this walks the table rather than naming rows.
+ */
+export const ShortcutReference: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    await railOf(canvasElement);
+    const body = within(document.body);
+    await expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull();
+
+    await userEvent.keyboard("?");
+    const dialog = await body.findByRole("dialog", { name: shortcuts.title });
+    const items = shortcuts.items as Record<string, string>;
+    for (const shortcut of SHORTCUTS) {
+      await expect(within(dialog).getByText(items[shortcut.id]!)).toBeVisible();
+    }
+
+    // and it gives Escape back rather than trapping the screen behind it
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull());
+  },
+};
+
+/**
+ * The bug every `?` handler ships with: `?` is a character, and a sheet that
+ * opened over the field someone was typing in would make it unwritable (#1676).
+ * The rail's own search box is the field to prove it in — it is on screen at
+ * this width and `/` reaches it.
+ */
+export const ShortcutReferenceIgnoresTyping: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const body = within(document.body);
+    const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
+
+    // inside a field a question mark is just a question mark
+    await userEvent.type(search, "what?");
+    await expect(search).toHaveValue("what?");
+    await expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull();
+
+    // nor with a modifier held, where the chord belongs to the browser or the os
+    await userEvent.click(canvasElement);
+    await userEvent.keyboard("{Meta>}?{/Meta}");
+    await expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull();
+    await userEvent.keyboard("{Alt>}?{/Alt}");
+    await expect(body.queryByRole("dialog", { name: shortcuts.title })).toBeNull();
+
+    // outside one it opens, which is what makes the three above a guard rather
+    // than a handler that never fires
+    await userEvent.keyboard("?");
+    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+  },
+};
+
+/**
+ * The hints (#1676): the palette prints the chord that opens it beside its
+ * field, and the rail's search box prints `/`. Both read their chord off the
+ * shortcut table, so neither can name a keystroke the shell does not bind.
+ */
+export const ShortcutHints: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const body = within(document.body);
+
+    // the rail's hint gives way to the clear button once there is a query
+    const slash = chordText(shortcutChord("navSearch"));
+    await expect(within(rail).getByRole("img", { name: slash })).toBeVisible();
+    const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
+    await userEvent.type(search, "log");
+    await waitFor(() => expect(within(rail).queryByRole("img", { name: slash })).toBeNull());
+    await userEvent.clear(search);
+
+    // and the palette carries its own, whichever glyph this platform prints
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    await body.findByRole("combobox", { name: en.shell.palette.label });
+    await expect(
+      body.getByRole("img", { name: chordText(shortcutChord("palette")) }),
+    ).toBeVisible();
   },
 };
 

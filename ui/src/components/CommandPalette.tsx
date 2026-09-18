@@ -6,9 +6,11 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { KbdChord } from "@/components/ui/kbd";
 import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { rankEntries, type PaletteEntry } from "@/lib/command-palette";
+import { shortcutChord } from "@/lib/shortcuts";
 import { leafKeys, type NavDef } from "@/lib/nav";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
@@ -231,22 +233,34 @@ export function CommandPalette({
         <DialogTitle>{t("shell.palette.title")}</DialogTitle>
         <DialogDescription>{t("shell.palette.description")}</DialogDescription>
       </DialogHeader>
-      <input
-        role="combobox"
-        aria-expanded={expanded}
-        aria-controls={listId}
-        aria-autocomplete="list"
-        aria-activedescendant={activeEntry ? optionId(activeEntry) : undefined}
-        aria-label={t("shell.palette.label")}
-        placeholder={t("shell.palette.placeholder")}
-        value={query}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setActive(0);
-        }}
-        onKeyDown={onKeyDown}
-        className="w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-[color:var(--text-subtle)] focus-visible:border-[color:var(--border-default)] focus-visible:ring-1 focus-visible:ring-ring"
-      />
+      {/* the chord that opens this, printed where it is reachable: a reader
+          who found the palette through the rail's footer link learns the
+          keystroke from the thing it opens (#1676). the hint sits inside the
+          field's box rather than beside it, so it survives the narrow shell,
+          and the field is padded to its width so a long query never runs
+          under it */}
+      <div className="relative">
+        <input
+          role="combobox"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={activeEntry ? optionId(activeEntry) : undefined}
+          aria-label={t("shell.palette.label")}
+          placeholder={t("shell.palette.placeholder")}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={onKeyDown}
+          className="w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] py-2 pl-3 pr-16 text-sm text-foreground outline-none transition-colors placeholder:text-[color:var(--text-subtle)] focus-visible:border-[color:var(--border-default)] focus-visible:ring-1 focus-visible:ring-ring"
+        />
+        <KbdChord
+          chord={shortcutChord("palette")}
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2"
+        />
+      </div>
       {/* a live count, so a screen reader hears the list narrow while the
           caller keeps typing rather than only on arrow-down */}
       <p className="sr-only" role="status">

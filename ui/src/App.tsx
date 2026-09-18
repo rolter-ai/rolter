@@ -11,6 +11,7 @@ import { OpenModeBanner } from "@/components/OpenModeBanner";
 import { Toaster } from "@/components/ui/toaster";
 import { ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
+import { ShortcutHelp } from "@/components/ShortcutHelp";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
 import {
   NAV_SEARCH_ID,
@@ -18,12 +19,8 @@ import {
   type NavGroup,
   type NavItem,
 } from "@/components/ui/nav-sidebar";
-import {
-  isNavSearchShortcut,
-  isPaletteShortcut,
-  readRecentScreens,
-  rememberScreen,
-} from "@/lib/command-palette";
+import { readRecentScreens, rememberScreen } from "@/lib/command-palette";
+import { chordText, dispatchShortcut, shortcutChord, type ShortcutHandlers } from "@/lib/shortcuts";
 import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/lib/nav";
 import { logout, ROLES, type MeMembership } from "@/lib/api";
 import { useAuth, type SessionUser } from "@/lib/auth";
@@ -339,23 +336,27 @@ function Shell() {
     setRecent(rememberScreen(activeKey));
   }, [activeKey, email]);
 
-  // ⌘K/Ctrl-K opens the palette from anywhere, `/` puts the caret in the rail's
-  // search box — but never while the caller is typing, where both are
-  // characters someone meant to write
+  // `?` lists what any of this is (#1676)
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+
+  // every shortcut the dashboard binds, dispatched off the one table the
+  // reference sheet also renders (#1676). a `Record` over the id union rather
+  // than a chain of `if`s, so an entry added to `SHORTCUTS` does not compile
+  // until it is handled here — the drift a hand-written sheet invites cannot
+  // start on this side either.
+  //
+  // none of them fires while the caller is typing: ⌘K/Ctrl-K is the browser's
+  // own only in the field it is not, and `/` and `?` are characters someone
+  // meant to write. the matchers own that rule, not this effect
   React.useEffect(() => {
     if (!email) return;
+    const handlers: ShortcutHandlers = {
+      palette: () => setPaletteOpen((v) => !v),
+      navSearch: () => document.getElementById(NAV_SEARCH_ID)?.focus(),
+      help: () => setShortcutsOpen((v) => !v),
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (isPaletteShortcut(e)) {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-        return;
-      }
-      if (isNavSearchShortcut(e)) {
-        const box = document.getElementById(NAV_SEARCH_ID);
-        if (!box) return;
-        e.preventDefault();
-        box.focus();
-      }
+      if (dispatchShortcut(e, handlers)) e.preventDefault();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -446,6 +447,7 @@ function Shell() {
         recent={recent}
         onNavigate={(k) => navigate(`/${k}`)}
       />
+      <ShortcutHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <div className="flex min-h-0 flex-1">
         <NavSidebar
           groups={navGroups}
@@ -461,7 +463,9 @@ function Shell() {
           footerLinks={[
             {
               key: "palette",
-              title: t("shell.palette.open"),
+              title: t("shell.palette.open", {
+                chord: chordText(shortcutChord("palette")),
+              }),
               icon: <Search />,
               onClick: () => setPaletteOpen(true),
             },
