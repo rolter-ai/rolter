@@ -15,7 +15,7 @@ import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 import { LockButton } from "@/components/ui/lock-button";
 import { Segmented } from "@/components/ui/segmented";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -1665,13 +1665,15 @@ export function ModelSheet({
             ))}
           </div>
         )}
-        {save.isError && (
-          <p role="alert" className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
-            {advancedRejected
-              ? t("modelSheet.advancedRejected", { message: (save.error as Error).message })
-              : (save.error as Error).message}
-          </p>
-        )}
+        <SheetError
+          message={
+            save.isError
+              ? advancedRejected
+                ? t("modelSheet.advancedRejected", { message: (save.error as Error).message })
+                : (save.error as Error).message
+              : undefined
+          }
+        />
         <div className="flex items-center gap-2.5 px-[22px] py-3.5">
           <button
             type="button"

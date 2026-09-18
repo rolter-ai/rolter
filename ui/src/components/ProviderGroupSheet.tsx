@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import {
   createProviderGroup,
@@ -381,11 +381,7 @@ export function ProviderGroupSheet({
       </SheetBody>
 
       <SheetFooter>
-        {save.isError && (
-          <p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
-            {(save.error as Error).message}
-          </p>
-        )}
+        <SheetError message={save.isError ? (save.error as Error).message : undefined} />
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}

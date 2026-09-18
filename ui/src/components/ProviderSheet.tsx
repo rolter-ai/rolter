@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
@@ -422,17 +422,9 @@ export function ProviderSheet({
       </SheetBody>
 
       <SheetFooter>
-        {save.isError && (
-          <p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
-            {(save.error as Error).message}
-          </p>
-        )}
+        <SheetError message={save.isError ? (save.error as Error).message : undefined} />
         {test.data && <TestOutcome result={test.data} />}
-        {test.isError && (
-          <p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
-            {(test.error as Error).message}
-          </p>
-        )}
+        <SheetError message={test.isError ? (test.error as Error).message : undefined} />
         <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
           {/* only for a saved provider: the probe reads the stored row, so it
               cannot speak for edits still sitting in the form */}

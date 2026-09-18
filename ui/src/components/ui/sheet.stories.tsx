@@ -5,7 +5,7 @@ import { expect, userEvent, within } from "storybook/test";
 import { Button } from "./button";
 import { Field } from "./field";
 import { Input } from "./input";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "./sheet";
+import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "./sheet";
 
 const meta = {
   title: "Overlays/Sheet",
@@ -62,5 +62,60 @@ export const OpensAndDismisses: Story = {
 
     await userEvent.click(body.getByRole("button", { name: "Close" }));
     await expect(body.queryByRole("dialog")).toBeNull();
+  },
+};
+
+/**
+ * The failure line above the buttons.
+ *
+ * `role="alert"` is the whole reason this is a component: five sheets rendered
+ * the same `<p>` and only one of them carried the live region, so the same save
+ * failure was announced in `ModelSheet` and silent everywhere else — a
+ * difference nothing on screen shows (#1658).
+ */
+function FailedSave() {
+  return (
+    <Sheet open onOpenChange={() => {}}>
+      <SheetHeader title="Edit route" subtitle="gpt-4o" onClose={() => {}} />
+      <SheetBody>
+        <Field label="Model name" htmlFor="model">
+          <Input id="model" defaultValue="gpt-4o" />
+        </Field>
+      </SheetBody>
+      <SheetFooter>
+        <SheetError message="route name already taken" />
+        <Button>Save</Button>
+      </SheetFooter>
+    </Sheet>
+  );
+}
+
+export const SaveFailed: Story = {
+  render: () => <FailedSave />,
+  play: async () => {
+    const body = within(document.body);
+    const alert = await body.findByRole("alert");
+    await expect(alert).toHaveTextContent("route name already taken");
+  },
+};
+
+/** No message, no element — so a caller can pass its error straight through. */
+export const NoErrorRendersNothing: Story = {
+  render: () => (
+    <Sheet open onOpenChange={() => {}}>
+      <SheetHeader title="Edit route" subtitle="gpt-4o" onClose={() => {}} />
+      <SheetBody>
+        <Field label="Model name" htmlFor="model">
+          <Input id="model" defaultValue="gpt-4o" />
+        </Field>
+      </SheetBody>
+      <SheetFooter>
+        <SheetError />
+        <Button>Save</Button>
+      </SheetFooter>
+    </Sheet>
+  ),
+  play: async () => {
+    await expect(within(document.body).queryByRole("alert")).not.toBeInTheDocument();
   },
 };
