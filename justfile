@@ -208,7 +208,13 @@ dogfood:
         cargo run -q -p rolter-control --features postgres --bin rolter-control 2>&1 \
         | sed 's/^/[control] /' ) &
     sleep 6
+    # ROLTER_NODE_ID is not optional in practice: without it (and without a
+    # HOSTNAME, which a shell-launched process does not have) the gateway posts
+    # its cluster heartbeat and its adaptive-routing telemetry with no node
+    # header, the control plane drops both with a 204, and the Cluster and
+    # Adaptive Routing screens are empty forever with nothing logged (#1644)
     ( OTEL_SERVICE_NAME=rolter-gateway ROLTER_SNAPSHOT_URL=http://127.0.0.1:4001/internal/snapshot \
+        ROLTER_NODE_ID=dogfood-gw-1 \
         cargo run -q -p rolter-gateway -- --config "$d/gateway.toml" 2>&1 \
         | sed 's/^/[gateway] /' ) &
     sleep 6
@@ -228,10 +234,17 @@ dogfood-key:
     #!/usr/bin/env bash
     set -euo pipefail
     c=http://127.0.0.1:4001/api/v1
-    org=$(curl -fsS $c/orgs | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
-    team=$(curl -fsS $c/orgs/$org/teams | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
-    proj=$(curl -fsS $c/teams/$team/projects | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
-    curl -fsS -X POST $c/projects/$proj/virtual-keys -H 'content-type: application/json' \
+    # RBAC only enforces when the control plane has an admin token, and the
+    # stack can be started either way. sending the header when one is set keeps
+    # this recipe working on both instead of 401ing on the authenticated one.
+    auth=()
+    if [ -n "${ROLTER_ADMIN_TOKEN:-}" ]; then
+      auth=(-H "authorization: Bearer $ROLTER_ADMIN_TOKEN")
+    fi
+    org=$(curl -fsS ${auth[@]+"${auth[@]}"} $c/orgs | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
+    team=$(curl -fsS ${auth[@]+"${auth[@]}"} $c/orgs/$org/teams | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
+    proj=$(curl -fsS ${auth[@]+"${auth[@]}"} $c/teams/$team/projects | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
+    curl -fsS ${auth[@]+"${auth[@]}"} -X POST $c/projects/$proj/virtual-keys -H 'content-type: application/json' \
       -d '{"name":"dogfood"}' \
       | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])' \
       > integration/dogfood/.virtual-key

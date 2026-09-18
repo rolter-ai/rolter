@@ -10,8 +10,11 @@
 # strategies visibly disagree. A fleet of identical targets makes every strategy
 # look the same and the routing screens untestable.
 
+# `bind` is not a key rolter reads: the config lint warns on it and the gateway
+# silently keeps its default. host/port are the real keys.
 [server]
-bind = "0.0.0.0:4000"
+host = "0.0.0.0"
+port = 4000
 
 # The gateway writes request logs here; the dashboard's analytics screens read
 # the same table through the control plane's CLICKHOUSE_URL.
@@ -141,6 +144,55 @@ name = "tei-embed-02"
 kind = "tei"
 api_base = "http://127.0.0.1:18015"
 api_key_env = "DOGFOOD_TEI_EMBED_02"
+
+# ── provider groups ────────────────────────────────────────────────
+# a self-hosted fleet is addressed as `group-slug/model` (ADR-0017 addendum), so
+# a client names the pool rather than one box. three of them, because the
+# interesting cases are the overlapping ones: `vllm-a100` is the whole rack,
+# `vllm-a100-fast` the subset without the slow card, and two providers sit in
+# both.
+#
+# groups only reach the gateway through the snapshot, which is the part worth
+# exercising: a group created through the dashboard never propagates at all
+# today (#1643), so seeding one from this file is currently the only way to put
+# a group in front of the data plane without restarting the gateway.
+
+[[provider_groups]]
+name = "vLLM A100 rack"
+slug = "vllm-a100"
+strategy = "weighted"
+[[provider_groups.members]]
+provider = "vllm-a100-01"
+weight = 3
+[[provider_groups.members]]
+provider = "vllm-a100-02"
+weight = 1
+# the ~4x slower card. kept in the rack-wide group so the weights have something
+# visibly wrong to correct for
+[[provider_groups.members]]
+provider = "vllm-a100-03"
+weight = 1
+
+# the same rack minus the slow card. membership is many-to-many, so 01 and 02
+# are in both groups and a client picks the scope it wants
+[[provider_groups]]
+name = "vLLM A100 fast"
+slug = "vllm-a100-fast"
+strategy = "round_robin"
+[[provider_groups.members]]
+provider = "vllm-a100-01"
+[[provider_groups.members]]
+provider = "vllm-a100-02"
+
+# the hosted-shaped edge as a pool of one: what an operator has after adding a
+# vendor and before adding a second region, and the case that proves group
+# addressing also works for a model name with no vendor prefix
+[[provider_groups]]
+name = "OpenAI edge pool"
+slug = "openai-pool"
+strategy = "round_robin"
+[[provider_groups.members]]
+provider = "openai-edge"
 
 # ── routes ───────────────────────────────────────────────────────────────────
 # one per strategy worth looking at, on the pool that makes it legible

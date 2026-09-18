@@ -55,6 +55,7 @@
 - [Testing](development/testing.md)
 - [Contributing](development/contributing.md)
 - [Parallel development with Worktrunk](development/worktrees.md)
+- [The dogfooding fleet](development/dogfooding-fleet.md)
 - [Dashboard localization (i18n)](development/i18n.md)
 - [Dashboard error states](development/error-states.md)
 - [Dashboard loading and empty states](development/loading-and-empty-states.md)
