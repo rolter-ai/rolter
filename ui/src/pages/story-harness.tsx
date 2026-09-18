@@ -322,7 +322,8 @@ export async function expectLoadError(
 ): Promise<void> {
   const canvas = within(canvasElement);
   // a screen whose query retries before it gives up needs longer than the
-  // 1s default — Logs runs its own retry policy over the shared one
+  // shared budget in `.storybook/preview.ts` — Logs runs its own retry policy
+  // over the shared one
   await waitFor(
     () =>
       expect(
