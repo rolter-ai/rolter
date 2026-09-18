@@ -83,13 +83,51 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui lint / build` job and fails on
-four things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
-`prompt`, and a component re-declared under a name `src/components/ui/` already
-exports. The last one is this page's rule — #1044 sat undiscovered for months
-because nothing looked, and seven primitives stayed trapped in one sheet's file.
+five things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+`prompt`, a component re-declared under a name `src/components/ui/` already
+exports, and the same element markup hand-written in three or more files. The
+fourth is this page's rule — #1044 sat undiscovered for months because nothing
+looked, and seven primitives stayed trapped in one sheet's file.
 
 The shared names are read out of `src/components/ui/*.tsx` rather than listed in
 the script, so a primitive added tomorrow is covered the day it lands.
+
+### Repeated shapes
+
+The name rule only catches a duplicate that happens to pick the shared
+component's name. It cannot see markup re-implemented inline under no name at
+all, which is what #1658 found: five sheets rendered the footer failure line as
+a byte-identical `<p className="px-[22px] pt-2.5 text-xs
+text-[color:var(--status-danger-text)]">`, one of them carried `role="alert"`
+and four did not, and the check reported the tree clean. So there is a fifth
+rule that matches a *shape* rather than a name (#1686).
+
+It normalises every JSX element to its tag plus its `className` with the classes
+sorted, and fails when the same pair is written in more than two files. Two
+knobs keep it from flagging ordinary Tailwind:
+
+- **intrinsic elements only.** `<div>`, `<section>`, `<button>` — never `<Card>`
+  or `<GatedButton>`. A shared component rendered with the same className in
+  five screens is the primitive doing its job, and flagging it would punish the
+  composition this page is asking for.
+- **at least four classes, at least two of them arbitrary values.**
+  `rounded-[10px]`, `text-[color:var(--text-subtle)]`, `max-w-[840px]` are the
+  design system spelled out by hand; `flex items-center gap-2` is a sentence in
+  Tailwind and repeats in eighteen files for good reasons. Both numbers were
+  tuned against the tree: at four and two, the #1658 footer line is caught and
+  not one generic flex row is.
+
+A computed `className={cn(…)}` is not compared at all. Its value depends on
+props, so two spellings that look alike may render nothing alike, and guessing
+there would be wrong in the direction that costs trust.
+
+The fix is to extract the primitive. When that has to wait, the shape goes in
+`ui/scripts/repeated-shapes-allowlist.ts` with the reason a reviewer accepted
+one more copy — the same shape as `literals-allowlist.ts`, and for the same
+reason: the check deletes an entry the moment the duplication drops back to two
+files, so the list can only shrink, and a stale entry fails the run rather than
+quietly covering for a copy that came back. The eight entries it carries today
+came from the rule's first pass and are tracked in #1711.
 
 Three things are exempt, by rule rather than by filename:
 

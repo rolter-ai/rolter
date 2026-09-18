@@ -3,12 +3,18 @@ import { describe, it, expect } from "bun:test";
 import {
   checkAll,
   checkSource,
+  collectShapes,
   describeViolation,
+  duplicatedShapes,
   importedPrimitives,
   readPrimitiveNames,
+  staleShapes,
   stripComments,
+  unexplainedShapes,
   waiverAbove,
+  type Shape,
 } from "./check-ui-primitives";
+import { REPEATED_SHAPES } from "./repeated-shapes-allowlist";
 
 const PRIMITIVES = ["Card", "Combobox", "Dialog", "Field", "SwitchRow"];
 const SCREEN = "src/pages/Example.tsx";
@@ -192,10 +198,148 @@ describe("the dashboard's own tree", () => {
     expect(checkAll().violations.map(describeViolation)).toEqual([]);
   });
 
+  it("records no shape that stopped being duplicated", () => {
+    // a stale entry is a rule that has quietly stopped applying: the primitive
+    // was extracted, and the same copy-paste could come back unnoticed
+    expect(checkAll().stale).toEqual([]);
+  });
+
+  it("states a reason for every recorded shape", () => {
+    expect(unexplainedShapes(REPEATED_SHAPES)).toEqual([]);
+  });
+
   it("states a reason for every waiver it carries", () => {
     for (const waiver of checkAll().waivers) {
       expect(waiver.reason.length).toBeGreaterThan(0);
       expect(waiver.rule).not.toBe("unknown");
     }
+  });
+});
+
+describe("the duplicated-shape rule", () => {
+  // the #1658 line, byte for byte: four tokens, two of them arbitrary
+  const DANGER = `<p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">x</p>`;
+  const shapesIn = (source: string, file: string) => collectShapes(source, file).shapes;
+  const across = (source: string, files: string[]): Shape[] =>
+    files.flatMap((file) => shapesIn(source, file));
+
+  it("collects a distinctive intrinsic element", () => {
+    expect(shapesIn(DANGER, SCREEN)).toMatchObject([
+      {
+        tag: "p",
+        line: 1,
+        key: "p|pt-2.5 px-[22px] text-[color:var(--status-danger-text)] text-xs",
+      },
+    ]);
+  });
+
+  it("sorts the classes so attribute order cannot hide a copy", () => {
+    const reordered = `<p className="text-xs text-[color:var(--status-danger-text)] px-[22px] pt-2.5">x</p>`;
+    expect(shapesIn(reordered, SCREEN)[0]!.key).toBe(shapesIn(DANGER, SCREEN)[0]!.key);
+  });
+
+  it("fails the same shape in three files and names every site", () => {
+    const [violation] = duplicatedShapes(
+      across(DANGER, ["src/pages/A.tsx", "src/pages/B.tsx", "src/pages/C.tsx"]),
+    );
+    expect(violation).toMatchObject({ rule: "duplicated-shape", file: "src/pages/A.tsx" });
+    const message = describeViolation(violation!);
+    expect(message).toContain("in 3 files");
+    for (const file of ["src/pages/A.tsx", "src/pages/B.tsx", "src/pages/C.tsx"]) {
+      expect(message).toContain(`${file}:1`);
+    }
+  });
+
+  it("passes the same shape in two files", () => {
+    // two is a coincidence; three is a primitive nobody extracted
+    expect(duplicatedShapes(across(DANGER, ["src/pages/A.tsx", "src/pages/B.tsx"]))).toEqual([]);
+  });
+
+  it("passes many copies inside one file", () => {
+    // a screen that renders its own row shape in each of three states is one
+    // component, not three; it is the fan-out across files that hides drift
+    const source = `${DANGER}\n${DANGER}\n${DANGER}`;
+    expect(duplicatedShapes(shapesIn(source, SCREEN))).toEqual([]);
+  });
+
+  it("ignores a generic utility stack", () => {
+    // `flex items-center gap-2` is a sentence in Tailwind, not a component, and
+    // a guard that flagged its eighteen files would be switched off by Friday
+    const source = `<div className="flex items-center gap-2 flex-wrap">x</div>`;
+    expect(shapesIn(source, SCREEN)).toEqual([]);
+  });
+
+  it("ignores a stack with only one arbitrary value", () => {
+    const source = `<div className="flex items-center gap-2 border-[color:var(--border-subtle)]">x</div>`;
+    expect(shapesIn(source, SCREEN)).toEqual([]);
+  });
+
+  it("ignores a shared component rendered the same way everywhere", () => {
+    // `<Card className="…">` in five screens is the primitive doing its job;
+    // flagging it would punish the composition this whole check encourages
+    const source = `<Card className="p-[22px] gap-3.5 rounded-[10px] mx-auto">x</Card>`;
+    expect(shapesIn(source, SCREEN)).toEqual([]);
+  });
+
+  it("ignores a computed className", () => {
+    // `cn(…)` depends on props: two spellings that look alike may render
+    // nothing alike, and guessing there is wrong in the direction that costs trust
+    const source = `<div className={cn("p-[22px] gap-3.5 rounded-[10px] mx-auto", extra)}>x</div>`;
+    expect(shapesIn(source, SCREEN)).toEqual([]);
+  });
+
+  it("reads past a handler that puts a > inside the tag", () => {
+    // `[^>]*` would stop at the arrow and miss every element with a handler,
+    // which is most of the interesting ones
+    const source = `<button onClick={() => close()} className="p-[22px] gap-3.5 rounded-[10px] mx-auto">x</button>`;
+    expect(shapesIn(source, SCREEN)).toMatchObject([{ tag: "button" }]);
+  });
+
+  it("skips the primitives directory and the fixtures", () => {
+    for (const file of [
+      "src/components/ui/card.tsx",
+      "src/pages/Example.stories.tsx",
+      "src/lib/thing.test.ts",
+    ]) {
+      expect(shapesIn(DANGER, file)).toEqual([]);
+    }
+  });
+
+  it("honours the same inline waiver the other rules take", () => {
+    const source = `{/* ui-primitives-allow: the one banner that is not a row */}\n${DANGER}`;
+    const { shapes, waivers } = collectShapes(source, SCREEN);
+    expect(shapes).toEqual([]);
+    expect(waivers).toMatchObject([
+      { rule: "duplicated-shape", line: 2, reason: "the one banner that is not a row" },
+    ]);
+  });
+
+  it("marks a waived shape with no reason as unknown so the run fails", () => {
+    const { waivers } = collectShapes(`// ui-primitives-allow:\n${DANGER}`, SCREEN);
+    expect(waivers).toMatchObject([{ rule: "unknown", reason: "" }]);
+  });
+});
+
+describe("the repeated-shape allow list", () => {
+  const DANGER = `<p className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">x</p>`;
+  const KEY = "p|pt-2.5 px-[22px] text-[color:var(--status-danger-text)] text-xs";
+  const three = ["src/pages/A.tsx", "src/pages/B.tsx", "src/pages/C.tsx"].flatMap(
+    (file) => collectShapes(DANGER, file).shapes,
+  );
+
+  it("silences a recorded shape", () => {
+    expect(duplicatedShapes(three, { [KEY]: "the sheet footer, tracked in #1711" })).toEqual([]);
+  });
+
+  it("reports an entry the tree no longer duplicates", () => {
+    // the entry has to go with the fix, or the same copy-paste comes back
+    // under cover of a reason that no longer describes anything
+    expect(staleShapes(three.slice(0, 1), { [KEY]: "still here" })).toEqual([KEY]);
+    expect(staleShapes(three, { [KEY]: "still here" })).toEqual([]);
+  });
+
+  it("reports an entry written without a reason", () => {
+    expect(unexplainedShapes({ [KEY]: "  " })).toEqual([KEY]);
+    expect(unexplainedShapes({ [KEY]: "a reason" })).toEqual([]);
   });
 });

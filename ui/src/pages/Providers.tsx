@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Plug, Tag, Trash2, Loader2 } from "lucide-react";
+import { Building2, Plug, Tag, Loader2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -19,6 +19,7 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
@@ -202,18 +203,12 @@ export default function Providers() {
               >
                 <Tag className="h-3.5 w-3.5" />
               </Button>
-              <button
-                type="button"
+              <DeleteIconButton
+                label={t("pages.providers.deleteOne", { name: provider.name })}
                 title={deleteGate.reason ?? t("pages.providers.deleteTitle")}
-                aria-label={t("pages.providers.deleteOne", {
-                  name: provider.name,
-                })}
                 disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(provider)}
-                className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
           </ListRow>
         ))}
