@@ -85,16 +85,17 @@ export const SelectsOnClick: Story = {
 };
 
 /**
- * Every option is a real `<button>`, so `Tab` reaches it and `Enter` activates
- * it — a div with an `onClick` would do neither.
+ * Every option is a real, tabbable `<button>`: `Tab` walks into the group and
+ * `Enter` picks an option — a div with an `onClick` would do neither.
  */
 export const SelectsFromTheKeyboard: Story = {
   render: () => <Controlled />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const option = canvas.getByRole("radio", { name: "Unlock all" });
-    option.focus();
-    await expect(option).toHaveFocus();
+    await userEvent.tab();
+    await expect(canvas.getByRole("radio", { name: "Lock all" })).toHaveFocus();
+    await userEvent.tab();
+    await expect(canvas.getByRole("radio", { name: "Unlock all" })).toHaveFocus();
     await userEvent.keyboard("{Enter}");
     await expect(canvas.getByText("mode: unlockAll")).toBeVisible();
   },

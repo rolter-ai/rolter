@@ -42,7 +42,7 @@ export const CollapsedDropsItsBody: Story = {
   render: () => <Controlled initial={false} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", { name: /General/ });
+    const toggle = canvas.getByRole("button", { name: "General" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     // bites if the body renders while closed, or is only hidden with CSS
     await expect(canvas.queryByLabelText("Alias")).not.toBeInTheDocument();
@@ -54,7 +54,7 @@ export const TogglesFromTheKeyboard: Story = {
   render: () => <Controlled initial={false} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", { name: /General/ });
+    const toggle = canvas.getByRole("button", { name: "General" });
     toggle.focus();
     await userEvent.keyboard("{Enter}");
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -73,7 +73,7 @@ export const InfoSitsBesideTheToggle: Story = {
   render: () => <Controlled info="Identity and endpoint of the routed model." />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", { name: /General/ });
+    const toggle = canvas.getByRole("button", { name: "General" });
     const hint = canvas.getByRole("button", { name: "About General" });
     await expect(toggle.contains(hint)).toBe(false);
     await userEvent.hover(hint);
