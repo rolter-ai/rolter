@@ -9,6 +9,7 @@ import {
   expectEmptyState,
   expectLoadError,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   Harness,
   json,
@@ -343,17 +344,33 @@ export const Deleting: Story = {
 
 // a profile reaches whole teams, so removing one changes what a group of people
 // can do — it is named and the consequence stated before anything leaves
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the toast, the row gone — rather than that the request left. A stub that
+// answers the full list forever passes either way, which is how a 204 fixture
+// that threw went unnoticed (#1260)
+let profileDeleted = false;
 const deletes = recording(async (input, init) => {
-  if (init?.method === "DELETE") return json({}, 204);
-  return stub(async () => json(PROFILES))(input, init);
+  if (init?.method === "DELETE") {
+    profileDeleted = true;
+    return json({}, 204);
+  }
+  const remaining = async () =>
+    json(profileDeleted ? PROFILES.filter((row) => row.id !== "p-1") : PROFILES);
+  return stub(remaining)(input, init);
 });
 
 export const ConfirmsBeforeDeletingAProfile: Story = {
-  render: () => (
-    <Harness fetchStub={deletes.stub}>
-      <AccessProfiles />
-    </Harness>
-  ),
+  render: () => {
+    profileDeleted = false;
+    return (
+      <Harness fetchStub={deletes.stub}>
+        <Toasted>
+          <AccessProfiles />
+        </Toasted>
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
@@ -371,6 +388,14 @@ export const ConfirmsBeforeDeletingAProfile: Story = {
     );
     await confirmDestructive(/Support engineers/, /delete profile/i);
     await deletes.expectSent("DELETE", "/access-profiles/p-1");
+
+    // the outcome, not just the request: the confirmation closes, the queue
+    // announces it, and the row is gone from the list
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Support engineers deleted/);
+    await waitFor(() =>
+      expect(canvas.queryByText("Support engineers")).not.toBeInTheDocument(),
+    );
   },
 };
 

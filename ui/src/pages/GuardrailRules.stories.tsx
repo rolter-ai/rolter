@@ -8,6 +8,7 @@ import {
   expectEmptyState,
   expectForbidden,
   expectLoadError,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -197,12 +198,25 @@ export const CreateRejectedByTheServer: Story = {
 
 // the delete used to be a bare window.confirm — unstyled, untranslated, and a
 // modal the story runner cannot answer. It is a real dialog now (#1179)
-const deletes = recording(async (_input, init) =>
-  init?.method === "DELETE" ? json({}, 204) : json(RULES),
-);
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the toast, the row gone — rather than that the request left. A stub that
+// answers the full list forever passes either way, which is how a 204 fixture
+// that threw went unnoticed (#1260)
+let ruleDeleted = false;
+const deletes = recording(async (_input, init) => {
+  if (init?.method === "DELETE") {
+    ruleDeleted = true;
+    return json({}, 204);
+  }
+  return json(ruleDeleted ? RULES.filter((rule) => rule.id !== "rule-email") : RULES);
+});
 
 export const ConfirmsBeforeDeletingARule: Story = {
-  render: () => <Harness fetchStub={deletes.stub} />,
+  render: () => {
+    ruleDeleted = false;
+    return <Harness fetchStub={deletes.stub} toasted />;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // by name, not by index: each row control names its own rule (#1214)
@@ -216,6 +230,14 @@ export const ConfirmsBeforeDeletingARule: Story = {
     await userEvent.click(await del());
     await confirmDestructive(/Redact customer email/, "Delete");
     await deletes.expectSent("DELETE", "/guardrails/rules/rule-email");
+
+    // the outcome, not just the request: the confirmation closes, the queue
+    // announces it, and the row is gone from the list
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Redact customer email deleted/);
+    await waitFor(() =>
+      expect(canvas.queryByText("Redact customer email")).not.toBeInTheDocument(),
+    );
   },
 };
 

@@ -7,10 +7,13 @@ import {
   confirmDestructive,
   expectForbidden,
   expectLoadError,
+  expectSheetClosed,
   expectSkeleton,
+  expectToast,
   Harness as ScreenHarness,
   json,
   recording,
+  Toasted,
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
@@ -96,10 +99,25 @@ function withConfig(
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  toasted,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  /** mount the shell's toast queue, for a story that asserts the outcome */
+  toasted?: boolean;
+}) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-    <Connectors />
+      {toasted ? (
+        <Toasted>
+          <Connectors />
+        </Toasted>
+      ) : (
+        <Connectors />
+      )}
     </ScreenHarness>
   );
 }
@@ -169,13 +187,25 @@ export const Error_: Story = {
 // shipping request logs somewhere is an egress decision; unmaking it takes the
 // delivery history with it, so the connector is named before anything goes
 // (#1179)
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the toast, the row gone — rather than that the request left. A stub that
+// answers the full list forever passes either way, which is how a 204 fixture
+// that threw went unnoticed (#1260)
+let connectorDeleted = false;
 const deletes = recording(async (_input, init) => {
-  if (init?.method === "DELETE") return json({}, 204);
-  return json(CONNECTORS);
+  if (init?.method === "DELETE") {
+    connectorDeleted = true;
+    return json({}, 204);
+  }
+  return json(connectorDeleted ? CONNECTORS.filter((row) => row.id !== "c-1") : CONNECTORS);
 });
 
 export const ConfirmsBeforeDeletingAConnector: Story = {
-  render: () => <Harness fetchStub={deletes.stub} />,
+  render: () => {
+    connectorDeleted = false;
+    return <Harness fetchStub={deletes.stub} toasted />;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
@@ -187,6 +217,12 @@ export const ConfirmsBeforeDeletingAConnector: Story = {
     await userEvent.click(canvas.getByLabelText("Delete connector signoz"));
     await confirmDestructive(/signoz/, /delete connector/i);
     await deletes.expectSent("DELETE", "/connectors/c-1");
+
+    // the outcome, not just the request: the confirmation closes, the queue
+    // announces it, and the row is gone from the list
+    await expectSheetClosed();
+    await expectToast(canvasElement, /signoz deleted/);
+    await waitFor(() => expect(canvas.queryByText("signoz")).not.toBeInTheDocument());
   },
 };
 

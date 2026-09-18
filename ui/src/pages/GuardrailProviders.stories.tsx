@@ -8,6 +8,7 @@ import {
   expectEmptyState,
   expectForbidden,
   expectLoadError,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -188,12 +189,27 @@ export const RegisterRejectedByTheServer: Story = {
 
 // deleting an enabled provider stops external enforcement outright, which is
 // too large a change for a bare window.confirm to carry (#1179)
-const deletes = recording(async (_input, init) =>
-  init?.method === "DELETE" ? json({}, 204) : json(PROVIDERS),
-);
+//
+// the list shrinks once the DELETE lands, so the story can assert the outcome
+// — the toast, the row gone — rather than that the request left. A stub that
+// answers the full list forever passes either way, which is how a 204 fixture
+// that threw went unnoticed (#1260)
+let providerDeleted = false;
+const deletes = recording(async (_input, init) => {
+  if (init?.method === "DELETE") {
+    providerDeleted = true;
+    return json({}, 204);
+  }
+  return json(
+    providerDeleted ? PROVIDERS.filter((row) => row.id !== "provider-primary") : PROVIDERS,
+  );
+});
 
 export const ConfirmsBeforeDeletingAProvider: Story = {
-  render: () => <Harness fetchStub={deletes.stub} />,
+  render: () => {
+    providerDeleted = false;
+    return <Harness fetchStub={deletes.stub} toasted />;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // by name, not by index: each row control names its own provider (#1214)
@@ -207,6 +223,14 @@ export const ConfirmsBeforeDeletingAProvider: Story = {
     await userEvent.click(await del());
     await confirmDestructive(/Production LLM Guard/, "Delete");
     await deletes.expectSent("DELETE", "/guardrails/providers/provider-primary");
+
+    // the outcome, not just the request: the confirmation closes, the queue
+    // announces it, and the row is gone from the list
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Production LLM Guard deleted/);
+    await waitFor(() =>
+      expect(canvas.queryByText("Production LLM Guard")).not.toBeInTheDocument(),
+    );
   },
 };
 
