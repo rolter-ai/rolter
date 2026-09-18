@@ -153,6 +153,27 @@ curl -X PUT https://control.example.com/api/v1/mcp-servers/$SERVER_ID/oauth-clie
 falls back to whatever you configured. Setting it to `manual` skips the probe
 altogether, which is worth doing for a server you know publishes nothing.
 
+Reading the same endpoint back returns what the last successful discovery
+resolved, so a misconfigured authorization server is visible without digging
+through logs:
+
+| Field | Meaning |
+| --- | --- |
+| `discovered_issuer` | the issuer the metadata named |
+| `discovered_authorize_url`, `discovered_token_url` | the endpoints it named |
+| `discovered_iss_supported` | whether it advertised `authorization_response_iss_parameter_supported` |
+| `discovered_at` | when the cache was last filled, or absent if never |
+
+`discovered_iss_supported` is the one worth knowing about: when it is `true`, a
+callback that arrives **without** an `iss` parameter is rejected rather than
+accepted, per RFC 9207 §2.4. If consent is failing on a server that used to
+work, this field tells you which rule is being applied.
+
+<Note>
+  The server row and the server list spell these `oauth_discovered_*`; this
+  endpoint drops the prefix. Same values, two names.
+</Note>
+
 This endpoint is admin-only in both directions — even reading it, because the
 row names a third party the organization has chosen to trust. The secret is
 sealed with the deployment key on write and is never readable back; omitting

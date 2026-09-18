@@ -7440,6 +7440,33 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
         "discovery should have cached the stub authorization server"
     );
 
+    // #1569: the row now holds `oauth_discovered_iss_supported = true` (the
+    // fourth element above), so this is the point where the read endpoint can
+    // be checked against it rather than against itself. an api client that
+    // reads only `/oauth-client` needs the flag to explain why a callback
+    // carrying no `iss` was rejected — it selects the RFC 9207 §2.4 row
+    let view: Value = client
+        .get(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        view["discovered_iss_supported"],
+        json!(true),
+        "the oauth-client view must report the discovered iss support: {view}"
+    );
+    assert_eq!(
+        view["discovered_issuer"],
+        json!(authz),
+        "and the rest of the discovery cache alongside it: {view}"
+    );
+
     // an edit that leaves the url where it is keeps the cache: re-discovering
     // on every rename would put an upstream probe on a path that has no reason
     // to touch one
