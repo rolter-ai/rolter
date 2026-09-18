@@ -1,12 +1,20 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Playground from "./Playground";
+import {
+  Harness,
+  clickWhenEnabled,
+  expectLoadError,
+  expectSkeleton,
+  json,
+  recording,
+  scopeResponse,
+  type FetchStub,
+} from "./story-harness";
+import { setPlaygroundKey } from "@/lib/gateway";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
-
-const KEY_STORAGE = "rolter.playground.key";
 
 /** What the gateway serves: a route, a provider pin, and a provider group. */
 const GATEWAY_MODELS = {
@@ -21,58 +29,77 @@ const GATEWAY_MODELS = {
 /** What the control plane serves: bare route ids, nothing else. */
 const ROUTES = [{ id: "r-1", model: "minicpm5-1b", strategy: "round_robin" }];
 
-type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+const MINT_PATH = "/playground-key";
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+/** Half an hour out, the lifetime `PLAYGROUND_KEY_TTL_MINUTES` fixes. */
+const expiry = () => new Date(Date.now() + 30 * 60_000).toISOString();
 
-const url = (input: RequestInfo | URL): string =>
-  typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+/** The row `POST /api/v1/me/projects/{id}/playground-key` answers with. */
+const minted = (key = "sk-rolter-minted") => ({
+  id: "vk-1",
+  project_id: "project-1",
+  key_hash: "hash",
+  key_prefix: key.slice(0, 12),
+  name: "Playground",
+  models: ["minicpm5-1b"],
+  providers: [],
+  disabled: false,
+  expires_at: expiry(),
+  cache_enabled: null,
+  created_by: "user-1",
+  business_unit_id: null,
+  customer_id: null,
+  purpose: "playground",
+  created_at: new Date().toISOString(),
+  key,
+});
+
+/** Every `Authorization` the screen sent to the gateway, in order. */
+interface Sent {
+  keys: string[];
+}
 
 /**
- * Routes always resolve; the gateway's `/v1/models` answers according to
- * `gateway`, so a story can put the picker in each of its three states.
+ * The deployment the Playground normally opens against: a project in scope, a
+ * mint endpoint that answers, and a gateway that serves its model list to the
+ * key it was handed.
+ *
+ * `mint` is a function so a story can refuse, stall, or answer twice.
  */
-function stubFor(gateway: () => Promise<Response>): FetchStub {
-  return async (input) => {
-    if (url(input).includes("/gw/v1/models")) return gateway();
+function deployment(
+  mint: () => Promise<Response>,
+  sent: Sent = { keys: [] },
+  projects: unknown[] = [{ id: "project-1", team_id: "team-1", name: "Gateway" }],
+): FetchStub {
+  return async (input, init) => {
+    const url = String(input);
+    const path = new URL(url, "http://localhost").pathname;
+    if (/^\/api\/v1\/teams\/[^/]+\/projects$/.test(path)) return json(projects);
+    const scope = scopeResponse(url);
+    if (scope) return scope;
+    if (url.includes(MINT_PATH)) return mint();
+    if (url.includes("/gw/v1/models")) {
+      const auth = new Headers(init?.headers).get("Authorization");
+      if (auth) sent.keys.push(auth.replace("Bearer ", ""));
+      return auth ? json(GATEWAY_MODELS) : json({ error: { message: "missing key" } }, 401);
+    }
     return json(ROUTES);
   };
 }
 
-// installed during render, not in an effect: child effects run before the
-// parent's, so an effect would let the first real fetch through
-function Harness({ fetchStub, playgroundKey }: { fetchStub: FetchStub; playgroundKey: string }) {
-  const original = React.useRef<typeof globalThis.fetch | null>(null);
-  const client = React.useMemo(() => {
-    original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
-    try {
-      if (playgroundKey) localStorage.setItem(KEY_STORAGE, playgroundKey);
-      else localStorage.removeItem(KEY_STORAGE);
-    } catch {
-      // localStorage unavailable in this runner; the no-key path is the default
-    }
-    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  }, [fetchStub, playgroundKey]);
-  React.useEffect(
-    () => () => {
-      if (original.current) globalThis.fetch = original.current;
-      try {
-        localStorage.removeItem(KEY_STORAGE);
-      } catch {
-        // nothing to clean up
-      }
-    },
-    [],
-  );
+/** Clears the in-memory key, so one story's key is never another's start state. */
+function Screen({ fetchStub }: { fetchStub: FetchStub }) {
+  // during render, not in an effect: the screen's own effects run first, and
+  // a key left behind would suppress the automatic mint under test
+  React.useState(() => {
+    setPlaygroundKey("");
+    return null;
+  });
+  React.useEffect(() => () => setPlaygroundKey(""), []);
   return (
-    <QueryClientProvider client={client}>
+    <Harness fetchStub={fetchStub}>
       <Playground />
-    </QueryClientProvider>
+    </Harness>
   );
 }
 
@@ -85,53 +112,199 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+const firstMint = { keys: [] as string[] };
+const mints = recording(deployment(async () => json(minted()), firstMint));
+
 /**
- * With a working key the picker lists what the gateway actually serves, and
- * groups it by owner so a route, a provider pin and a provider group are told
- * apart rather than all reading as bare strings (#946).
+ * Opening the screen mints a key, with no paste step (#944).
+ *
+ * The three things the issue asks for are asserted together: the request goes
+ * out on its own, the key that comes back is what the gateway calls are
+ * authenticated with, and the row says when it stops working.
  */
-export const GatewayModels: Story = {
-  render: () => (
-    <Harness
-      playgroundKey="rolter-test-key"
-      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
-    />
-  ),
+export const MintsAKeyOnOpen: Story = {
+  render: () => <Screen fetchStub={mints.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const picker = await canvas.findByRole("combobox", { name: "Model" });
-    await userEvent.click(picker);
+    const rec = mints;
+    const sent = firstMint;
+
+    await rec.expectSent("POST", MINT_PATH);
+    // no body: the control plane scopes the key itself, and a client that could
+    // send `models` could ask for every model there is
+    await waitFor(() =>
+      expect(rec.calls.find((c) => c.url.includes(MINT_PATH))?.body).toBeUndefined(),
+    );
+
+    await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+    // the expiry is on screen, so a key that stops working is explicable
+    await waitFor(() => expect(canvas.getByText(/Expires in \d+ min/)).toBeVisible());
+
+    // and it is the minted key the gateway is called with
+    await waitFor(() => expect(sent.keys).toContain("sk-rolter-minted"));
+
+    // the model list is the gateway's own, which is only reachable with a key
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
     const listbox = canvas.getByRole("listbox");
     await waitFor(() =>
       expect(within(listbox).getByRole("option", { name: "abc/minicpm5-1b" })).toBeTruthy(),
     );
-    // the group address is selectable — the whole point of the screen
-    await expect(
-      within(listbox).getByRole("option", { name: "gpustack/minicpm5-1b" }),
-    ).toBeTruthy();
-
-    // grouped by owner, so the three kinds of address are visually distinct
-    const groups = within(listbox)
-      .getAllByRole("group")
-      .map((g) => g.getAttribute("aria-label"));
-    await expect(groups).toContain("vllm-test");
-    await expect(groups).toContain("abc");
     await userEvent.keyboard("{Escape}");
-
-    // nothing to explain when the list is the gateway's own
-    await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
   },
 };
 
 /**
- * No key yet: the fallback route list is still shown, but the picker says what
- * it is showing and what is missing from it. Silently substituting a strictly
- * smaller list is what made a provider group look like it did not exist.
+ * The key is never written to browser storage (#944).
+ *
+ * Asserting the old `rolter.playground.key` entry is absent would pass against
+ * code that writes a differently named one, so this records every write and
+ * asserts none of them carried the secret.
  */
-export const NoKeySaysWhatIsMissing: Story = {
-  render: () => <Harness playgroundKey="" fetchStub={stubFor(async () => json({ data: [] }))} />,
+export const KeyNeverReachesLocalStorage: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const written: string[] = [];
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function patched(this: Storage, key: string, value: string) {
+      written.push(`${key}=${value}`);
+      return original.call(this, key, value);
+    };
+    try {
+      await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+      await expect(written.some((entry) => entry.includes("sk-rolter-minted"))).toBe(false);
+      await expect(localStorage.getItem("rolter.playground.key")).toBeNull();
+    } finally {
+      Storage.prototype.setItem = original;
+    }
+  },
+};
+
+/**
+ * The mint is a request like any other, so it holds a place while it is out —
+ * the scope chain resolves, and only the mint stalls.
+ */
+export const MintingShowsProgress: Story = {
+  render: () => <Screen fetchStub={deployment(() => new Promise<Response>(() => {}))} />,
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+  },
+};
+
+/**
+ * A project with no routes cannot mint: an empty model list on a virtual key
+ * means *every* model, so the control plane refuses rather than handing out the
+ * widest key in the system. The screen shows the refusal and stays usable — the
+ * paste field is still there.
+ */
+export const RoutelessProjectIsRefused: Story = {
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () =>
+        json(
+          {
+            error: {
+              message:
+                "this project has no routes, so there is nothing a playground key could address",
+            },
+          },
+          400,
+        ),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /this project has no routes/);
+    // the screen does not retry the refusal on its own — one automatic attempt,
+    // then it is the operator's call
+    await expect(canvas.getByRole("button", { name: "Renew key" })).toBeEnabled();
+  },
+};
+
+/** No session, no minting: signing in is the fix, and the state says so. */
+export const SignedOutCannotMint: Story = {
+  render: () => (
+    <Screen fetchStub={deployment(async () => json({ error: { message: "unauthorized" } }, 401))} />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /Sign in to see the playground key/);
+  },
+};
+
+/** Renewing asks for a fresh key rather than extending the one in hand. */
+let issued = 0;
+const renewed = { keys: [] as string[] };
+const renewals = recording(
+  deployment(async () => {
+    issued += 1;
+    return json(minted(`sk-rolter-${issued}`));
+  }, renewed),
+);
+
+export const RenewMintsAgain: Story = {
+  render: () => <Screen fetchStub={renewals.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rec = renewals;
+    const sent = renewed;
+
+    await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+    await waitFor(() => expect(sent.keys).toContain("sk-rolter-1"));
+    // one automatic mint, not two: the screen must not re-mint on its own
+    await expect(
+      rec.calls.filter((c) => c.method === "POST" && c.url.includes(MINT_PATH)).length,
+    ).toBe(1);
+
+    await clickWhenEnabled(canvasElement, "Renew key");
+    await waitFor(() =>
+      expect(rec.calls.filter((c) => c.method === "POST" && c.url.includes(MINT_PATH)).length).toBe(
+        2,
+      ),
+    );
+    // the second key is the one being sent — a renew that left the old key in
+    // place would keep every assertion above passing
+    await waitFor(() => expect(sent.keys).toContain("sk-rolter-2"));
+  },
+};
+
+/**
+ * The paste field stays, for testing one specific key on purpose — the case
+ * automatic minting cannot serve.
+ */
+const pastedInto = { keys: [] as string[] };
+
+export const PastedKeyOverridesTheMintedOne: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()), pastedInto)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sent = pastedInto;
+    await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+
+    await userEvent.click(canvas.getByRole("button", { name: "Use a specific key" }));
+    const field = await canvas.findByLabelText("Virtual key");
+    await userEvent.type(field, "sk-rolter-mine");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+
+    // the badge stops claiming a lifetime rolter chose, because it did not
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expect(canvas.queryByText(/Expires in \d+ min/)).toBeNull();
+    await waitFor(() => expect(sent.keys).toContain("sk-rolter-mine"));
+  },
+};
+
+/**
+ * No project in scope, nothing to mint against. The screen says so rather than
+ * leaving a button that cannot work, and the picker falls back to the control
+ * plane's route list with a notice explaining what is missing from it (#946).
+ */
+export const NoProjectSaysWhatIsMissing: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()), undefined, [])} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(/Pick a project to mint a key against/)).toBeVisible(),
+    );
     await waitFor(() => expect(canvas.getByText(/Showing configured routes/)).toBeVisible());
     await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
     const listbox = canvas.getByRole("listbox");
@@ -149,9 +322,15 @@ export const NoKeySaysWhatIsMissing: Story = {
  */
 export const RejectedKeySaysSo: Story = {
   render: () => (
-    <Harness
-      playgroundKey="rolter-bad-key"
-      fetchStub={stubFor(async () => json({ error: { message: "invalid key" } }, 401))}
+    <Screen
+      fetchStub={async (input) => {
+        const url = String(input);
+        const scope = scopeResponse(url);
+        if (scope) return scope;
+        if (url.includes(MINT_PATH)) return json(minted("sk-rolter-stale"));
+        if (url.includes("/gw/v1/models")) return json({ error: { message: "invalid key" } }, 401);
+        return json(ROUTES);
+      }}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -166,12 +345,7 @@ export const RejectedKeySaysSo: Story = {
 // the model picker row and the composer wrap on a phone (#1242)
 export const Mobile: Story = {
   ...atMobile,
-  render: () => (
-    <Harness
-      playgroundKey="rolter-test-key"
-      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
-    />
-  ),
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('[role="combobox"]')).toBeTruthy());
@@ -194,17 +368,13 @@ function withDocsBase(base: string | undefined) {
   };
 }
 
-/** The key field's hint links into `security/which-key` when docs exist (#1164). */
+/** The paste field's hint links into `security/which-key` when docs exist (#1164). */
 export const KeyHintLinksToTheDocs: Story = {
   beforeEach: withDocsBase("https://docs.example.com"),
-  render: () => (
-    <Harness
-      playgroundKey="rolter-test-key"
-      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
-    />
-  ),
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Use a specific key" }));
     const link = await canvas.findByRole("link", { name: /Which key do I need/ });
     await expect(link).toHaveAttribute("href", "https://docs.example.com/security/which-key");
   },
@@ -213,14 +383,10 @@ export const KeyHintLinksToTheDocs: Story = {
 /** The air-gapped default: the hint stands alone, with nothing to click. */
 export const KeyHintHasNoLinkWithoutADocsHost: Story = {
   beforeEach: withDocsBase(undefined),
-  render: () => (
-    <Harness
-      playgroundKey="rolter-test-key"
-      fetchStub={stubFor(async () => json(GATEWAY_MODELS))}
-    />
-  ),
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Use a specific key" }));
     await canvas.findByText(/A rolter virtual key, minted on the Virtual Keys screen/);
     await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
   },

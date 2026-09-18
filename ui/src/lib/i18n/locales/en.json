@@ -192,7 +192,8 @@
       "skills": "skills",
       "complexityPolicies": "complexity policies",
       "complexityPolicy": "this route's complexity policy",
-      "paletteRecords": "searchable records"
+      "paletteRecords": "searchable records",
+      "playgroundKey": "the playground key"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -997,7 +998,9 @@
       "createSubtitle": "The plaintext key is shown once, right after creation — copy it then",
       "creating": "Creating…",
       "createdTitle": "Key created",
-      "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again."
+      "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
+      "playground": "Playground",
+      "playgroundHint": "The Playground minted this key for one sitting, scoped to this project's routes. It expires on its own — nothing needs to delete it."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
@@ -2549,6 +2552,17 @@
     "copyAsCodeHint": "The same OpenAI SDK, pointed at Rolter. The key is read from an environment variable so the snippet is safe to paste anywhere.",
     "language": "Language",
     "key": {
+      "title": "Session key",
+      "none": "No key",
+      "active": "Active",
+      "expired": "Expired",
+      "pasted": "Pasted",
+      "expires": "Expires {{when}}",
+      "renew": "Renew key",
+      "mintedHint": "Rolter mints this key when you open the Playground, scoped to the models this project routes. It is held in memory only and expires on its own.",
+      "expiredHint": "This key has expired. Renew it to keep sending requests.",
+      "noProject": "Pick a project to mint a key against, or paste one below.",
+      "manual": "Use a specific key",
       "label": "Virtual key",
       "placeholder": "sk-rolter-… (the key the gateway authenticates)",
       "save": "Save",
@@ -3007,7 +3021,9 @@
         "noUsage": "no usage in the last 7 days",
         "rotate": "Rotate",
         "rotateHint": "Rotate: issue a new secret and disable this one",
-        "deleteHint": "Delete this virtual key"
+        "deleteHint": "Delete this virtual key",
+        "playground": "Playground",
+        "playgroundHint": "The Playground minted this key for one sitting. It expires on its own — nothing needs to delete it."
       },
       "mint": {
         "title": "New virtual key",

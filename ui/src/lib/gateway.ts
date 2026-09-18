@@ -5,27 +5,66 @@ import i18n from "@/lib/i18n";
 // the dashboard is served by the control plane, but chat/embeddings/image/audio
 // calls hit the gateway on a different port. in dev, vite proxies /gw → :4000
 // (see vite.config.ts); in prod the control plane must reverse-proxy /gw/*.
-// the gateway authenticates with a virtual key, which the user sets in the
-// Playground (persisted to localStorage, never sent to the control plane).
+// the gateway authenticates with a virtual key: the Playground mints a
+// short-lived one per sitting and keeps it here, in memory.
 
 const GW_BASE = "/gw";
-const KEY_STORAGE = "rolter.playground.key";
 
-export function getPlaygroundKey(): string {
-  try {
-    return localStorage.getItem(KEY_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
+/**
+ * The key the Playground is currently sending, and when it stops working.
+ *
+ * `expiresAt` is set for a key rolter minted; a key the operator pasted by
+ * hand carries no expiry here, because the dashboard did not choose one and
+ * guessing at it would be worse than saying nothing.
+ */
+export interface PlaygroundKeyState {
+  key: string;
+  expiresAt: string | null;
+  /** rolter minted this key for this sitting, rather than a person pasting it */
+  minted: boolean;
 }
 
-export function setPlaygroundKey(key: string): void {
-  try {
-    if (key) localStorage.setItem(KEY_STORAGE, key);
-    else localStorage.removeItem(KEY_STORAGE);
-  } catch {
-    // localStorage unavailable — key just won't persist across reloads
-  }
+const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false };
+
+// deliberately a module variable and not `localStorage` (#944): a gateway
+// credential written to browser storage outlives the sitting that needed it and
+// stays there until somebody clears it. this one dies with the tab, and the
+// Playground asks for a fresh one instead of keeping it.
+let state: PlaygroundKeyState = NO_KEY;
+
+const listeners = new Set<() => void>();
+
+export function getPlaygroundKeyState(): PlaygroundKeyState {
+  return state;
+}
+
+export function getPlaygroundKey(): string {
+  return state.key;
+}
+
+/**
+ * Set the key every gateway call below authenticates with.
+ *
+ * Passing an empty key clears it. The whole state object is replaced rather
+ * than mutated so `useSyncExternalStore` sees a new reference and re-renders
+ * the screen — and so a renewed key can never keep the previous expiry.
+ */
+export function setPlaygroundKey(
+  key: string,
+  options: { expiresAt?: string | null; minted?: boolean } = {},
+): void {
+  state = key
+    ? { key, expiresAt: options.expiresAt ?? null, minted: options.minted ?? false }
+    : NO_KEY;
+  for (const listener of listeners) listener();
+}
+
+/** Subscribe to key changes; returns the unsubscribe `useSyncExternalStore` wants. */
+export function subscribePlaygroundKey(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 function authHeaders(json = true): Record<string, string> {

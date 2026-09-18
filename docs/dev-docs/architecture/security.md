@@ -317,6 +317,18 @@ Keys** mint the client credential, the provider sheet says *Provider key*, and
 the Playground's key field says which one it wants. `docs/user-docs/security/which-key`
 is the user-facing version of this table.
 
+The Playground does not ask for that key first. Opening it mints a session key
+through `POST /api/v1/me/projects/{id}/playground-key` (see
+[RBAC and auth](rbac-and-auth.md#the-playground-key-is-scoped-by-the-server)),
+and the dashboard holds the plaintext in a module variable in
+`ui/src/lib/gateway.ts` — never in `localStorage`, which is where it used to go
+and where a long-lived production key then sat until somebody cleared it
+(#944). The screen renders the key's *state*, never the secret: a badge, the
+expiry, and a **Renew key** button that asks for a fresh key rather than
+extending the one in hand. The paste field stays for testing one specific key
+on purpose, and a key pasted there carries no expiry, because the dashboard did
+not choose one.
+
 ## Threat model (high level)
 
 - **Tenant isolation**: virtual keys are scoped to a project; model allow-lists prevent access to unconfigured models; cache keys are namespaced to avoid cross-tenant cache poisoning.

@@ -48,6 +48,7 @@ import {
 
 import { Tag } from "@/components/ui/tag";
 import {
+  PLAYGROUND_PURPOSE,
   createVirtualKey,
   deleteVirtualKey,
   fetchBusinessUnits,
@@ -263,8 +264,19 @@ export default function Keys() {
             className={key.disabled ? "bg-[color:var(--surface-subtle)]/60" : undefined}
           >
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">
-                {key.name ?? t("pages.virtualKeys.unnamed")}
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-sm font-semibold">
+                  {key.name ?? t("pages.virtualKeys.unnamed")}
+                </span>
+                {/* a key the Playground minted for itself, not one an operator
+                    created: it is scoped by the server and expires on its own,
+                    which the row says rather than leaving a reader to infer it
+                    from a short expiry (#944) */}
+                {key.purpose === PLAYGROUND_PURPOSE && (
+                  <Badge tone="info" title={t("pages.virtualKeys.playgroundHint")}>
+                    {t("pages.virtualKeys.playground")}
+                  </Badge>
+                )}
               </div>
               <div className="truncate text-[0.6875rem] text-muted-foreground">
                 {key.expires_at

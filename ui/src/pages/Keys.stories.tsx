@@ -171,6 +171,25 @@ const KEYS: VirtualKeyRow[] = [
   },
 ];
 
+/** a key the Playground minted for itself, which no operator created (#944) */
+const PLAYGROUND_KEY: VirtualKeyRow = {
+  id: "vk-3",
+  project_id: "project-1",
+  key_hash: "hash-3",
+  key_prefix: "sk-rolter-play",
+  name: "Playground",
+  models: ["gpt-4o"],
+  providers: [],
+  created_by: "user-1",
+  business_unit_id: null,
+  customer_id: null,
+  disabled: false,
+  expires_at: "2026-07-01T00:30:00Z",
+  cache_enabled: null,
+  purpose: "playground",
+  created_at: "2026-07-01T00:00:00Z",
+};
+
 const withKeys = (keys: VirtualKeyRow[], status = 200): FetchStub =>
   scoped(
     async (input) =>
@@ -200,6 +219,37 @@ export const Loaded: Story = {
     const row = name.closest('[style*="grid-template-columns"]');
     await expect(row).not.toBeNull();
     await expect(getComputedStyle(row as HTMLElement).gridTemplateColumns).not.toBe("none");
+  },
+};
+
+/**
+ * The Playground's own key says what it is (#944).
+ *
+ * Every other row on this screen was created by somebody who chose its name,
+ * its reach and its lifetime. This one was issued by a screen, scoped by the
+ * server and expires by itself, and a reader who cannot tell the difference
+ * reads a half-hour expiry as a mistake somebody made.
+ */
+export const PlaygroundKeyIsLabelled: Story = {
+  render: () => (
+    <Harness fetchStub={withKeys([...KEYS, PLAYGROUND_KEY])}>
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // by its explanation, not its text: the control plane names the key itself
+    // "Playground" too, so matching on the word alone finds the name as well
+    const badge = await canvas.findByTitle(/expires on its own/);
+    await expect(badge).toHaveTextContent("Playground");
+
+    // and only that row carries it: a badge on every key would say nothing
+    await expect(canvas.getAllByTitle(/expires on its own/)).toHaveLength(1);
+    // the expiry the badge is explaining is on the row itself, in the house
+    // short date rather than the raw timestamp
+    const row = badge.closest('[style*="grid-template-columns"]');
+    const expires = formattersFor("en").date(PLAYGROUND_KEY.expires_at as string);
+    await expect(within(row as HTMLElement).getByText(`expires ${expires}`)).toBeVisible();
   },
 };
 

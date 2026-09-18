@@ -68,6 +68,13 @@ resolved once, at mint time: a route added afterwards is outside that key's
 reach, which makes it a snapshot of what the caller could reach rather than a
 standing grant.
 
+The dashboard calls this once per project as the Playground opens, and once
+more per **Renew key** — never in a loop, since a refusal (a routeless project
+answers `400`, no session answers `401`) is a state the operator has to act on
+rather than one a retry can clear. Both the Virtual Keys screen and the account's
+own key list label a `purpose = 'playground'` row, so a half-hour expiry reads as
+the design rather than as somebody's mistake.
+
 Override either default with `server.require_auth`:
 
 | value | behaviour on an empty key set |

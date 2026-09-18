@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   GitCompare,
   ImageIcon,
@@ -17,6 +17,8 @@ import { useTranslation } from "react-i18next";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
 import { DocsLink } from "@/components/DocsLink";
+import { LoadError } from "@/components/LoadError";
+import { ControlSkeleton } from "@/components/LoadingState";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,20 +30,24 @@ import { StatusRow } from "@/components/ui/status-row";
 import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { fetchModels } from "@/lib/api";
+import { fetchModels, mintPlaygroundKey } from "@/lib/api";
 import {
   chatCompletion,
   embed,
   fetchGatewayModels,
   generateImages,
-  getPlaygroundKey,
+  getPlaygroundKeyState,
   realtimeUrl,
   setPlaygroundKey,
+  subscribePlaygroundKey,
   synthesizeSpeech,
   transcribe,
   type ChatMessage,
   type GeneratedImage,
+  type PlaygroundKeyState,
 } from "@/lib/gateway";
+import { useFormat } from "@/lib/i18n/format";
+import { useScope } from "@/lib/scope";
 
 // the built-in fake-llm always works with no upstream/secrets, so it's a safe
 // default for every modality in local dev.
@@ -76,7 +82,9 @@ export type ModelSource = "gateway" | "no-key" | "unreachable";
  * vanished, with nothing on screen to say why.
  */
 function useModelCatalog(): { options: ModelOption[]; source: ModelSource } {
-  const key = getPlaygroundKey();
+  // the key is read through the store rather than once at render, so the list
+  // re-fetches the moment the screen mints one (#944)
+  const key = usePlaygroundKeyState().key;
   const routes = useQuery({ queryKey: ["models"], queryFn: fetchModels });
   const gateway = useQuery({
     queryKey: ["gateway-models", key],
@@ -165,10 +173,167 @@ function ModelSourceNotice({ source }: { source: ModelSource }) {
   );
 }
 
-/* ---------------- virtual key bar ---------------- */
-function KeyBar() {
+/* ---------------- session key bar ---------------- */
+
+/**
+ * The key the Playground is sending, as a store rather than component state.
+ *
+ * It lives in `lib/gateway.ts` because every call on this screen authenticates
+ * with it, and in memory because #944 is about a gateway credential that used
+ * to be written to `localStorage` and stay there long after the sitting that
+ * needed it.
+ */
+function usePlaygroundKeyState(): PlaygroundKeyState {
+  return React.useSyncExternalStore(
+    subscribePlaygroundKey,
+    getPlaygroundKeyState,
+    getPlaygroundKeyState,
+  );
+}
+
+/**
+ * The current time, re-read every `intervalMs`.
+ *
+ * A minted key is good for half an hour, so "expires in 29 min" has to count
+ * down on its own — a countdown that only moves when something else re-renders
+ * is how a key reads as live several minutes after it stopped working.
+ */
+function useNow(intervalMs = 15_000): number {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+/**
+ * Mints the Playground's key and says what state it is in.
+ *
+ * Opening the screen as a signed-in operator mints a key scoped by the control
+ * plane to the routes of the project in scope, so the five-second smoke test
+ * this screen exists for does not start with a trip to the Keys screen and a
+ * paste. The secret is never rendered: the key is held in memory and shown only
+ * as its state, because there is nothing an operator does with the string that
+ * the screen is not already doing for them.
+ *
+ * The paste field stays, for testing one specific key on purpose — the case
+ * automatic minting cannot serve.
+ */
+function SessionKeyBar() {
   const { t } = useTranslation();
-  const [key, setKey] = React.useState(getPlaygroundKey());
+  const fmt = useFormat();
+  const scope = useScope();
+  const state = usePlaygroundKeyState();
+  const now = useNow();
+  const projectId = scope.projectId;
+
+  const mint = useMutation({
+    mutationFn: () => mintPlaygroundKey(projectId as string),
+    onSuccess: (minted) =>
+      setPlaygroundKey(minted.key, { expiresAt: minted.expires_at ?? null, minted: true }),
+  });
+
+  // one automatic attempt per project, not one per render: a refusal — a
+  // project with no routes answers 400 — must not turn into a mint loop, and
+  // the operator renews by hand from here on
+  const { mutate } = mint;
+  const asked = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!projectId || state.key || asked.current === projectId) return;
+    asked.current = projectId;
+    mutate();
+  }, [projectId, state.key, mutate]);
+
+  const expired = state.expiresAt !== null && new Date(state.expiresAt).getTime() <= now;
+
+  return (
+    // the failure sits outside the band rather than inside it: `LoadError`
+    // paints the control plane's own message in `--text-subtle`, which clears
+    // AA on the page surface and not on the lighter `--surface-subtle` (#1725)
+    <>
+      <div className="flex flex-col gap-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            {t("playground.key.title")}
+          </span>
+          {mint.isPending ? (
+            <ControlSkeleton width={132} />
+          ) : (
+            <KeyStatus state={state} expired={expired} />
+          )}
+          {!mint.isPending && state.minted && !expired && state.expiresAt && (
+            <span className="text-xs text-[color:var(--text-subtle)]">
+              {t("playground.key.expires", { when: fmt.relative(state.expiresAt, now) })}
+            </span>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto"
+            disabled={!projectId || mint.isPending}
+            onClick={() => mint.mutate()}
+          >
+            {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t("playground.key.renew")}
+          </Button>
+        </div>
+        {/* the project chain has to resolve before there is anything to mint
+          against, and an operator who belongs to no project needs to hear that
+          rather than watch a button do nothing */}
+        {!projectId && !scope.isLoading && (
+          <p className="text-xs text-[color:var(--text-subtle)]">{t("playground.key.noProject")}</p>
+        )}
+        {!mint.isPending && !mint.error && (
+          <p className="text-xs leading-snug text-[color:var(--text-subtle)]">
+            {expired ? t("playground.key.expiredHint") : t("playground.key.mintedHint")}
+          </p>
+        )}
+        <ManualKeyField pasted={state.key !== "" && !state.minted} />
+      </div>
+      {mint.error != null && (
+        <LoadError
+          error={mint.error}
+          resource={t("errors.resources.playgroundKey")}
+          onRetry={() => mint.mutate()}
+        />
+      )}
+    </>
+  );
+}
+
+/** What the screen is currently sending, in one badge. */
+function KeyStatus({ state, expired }: { state: PlaygroundKeyState; expired: boolean }) {
+  const { t } = useTranslation();
+  if (!state.key) return <Badge tone="neutral">{t("playground.key.none")}</Badge>;
+  if (!state.minted)
+    return (
+      <Badge tone="info" dot>
+        {t("playground.key.pasted")}
+      </Badge>
+    );
+  return expired ? (
+    <Badge tone="warning" dot>
+      {t("playground.key.expired")}
+    </Badge>
+  ) : (
+    <Badge tone="success" dot>
+      {t("playground.key.active")}
+    </Badge>
+  );
+}
+
+/**
+ * The manual paste field, collapsed by default.
+ *
+ * Kept because testing one particular key — a customer's, a key that is about
+ * to expire — is a real thing to do here, and automatic minting cannot do it.
+ * Collapsed because it is now the exception: the screen arrives with a key.
+ */
+function ManualKeyField({ pasted }: { pasted: boolean }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = React.useState(pasted);
+  const [key, setKey] = React.useState("");
   const [saved, setSaved] = React.useState(false);
   const save = () => {
     setPlaygroundKey(key.trim());
@@ -176,31 +341,46 @@ function KeyBar() {
     setTimeout(() => setSaved(false), 1400);
   };
   return (
-    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-muted-foreground">
-          {t("playground.key.label")}
-        </span>
-        <Input
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          placeholder={t("playground.key.placeholder")}
-          className="h-8 flex-1 font-mono text-xs"
-          type="password"
-          spellCheck={false}
-        />
-        <Button size="sm" variant="outline" onClick={save}>
-          {saved ? t("playground.key.saved") : t("playground.key.save")}
-        </Button>
-      </div>
-      {/* three different credentials in this product answer to "api key";
-          say which one this field wants (#943) */}
-      <p className="mt-1.5 text-[0.6875rem] leading-snug text-[color:var(--text-subtle)]">
-        {t("playground.key.hint")}{" "}
-        {/* suppressed entirely when no documentation host is configured, so the
-            hint above never trails a dead link (#1164) */}
-        <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
-      </p>
+    <div className="flex flex-col gap-2">
+      <Button
+        size="sm"
+        variant="ghost"
+        className="self-start px-1 text-xs text-muted-foreground"
+        aria-expanded={open}
+        aria-controls="playground-manual-key"
+        onClick={() => setOpen((was) => !was)}
+      >
+        {t("playground.key.manual")}
+      </Button>
+      {open && (
+        <div id="playground-manual-key" className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t("playground.key.label")}
+            </span>
+            <Input
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={t("playground.key.placeholder")}
+              className="h-8 flex-1 font-mono text-xs"
+              type="password"
+              spellCheck={false}
+              aria-label={t("playground.key.label")}
+            />
+            <Button size="sm" variant="outline" onClick={save}>
+              {saved ? t("playground.key.saved") : t("playground.key.save")}
+            </Button>
+          </div>
+          {/* three different credentials in this product answer to "api key";
+              say which one this field wants (#943) */}
+          <p className="text-[0.6875rem] leading-snug text-[color:var(--text-subtle)]">
+            {t("playground.key.hint")}{" "}
+            {/* suppressed entirely when no documentation host is configured, so
+                the hint above never trails a dead link (#1164) */}
+            <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1010,7 +1190,7 @@ export default function Playground() {
 
   return (
     <div className="flex flex-col gap-5 p-[22px]">
-      <KeyBar />
+      <SessionKeyBar />
       <ModelSourceNotice source={source} />
       <Tabs
         value={mode}
