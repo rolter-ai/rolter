@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DocsLink } from "@/components/DocsLink";
 import {
   DEFAULT_KEY_TTL_DAYS,
   KeyCacheField,
@@ -131,7 +132,10 @@ export default function Account() {
       {/* the screen sits under "Account" in a product that also has provider
           keys and an admin token; say which credential this one is (#943) */}
       <p className="text-sm text-muted-foreground">
-        {t("account.keys.explainer")}
+        {t("account.keys.explainer")}{" "}
+        {/* the explainer stands alone; the link only adds depth, and is absent
+            on a deployment that configured no documentation host (#1164) */}
+        <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
       <div className="flex items-center gap-3">
         <span className="text-sm text-muted-foreground">

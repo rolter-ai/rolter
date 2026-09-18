@@ -485,3 +485,51 @@ export const MintRejectionIsShownOnTheSheet: Story = {
     await expect(within(form).getByLabelText("Name")).toBeInTheDocument();
   },
 };
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the two states below cannot leak into each other.
+ */
+function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
+}
+
+/** The explainer carries a link into `security/which-key` when docs exist (#1164). */
+export const ExplainerLinksToTheDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const link = await canvas.findByRole("link", { name: /Which key do I need/ });
+    await expect(link).toHaveAttribute("href", "https://docs.example.com/security/which-key");
+  },
+};
+
+/**
+ * The air-gapped default: no documentation host, so the explainer stands alone
+ * and there is no link to click into nothing.
+ */
+export const ExplainerHasNoLinkWithoutADocsHost: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the explainer itself is still there — only the link is suppressed
+    await canvas.findByText(/These are rolter virtual keys/);
+    await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
+  },
+};
