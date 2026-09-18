@@ -228,10 +228,11 @@ export const PoliciesStillLoading: Story = {
 };
 
 /**
- * `GET /routes/{id}/complexity` is held to the route *mutation* bar
- * server-side (#704), so a read-only caller is refused the policy itself. The
- * screen says so rather than widening the read or reporting the routes as
- * unconfigured.
+ * `GET /routes/{id}/complexity` takes `route:read` server-side (#1666), so a
+ * viewer is served the policy — but a caller the control plane refuses the read
+ * to entirely still exists (a custom role denied `route:read`, or a control
+ * plane older than #1666). The screen says so rather than reporting the routes
+ * as unconfigured.
  */
 const forbiddenPolicies: FetchStub = async (input) => {
   const url = String(input);

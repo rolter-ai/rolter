@@ -3152,15 +3152,19 @@ async fn set_route_params(
 
 /// Read the policy as a first-class control-plane resource while storing it in
 /// the snapshot-compatible route params JSON.
-// this GET has always been held to the route *mutation* bar (admin), not
-// `route:read`; the capability it names records that rather than quietly
-// widening it to a viewer's (#704)
+// this read takes `route:read`, the same bar as every other attribute of the
+// route it belongs to. #704 held it to the *mutation* bar instead, which made
+// the policy the one part of a route a viewer could list but never see, so the
+// dashboard's Complexity Router answered a reader with a permission error
+// (#1666). It is configuration rather than a secret — it already travels to the
+// gateway inside the route's `params` — and the PUT beside it still takes
+// `route:update`, so a viewer reads it and writes nothing
 async fn get_route_complexity(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    authorize_route(&state, &principal, id, cap!("route", Update)).await?;
+    authorize_route(&state, &principal, id, cap!("route", Read)).await?;
     let route = RouteRepo(pool(&state)).get(id).await?;
     Ok(Json(
         route

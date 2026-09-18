@@ -68,6 +68,8 @@ Rolter publishes its own permission table, so you never have to keep a copy in s
 
 Both read the same table the control plane enforces with, so the answer is never a guess: a request that `effective` says you cannot make returns `403` if you make it anyway.
 
+A resource's sub-resources sit at the same bar as the resource itself. A route's complexity-routing tiers are the one part of a route with their own endpoint, and they follow that rule: reading them takes `route:read`, replacing them takes `route:update`. So a viewer sees every policy on the **Complexity Router** screen for the routes it can already list, and changes none of them.
+
 ### Reading it in the dashboard
 
 **Roles & Permissions** renders `GET /api/v1/rbac/matrix` directly, so the grid on screen is the deployment's own rule set rather than a copy of it. One row per resource, grouped by the scope the resource lives under (deployment-wide, organization, team, project); one column per role, with the built-in three first and your org's custom roles after them, ordered by the base role each extends.
