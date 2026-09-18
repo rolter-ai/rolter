@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rolter_core::probe::{probe_request, ANTHROPIC_VERSION};
+use rolter_core::probe::{probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION};
 use rolter_core::{HealthConfig, ProviderKind};
 
 /// A fully-resolved probe request for one provider: either a free liveness GET
@@ -383,14 +383,24 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
             ProbePlan,
             crate::health_events::HealthSource,
             reqwest::Client,
+            bool,
         )> = {
             let snap = state.snapshot.load();
+            // a provider a reload removed must stop showing up in /v1/models
+            state
+                .model_catalog
+                .retain(&snap.providers.keys().map(String::as_str).collect());
             snap.providers
                 .values()
                 .filter_map(|p| {
                     let (plan, source) = build_probe_plan(p, &cfg.path);
+                    // the free probe of a catalogue kind already asks the
+                    // upstream for its model list, so reading that body costs
+                    // nothing extra and is what /v1/models lists (#1647)
+                    let catalogue = matches!(plan, ProbePlan::Free { .. })
+                        && probe_expectation(p.kind, &cfg.path) == ProbeExpectation::Catalogue;
                     match state.forwarder.client_for(p) {
-                        Ok(client) => Some((p.name.clone(), plan, source, client)),
+                        Ok(client) => Some((p.name.clone(), plan, source, client, catalogue)),
                         Err(error) => {
                             tracing::warn!(provider = %p.name, %error, "cannot build health-probe TLS client");
                             None
@@ -400,7 +410,7 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
                 .collect()
         };
         let mut sweep = tokio::task::JoinSet::new();
-        for (name, plan, source, client) in plans {
+        for (name, plan, source, client, catalogue) in plans {
             // a provider inside its 429 backoff window sits this sweep out
             if !state.health.should_probe(&name) {
                 continue;
@@ -408,25 +418,35 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
             let limiter = limiter.clone();
             let jitter_ms = probe_jitter_ms(&name, jitter_window_ms);
             let timeout = Duration::from_secs(cfg.timeout_secs.max(1));
+            let model_catalog = catalogue.then(|| state.model_catalog.clone());
             sweep.spawn(async move {
                 let _permit = limiter.acquire_owned().await.ok()?;
                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
                 let req = plan.build(&client);
                 let started = std::time::Instant::now();
-                let (outcome, status, timed_out) =
-                    match tokio::time::timeout(timeout, req.send()).await {
-                        Ok(Ok(resp)) => {
-                            let code = resp.status().as_u16();
-                            let out = match code {
-                                429 => ProbeOutcome::RateLimited,
-                                s if s < 500 => ProbeOutcome::Ok,
-                                _ => ProbeOutcome::Failed,
-                            };
-                            (out, Some(code), false)
+                let (outcome, status, timed_out) = match tokio::time::timeout(timeout, req.send())
+                    .await
+                {
+                    Ok(Ok(resp)) => {
+                        let code = resp.status().as_u16();
+                        let out = match code {
+                            429 => ProbeOutcome::RateLimited,
+                            s if s < 500 => ProbeOutcome::Ok,
+                            _ => ProbeOutcome::Failed,
+                        };
+                        if let (Some(catalog), true) = (&model_catalog, (200..300).contains(&code))
+                        {
+                            if let Ok(Some(models)) =
+                                tokio::time::timeout(timeout, read_catalogue(resp)).await
+                            {
+                                catalog.record(&name, models);
+                            }
                         }
-                        Ok(Err(e)) => (ProbeOutcome::Failed, None, e.is_timeout()),
-                        Err(_) => (ProbeOutcome::Failed, None, true),
-                    };
+                        (out, Some(code), false)
+                    }
+                    Ok(Err(e)) => (ProbeOutcome::Failed, None, e.is_timeout()),
+                    Err(_) => (ProbeOutcome::Failed, None, true),
+                };
                 let latency_ms = started.elapsed().as_millis() as u32;
                 Some((name, source, outcome, status, latency_ms, timed_out))
             });
@@ -463,6 +483,35 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
             }
         }
     }
+}
+
+/// Largest probe body read for its model catalogue.
+///
+/// A liveness probe has no business pulling an unbounded response into the
+/// gateway's memory, and an aggregator's `/v1/models` is the largest honest
+/// body here — a few hundred KiB. Anything past the cap is not a catalogue
+/// worth listing, so the read is abandoned rather than truncated mid-JSON.
+const MAX_CATALOGUE_BYTES: usize = 1 << 20;
+
+/// Read a probe response as a model catalogue, or `None` when it is not one.
+///
+/// Reads chunk by chunk against [`MAX_CATALOGUE_BYTES`] instead of buffering
+/// the whole body, so an upstream that answers a probe with something enormous
+/// costs the gateway a bounded amount of memory.
+async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if body.len() + chunk.len() > MAX_CATALOGUE_BYTES {
+            tracing::debug!(
+                cap = MAX_CATALOGUE_BYTES,
+                "probe body exceeds the catalogue read cap; not listing its models"
+            );
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&body).ok()?;
+    rolter_core::probe::catalogue_ids(&parsed)
 }
 
 /// Build a probe [`HealthEvent`](crate::health_events::HealthEvent) from a sweep

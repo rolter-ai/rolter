@@ -113,6 +113,40 @@ pub fn count_catalogue(body: &serde_json::Value) -> Option<usize> {
         .find_map(|key| Some(body.get(key)?.as_array()?.len()))
 }
 
+/// The model ids in a probe response body, when it is a catalogue at all.
+///
+/// Same shapes as [`count_catalogue`], read one level deeper: the gateway uses
+/// these ids to list what a provider actually serves under
+/// `provider-slug/model`, instead of only the upstream models a configured
+/// route target happens to name (#1647).
+///
+/// An entry's id is the first of `id`, `model`, `modelId` or `name` it carries,
+/// which covers the openai (`id`), bedrock (`modelId`) and google/ollama
+/// (`name`) shapes; a bare string entry is its own id. A `name` that arrives as
+/// a resource path (`publishers/google/models/gemini-2.5-pro`) is reduced to
+/// its last segment, because that is the part an address can carry — a slash in
+/// a model id would re-split as another `slug/model` address.
+pub fn catalogue_ids(body: &serde_json::Value) -> Option<Vec<String>> {
+    const ARRAY_KEYS: [&str; 4] = ["data", "models", "modelSummaries", "publisherModels"];
+    const ID_KEYS: [&str; 4] = ["id", "model", "modelId", "name"];
+    let items = body
+        .as_array()
+        .or_else(|| ARRAY_KEYS.iter().find_map(|key| body.get(key)?.as_array()))?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let raw = match item {
+                    serde_json::Value::String(s) => s.as_str(),
+                    other => ID_KEYS.iter().find_map(|key| other.get(key)?.as_str())?,
+                };
+                let id = raw.rsplit('/').next().unwrap_or(raw).trim();
+                (!id.is_empty()).then(|| id.to_string())
+            })
+            .collect(),
+    )
+}
+
 fn bedrock_models_url(api_base: &str) -> String {
     let base = api_base.trim_end_matches('/');
     if let Some(control) = base.strip_prefix("https://bedrock-runtime.") {
@@ -239,6 +273,54 @@ mod tests {
         assert_eq!(count_catalogue(&json!({"data": "not-an-array"})), None);
         assert_eq!(count_catalogue(&json!("<!doctype html>")), None);
         assert_eq!(count_catalogue(&json!(null)), None);
+    }
+
+    #[test]
+    fn catalogue_ids_reads_every_shape_the_probe_urls_return() {
+        use serde_json::json;
+        assert_eq!(
+            catalogue_ids(&json!({"data": [{"id": "gpt-4o"}, {"id": "o3-mini"}]})),
+            Some(vec!["gpt-4o".to_string(), "o3-mini".to_string()])
+        );
+        assert_eq!(
+            catalogue_ids(&json!({"modelSummaries": [{"modelId": "anthropic.claude-3"}]})),
+            Some(vec!["anthropic.claude-3".to_string()])
+        );
+        assert_eq!(
+            catalogue_ids(&json!({"models": [{"name": "llama3:8b"}]})),
+            Some(vec!["llama3:8b".to_string()])
+        );
+        // a bare string list, as some openai-compatible servers answer
+        assert_eq!(
+            catalogue_ids(&json!(["qwen3"])),
+            Some(vec!["qwen3".to_string()])
+        );
+    }
+
+    /// A google resource path is not addressable as-is: the slash would re-split
+    /// as another `slug/model` address, so only the last segment is a model id.
+    #[test]
+    fn catalogue_ids_reduce_a_resource_path_to_its_last_segment() {
+        use serde_json::json;
+        assert_eq!(
+            catalogue_ids(
+                &json!({"publisherModels": [{"name": "publishers/google/models/gemini-2.5-pro"}]})
+            ),
+            Some(vec!["gemini-2.5-pro".to_string()])
+        );
+    }
+
+    #[test]
+    fn catalogue_ids_of_a_non_catalogue_body_is_none() {
+        use serde_json::json;
+        assert_eq!(catalogue_ids(&json!({"message": "ok"})), None);
+        assert_eq!(catalogue_ids(&json!("<!doctype html>")), None);
+        // a catalogue whose entries carry no usable id yields an empty list,
+        // not a wrong one
+        assert_eq!(
+            catalogue_ids(&json!({"data": [{"object": "model"}, {"id": ""}]})),
+            Some(Vec::new())
+        );
     }
 
     #[test]

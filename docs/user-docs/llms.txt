@@ -122,7 +122,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [/v1/messages](/api/messages): Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config.
 - [Realtime](/api/realtime): Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and what it does not yet cover.
 - [MCP](/api/mcp): Proxy Streamable HTTP and SSE MCP servers with user-bound OAuth authorization.
-- [/v1/models](/api/models): List the model route names configured in Rolter that your virtual key is authorized to use, filtered by the key allow-list defined in rolter.toml.
+- [/v1/models](/api/models): List the route names, provider-pinned addresses and provider-group addresses your Rolter virtual key is authorized to use, filtered by the key allow-list.
 - [Health & Metrics](/api/health-and-metrics): Use GET /healthz for liveness probes, GET /readyz for readiness probes, and GET /metrics for Prometheus scraping to integrate Rolter into your monitoring and orchestration stack.
 - [Stability](/api/stability): GET /api/v1/stability lists the subsystems this build marks experimental — the ones that may change shape or be removed in a minor release. Absence means stable.
 - [UX Events](/api/ui-events): POST /api/v1/ui-events records structural dashboard usability telemetry — screen views, time-to-interactive, form abandons and error states — into ClickHouse alongside request logs.

@@ -1,16 +1,34 @@
 ---
-title: "GET /v1/models: List the Model Routes Your Key Can Access"
+title: "GET /v1/models: List the Models Your Key Can Access"
 sidebarTitle: "/v1/models"
-description: "List the model route names configured in Rolter that your virtual key is authorized to use, filtered by the key allow-list defined in rolter.toml."
+description: "List the route names, provider-pinned addresses and provider-group addresses your Rolter virtual key is authorized to use, filtered by the key allow-list."
 ---
 
-The `/v1/models` endpoint returns the public model names — route names — that are configured in your `rolter.toml` and accessible to the authenticated virtual key. You can use this endpoint to discover which model names to pass in the `model` field of chat, completion, or messages requests.
+The `/v1/models` endpoint returns the public model names that are configured in your `rolter.toml` and accessible to the authenticated virtual key. You can use this endpoint to discover which model names to pass in the `model` field of chat, completion, or messages requests.
 
 ## What is returned
 
-The response lists **Rolter route names**, not upstream model IDs. For example, a route configured with `model = "gpt-4o"` that targets the upstream model `gpt-4o-2024-11-20` appears in this list as `gpt-4o`. The upstream model ID is an internal concern managed by your route configuration.
+The response lists every model name this gateway accepts in a `model` field, in three forms:
 
-When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all routes.
+| Id | `owned_by` | What it is |
+| --- | --- | --- |
+| `gpt-4o` | `rolter` | a **route name** from your configuration. A route configured with `model = "gpt-4o"` that targets the upstream model `gpt-4o-2024-11-20` appears as `gpt-4o` — the upstream id stays an internal concern of the route |
+| `openai-edge/gpt-4o` | the provider's name | a **provider-pinned address**: this provider, this upstream model, no cross-provider fan-out |
+| `edge-fleet/gpt-4o` | the group's name | a **provider-group address**, balanced across the group's members |
+
+When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all of them.
+
+### How the provider-pinned list is built
+
+A provider-pinned address works for any model the provider actually serves, not only the ones your routes mention. To list them, Rolter reads the model catalogue each provider returns to its **health probe** and caches it.
+
+<Note>
+  The wider list requires active health checks (`[health] enabled = true`). With probing off, the provider-pinned entries are derived from your route targets alone, so a provider that serves more models than your routes name will under-report them. This changes only what is *listed*: `provider-slug/model` routes either way, so an address you know works even when it is not in the list.
+</Note>
+
+At most 200 catalogued models are listed per provider, so one aggregator with a
+several-hundred-model catalogue cannot bury the rest of your fleet. Models named
+by a route target are always listed, regardless of that cap.
 
 <Note>
   Rolter also exposes a built-in `fake-llm` model that responds locally without forwarding to any upstream. It appears in the model list unless a configured route shadows it with the same name. It is useful for testing authentication and connectivity without incurring upstream costs.
@@ -70,6 +88,16 @@ for model in models:
       "id": "llama",
       "object": "model",
       "owned_by": "rolter"
+    },
+    {
+      "id": "openai-edge/gpt-4o",
+      "object": "model",
+      "owned_by": "openai-edge"
+    },
+    {
+      "id": "openai-edge/o3-mini",
+      "object": "model",
+      "owned_by": "openai-edge"
     }
   ]
 }
@@ -80,11 +108,11 @@ for model in models:
 </ResponseField>
 
 <ResponseField name="data" type="array">
-  Array of model objects, one per accessible route.
+  Array of model objects, one per accessible model name.
 
   <Expandable title="Model object fields">
     <ResponseField name="id" type="string">
-      The route name you pass as `model` in request bodies (e.g. `"gpt-4o"`, `"claude"`, `"llama"`).
+      The name you pass as `model` in request bodies: a route name (e.g. `"gpt-4o"`), a provider-pinned address (`"openai-edge/gpt-4o"`), or a provider-group address (`"edge-fleet/gpt-4o"`).
     </ResponseField>
 
     <ResponseField name="object" type="string">
@@ -92,7 +120,7 @@ for model in models:
     </ResponseField>
 
     <ResponseField name="owned_by" type="string">
-      Always `"rolter"` — these are gateway-level route names, not upstream provider objects.
+      `"rolter"` for a route name, otherwise the name of the provider or provider group the address pins — so a client can group the list by where each model comes from.
     </ResponseField>
   </Expandable>
 </ResponseField>

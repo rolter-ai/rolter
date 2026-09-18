@@ -175,16 +175,17 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
 
     // provider-slug/model ids (ADR-0017): make every provider-addressable model
     // discoverable alongside the route ids. a provider's models are the upstream
-    // models it serves across the configured routes' targets (and variants);
-    // owned_by names the provider so a client can group by it. sorted + deduped
-    // for a stable listing, and filtered by the same key allow-list
+    // models named by the configured routes' targets (and variants) *plus* the
+    // catalogue its health probe reported, so the listing matches what
+    // `Snapshot::resolve_pinned` will actually route rather than the subset a
+    // route happens to mention (#1647). owned_by names the provider so a client
+    // can group by it. sorted + deduped for a stable listing, and filtered by
+    // the same key allow-list
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
         .map(|(slug, name)| (name.as_str(), slug.as_str()))
         .collect();
-    let mut pinned: std::collections::BTreeSet<(String, String)> =
-        std::collections::BTreeSet::new();
     // provider name -> upstream models it serves, reused to expand group ids
     let mut provider_models: std::collections::HashMap<&str, std::collections::BTreeSet<String>> =
         std::collections::HashMap::new();
@@ -200,15 +201,31 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
                 .entry(target.provider.as_str())
                 .or_default()
                 .insert(upstream.to_string());
-            let Some(slug) = name_to_slug.get(target.provider.as_str()) else {
-                continue;
-            };
+        }
+    }
+    // widen with each provider's probed catalogue. the cache is empty until the
+    // first health sweep lands (and stays empty while probing is off), in which
+    // case this is exactly the route-derived listing it always was
+    for name in snap.providers.keys() {
+        let Some(models) = state.model_catalog.models(name) else {
+            continue;
+        };
+        let known = provider_models.entry(name.as_str()).or_default();
+        known.extend(models.iter().cloned());
+    }
+    let mut pinned: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for (provider, models) in &provider_models {
+        let Some(slug) = name_to_slug.get(provider) else {
+            continue;
+        };
+        for upstream in models {
             let id = format!("{slug}/{upstream}");
             if vk
                 .as_ref()
-                .is_none_or(|vk| vk.model_permitted(&id) && vk.provider_allowed(&target.provider))
+                .is_none_or(|vk| vk.model_permitted(&id) && vk.provider_allowed(provider))
             {
-                pinned.insert((id, target.provider.clone()));
+                pinned.insert((id, (*provider).to_string()));
             }
         }
     }
@@ -4148,6 +4165,124 @@ mod tests {
         state.managed_auth = true;
         let resp = list_models(State(state), HeaderMap::new()).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A config whose single provider serves five models but whose one route
+    /// names only one of them — the shape of #1647.
+    fn config_with_a_wide_provider() -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "openai-edge".to_string(),
+            slug: Some("openai-edge".to_string()),
+            ..Default::default()
+        });
+        config.routes.push(ModelRoute {
+            model: "chat".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![Target {
+                provider: "openai-edge".to_string(),
+                model: Some("gpt-4o".to_string()),
+                weight: 1,
+            }],
+        });
+        config
+    }
+
+    /// The bug: a model the provider serves is routable through
+    /// `Snapshot::resolve_pinned` but was never listed, because the listing was
+    /// built from route targets alone.
+    #[tokio::test]
+    async fn list_models_lists_the_whole_probed_catalogue_not_only_route_targets() {
+        let state = AppState::new(&config_with_a_wide_provider());
+        state.model_catalog.record(
+            "openai-edge",
+            vec![
+                "gpt-4o".to_string(),
+                "gpt-4.1".to_string(),
+                "o3-mini".to_string(),
+            ],
+        );
+        let ids =
+            models_in_response(list_models(State(state.clone()), HeaderMap::new()).await).await;
+        for id in [
+            "openai-edge/gpt-4o",
+            "openai-edge/gpt-4.1",
+            "openai-edge/o3-mini",
+        ] {
+            assert!(ids.contains(&id.to_string()), "{id} missing from {ids:?}");
+            // every listed address is one the gateway will actually route
+            assert!(
+                state.snapshot.load().resolve_pinned(id).is_some(),
+                "{id} is listed but not routable"
+            );
+        }
+    }
+
+    /// Without a probe the listing is exactly what it always was, so a
+    /// deployment that never enables health checks sees no change.
+    #[tokio::test]
+    async fn an_unprobed_provider_keeps_the_route_derived_listing() {
+        let state = AppState::new(&config_with_a_wide_provider());
+        let ids = models_in_response(list_models(State(state), HeaderMap::new()).await).await;
+        assert!(ids.contains(&"openai-edge/gpt-4o".to_string()), "{ids:?}");
+        assert!(!ids.iter().any(|id| id == "openai-edge/o3-mini"), "{ids:?}");
+    }
+
+    /// The catalogue widens what is discoverable, never what a key may reach.
+    #[tokio::test]
+    async fn a_key_allow_list_still_filters_catalogued_models() {
+        let mut config = config_with_a_wide_provider();
+        config.virtual_keys.push(VirtualKeyConfig {
+            key: "sk-pinned".to_string(),
+            name: None,
+            models: vec!["openai-edge/gpt-4o".to_string()],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        });
+        let state = AppState::new(&config);
+        state.model_catalog.record(
+            "openai-edge",
+            vec!["gpt-4o".to_string(), "o3-mini".to_string()],
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-pinned"),
+        );
+        let ids = models_in_response(list_models(State(state), headers).await).await;
+        assert_eq!(ids, vec!["openai-edge/gpt-4o".to_string()]);
+    }
+
+    /// A group address fans out over its members' models, so a member's probed
+    /// catalogue has to widen the group listing too.
+    #[tokio::test]
+    async fn a_group_listing_widens_with_its_members_catalogue() {
+        let mut config = config_with_a_wide_provider();
+        config
+            .provider_groups
+            .push(rolter_core::ProviderGroupConfig {
+                name: "edge fleet".to_string(),
+                slug: Some("edge".to_string()),
+                strategy: BalancingStrategy::RoundRobin,
+                members: vec![rolter_core::GroupMember {
+                    provider: "openai-edge".to_string(),
+                    model: None,
+                    weight: 1,
+                }],
+            });
+        let state = AppState::new(&config);
+        state
+            .model_catalog
+            .record("openai-edge", vec!["o3-mini".to_string()]);
+        let ids = models_in_response(list_models(State(state), HeaderMap::new()).await).await;
+        assert!(ids.contains(&"edge/o3-mini".to_string()), "{ids:?}");
     }
 
     #[tokio::test]
