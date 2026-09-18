@@ -46,6 +46,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
 
+import { REPEATED_SHAPES } from "./repeated-shapes-allowlist";
+
 const ROOT = join(import.meta.dir, "..");
 
 /** where a primitive is allowed to be the thing it wraps */
@@ -101,7 +103,7 @@ export function stripComments(source: string): string {
  */
 const WAIVER = /ui-primitives-allow:\s*(.*)$/;
 
-export type RuleId = "select" | "pre" | "native-dialog" | "shadowed-primitive";
+export type RuleId = "select" | "pre" | "native-dialog" | "shadowed-primitive" | "duplicated-shape";
 
 export interface Violation {
   file: string;
@@ -109,6 +111,14 @@ export interface Violation {
   rule: RuleId;
   /** the source text that tripped the rule, for the message */
   found: string;
+  /**
+   * Every `file:line` sharing this shape, for `duplicated-shape` only.
+   *
+   * The whole point of that rule is the set, not the one site it happens to
+   * report at: a message naming a single line would send the reader to fix one
+   * copy of five.
+   */
+  sites?: string[];
 }
 
 export interface Waiver {
@@ -136,6 +146,11 @@ const ADVICE: Record<RuleId, string> = {
     "this re-declares a component `src/components/ui/` already exports, " +
     "without importing it — a second copy of a primitive, which is how #1044 " +
     "happened. Import the shared one, or compose it under a name of its own.",
+  "duplicated-shape":
+    "the same element and the same design-system classes, hand-written in three " +
+    "or more files — a primitive that was never extracted, which is how #1658 " +
+    'shipped the same save failure with `role="alert"` in one file and without ' +
+    "it in four. Pull it into `src/components/ui/` and import it.",
 };
 
 /**
@@ -273,41 +288,258 @@ export function checkSource(
   return { violations, waivers };
 }
 
+/**
+ * How many design-system tokens make a className distinctive (#1686).
+ *
+ * `flex items-center gap-2` repeats in eighteen files and always will — a stack
+ * of generic utilities is a sentence in Tailwind, not a component. What marks a
+ * *deliberate* shape is the arbitrary value: `rounded-[10px]`,
+ * `text-[color:var(--text-subtle)]`, `max-w-[840px]`. Those are the design
+ * system spelled out by hand, and when the same handful of them lands on the
+ * same tag in three files, somebody has re-typed a primitive.
+ *
+ * So the filter is two knobs rather than one length. Both were tuned against
+ * the tree: at four tokens with two arbitrary ones, the footer line #1658 had
+ * to fix by hand (`p` with `px-[22px]` and
+ * `text-[color:var(--status-danger-text)]`) is caught, and not one generic flex
+ * row is.
+ */
+const MIN_TOKENS = 4;
+const MIN_ARBITRARY = 2;
+
+/** a shape may live in at most this many files before it is a missing primitive */
+const MAX_FILES = 2;
+
+export interface Shape {
+  file: string;
+  line: number;
+  /** `tag|class class class`, sorted so attribute order cannot hide a copy */
+  key: string;
+  tag: string;
+}
+
+/** `rounded-[10px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
+function isArbitrary(token: string): boolean {
+  return token.includes("[");
+}
+
+/**
+ * The end of the JSX opening tag that starts at `from`.
+ *
+ * Walked rather than matched with `[^>]*`: an `onClick={() => x}` before the
+ * `className` puts a `>` inside the tag, and a regex that stopped there would
+ * miss every element with a handler on it — which is most of the interesting
+ * ones.
+ */
+function endOfTag(source: string, from: number): number {
+  let i = from;
+  let depth = 0;
+  let quote = "";
+  while (i < source.length) {
+    const c = source[i]!;
+    if (quote) {
+      if (c === quote) quote = "";
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+    } else if (c === "{") {
+      depth += 1;
+    } else if (c === "}") {
+      depth -= 1;
+    } else if (c === ">" && depth === 0) {
+      break;
+    }
+    i += 1;
+  }
+  return i;
+}
+
+/**
+ * Every distinctive intrinsic element in one file, and the waivers that silence
+ * one.
+ *
+ * Two deliberate narrowings, both of which trade recall for a guard nobody
+ * turns off:
+ *
+ *   - **intrinsic tags only** (`div`, `section`, `button`), never `<Card>` or
+ *     `<GatedButton>`. A shared component rendered with the same className in
+ *     five screens is the primitive doing its job; flagging it would punish
+ *     exactly the composition this whole check exists to encourage.
+ *   - **literal classNames only**. `className={cn(…)}` is not compared: its
+ *     value depends on props, so two spellings that look alike may render
+ *     nothing alike, and a guard that guessed there would be wrong in the
+ *     direction that costs trust.
+ */
+export function collectShapes(
+  source: string,
+  file: string,
+): { shapes: Shape[]; waivers: Waiver[] } {
+  const shapes: Shape[] = [];
+  const waivers: Waiver[] = [];
+  if (file.startsWith(PRIMITIVES_DIR) || FIXTURES.test(file)) return { shapes, waivers };
+
+  const masked = stripComments(source);
+  const lines = source.split("\n");
+  // lowercase initial is what makes a JSX tag an intrinsic element
+  const start = /<([a-z][a-z0-9.-]*)(?=[\s/>])/g;
+  let match: RegExpExecArray | null;
+  while ((match = start.exec(masked))) {
+    const body = masked.slice(match.index, endOfTag(masked, match.index + match[0].length));
+    const className = /\sclassName="([^"]*)"/.exec(body);
+    if (!className) continue;
+    const tokens = className[1]!.trim().split(/\s+/).filter(Boolean);
+    const arbitrary = tokens.filter(isArbitrary).length;
+    if (tokens.length < MIN_TOKENS || arbitrary < MIN_ARBITRARY) continue;
+
+    const line = masked.slice(0, match.index).split("\n").length;
+    const reason = waiverAbove(lines, line - 1);
+    if (reason !== null) {
+      waivers.push({
+        file,
+        line,
+        rule: reason ? "duplicated-shape" : "unknown",
+        reason,
+      });
+      continue;
+    }
+    shapes.push({
+      file,
+      line,
+      tag: match[1]!,
+      key: `${match[1]!}|${[...tokens].sort().join(" ")}`,
+    });
+  }
+  return { shapes, waivers };
+}
+
+/**
+ * A recorded shape and why it is still here.
+ *
+ * Modelled on `literals-allowlist.ts` rather than on a baseline JSON: an entry
+ * carries the reason a reviewer accepted it, and `staleShapes()` deletes it the
+ * moment the duplication is gone, so the list can only shrink.
+ */
+export type ShapeAllowList = Record<string, string>;
+
+/** Every shape that outgrew `MAX_FILES` and is not recorded. */
+export function duplicatedShapes(shapes: Shape[], allowed: ShapeAllowList = {}): Violation[] {
+  const byKey = new Map<string, Shape[]>();
+  for (const shape of shapes) {
+    const at = byKey.get(shape.key);
+    if (at) at.push(shape);
+    else byKey.set(shape.key, [shape]);
+  }
+  const violations: Violation[] = [];
+  for (const [key, group] of byKey) {
+    const files = [...new Set(group.map((s) => s.file))];
+    if (files.length <= MAX_FILES || key in allowed) continue;
+    // reported at the first site so the message has a place to point, but the
+    // whole set rides along: fixing one copy of five is not fixing this
+    const first = group[0]!;
+    violations.push({
+      file: first.file,
+      line: first.line,
+      rule: "duplicated-shape",
+      found: key,
+      sites: group.map((s) => `${s.file}:${s.line}`),
+    });
+  }
+  return violations;
+}
+
+/** Recorded shapes that no longer duplicate, so the entry has to go. */
+export function staleShapes(shapes: Shape[], allowed: ShapeAllowList = {}): string[] {
+  const files = new Map<string, Set<string>>();
+  for (const shape of shapes) {
+    const at = files.get(shape.key) ?? new Set<string>();
+    at.add(shape.file);
+    files.set(shape.key, at);
+  }
+  return Object.keys(allowed)
+    .filter((key) => (files.get(key)?.size ?? 0) <= MAX_FILES)
+    .sort();
+}
+
+/** Allow-list entries written without a reason, which silence rather than explain. */
+export function unexplainedShapes(allowed: ShapeAllowList = {}): string[] {
+  return Object.keys(allowed)
+    .filter((key) => !allowed[key]?.trim())
+    .sort();
+}
+
 /** The failure text — it has to name the replacement, not only the offence. */
 export function describeViolation(v: Violation): string {
+  if (v.sites) {
+    const [tag, className] = v.found.split("|");
+    return (
+      `<${tag} className="${className}"> in ${new Set(v.sites.map((s) => s.split(":")[0])).size}` +
+      ` files — ${ADVICE[v.rule]}\n      ${v.sites.join("\n      ")}`
+    );
+  }
   return `${v.file}:${v.line}: ${v.found} — ${ADVICE[v.rule]}`;
 }
 
-export function checkAll(root = ROOT): { violations: Violation[]; waivers: Waiver[] } {
+export function checkAll(
+  root = ROOT,
+  allowedShapes: ShapeAllowList = REPEATED_SHAPES,
+): { violations: Violation[]; waivers: Waiver[]; stale: string[] } {
   const primitives = readPrimitiveNames(root);
   const violations: Violation[] = [];
   const waivers: Waiver[] = [];
+  const shapes: Shape[] = [];
   const seen = new Set<string>();
   for (const pattern of SCANNED) {
     for (const path of new Glob(pattern).scanSync(root)) {
       const rel = path.replace(/\\/g, "/");
       if (seen.has(rel)) continue;
       seen.add(rel);
-      const result = checkSource(readFileSync(join(root, path), "utf8"), rel, primitives);
+      const source = readFileSync(join(root, path), "utf8");
+      const result = checkSource(source, rel, primitives);
       violations.push(...result.violations);
       waivers.push(...result.waivers);
+      const shaped = collectShapes(source, rel);
+      shapes.push(...shaped.shapes);
+      waivers.push(...shaped.waivers);
     }
   }
+  violations.push(...duplicatedShapes(shapes, allowedShapes));
   const byPlace = (a: { file: string; line: number }, b: { file: string; line: number }) =>
     a.file.localeCompare(b.file) || a.line - b.line;
-  return { violations: violations.sort(byPlace), waivers: waivers.sort(byPlace) };
+  return {
+    violations: violations.sort(byPlace),
+    waivers: waivers.sort(byPlace),
+    stale: staleShapes(shapes, allowedShapes),
+  };
 }
 
 if (import.meta.main) {
   const primitives = readPrimitiveNames();
-  const { violations, waivers } = checkAll();
+  const { violations, waivers, stale } = checkAll();
 
   console.log(`scanned ${SCANNED.join(", ")}`);
   console.log(`  ${primitives.length} shared component(s) from ${PRIMITIVE_MODULES}`);
+  console.log(`  ${Object.keys(REPEATED_SHAPES).length} repeated shape(s) recorded`);
   console.log(`  ${waivers.length} waiver(s) honoured`);
   for (const w of waivers) console.log(`    ${w.file}:${w.line}  [${w.rule}]  ${w.reason}`);
 
   // a waiver with no reason is not a waiver, it is a silencer
+  const silencers = unexplainedShapes(REPEATED_SHAPES);
+  if (silencers.length > 0) {
+    console.error(`\n${silencers.length} recorded shape(s) with no reason:`);
+    for (const key of silencers) console.error(`  ${key}`);
+    console.error("\nsay why the duplication is still there, or extract the primitive instead.");
+    process.exit(1);
+  }
+
+  if (stale.length > 0) {
+    console.error(`\n${stale.length} recorded shape(s) no longer duplicated:`);
+    for (const key of stale) console.error(`  ${key}`);
+    console.error(
+      "\nthe primitive was extracted, or the copies were deleted. drop the entry from\n" +
+        "scripts/repeated-shapes-allowlist.ts so the same shape cannot come back unnoticed.",
+    );
+    process.exit(1);
+  }
+
   const unexplained = waivers.filter((w) => w.rule === "unknown");
   if (unexplained.length > 0) {
     console.error(`\n${unexplained.length} waiver(s) with no reason:`);

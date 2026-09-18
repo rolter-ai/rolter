@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Lock, Tag, Trash2, Loader2 } from "lucide-react";
+import { Boxes, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -21,6 +21,7 @@ import {
   Toolbar,
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
@@ -467,23 +468,13 @@ export default function Models() {
                 <Tag className="h-3.5 w-3.5" />
               </Button>
               {r.origin === "db" && (
-                <button
-                  type="button"
+                <DeleteIconButton
+                  label={t("pages.models.deleteAria", { model: r.name })}
                   title={deleteGate.reason ?? t("pages.models.deleteAria", { model: r.name })}
-                  aria-label={t("pages.models.deleteAria", { model: r.name })}
-                  disabled={
-                    deleteGate.denied ||
-                    (removeModel.isPending && deleteTarget?.model === r.entry.model)
-                  }
+                  disabled={deleteGate.denied}
+                  pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
                   onClick={() => setDeleteTarget(r.entry)}
-                  className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {removeModel.isPending && deleteTarget?.model === r.entry.model ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                />
               )}
             </div>
           </ListRow>
