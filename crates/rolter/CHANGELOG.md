@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-v0.1.0...rolter-v0.1.1) - 2026-09-18
+
+### Bug Fixes
+- *(gateway)* print a try-it command easy-up's own config accepts ([#1703](https://github.com/rolter-ai/rolter/pull/1703)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* give the fleet one place to decide where request logs go [#929] ([#1174](https://github.com/rolter-ai/rolter/pull/1174)) by [@ormeilu](https://github.com/ormeilu)
+
+### Build
+- *(control)* fix easy_up Args literal for rolter-control/postgres [#1295] ([#1305](https://github.com/rolter-ai/rolter/pull/1305)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(control)* record the struggle signals the ux stream cannot express [#1731] ([#1746](https://github.com/rolter-ai/rolter/pull/1746)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* give the dashboard a documentation base URL ([#1656](https://github.com/rolter-ai/rolter/pull/1656)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* migrate rolter.toml across schema versions on load [#326] ([#1515](https://github.com/rolter-ai/rolter/pull/1515)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* warn about unrecognised rolter.toml keys at startup ([#1438](https://github.com/rolter-ai/rolter/pull/1438)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* report unrecognised rolter.toml keys in rolter check ([#1433](https://github.com/rolter-ai/rolter/pull/1433)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* totp second factor for local accounts [#1078] ([#1324](https://github.com/rolter-ai/rolter/pull/1324)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* export the live configuration as importable rolter.toml [#1082] ([#1311](https://github.com/rolter-ai/rolter/pull/1311)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* cached update check with a dashboard hint and a cli notice [#902] ([#1294](https://github.com/rolter-ai/rolter/pull/1294)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* verify and rotate the KEK against the control-plane store [#923] ([#1175](https://github.com/rolter-ai/rolter/pull/1175)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* throttle and audit failed logins [#1079] ([#1161](https://github.com/rolter-ai/rolter/pull/1161)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(control)* resolve the public base url once, not per request ([#1435](https://github.com/rolter-ai/rolter/pull/1435)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(core)* lint the vendored easy-up example config directly [#1440] ([#1471](https://github.com/rolter-ai/rolter/pull/1471)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-v0.0.10...rolter-v0.0.11) - 2026-08-13
 
 ### Bug Fixes

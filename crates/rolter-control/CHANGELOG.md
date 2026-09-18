@@ -6,6 +6,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.1.0...rolter-control-v0.1.1) - 2026-09-18
+
+### Bug Fixes
+- *(control)* read provider credentials in either spelling on seed and export ([#1733](https://github.com/rolter-ai/rolter/pull/1733)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* read a route complexity policy at route:read ([#1717](https://github.com/rolter-ai/rolter/pull/1717)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* expose discovered_iss_supported on the oauth-client view [#1569] ([#1602](https://github.com/rolter-ai/rolter/pull/1602)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* make a missing node identity audible ([#1705](https://github.com/rolter-ai/rolter/pull/1705)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* bump config_version on provider group writes ([#1702](https://github.com/rolter-ai/rolter/pull/1702)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record when a ui event happened, not when it arrived [#1224] ([#1668](https://github.com/rolter-ai/rolter/pull/1668)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* only demand a kek when set_oauth_client seals a secret [#1564] ([#1571](https://github.com/rolter-ai/rolter/pull/1571)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* validate set_auth before sealing, and only demand a kek to seal ([#1565](https://github.com/rolter-ai/rolter/pull/1565)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* clear the mcp oauth discovery cache when the issuer or discovery mode changes [#1432] ([#1507](https://github.com/rolter-ai/rolter/pull/1507)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* clear stale mcp oauth discovery cache on url change ([#1431](https://github.com/rolter-ai/rolter/pull/1431)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* bring the mcp oauth client up to the current spec ([#1419](https://github.com/rolter-ai/rolter/pull/1419)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* break invocation-list ties so burst rows page stably ([#1391](https://github.com/rolter-ai/rolter/pull/1391)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* document config/export and sso-provider update in the OpenAPI doc ([#1316](https://github.com/rolter-ai/rolter/pull/1316)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* return the unpriced flag on /analytics/invocations [#1226] ([#1277](https://github.com/rolter-ai/rolter/pull/1277)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* name the grain of a health rollup and nest targets under their provider ([#1282](https://github.com/rolter-ai/rolter/pull/1282)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* stop echoing raw ClickHouse errors to the dashboard [#1221] ([#1222](https://github.com/rolter-ai/rolter/pull/1222)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* stamp request logs with the request time, not the batch flush time ([#1223](https://github.com/rolter-ai/rolter/pull/1223)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* redact every credential from the dashboard's config view [#1212] ([#1216](https://github.com/rolter-ai/rolter/pull/1216)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* tell a store-less control plane apart from a generic 404 [#1204] ([#1211](https://github.com/rolter-ai/rolter/pull/1211)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* parse optional log-window params without failing on empty strings [#1177] ([#1190](https://github.com/rolter-ai/rolter/pull/1190)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* give the fleet one place to decide where request logs go [#929] ([#1174](https://github.com/rolter-ai/rolter/pull/1174)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Build
+- *(control)* fix easy_up Args literal for rolter-control/postgres [#1295] ([#1305](https://github.com/rolter-ai/rolter/pull/1305)) by [@ormeilu](https://github.com/ormeilu)
+
+### CI/CD
+- *(infra)* repin rust-toolchain to a reachable commit [#1227] ([#1455](https://github.com/rolter-ai/rolter/pull/1455)) by [@ormeilu](https://github.com/ormeilu)
+
+### Dependencies
+- *(deps)* bump argon2 from 0.5.3 to 0.6.0 ([#1156](https://github.com/rolter-ai/rolter/pull/1156)) by [@dependabot[bot]](https://github.com/dependabot[bot])
+
+### Documentation
+- *(control)* document every route's query string, and guard it [#1412] ([#1604](https://github.com/rolter-ai/rolter/pull/1604)) by [@ormeilu](https://github.com/ormeilu)
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(control)* record the struggle signals the ux stream cannot express [#1731] ([#1746](https://github.com/rolter-ai/rolter/pull/1746)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* mint a playground key the server scopes itself [#1640] ([#1706](https://github.com/rolter-ai/rolter/pull/1706)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* give the dashboard a documentation base URL ([#1656](https://github.com/rolter-ai/rolter/pull/1656)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* export the tiered provider shape with a schema_version stamp ([#1561](https://github.com/rolter-ai/rolter/pull/1561)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* keyset pagination for the invocations list ([#1410](https://github.com/rolter-ai/rolter/pull/1410)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* list every project in an org in one request ([#1443](https://github.com/rolter-ai/rolter/pull/1443)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* warn about unrecognised rolter.toml keys at startup ([#1438](https://github.com/rolter-ai/rolter/pull/1438)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* stability marker so experimental subsystems are labelled [#1385] ([#1402](https://github.com/rolter-ai/rolter/pull/1402)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* static credentials and per-server transport settings for mcp [#952] ([#1349](https://github.com/rolter-ai/rolter/pull/1349)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* label primitive for providers, routes, groups and models [#985] ([#1330](https://github.com/rolter-ai/rolter/pull/1330)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* totp second factor for local accounts [#1078] ([#1324](https://github.com/rolter-ai/rolter/pull/1324)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* update an SSO provider in place instead of delete-and-recreate [#1233] ([#1299](https://github.com/rolter-ai/rolter/pull/1299)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* serve an OpenAPI document for the control-plane API [#1040] ([#1310](https://github.com/rolter-ai/rolter/pull/1310)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* export the live configuration as importable rolter.toml [#1082] ([#1311](https://github.com/rolter-ai/rolter/pull/1311)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* cached update check with a dashboard hint and a cli notice [#902] ([#1294](https://github.com/rolter-ai/rolter/pull/1294)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* make payload capture discoverable, on in the dogfood profile ([#1287](https://github.com/rolter-ai/rolter/pull/1287)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* give the curated MCP library entries their tool and scope lists ([#1284](https://github.com/rolter-ai/rolter/pull/1284)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* filter /analytics/invocations by business unit and customer ([#1281](https://github.com/rolter-ai/rolter/pull/1281)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* require a name and an expiry when minting a virtual key [#945] ([#1172](https://github.com/rolter-ai/rolter/pull/1172)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* carry the security policy to the gateway and enforce it [#1162] ([#1165](https://github.com/rolter-ai/rolter/pull/1165)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* throttle and audit failed logins [#1079] ([#1161](https://github.com/rolter-ai/rolter/pull/1161)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* compute money in exact decimal instead of f64 ([#1450](https://github.com/rolter-ai/rolter/pull/1450)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* resolve the public base url once, not per request ([#1435](https://github.com/rolter-ai/rolter/pull/1435)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract the guardrail repo into its own module [#1042] ([#1320](https://github.com/rolter-ai/rolter/pull/1320)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract mcp repo into its own module [#1042] ([#1303](https://github.com/rolter-ai/rolter/pull/1303)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- *(control)* drive ui events through clickhouse end to end [#1728] ([#1749](https://github.com/rolter-ai/rolter/pull/1749)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* give every worktree its own postgres test database [#1430] ([#1734](https://github.com/rolter-ai/rolter/pull/1734)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* assert the config export is clean under the key lint [#1439] ([#1472](https://github.com/rolter-ai/rolter/pull/1472)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* assert the totp replay rule, not the clock ([#1452](https://github.com/rolter-ai/rolter/pull/1452)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* drop the per-test schema when an integration test finishes ([#1428](https://github.com/rolter-ai/rolter/pull/1428)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-control-v0.0.10...rolter-control-v0.0.11) - 2026-08-13
 
 ### Bug Fixes
