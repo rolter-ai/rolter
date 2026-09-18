@@ -22,7 +22,7 @@
 //! skips then never earns the latency sample the evidence check is counting,
 //! so the route stays on the fallback forever and `adaptive` is silently equal
 //! to the strategy it replaced. A bounded warm-up therefore runs *before*
-//! engagement: while the evidence is thin, up to [`MAX_WARMUP_PROBES`] picks
+//! engagement: while the evidence is thin, up to `MAX_WARMUP_PROBES` picks
 //! per target are steered to the targets that have no latency sample yet. The
 //! budget is what keeps an unreachable target from swallowing the route — it
 //! costs at most `MAX_WARMUP_PROBES` picks in total, not a permanent share.
@@ -79,7 +79,7 @@ pub struct Adaptive {
     /// picks each target has served, index-aligned with the route targets
     target_samples: Vec<AtomicU64>,
     /// warm-up picks already spent on each target, bounded by
-    /// [`MAX_WARMUP_PROBES`] so an unreachable target cannot absorb the route
+    /// `MAX_WARMUP_PROBES` so an unreachable target cannot absorb the route
     warmup_probes: Vec<AtomicU64>,
     /// milliseconds since [`Adaptive::built`] at each target's last pick;
     /// meaningless until that target's sample count is non-zero
