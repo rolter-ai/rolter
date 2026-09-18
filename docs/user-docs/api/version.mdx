@@ -6,7 +6,7 @@ description: "GET /api/v1/version reports the running rolter version and, when t
 
 `GET /api/v1/version` answers two questions in one document: which rolter this
 control plane is, and whether a newer stable release exists. The dashboard reads
-it once per session for the small *v0.2.0 available* hint beside the version in
+it once per session for the small _v0.2.0 available_ hint beside the version in
 its footer, so no browser ever calls GitHub itself and a deployment does not
 leak per-user egress.
 
@@ -41,26 +41,26 @@ about the deployment, not about any tenant. An anonymous request is refused with
 }
 ```
 
-| Field | Type | Meaning |
-|---|---|---|
-| `current` | string | the version this control plane was built as (the Cargo workspace version, which release-plz maintains) |
-| `latest` | string or `null` | the latest stable release the last successful check reported; `null` until one has succeeded |
-| `release_url` | string or `null` | the release page to send an operator to |
-| `update_available` | boolean | `latest` is strictly newer than `current` by semantic-version order |
-| `checked_at` | RFC 3339 or `null` | when the last successful check completed |
-| `enabled` | boolean | whether the check runs at all; `false` when `ROLTER_UPDATE_CHECK=false` |
+| Field              | Type               | Meaning                                                                                                |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------ |
+| `current`          | string             | the version this control plane was built as (the Cargo workspace version, which release-plz maintains) |
+| `latest`           | string or `null`   | the latest stable release the last successful check reported; `null` until one has succeeded           |
+| `release_url`      | string or `null`   | the release page to send an operator to                                                                |
+| `update_available` | boolean            | `latest` is strictly newer than `current` by semantic-version order                                    |
+| `checked_at`       | RFC 3339 or `null` | when the last successful check completed                                                               |
+| `enabled`          | boolean            | whether the check runs at all; `false` when `ROLTER_UPDATE_CHECK=false`                                |
 
 ### States
 
 The dashboard treats every state except "update available" as "show the plain
 version". These are the shapes it can meet:
 
-| Situation | `enabled` | `latest` | `update_available` |
-|---|---|---|---|
-| check disabled (`ROLTER_UPDATE_CHECK=false`) | `false` | `null` | `false` |
-| still checking, or offline / rate-limited so far | `true` | `null` | `false` |
-| current or newer than the latest release | `true` | set | `false` |
-| an older build | `true` | set | `true` |
+| Situation                                        | `enabled` | `latest` | `update_available` |
+| ------------------------------------------------ | --------- | -------- | ------------------ |
+| check disabled (`ROLTER_UPDATE_CHECK=false`)     | `false`   | `null`   | `false`            |
+| still checking, or offline / rate-limited so far | `true`    | `null`   | `false`            |
+| current or newer than the latest release         | `true`    | set      | `false`            |
+| an older build                                   | `true`    | set      | `true`             |
 
 An air-gapped control plane that has not opted out is indistinguishable from
 one still checking: `enabled: true`, everything else empty. Nothing is logged

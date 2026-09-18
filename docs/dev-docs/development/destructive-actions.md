@@ -49,8 +49,8 @@ Four properties are load-bearing:
   the wrong row deleted.
 - **The description states the consequence in one sentence.** What stops
   working, and whether anything else goes with it. `McpOAuth` is the model:
-  revoking a *grant* cascades to its sessions and the dialog counts them;
-  revoking a *session* does not, and the dialog says so.
+  revoking a _grant_ cascades to its sessions and the dialog counts them;
+  revoking a _session_ does not, and the dialog says so.
 - **The dialog does not close itself on confirm.** The caller closes it from
   `onSuccess`. A mutation that fails leaves the dialog open with the control
   plane's own message on a `role="alert"` line, because closing would drop the
@@ -101,7 +101,7 @@ const { guard, close, locked, prompt } = useDiscardGuard({
 ```
 
 `Sheet.onDismiss` answers synchronously — it was shaped around the browser
-prompt — so the hook keeps that contract by *refusing* the dismissal and raising
+prompt — so the hook keeps that contract by _refusing_ the dismissal and raising
 the dialog, then closing the sheet from the dialog's confirm one tick later. The
 four dismissal paths (Escape, the scrim, the header's close button, Cancel) all
 land on it, and the rules are:

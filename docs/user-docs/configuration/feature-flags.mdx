@@ -10,14 +10,14 @@ Feature flags are deployment-wide switches for the gateway subsystems that are s
 
 ## The flags
 
-| Flag | What it controls |
-|---|---|
-| `response_cache` | Serving repeated completions from the shared Redis cache instead of forwarding them upstream. |
-| `cache_aware_routing` | Scoring targets by KV-cache affinity, so a conversation keeps landing on the replica that already holds its prefix. |
-| `circuit_breaker` | Tripping a failing target out of the pool and probing it before restoring traffic. |
-| `active_health_checks` | Polling targets in the background so an unhealthy one is parked before a live request finds it. |
-| `complexity_routing` | Estimating prompt complexity and routing cheap requests to smaller models. |
-| `guardrails` | Running the configured pre- and post-call guardrail rules. |
+| Flag                   | What it controls                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `response_cache`       | Serving repeated completions from the shared Redis cache instead of forwarding them upstream.                       |
+| `cache_aware_routing`  | Scoring targets by KV-cache affinity, so a conversation keeps landing on the replica that already holds its prefix. |
+| `circuit_breaker`      | Tripping a failing target out of the pool and probing it before restoring traffic.                                  |
+| `active_health_checks` | Polling targets in the background so an unhealthy one is parked before a live request finds it.                     |
+| `complexity_routing`   | Estimating prompt complexity and routing cheap requests to smaller models.                                          |
+| `guardrails`           | Running the configured pre- and post-call guardrail rules.                                                          |
 
 The set is a fixed allowlist. There is no free-form flag namespace: each flag maps to a subsystem the gateway knows how to enable at a safe configuration boundary.
 

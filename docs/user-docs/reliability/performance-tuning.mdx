@@ -10,11 +10,11 @@ One deployment-wide runtime policy governs how Rolter talks to upstreams under l
 
 ## Retries
 
-| Setting | Range | Meaning |
-|---|---|---|
-| `retry_max_retries` | 0–10 | Retry budget for a single client request. |
-| `retry_base_ms` | 0–60000 | First backoff interval. |
-| `retry_max_ms` | 0–600000 | Ceiling the exponential backoff grows to. |
+| Setting             | Range    | Meaning                                   |
+| ------------------- | -------- | ----------------------------------------- |
+| `retry_max_retries` | 0–10     | Retry budget for a single client request. |
+| `retry_base_ms`     | 0–60000  | First backoff interval.                   |
+| `retry_max_ms`      | 0–600000 | Ceiling the exponential backoff grows to. |
 
 The cap cannot be lower than the base — an incoherent pair is rejected rather than silently clamped.
 
@@ -30,12 +30,12 @@ The cap cannot be lower than the base — an incoherent pair is rejected rather 
 
 Rolter creates an **independent bounded queue and worker set per provider**, so one slow provider cannot consume the admission capacity that healthy providers need.
 
-| Setting | Range | Meaning |
-|---|---|---|
-| `queue_capacity` | 1–100000 | Requests that may wait for a worker. |
-| `queue_workers` | 1–2048 | Concurrent in-flight requests per provider. |
-| `queue_backpressure` | `drop` / `block` / `error` | What happens when the queue is full. |
-| `queue_block_ms` | 0–120000 | How long `block` waits for capacity. |
+| Setting              | Range                      | Meaning                                     |
+| -------------------- | -------------------------- | ------------------------------------------- |
+| `queue_capacity`     | 1–100000                   | Requests that may wait for a worker.        |
+| `queue_workers`      | 1–2048                     | Concurrent in-flight requests per provider. |
+| `queue_backpressure` | `drop` / `block` / `error` | What happens when the queue is full.        |
+| `queue_block_ms`     | 0–120000                   | How long `block` waits for capacity.        |
 
 The three backpressure policies:
 
@@ -47,11 +47,11 @@ Shed requests never fail over to a sibling target and never retry: admission
 backpressure is a signal to the caller, not an upstream fault. Each policy has a
 fixed wire shape:
 
-| Policy | HTTP status | `error.code` | `error.type` |
-|---|---|---|---|
-| `drop` | 503 | `queue_dropped` | `overloaded_error` |
-| `block` (timed out) | 429 | `queue_timeout` | `rate_limit_error` |
-| `error` | 429 | `queue_full` | `rate_limit_error` |
+| Policy              | HTTP status | `error.code`    | `error.type`       |
+| ------------------- | ----------- | --------------- | ------------------ |
+| `drop`              | 503         | `queue_dropped` | `overloaded_error` |
+| `block` (timed out) | 429         | `queue_timeout` | `rate_limit_error` |
+| `error`             | 429         | `queue_full`    | `rate_limit_error` |
 
 ```json
 {

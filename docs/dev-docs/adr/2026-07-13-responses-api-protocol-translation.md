@@ -35,9 +35,9 @@ flowchart LR
 
 ## Comparison
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **1. Native passthrough only** | No translation and no loss for a Responses-native upstream | Chat and Anthropic routes do not support the new surface |
+| Option                                  | Pros                                                                                              | Cons                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **1. Native passthrough only**          | No translation and no loss for a Responses-native upstream                                        | Chat and Anthropic routes do not support the new surface                                |
 | **2. Protocol registry with Responses** | One public contract for OpenAI, Chat and Anthropic; transport, metrics and accounting stay shared | Not every Responses capability has an equivalent; an SSE converter has to be maintained |
 
 ## Decision

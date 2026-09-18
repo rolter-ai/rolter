@@ -24,7 +24,7 @@ re-hand-writes them every time an endpoint is added. Nothing tells an SDK author
 that a new endpoint exists, so the three clients drift from the server and from
 each other, independently and silently.
 
-There is a second, sharper problem: even *with* a document, a hand-maintained
+There is a second, sharper problem: even _with_ a document, a hand-maintained
 one goes stale the first time somebody adds an endpoint and forgets. A schema
 that is 95% right is worse than none, because a generated SDK reports the
 missing 5% as "not part of the API" rather than as "not documented yet".
@@ -38,7 +38,7 @@ missing 5% as "not part of the API" rather than as "not documented yet".
    the annotation lives next to the code it describes. It means adding a
    proc-macro dependency and its whole derive graph to a crate that currently
    has neither, annotating every handler and every request/response type in one
-   change, and accepting that the derived schema describes rolter's *Rust types*
+   change, and accepting that the derived schema describes rolter's _Rust types_
    rather than its wire contract — the two diverge wherever a handler flattens,
    renames or hides a field, which several of them do (`VirtualKey.key_hash`,
    `User.password_hash`, `CreatedVirtualKey`'s flattened plaintext).

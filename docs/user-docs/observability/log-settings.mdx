@@ -20,12 +20,12 @@ Payload capture stores the raw prompt and completion bodies next to the log meta
 
 When it is on, four settings narrow what gets stored:
 
-| Setting | Effect |
-|---|---|
-| `payload_capture_max_bytes` | Truncates anything longer. Maximum `1048576` (1 MiB). |
-| `payload_capture_redact_fields` | JSON keys stripped **before the write**, so a redacted value never reaches storage. |
-| `payload_capture_models` | Capture only these models. Empty means all. |
-| `payload_capture_virtual_key_ids` | Capture only these virtual keys. Empty means all. |
+| Setting                           | Effect                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------- |
+| `payload_capture_max_bytes`       | Truncates anything longer. Maximum `1048576` (1 MiB).                               |
+| `payload_capture_redact_fields`   | JSON keys stripped **before the write**, so a redacted value never reaches storage. |
+| `payload_capture_models`          | Capture only these models. Empty means all.                                         |
+| `payload_capture_virtual_key_ids` | Capture only these virtual keys. Empty means all.                                   |
 
 Redaction happening before the write is the important part: turning a field on later does not retroactively clean what is already stored, and turning it off does not expose history that was never captured.
 

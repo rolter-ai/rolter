@@ -31,11 +31,11 @@ client authorization headers are removed.
 A registered server's `transport`, and an organization's
 `default_transport`, must be one of:
 
-| Value | Proxied over this endpoint |
-| --- | --- |
-| `streamable_http` | yes — the default |
-| `sse` | yes, legacy |
-| `websocket` | no; accepted in the registry, rejected with `mcp_transport_unsupported` on this HTTP endpoint |
+| Value             | Proxied over this endpoint                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `streamable_http` | yes — the default                                                                             |
+| `sse`             | yes, legacy                                                                                   |
+| `websocket`       | no; accepted in the registry, rejected with `mcp_transport_unsupported` on this HTTP endpoint |
 
 `stdio` is **not accepted**. It names a local subprocess, which a hosted
 control plane cannot dial, so registering one now fails validation rather than

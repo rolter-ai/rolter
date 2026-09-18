@@ -13,7 +13,7 @@ mcp_servers (org-scoped)
 ```
 
 - **Server** — name, slug (unique per org), URL, transport and the OAuth scopes every proxied call requires. Deleting one cascades to its grants and sessions: withdrawing the server withdraws access to it.
-- **Grant** — a user's consent against a server, with the scope set they agreed to. A user holds at most one *live* grant per server (a partial unique index on `revoked_at is null`); revoked grants are kept so the audit trail survives. Re-consenting updates the scopes in place rather than accumulating rows.
+- **Grant** — a user's consent against a server, with the scope set they agreed to. A user holds at most one _live_ grant per server (a partial unique index on `revoked_at is null`); revoked grants are kept so the audit trail survives. Re-consenting updates the scopes in place rather than accumulating rows.
 - **Session** — the tokens issued under a grant, with `expires_at`, an optional refresh token and `refresh_expires_at`.
 
 ## Token handling
@@ -26,12 +26,12 @@ The gateway indexes servers by `(org, slug)` and sessions by `(server, user)`. A
 
 ## Who sees what
 
-| caller | grants / sessions visible | may revoke |
-| --- | --- | --- |
-| superadmin / admin token | every one in the org | any |
-| org admin | every one in the org | any |
-| org member or viewer | only the ones they own | only their own |
-| anyone outside the org | none (`403`) | none (`403`) |
+| caller                   | grants / sessions visible | may revoke     |
+| ------------------------ | ------------------------- | -------------- |
+| superadmin / admin token | every one in the org      | any            |
+| org admin                | every one in the org      | any            |
+| org member or viewer     | only the ones they own    | only their own |
+| anyone outside the org   | none (`403`)              | none (`403`)   |
 
 Every listing is joined through `mcp_servers.org_id`, so a cross-tenant read is not expressible, not merely filtered out.
 
@@ -119,7 +119,7 @@ upstream. The cache write is skipped when the values have not changed:
 unconditional write would wake every gateway on every consent.
 
 **Moving a server's URL invalidates the cache** (#1416). The cached endpoints
-belong to whatever authorization server the *old* URL's metadata named, so
+belong to whatever authorization server the _old_ URL's metadata named, so
 `PATCH /api/v1/mcp-servers/{id}` clears all four `oauth_discovered_*` columns
 whenever the update actually changes `url`. Without that, a refresh landing
 between the edit and the next interactive authorize would post to the previous
@@ -140,7 +140,7 @@ entirely, which is worth setting for a server known to publish no metadata.
 
 **Re-pinning the issuer or the discovery mode invalidates the cache the same
 way** (#1432). The cached triple belongs to whatever authorization server the
-*old* issuer and discovery choice named, so `PUT .../oauth-client` clears all
+_old_ issuer and discovery choice named, so `PUT .../oauth-client` clears all
 four `oauth_discovered_*` columns whenever the update actually changes
 `oauth_issuer` or `oauth_discovery` — same trigger, same reasoning as the URL
 case above, and folded into the same statement for the same
@@ -186,24 +186,24 @@ verifier, together with whether that metadata advertised
 `authorization_response_iss_parameter_supported`. The callback applies the
 RFC 9207 §2.4 table before the authorization code goes anywhere:
 
-| advertised | `iss` present | action |
-| --- | --- | --- |
-| `true` | yes | compare against the recorded issuer |
-| `true` | no | **reject** |
-| `false` or absent | yes | compare against the recorded issuer |
-| `false` or absent | no | proceed |
+| advertised        | `iss` present | action                              |
+| ----------------- | ------------- | ----------------------------------- |
+| `true`            | yes           | compare against the recorded issuer |
+| `true`            | no            | **reject**                          |
+| `false` or absent | yes           | compare against the recorded issuer |
+| `false` or absent | no            | proceed                             |
 
 The comparison is **byte equality**. No case folding, no default-port elision,
 no trailing slash, no percent-decoding — reaching for a URL parser here would
 re-introduce exactly the equivalences a mix-up attack needs. A response that
 fails the check is refused whole: its `error`, `error_description` and
 `error_uri` are not acted on or displayed either, which is why the callback
-resolves the login state and validates the issuer *before* it reads anything
+resolves the login state and validates the issuer _before_ it reads anything
 else in the response.
 
 Which line applies is visible over the API: `GET /api/v1/mcp-servers/{id}/oauth-client`
 returns `discovered_iss_supported` beside the rest of the discovery cache
-(#1569). Without it a client reading only that endpoint can see *what* was
+(#1569). Without it a client reading only that endpoint can see _what_ was
 discovered but not how a callback with no `iss` will be judged, which is the
 difference between "proceed" and "reject". Note the naming: the row and the
 server list use `oauth_discovered_*`, the client view drops the prefix.
@@ -222,7 +222,7 @@ derived from the operator-configured server URL, and — the new exposure — th
 `authorization_servers` and endpoints of a document a third-party MCP server
 served. An operator registering an MCP server is already trusted to point the
 control plane at a token endpoint, so this widens an existing trust rather than
-creating one, but it widens it to a value the *upstream* chooses. Three guards
+creating one, but it widens it to a value the _upstream_ chooses. Three guards
 bound it, and they are the reason this is acceptable rather than merely small:
 
 - every URL is `https`, with `http` allowed only on loopback;
@@ -250,8 +250,8 @@ Token exchange (`urn:ietf:params:oauth:grant-type:token-exchange`) is the server
 
 The whole flow is drivable from the SPA (#1194), so an operator never has to reach for `curl` to register a client:
 
-- **MCP Catalog → Configure** carries an *Authentication* section (#1447) that shows only what the selected `auth_kind` uses: nothing for `none`, a write-only credential for `bearer`, a header name plus credential for `header`, and the OAuth client section below for `oauth`. It writes through `PUT .../auth` after the row is saved, and only when the kind, the header name or a typed credential actually moved. That keeps untouched saves out of `audit_log`, and it keeps a deployment without `ROLTER_KEK` able to edit a server's other fields, because the route needs the KEK even for a kind that seals nothing. The header name is checked against the same reserved list as `RESERVED_AUTH_HEADERS` before sending. *Clear stored credential* is a confirmed, immediate move to `none`, because the shape constraint allows no `bearer`/`header` row without a credential. Saving a credentialed server as `none` or `oauth` asks for the same confirmation. A `ROLTER_KEK` refusal is shown as a deployment problem next to the control plane's own message. The dialog also edits the three transport overrides: a blank field is `null`, and a field left as it was is omitted from the `PATCH`, so absent and `null` stay distinct on the wire. The rules live in `ui/src/lib/mcp-server-auth.ts` with unit tests.
-- The *OAuth client* section (the `oauth` branch above) has: a discovery-mode picker (`auto` | `manual`), client id, a write-only client secret, the authorize/token URL pair, a pinned `issuer` and the default scopes (#1415). Only the client id is required under `auto`, where the pair is an optional fallback; `manual` requires the pair, and half a pair is refused in either mode. `discovery` and `issuer` are sent on every `PUT` — the handler reads an omitted mode as `auto`, which used to reset a `manual` server on every re-save. Under `auto` a read-only panel shows the row's `oauth_discovered_*` columns with `oauth_discovered_at`, or says nothing has been discovered yet, and warns that saving a new server URL, issuer or mode clears it — the same three changes the store clears the cache on. A moved URL is also flagged beside the URL field whatever the auth kind, since the store drops the cache on a URL change even when the panel is not on screen (#1572). *Connect* is enabled for a client id alone under `auto`, and needs the pair under `manual`. The rules live in `ui/src/lib/mcp-oauth-client.ts` with unit tests. It reads `GET .../oauth-client` purely for `redirect_uri` — the callback is deployment-derived and cannot be worked out from the browser's origin — and writes through `PUT .../oauth-client` after the server row itself is saved, which is also how a client is registered on a server in the same action that creates it. The secret is never echoed back: a badge says whether one is stored, and a *Clear stored secret* toggle sends `""` to downgrade the client to a public one. The `PUT` is skipped entirely when nothing in the section changed, so re-saving a server does not fill `audit_log` with `mcp_oauth_client.update` entries nobody made.
+- **MCP Catalog → Configure** carries an _Authentication_ section (#1447) that shows only what the selected `auth_kind` uses: nothing for `none`, a write-only credential for `bearer`, a header name plus credential for `header`, and the OAuth client section below for `oauth`. It writes through `PUT .../auth` after the row is saved, and only when the kind, the header name or a typed credential actually moved. That keeps untouched saves out of `audit_log`, and it keeps a deployment without `ROLTER_KEK` able to edit a server's other fields, because the route needs the KEK even for a kind that seals nothing. The header name is checked against the same reserved list as `RESERVED_AUTH_HEADERS` before sending. _Clear stored credential_ is a confirmed, immediate move to `none`, because the shape constraint allows no `bearer`/`header` row without a credential. Saving a credentialed server as `none` or `oauth` asks for the same confirmation. A `ROLTER_KEK` refusal is shown as a deployment problem next to the control plane's own message. The dialog also edits the three transport overrides: a blank field is `null`, and a field left as it was is omitted from the `PATCH`, so absent and `null` stay distinct on the wire. The rules live in `ui/src/lib/mcp-server-auth.ts` with unit tests.
+- The _OAuth client_ section (the `oauth` branch above) has: a discovery-mode picker (`auto` | `manual`), client id, a write-only client secret, the authorize/token URL pair, a pinned `issuer` and the default scopes (#1415). Only the client id is required under `auto`, where the pair is an optional fallback; `manual` requires the pair, and half a pair is refused in either mode. `discovery` and `issuer` are sent on every `PUT` — the handler reads an omitted mode as `auto`, which used to reset a `manual` server on every re-save. Under `auto` a read-only panel shows the row's `oauth_discovered_*` columns with `oauth_discovered_at`, or says nothing has been discovered yet, and warns that saving a new server URL, issuer or mode clears it — the same three changes the store clears the cache on. A moved URL is also flagged beside the URL field whatever the auth kind, since the store drops the cache on a URL change even when the panel is not on screen (#1572). _Connect_ is enabled for a client id alone under `auto`, and needs the pair under `manual`. The rules live in `ui/src/lib/mcp-oauth-client.ts` with unit tests. It reads `GET .../oauth-client` purely for `redirect_uri` — the callback is deployment-derived and cannot be worked out from the browser's origin — and writes through `PUT .../oauth-client` after the server row itself is saved, which is also how a client is registered on a server in the same action that creates it. The secret is never echoed back: a badge says whether one is stored, and a _Clear stored secret_ toggle sends `""` to downgrade the client to a public one. The `PUT` is skipped entirely when nothing in the section changed, so re-saving a server does not fill `audit_log` with `mcp_oauth_client.update` entries nobody made.
 - **MCP Catalog → Connect** calls `POST .../oauth/authorize` and opens the returned URL in a new tab. The dashboard never navigates itself there: the consent screen belongs to a third party, and a blocked pop-up is reported rather than left silent, because the request has already succeeded by then.
 - **Auth Sessions → renew** calls `POST /api/v1/mcp/sessions/{id}/refresh` for one row, beside the background sweeper. Only a session that stored a refresh token offers it. A refusal is worth reading rather than retrying, since the control plane has already revoked the session by the time the error arrives.
 
@@ -311,7 +311,7 @@ misconfigured KEK look like a server that was never registered.
 copy taken at creation, so the value a server never overrode still moves when
 the value it inherits does.
 
-What it inherits is the *deployment* transport timeout, not the org's
+What it inherits is the _deployment_ transport timeout, not the org's
 `mcp_gateway_settings`: those org defaults are still not read by the data plane,
 which is what the `mcp_settings` stability marker records and what #1404 closes.
 Until then a per-server override is the only way to give one server its own
@@ -334,8 +334,8 @@ versus drop it — which an `Option` alone cannot express. serde collapses both 
 
 - **stdio** — removed as a transport in #783, since a hosted control plane
   cannot dial a local subprocess. The MCP specification agrees from the other
-  side: stdio implementations *"SHOULD NOT"* use its authorization flow and
-  should *"retrieve credentials from the environment"*, so there is nothing here
+  side: stdio implementations _"SHOULD NOT"_ use its authorization flow and
+  should _"retrieve credentials from the environment"_, so there is nothing here
   to store for one.
 - **mTLS** — a client certificate is an identity, not a string, and there is no
   certificate store to put one in.

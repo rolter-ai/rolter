@@ -39,6 +39,7 @@ metrics_path = "/internal/metrics"
     **Type:** Counter
 
     Total number of requests proxied by the gateway since startup. Use this as your primary throughput signal — `rate(rolter_requests_total[1m])` gives you requests per second.
+
   </Accordion>
 
   <Accordion title="rolter_client_disconnects_total">
@@ -47,6 +48,7 @@ metrics_path = "/internal/metrics"
     Requests whose caller went away before the response finished — a closed browser tab, a client-side timeout, a pod rollout. These are logged with status `499` (nginx's *client closed request*) and are deliberately never retried onto another provider, so they cost you one upstream attempt, not two.
 
     A rising rate almost always means client timeouts are tighter than your upstream latency rather than anything being broken in the gateway. Compare `rate(rolter_client_disconnects_total[5m])` against the p95 of `rolter_request_latency_ms`.
+
   </Accordion>
 
   <Accordion title="rolter_inflight_requests">
@@ -55,18 +57,21 @@ metrics_path = "/internal/metrics"
     Requests currently in flight to upstream providers, summed across targets and sampled when you scrape.
 
     On an idle gateway this reads `0`. A floor that never comes back to zero means requests are exiting without releasing their slot, which quietly biases every load-aware routing decision — alert on `min_over_time(rolter_inflight_requests[15m]) > 0` for a gateway that does have quiet periods.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_errors_total">
     **Type:** Counter
 
     Total upstream errors, broken down by error type. Incremented when an upstream returns a 4xx/5xx or a connection-level failure occurs (after all retries are exhausted).
+
   </Accordion>
 
   <Accordion title="rolter_auth_failures_total">
     **Type:** Counter
 
     Total authentication failures — requests that were rejected because the presented virtual key was missing, invalid, disabled, or expired.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_connections_total">
@@ -75,6 +80,7 @@ metrics_path = "/internal/metrics"
     Connections established to upstream providers. Every increment is the connection pool failing to find a connection it could reuse.
 
     Watch the ratio, not the raw number: `rate(rolter_upstream_connections_total[5m]) / rate(rolter_requests_total[5m])`. Near zero means the pool is doing its job. Approaching one means every request is paying a fresh TCP and TLS handshake, which on a cross-region provider is most of your latency — check `pool_idle_timeout` and whether the provider is closing connections between requests.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_connect_errors_total">
@@ -83,6 +89,7 @@ metrics_path = "/internal/metrics"
     Attempts that failed before a connection existed — DNS, TCP, TLS, or a rejection by the egress policy.
 
     Distinct from `rolter_upstream_errors_total`, which counts providers that answered with an error. A provider you cannot reach and a provider returning 500 need different fixes.
+
   </Accordion>
 </AccordionGroup>
 
@@ -95,6 +102,7 @@ metrics_path = "/internal/metrics"
     Tasks that are runnable and waiting for a worker thread. A sustained non-zero value means requests are queuing inside rolter itself, before any provider is called — which no upstream latency metric will ever show you.
 
     This is the metric that separates "the provider is slow" from "we are saturated". They look identical in end-to-end latency and have opposite fixes.
+
   </Accordion>
 
   <Accordion title="tokio.runtime.worker.busy.time">
@@ -103,12 +111,14 @@ metrics_path = "/internal/metrics"
     Cumulative time runtime workers spent doing work, summed across workers.
 
     Exported as time rather than a ratio so it re-aggregates correctly: derive utilisation with `rate(tokio.runtime.worker.busy.time) / tokio.runtime.workers`.
+
   </Accordion>
 
   <Accordion title="tokio.runtime.workers / tokio.runtime.tasks.alive">
     **Type:** Gauge (OTLP only)
 
     Worker threads in the runtime, and tasks currently alive. `workers` is the denominator for the utilisation calculation above; a steadily climbing `tasks.alive` with flat throughput points at tasks that are never completing.
+
   </Accordion>
 </AccordionGroup>
 
@@ -132,30 +142,35 @@ These series are scraped, not measured by Rolter. They appear only for providers
     Requests waiting to be scheduled on the upstream engine. This is the same number that feeds load-aware balancing, so it explains why Rolter steered traffic away from a target.
 
     Read from `vllm:num_requests_waiting`, `sglang:num_queue_reqs`, `num_requests_waiting` or `tgi_queue_size`, whichever appears first.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_running_requests">
     **Type:** Gauge · Labels: `provider`
 
     Requests the engine is currently decoding. Paired with queue depth this separates "busy" from "backed up": high running with an empty queue is a fully-used engine, while a growing queue at flat running count is one that cannot keep up.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_kv_cache_utilization">
     **Type:** Gauge, 0–1 · Labels: `provider`
 
     Fraction of the engine's KV cache in use. Normalised to a fraction regardless of whether the engine reports 0–1 or a 0–100 percentage. Sustained high utilisation is the usual precursor to preemption and throughput collapse.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_generation_throughput_tokens_per_second">
     **Type:** Gauge · Labels: `provider`
 
     Generation throughput as reported by the engine itself. Useful as a sanity check against Rolter's own latency histograms — if engine throughput is steady while Rolter's p99 climbs, the added latency is not in the engine.
+
   </Accordion>
 
   <Accordion title="rolter_upstream_scrape_up">
     **Type:** Gauge, 0 or 1 · Labels: `provider`
 
     `1` when the most recent sweep reached the provider, `0` otherwise. Check this before trusting the gauges above: a failed scrape reports zeros for the counts, which without this flag is indistinguishable from a genuinely idle engine.
+
   </Accordion>
 </AccordionGroup>
 
@@ -174,12 +189,14 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     **Type:** Histogram · Labels: `model`
 
     End-to-end request latency in milliseconds — from the moment Rolter receives the first request byte to when the last response byte is sent to the client (including streaming). Use `histogram_quantile(0.99, rate(rolter_request_latency_ms_bucket[5m]))` for p99 latency per model.
+
   </Accordion>
 
   <Accordion title="rolter_request_ttft_ms">
     **Type:** Histogram · Labels: `model`
 
     Time-to-first-token in milliseconds for streaming requests. This measures how long the client waits before receiving the initial token — a key quality-of-service signal for interactive applications. Use the `_bucket` series for percentile calculations in Grafana or Prometheus recording rules.
+
   </Accordion>
 </AccordionGroup>
 
@@ -190,6 +207,7 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     **Type:** Gauge
 
     The current configuration snapshot version. This increments each time Rolter successfully reloads its configuration. Alert on this staying flat if you expect regular updates, or spiking unexpectedly.
+
   </Accordion>
 
   <Accordion title="rolter_usage_records_dropped_total">
@@ -198,12 +216,14 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     Budget-spend and rate-limit token records dropped because the post-response recording queue was full. Each drop means one request's spend is missing from its budget counters and its tokens are missing from its `tpm` windows.
 
     The queue is bounded on purpose: recording writes to Redis, and an unbounded backlog would grow worst exactly when the gateway is under stress. A non-zero rate here says the counter store is not keeping up — check Redis latency first, then raise `[usage_recording] workers` or `queue_capacity`. Sustained drops mean budget enforcement is under-counting and will let spend through.
+
   </Accordion>
 
   <Accordion title="rolter_usage_records_queued">
     **Type:** Gauge
 
     Usage records waiting to be written to the counter store, sampled at scrape time. This is the early-warning signal for the counter above: a queue that sits consistently deep is one traffic spike away from dropping.
+
   </Accordion>
 
   <Accordion title="rolter_breaker_entries">
@@ -212,6 +232,7 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     Live per-`(model, target)` circuit-breaker entries the gateway is holding, sampled at the last configuration reload.
 
     The gateway hot-reloads configuration without restarting, so a long-lived process serves many configuration generations. Each reload retires entries for targets nothing routes to any more; targets that are currently open or half-open are kept, because forgetting one would silently re-admit traffic to an upstream that is still down. In a healthy fleet this gauge sits at or near zero — a recovered target releases its entry — and rises only while targets are actually failing. A value that climbs steadily across reloads and never falls is the signal that something is retaining state it should not.
+
   </Accordion>
 
   <Accordion title="Additional event counters">
@@ -230,6 +251,7 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     | `rolter_health_probe_total` | Active health probe attempts |
     | `rolter_breaker_trip_total` | Circuit breaker trips |
     | `rolter_scrape_total` | Upstream engine metrics scrape attempts |
+
   </Accordion>
 </AccordionGroup>
 
@@ -272,12 +294,12 @@ the default.
 
 ### What is exported
 
-| Kind | Metrics | How |
-|---|---|---|
-| Counters and gauges | every `rolter_*_total`, `rolter_config_version` | observable |
-| Process and runtime | `process.*`, `tokio.runtime.*` | observable, OTLP only |
-| Labelled counters | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total` | observable |
-| Histograms | `rolter_request_latency_ms`, `rolter_request_ttft_ms` | recorded per request |
+| Kind                | Metrics                                                                                                   | How                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
+| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                           | observable            |
+| Process and runtime | `process.*`, `tokio.runtime.*`                                                                            | observable, OTLP only |
+| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total` | observable            |
+| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`                                                     | recorded per request  |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the
 request path, and the SDK reads the same atomics on its own schedule

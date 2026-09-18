@@ -15,7 +15,7 @@ why.
 **A semantic conflict is invisible to a per-branch gate.** `ci-ok` runs against
 each PR's head, not against the tree that merging it would produce. GitHub will
 merge a branch that is behind `master` without re-running anything, so any pair
-of changes that only conflict *semantically* — a new field, a renamed function,
+of changes that only conflict _semantically_ — a new field, a renamed function,
 a widened enum — passes both gates and fails on the merge result.
 
 **`ProviderConfig` made the blast radius maximal.** With 16 fields and no
@@ -48,13 +48,13 @@ The repository **merges `master` through GitHub's merge queue**, and keeps
 > The repository side of this — the `merge_group:` trigger and everything that
 > hangs off it — ships with #1318. Switching the queue **on** is a
 > branch-protection setting that no pull request can make; until someone with
-> admin runs the commands under *The settings, for whoever has admin* below,
+> admin runs the commands under _The settings, for whoever has admin_ below,
 > merging behaves exactly as it did before and the `merge_group` trigger is
 > inert. Nothing breaks in the meantime.
 
 This page used to record the opposite decision, with an explicit condition for
-revisiting it: *if a semantic conflict reaches `master` twice more, turn the
-merge queue on.* The condition was met. c8b6d0dc above is the first; the second
+revisiting it: _if a semantic conflict reaches `master` twice more, turn the
+merge queue on._ The condition was met. c8b6d0dc above is the first; the second
 is #1318 — #1310 added `openapi::tests::every_registered_route_is_documented`
 while #1311 and #1299 each mounted a new route, all three green, all three blind
 to each other, and the combined tree failed the completeness assertion. The
@@ -62,11 +62,11 @@ reasoning behind the switch is [ADR-0033](../adr/2026-09-18-merge-queue.md).
 
 Three options were on the table:
 
-| Option | What it buys | What it costs |
-|---|---|---|
-| `strict = true` | The gate always ran on a tree containing current `master` | Every PR must be manually rebased and re-gated whenever anything else merges; with several agent worktrees and dependabot in flight, the last-merge-wins churn is continuous and can outrun a gate run |
-| Merge queue | GitHub re-runs `ci-ok` against the prospective merge result, batching and ordering merges without anyone pushing rebases | One extra gate run per batch, and merging becomes asynchronous |
-| Neither | No new friction | Semantic conflicts still reach `master` |
+| Option          | What it buys                                                                                                             | What it costs                                                                                                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `strict = true` | The gate always ran on a tree containing current `master`                                                                | Every PR must be manually rebased and re-gated whenever anything else merges; with several agent worktrees and dependabot in flight, the last-merge-wins churn is continuous and can outrun a gate run |
+| Merge queue     | GitHub re-runs `ci-ok` against the prospective merge result, batching and ordering merges without anyone pushing rebases | One extra gate run per batch, and merging becomes asynchronous                                                                                                                                         |
+| Neither         | No new friction                                                                                                          | Semantic conflicts still reach `master`                                                                                                                                                                |
 
 ### How merging works now
 

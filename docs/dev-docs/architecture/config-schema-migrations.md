@@ -27,7 +27,7 @@ pub static MIGRATIONS: &[Migration] = &[Migration {
 
 The `GatewayConfig` parsed from the migrated document must equal the one parsed from the original. `migration_is_behaviour_preserving` pins this.
 
-This is what makes it safe to migrate on *every* load rather than as a separate operator-invoked step. The moment a migration can change behaviour, running it implicitly at boot becomes the wrong design and the whole thing needs an apply/confirm cycle.
+This is what makes it safe to migrate on _every_ load rather than as a separate operator-invoked step. The moment a migration can change behaviour, running it implicitly at boot becomes the wrong design and the whole thing needs an apply/confirm cycle.
 
 ### A file from the future loads, it does not fail
 
@@ -56,7 +56,7 @@ That is #1514. Until every reader goes through the accessor, these stay deserial
 
 ### If your step renames a key, `config_lint` needs to change with it
 
-No current step *consumes* a key, so the lint and the chain do not interact. The first rename breaks that: the lint parses the file as written and would report the old spelling as an unrecognised key, telling an operator to fix something rolter already handled.
+No current step _consumes_ a key, so the lint and the chain do not interact. The first rename breaks that: the lint parses the file as written and would report the old spelling as an unrecognised key, telling an operator to fix something rolter already handled.
 
 Do not fix this by linting the migrated document. The paths the lint prints are how an operator finds the line in their own file, and migrating first rewrites them into paths the file does not contain — `providers[0].x` becomes `providers.readonly[0].x`, which greps to nothing. Have the migration declare the key paths it consumes, and have the lint skip exactly those.
 

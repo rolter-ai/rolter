@@ -1,6 +1,6 @@
 # SCIM 2.0 provisioning
 
-An identity provider can create, update, deactivate and reconcile rolter accounts *and groups* over SCIM 2.0 instead of an operator doing it by hand. Users answer *who exists*; groups, through an operator-written mapping, answer *what they may do*.
+An identity provider can create, update, deactivate and reconcile rolter accounts _and groups_ over SCIM 2.0 instead of an operator doing it by hand. Users answer _who exists_; groups, through an operator-written mapping, answer _what they may do_.
 
 ## Tokens carry the tenant
 
@@ -30,7 +30,7 @@ DELETE /scim/v2/Users/{id}
 - **Filters.** Only `userName eq "value"` is supported — the one shape reconciliation needs. Any other filter is a `400` with `scimType: invalidFilter` rather than being ignored: silently returning the whole directory reads to an IdP as "no such user", and it then re-creates the account.
 - **Idempotence.** IdPs retry. Creating an existing `userName` returns `409` with `scimType: uniqueness` instead of a second account. If the email already belongs to a local account (invited by an admin, or provisioned elsewhere), that account is adopted rather than failing on the unique email, so provisioning converges.
 - **PATCH.** The `active` toggle is implemented, in both the `path: "active"` and bare `{"active": false}` forms, and with the string `"true"`/`"false"` some IdPs send. Any other operation is a `400` — an IdP that gets a success for an operation nothing applied would believe the change landed.
-- **Deactivation logs the user out.** Setting `active: false` stamps `deactivated_at` *and* deletes the account's live sessions, because an IdP disabling a leaver expects them out now, not merely unable to log in again.
+- **Deactivation logs the user out.** Setting `active: false` stamps `deactivated_at` _and_ deletes the account's live sessions, because an IdP disabling a leaver expects them out now, not merely unable to log in again.
 - **DELETE deprovisions.** The account is deactivated, its sessions dropped, and the org's SCIM identity mapping removed. The `users` row itself stays: its memberships and audit trail must outlive any one IdP, and a later `POST` adopts it again.
 
 ## No password path

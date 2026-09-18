@@ -60,7 +60,7 @@ by a decision in Rust: two logins racing with the same stolen code would both
 read the same value and both conclude it was fresh, whereas as a conditional
 update exactly one of them affects a row.
 
-The visible consequence is that the code used to *confirm* an enrolment is
+The visible consequence is that the code used to _confirm_ an enrolment is
 spent, so the first sign-in afterwards needs the next code. That is the rule
 working. It is called out in the operator docs so it does not read as a fault.
 
@@ -84,12 +84,12 @@ of a mistyped digit.
 
 ## Storage
 
-| Table | Holds |
-|---|---|
-| `user_totp_factors` | one row per user: the sealed secret, `confirmed_at`, `last_used_step` |
-| `user_recovery_codes` | hashed single-use codes; `used_at` marks a spent one |
-| `mfa_challenges` | logins in flight; hashed token, attempt count, expiry |
-| `org_auth_policies.mfa_policy` | enforcement, alongside the password/SSO switches |
+| Table                          | Holds                                                                 |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `user_totp_factors`            | one row per user: the sealed secret, `confirmed_at`, `last_used_step` |
+| `user_recovery_codes`          | hashed single-use codes; `used_at` marks a spent one                  |
+| `mfa_challenges`               | logins in flight; hashed token, attempt count, expiry                 |
+| `org_auth_policies.mfa_policy` | enforcement, alongside the password/SSO switches                      |
 
 The secret is sealed with the deployment KEK — it is a bearer credential, so a
 database dump alone must not yield one — and is registered in `SEALED_COLUMNS`

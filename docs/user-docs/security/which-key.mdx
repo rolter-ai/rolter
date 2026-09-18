@@ -10,11 +10,11 @@ first-run mistake, so this page names each one.
 
 ## The three credentials
 
-| Credential | Looks like | Who holds it | Where it is set |
-| --- | --- | --- | --- |
-| **Virtual key** | `sk-rolter-…` | your applications and users | minted in the dashboard under **Governance → Virtual Keys**, or your own under **Settings → My Virtual Keys** |
-| **Provider key** | whatever the provider issues — `sk-ant-…`, `sk-proj-…`, `AIza…` | rolter itself | **Providers → provider → Provider key**, or a `ROLTER_*`/provider env var |
-| **Admin token** | opaque, operator-chosen | operators and automation | `ROLTER_ADMIN_TOKEN` on the control plane |
+| Credential       | Looks like                                                      | Who holds it                | Where it is set                                                                                               |
+| ---------------- | --------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **Virtual key**  | `sk-rolter-…`                                                   | your applications and users | minted in the dashboard under **Governance → Virtual Keys**, or your own under **Settings → My Virtual Keys** |
+| **Provider key** | whatever the provider issues — `sk-ant-…`, `sk-proj-…`, `AIza…` | rolter itself               | **Providers → provider → Provider key**, or a `ROLTER_*`/provider env var                                     |
+| **Admin token**  | opaque, operator-chosen                                         | operators and automation    | `ROLTER_ADMIN_TOKEN` on the control plane                                                                     |
 
 ### Virtual key
 
@@ -34,7 +34,7 @@ application should ever have. See [Virtual keys](/concepts/virtual-keys).
 ### Provider key
 
 The credential a provider — OpenAI, Anthropic, Bedrock, your own vLLM — issued
-to *rolter*. It is configured once on the provider, sealed at rest, and used by
+to _rolter_. It is configured once on the provider, sealed at rest, and used by
 the gateway when it forwards a request upstream. Clients never send it, never
 see it, and cannot retrieve it through the API. See
 [Providers](/configuration/providers).
@@ -66,7 +66,7 @@ instead of the one it issued to you. Mint a virtual key and send that.
 
 1. Anything a client holds is a **virtual key**, and it starts with
    `sk-rolter-`.
-2. Anything that starts with a *provider's* prefix belongs on the **provider**,
+2. Anything that starts with a _provider's_ prefix belongs on the **provider**,
    not in a client.
 3. Anything that configures rolter rather than calls it uses the **admin
    token**.

@@ -60,7 +60,7 @@ Two of them landed with the Settings screens (#564):
 - `client_settings` — the base URL the dashboard advertises (advisory; the gateway never reads it), the allowlist of inbound client headers forwarded to the upstream provider, the static headers the gateway injects on every upstream request, and the request-id header. Trace-context headers propagate independently of the allowlist, and injected header values are treated as credential material: they reach the gateway through the snapshot but never the audit log, which records only the names.
 - `model_defaults` — an `enabled` kill switch plus optional `default_model`, `default_temperature`, `default_top_p` and `default_max_tokens`. Defaults only ever fill a key the request omitted, so the table can be populated without changing the meaning of any request that was already explicit. `default_temperature` and `default_top_p` are `double precision`, not `real`: an `f32` default serializes into JSON as `0.800000011920929` and that is what would reach the provider.
 
-## Data written *by* the data plane
+## Data written _by_ the data plane
 
 Most tables flow control plane → gateway. Two flow the other way, written from the channel the gateway already holds and never read back by it:
 
@@ -89,6 +89,7 @@ observation was made, and `mcp_tool_call_logs` the `ts` the submitter reports
 for the tool call (falling back to ingest time). See
 [Observability](observability.md#request--cost-logs) for what each instant
 means; rows written before #1210 carry flush time.
+
 - `ui_events` — dashboard UX events (#805): screen views and time-to-interactive,
   navigation and back-outs, form submit/abandon and which validation rules fire,
   empty- and error-state impressions, save-to-confirmation latency. Carries

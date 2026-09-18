@@ -7,10 +7,10 @@ confidence, so the only way to find the thin parts was to read the source.
 
 A **stability marker** says which parts are still moving. There are two levels:
 
-| Level | Means |
-|---|---|
-| `stable` | the default. Covered by whatever compatibility promise the release makes |
-| `experimental` | **may change shape or be removed in a minor release** |
+| Level          | Means                                                                    |
+| -------------- | ------------------------------------------------------------------------ |
+| `stable`       | the default. Covered by whatever compatibility promise the release makes |
+| `experimental` | **may change shape or be removed in a minor release**                    |
 
 The source of truth is `SUBSYSTEMS` in
 [`crates/rolter-core/src/stability.rs`](../../crates/rolter-core/src/stability.rs).
@@ -31,13 +31,13 @@ experimental subsystem a minor release may
 
 None of that is licensed on a stable subsystem.
 
-## What the marker does *not* say
+## What the marker does _not_ say
 
 This is the half that gets misread, so it is stated positively:
 
 - **It is not a quality warning.** An experimental subsystem is not expected to
   crash, leak or lose data. It is held to the same review, test and security
-  standards as everything else. The claim is about the *design* settling, not
+  standards as everything else. The claim is about the _design_ settling, not
   about the code being shaky — which is why the word is "experimental" and not
   "unstable".
 - **It is not a support disclaimer.** A bug in an experimental subsystem is a
@@ -54,11 +54,11 @@ This is the half that gets misread, so it is stated positively:
 Stability composes with the two axes ADR-0031 proposes and is deliberately not
 a third mechanism inside them:
 
-| Axis | Question | Set by | Where it lives |
-|---|---|---|---|
-| capability | *can* this deployment run it? | the build and its infrastructure | `unavailable_flags()`, read-only |
-| enablement | is it turned on? | the operator | a stored flag, hot-reloaded through `/internal/snapshot` |
-| stability | how finished is it? | us, at build time | `SUBSYSTEMS`, a `const` |
+| Axis       | Question                      | Set by                           | Where it lives                                           |
+| ---------- | ----------------------------- | -------------------------------- | -------------------------------------------------------- |
+| capability | _can_ this deployment run it? | the build and its infrastructure | `unavailable_flags()`, read-only                         |
+| enablement | is it turned on?              | the operator                     | a stored flag, hot-reloaded through `/internal/snapshot` |
+| stability  | how finished is it?           | us, at build time                | `SUBSYSTEMS`, a `const`                                  |
 
 The three are independent. An experimental subsystem can be perfectly available
 and perfectly enabled, and marking one experimental never turns anything off.
@@ -80,14 +80,14 @@ against — a documented "not yet", a management surface the data plane does not
 read, an enforcement path a request can take without meeting. Not by
 impression.
 
-| Subsystem | Dashboard | Why it is experimental |
-|---|---|---|
-| `labels` | *(no screen; chips on Providers, Provider Groups and Routing Rules)* | Display and filter only. A route cannot select its targets by label, and making labels selectable turns them into configuration the data plane consumes — a change in what a label *is*. Stated in [Labels](../architecture/labels.md#display-and-filter-only-for-now). |
-| `mcp_settings` | MCP → MCP Settings | The screen stores organization defaults for transport, timeout intent, retries, failure policy and undeclared tools, and the HTTP proxy does not read them. Since [#952](https://github.com/rolter-ai/rolter/issues/952) it does read a *per-server* override; a server without one falls back to the deployment-level transport timeouts rather than to these org defaults. |
-| `mcp_tool_groups` | MCP → Tool Groups | Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary. Access is still decided by virtual-key owner, server, the server's configured credential — a static one, or a live OAuth session and its required scopes — and nothing about which tools a group names. Stated in [MCP OAuth](../architecture/mcp-oauth.md). |
-| `plugins` | Plugins | The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it. `PluginRequest` in [`plugin_dispatch.rs`](../../crates/rolter-core/src/plugin_dispatch.rs) is the shape in question. |
-| `realtime` | *(no screen; reachable from the Playground)* | The `/v1/realtime` websocket relay sits outside every request-path subsystem. A session is admitted against process-local caps only and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution, so spend through a realtime session is neither capped nor recorded. |
-| `skills_repository` | Skills Repository | A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled. Nothing outside the dashboard depends on the current shape yet. |
+| Subsystem           | Dashboard                                                            | Why it is experimental                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `labels`            | _(no screen; chips on Providers, Provider Groups and Routing Rules)_ | Display and filter only. A route cannot select its targets by label, and making labels selectable turns them into configuration the data plane consumes — a change in what a label _is_. Stated in [Labels](../architecture/labels.md#display-and-filter-only-for-now).                                                                                                                                 |
+| `mcp_settings`      | MCP → MCP Settings                                                   | The screen stores organization defaults for transport, timeout intent, retries, failure policy and undeclared tools, and the HTTP proxy does not read them. Since [#952](https://github.com/rolter-ai/rolter/issues/952) it does read a _per-server_ override; a server without one falls back to the deployment-level transport timeouts rather than to these org defaults.                            |
+| `mcp_tool_groups`   | MCP → Tool Groups                                                    | Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary. Access is still decided by virtual-key owner, server, the server's configured credential — a static one, or a live OAuth session and its required scopes — and nothing about which tools a group names. Stated in [MCP OAuth](../architecture/mcp-oauth.md). |
+| `plugins`           | Plugins                                                              | The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it. `PluginRequest` in [`plugin_dispatch.rs`](../../crates/rolter-core/src/plugin_dispatch.rs) is the shape in question.                                                                                                   |
+| `realtime`          | _(no screen; reachable from the Playground)_                         | The `/v1/realtime` websocket relay sits outside every request-path subsystem. A session is admitted against process-local caps only and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution, so spend through a realtime session is neither capped nor recorded.                                                                                                    |
+| `skills_repository` | Skills Repository                                                    | A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled. Nothing outside the dashboard depends on the current shape yet.                                                                                                                                                                                     |
 
 A subsystem not in that table is stable. The table is short deliberately: a
 marker on every page is a marker nobody reads, and the value of this one is
@@ -116,7 +116,7 @@ entirely in how rarely it appears.
 ### Why the dashboard does not render `note`
 
 `note` on the wire is English, and a dashboard running in Russian used to show
-the translated word *Экспериментально* with a sentence of English behind it
+the translated word _Экспериментально_ with a sentence of English behind it
 (#1401). The rail therefore uses only the `id` from the answer and looks the
 note up in the catalogs, where every other string it shows already lives. The
 list itself keeps one owner — which subsystems are marked, and on which nav
@@ -176,7 +176,7 @@ SDK author sees it too.
 ## Relationship to the 1.0.0 guarantees (#922)
 
 [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md) decides
-what each *stable* surface guarantees at 1.0 — the `/v1/*` gateway surface, the
+what each _stable_ surface guarantees at 1.0 — the `/v1/*` gateway surface, the
 `/api/v1/*` control API, the config keys and environment variables, the database
 schema and the Rust crates. This page does not restate it. It is named there as
 **the** exemption route: a subsystem carrying the `experimental` marker is

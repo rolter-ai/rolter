@@ -13,16 +13,16 @@ as one pull request. One issue, one agent, one PR.
 rolter is an OpenAI/Anthropic-compatible AI gateway and load balancer: a Cargo
 workspace of shared crates behind two binaries.
 
-| Crate | What lives there |
-|---|---|
-| `crates/rolter-core` | config types (`ProviderKind`, routes, strategies), shared errors |
-| `crates/rolter-balancer` | `LoadBalancer` trait, strategies, cache-aware scorer, `build()` |
-| `crates/rolter-proxy` | upstream HTTP/TLS client, provider dialect adapters |
-| `crates/rolter-store` | storage traits, `postgres` feature backend, `migrations/` |
-| `crates/rolter-auth` | virtual keys, roles, access checks |
-| `crates/rolter-gateway` | data-plane binary (`/v1/*` surface) |
-| `crates/rolter-control` | control-plane binary, CRUD API, `/internal/snapshot`, UI host |
-| `crates/rolter` | unified launcher (`gateway` / `control` / `easy-up`) |
+| Crate                    | What lives there                                                 |
+| ------------------------ | ---------------------------------------------------------------- |
+| `crates/rolter-core`     | config types (`ProviderKind`, routes, strategies), shared errors |
+| `crates/rolter-balancer` | `LoadBalancer` trait, strategies, cache-aware scorer, `build()`  |
+| `crates/rolter-proxy`    | upstream HTTP/TLS client, provider dialect adapters              |
+| `crates/rolter-store`    | storage traits, `postgres` feature backend, `migrations/`        |
+| `crates/rolter-auth`     | virtual keys, roles, access checks                               |
+| `crates/rolter-gateway`  | data-plane binary (`/v1/*` surface)                              |
+| `crates/rolter-control`  | control-plane binary, CRUD API, `/internal/snapshot`, UI host    |
+| `crates/rolter`          | unified launcher (`gateway` / `control` / `easy-up`)             |
 
 Read the root `AGENTS.md` before you start. Its maintenance matrix is binding:
 when you change the thing on the left, the entries on the right change in the
@@ -47,7 +47,7 @@ same PR.
 - Keep the data-plane hot path allocation-light and lock-free on reads
   (`arc-swap` for config).
 - No `unwrap()`/`expect()` on request paths; map errors to OpenAI-style JSON.
-- Code comments start lowercase with no trailing punctuation and explain *why*,
+- Code comments start lowercase with no trailing punctuation and explain _why_,
   not what. `///` doc comments are normal prose.
 - Unit tests live next to the code in `#[cfg(test)] mod tests`.
 
@@ -87,8 +87,8 @@ which failure was pre-existing.
 # Shipping
 
 - Conventional Commits. Types: `feat fix perf refactor docs test build ci chore
-  revert`. Scopes are a **fixed allowlist** — `gateway balancer proxy core store
-  auth control ui docs infra ci deps release e2e` — and anything else fails the
+revert`. Scopes are a **fixed allowlist** — `gateway balancer proxy core store
+auth control ui docs infra ci deps release e2e` — and anything else fails the
   `pr-title` check. There is no `mcp`, `deployment` or `security` scope; use the
   crate the change lives in, or no scope.
 - PR title is one valid Conventional Commit line with the issue in brackets:
@@ -100,7 +100,7 @@ which failure was pre-existing.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).
 - Open the PR as a draft, then mark it ready once `ci-ok` is green. Do not merge
   and never pass `--delete-branch`.
-- Ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the *same* PR,
+- Ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the _same_ PR,
   including the `docs/dev-docs/SUMMARY.md` or `docs/user-docs/docs.json` nav line — an
   unlisted page is invisible.
 - File a GitHub issue for anything you find that is out of scope, and add it to

@@ -25,7 +25,7 @@ rolter makes outbound network calls **only** to endpoints you configure:
   `~/.cache/rolter/update-check.json`). One request, a 5-second timeout, a
   `User-Agent: rolter/<version>` header and nothing else — no installation id,
   config or credentials. It feeds `GET /api/v1/version` and the dashboard
-  footer's *v0.2.0 available* hint (#902), and the launcher's one-line stderr
+  footer's _v0.2.0 available_ hint (#902), and the launcher's one-line stderr
   notice (#901). Failures never log above `debug` and never delay a command.
   **Set `ROLTER_UPDATE_CHECK=false`** to turn it off in an enclave; the
   endpoint then reports `enabled: false` and the footer shows the running

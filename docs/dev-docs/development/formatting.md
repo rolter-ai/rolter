@@ -102,7 +102,7 @@ once and `git blame` skips it:
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
-Gating only *changed* files was the alternative and was rejected: a
+Gating only _changed_ files was the alternative and was rejected: a
 per-file-changed gate leaves the tree permanently half-formatted, so the
 "reformatted paragraph" diffs keep arriving one file at a time forever, and the
 hook has to grow a notion of which files are in the club.

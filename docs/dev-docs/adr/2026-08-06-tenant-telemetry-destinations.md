@@ -5,7 +5,7 @@
 
 ## Context
 
-Telemetry is currently an *operator* decision baked into the deployment:
+Telemetry is currently an _operator_ decision baked into the deployment:
 `OTEL_EXPORTER_OTLP_ENDPOINT` for the backend exporter and
 `ROLTER_UI_OTEL_ENDPOINT` for the dashboard. A client of the gateway has no say
 in either — they cannot turn tracing off for their own traffic, and they cannot
@@ -22,7 +22,7 @@ review.
 
 **Per-tenant destinations.** rolter is multi-tenant (org / team / project,
 virtual keys, RBAC) while telemetry is single-destination, which does not match.
-A team running rolter as shared infrastructure wants its spans in *its* backend;
+A team running rolter as shared infrastructure wants its spans in _its_ backend;
 some tenants want no export at all for data-residency reasons; a customer
 debugging their own integration should not have to ask the operator to fetch
 traces. This half raises questions — scope, fan-out, egress safety, cardinality —
@@ -39,7 +39,7 @@ One switch covering traces, metrics, the dashboard's browser tracing, and logs
 once [#809](https://github.com/rolter-ai/rolter/issues/809) lands.
 
 - **It can only subtract.** When false, no exporter is built regardless of which
-  `OTEL_*` endpoints are set. It is never a second way to turn export *on*.
+  `OTEL_*` endpoints are set. It is never a second way to turn export _on_.
 - **Unset means enabled**, so no existing deployment changes behaviour. That is
   not a weaker default than it sounds: with no endpoint configured nothing is
   exported anyway, so the effective default remains "exports nothing".
@@ -63,7 +63,7 @@ that sits in front of the tenants' backends, not a fan-out inside rolter.
 - **Scope: org.** It is the easiest to administer and the coarsest unit anyone
   actually asks about ("my team's spans in my team's Honeycomb"). Virtual key is
   finer and matches how traffic is attributed, but a destination per key is a
-  cardinality problem with no matching demand. rolter's job is to *stamp* the
+  cardinality problem with no matching demand. rolter's job is to _stamp_ the
   attribute; the routing key can be refined later without changing where fan-out
   happens.
 - **Fan-out: the collector's routing processor.** Multiple SDK exporters

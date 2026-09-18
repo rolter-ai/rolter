@@ -10,17 +10,17 @@ themselves are components.
 They live in `ui/src/components/ui/` beside the other primitives, and their
 stories are grouped under **Forms/** in Storybook.
 
-| Primitive | File | What it is |
-|---|---|---|
-| `FieldLabel` | `field-label.tsx` | the compact label a sheet row carries, with the optional required marker and (i) note |
-| `FieldError` | `field-error.tsx` | the message under a control, carrying the id the control points at |
-| `describedBy` | `field-error.tsx` | joins the ids a control actually has into one `aria-describedby` |
-| `FormSection` | `form-section.tsx` | one collapsible group of fields, open state owned by the caller |
-| `Segmented` | `segmented.tsx` | a two-to-four way choice rendered inline as a `radiogroup` |
-| `LockButton` | `lock-button.tsx` | the padlock toggle beside a parameter or header |
-| `ChipGroup` | `chip-group.tsx` | a multi-select over a short, fully visible list |
-| `SwitchRow` | `switch-row.tsx` | a boolean as a full-width row: title, hint, switch |
-| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block |
+| Primitive       | File                 | What it is                                                                            |
+| --------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note |
+| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                    |
+| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                      |
+| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                       |
+| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                            |
+| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                       |
+| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                       |
+| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                    |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block               |
 
 ## Which one to reach for
 
@@ -54,7 +54,7 @@ easy to lose when the shape is retyped in the next sheet:
   correct and leaves the control unnamed.
 - `FieldError` renders nothing at all when there is no error, and carries an
   `id` so the control can describe itself with it (#1527).
-- `FormSection`'s header is a real `<button>` and its (i) sits *beside* it, not
+- `FormSection`'s header is a real `<button>` and its (i) sits _beside_ it, not
   inside: a button inside a button is invalid HTML and an axe
   `nested-interactive` failure (#1201). A collapsed section renders no body, so
   a closed section holds nothing tabbable.
@@ -62,8 +62,8 @@ easy to lose when the shape is retyped in the next sheet:
   exactly one `aria-checked`.
 - `LockButton` reports `aria-pressed` and names both the state and what a press
   will do, because the padlock icon says neither.
-- `ChipGroup` is one named `group` of `aria-pressed` toggles, and says *none
-  available* rather than rendering an empty row.
+- `ChipGroup` is one named `group` of `aria-pressed` toggles, and says _none
+  available_ rather than rendering an empty row.
 - `SwitchRow` names its switch after the row title.
 - `SettingsPanel` groups its controls in a `<fieldset disabled>` rather than a
   faded `<div>`. Fading a live div drags its labels and hints below 4.5:1 while
@@ -100,7 +100,7 @@ all, which is what #1658 found: five sheets rendered the footer failure line as
 a byte-identical `<p className="px-[22px] pt-2.5 text-xs
 text-[color:var(--status-danger-text)]">`, one of them carried `role="alert"`
 and four did not, and the check reported the tree clean. So there is a fifth
-rule that matches a *shape* rather than a name (#1686).
+rule that matches a _shape_ rather than a name (#1686).
 
 It normalises every JSX element to its tag plus its `className` with the classes
 sorted, and fails when the same pair is written in more than two files. Two
@@ -132,7 +132,7 @@ came from the rule's first pass and are tracked in #1711.
 Three things are exempt, by rule rather than by filename:
 
 - anything under `src/components/ui/` — a primitive necessarily contains the
-  element it wraps, and `CodeBlock` *is* the `<pre>`;
+  element it wraps, and `CodeBlock` _is_ the `<pre>`;
 - `*.stories.tsx` and `*.test.ts(x)`, which are fixtures rather than shipped UI,
   the same carve-out `check-literals.ts` makes;
 - a file that **imports** the shared component and wraps it. Adapting

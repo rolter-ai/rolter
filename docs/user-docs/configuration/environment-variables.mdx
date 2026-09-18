@@ -12,13 +12,13 @@ Environment variables override their corresponding `rolter.toml` values, and CLI
 
 These variables control the gateway process (`rolter-gateway`).
 
-| Variable | Purpose |
-| --- | --- |
-| `ROLTER_CONFIG` | Path to the configuration file. Defaults to `rolter.toml` in the current directory. |
-| `ROLTER_HOST` | Listen host. Overrides `[server] host` in `rolter.toml`. |
-| `ROLTER_PORT` | Listen port. Overrides `[server] port` in `rolter.toml`. |
-| `ROLTER_KEY_PEPPER` | Secret mixed into virtual-key digests. Keeps plaintext keys out of gateway memory; a leaked digest is useless without it. Overrides `[server] key_pepper`. |
-| `CLICKHOUSE_URL` | ClickHouse HTTP interface URL, e.g. `http://localhost:8123`. Read by **both** the gateway (which writes request, usage and cost rows) and the control plane (which reads them back for the dashboard), so set it on both. A `[logging] clickhouse_url` in the gateway's own config file wins over it; a gateway with neither inherits the control plane's value from `/internal/snapshot`. Leave it unset everywhere and the Usage, Costs and Logs screens stay empty however much traffic is served. |
+| Variable            | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ROLTER_CONFIG`     | Path to the configuration file. Defaults to `rolter.toml` in the current directory.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `ROLTER_HOST`       | Listen host. Overrides `[server] host` in `rolter.toml`.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `ROLTER_PORT`       | Listen port. Overrides `[server] port` in `rolter.toml`.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `ROLTER_KEY_PEPPER` | Secret mixed into virtual-key digests. Keeps plaintext keys out of gateway memory; a leaked digest is useless without it. Overrides `[server] key_pepper`.                                                                                                                                                                                                                                                                                                                                            |
+| `CLICKHOUSE_URL`    | ClickHouse HTTP interface URL, e.g. `http://localhost:8123`. Read by **both** the gateway (which writes request, usage and cost rows) and the control plane (which reads them back for the dashboard), so set it on both. A `[logging] clickhouse_url` in the gateway's own config file wins over it; a gateway with neither inherits the control plane's value from `/internal/snapshot`. Leave it unset everywhere and the Usage, Costs and Logs screens stay empty however much traffic is served. |
 
 ---
 
@@ -26,29 +26,29 @@ These variables control the gateway process (`rolter-gateway`).
 
 These variables control the control-plane process (`rolter-control`), which manages the dashboard, management API, and config propagation.
 
-| Variable | Purpose |
-| --- | --- |
-| `ROLTER_CONTROL_HOST` | Listen host for the control-plane HTTP server. |
-| `ROLTER_CONTROL_PORT` | Listen port for the control-plane HTTP server. |
-| `ROLTER_UI_DIR` | Filesystem path to the built UI assets served by the control plane. |
-| `ROLTER_UI_DOCS_BASE_URL` | Base URL of the documentation site the dashboard deep-links into, e.g. `https://docs.example.com`. Unset by default, which suppresses every documentation link in the dashboard — see [Documentation links](/deployment/documentation-links). |
-| `ROLTER_KEK` | AES-256-GCM master key used to encrypt provider credentials at rest in PostgreSQL. It is not part of a database dump — see [Backup, restore and KEK rotation](/deployment/backup-and-restore). |
-| `ROLTER_KEK_OLD` | Read only by `rolter kek rotate`: the KEK being rotated away from. Never set it on a running gateway or control plane. |
-| `DATABASE_URL` | PostgreSQL connection string, e.g. `postgres://user:pass@localhost:5432/rolter`. |
-| `ROLTER_DB_MAX_CONNECTIONS` | Ceiling on open PostgreSQL connections. Default `10`. |
-| `ROLTER_DB_MIN_CONNECTIONS` | Connections kept open while idle. Default `0`. |
-| `ROLTER_DB_ACQUIRE_TIMEOUT_SECS` | How long a request waits for a free connection before failing. Default `30`. |
-| `ROLTER_DB_IDLE_TIMEOUT_SECS` | Close a connection idle for longer than this. `0` means never. Default `600`. |
-| `ROLTER_DB_MAX_LIFETIME_SECS` | Retire a connection older than this regardless of use. `0` disables. Default `1800`. |
-| `ROLTER_LOGIN_MAX_FAILURES` | Failed sign-ins one account tolerates before it locks. Default `5`. |
-| `ROLTER_LOGIN_IP_MAX_FAILURES` | Failed sign-ins one client address tolerates across every account it tries. Default `50`. |
-| `ROLTER_LOGIN_FAILURE_WINDOW_SECS` | How long a failure counter survives without a new failure. Default `900`. |
-| `ROLTER_LOGIN_LOCK_SECS` | The first lock once the budget is spent; each further failure doubles it. Default `60`. |
-| `ROLTER_LOGIN_MAX_LOCK_SECS` | Ceiling on that doubling, so a lock is always a bounded outage. Default `900`. |
-| `ROLTER_LOGIN_MAX_DELAY_MS` | Ceiling on the delay added to a rejected sign-in. Default `2000`. |
-| `ROLTER_LOGIN_TRUST_FORWARDED_FOR` | Count failures against the `X-Forwarded-For` client instead of the socket peer. Default off. |
-| `ROLTER_LOGIN_THROTTLE_DISABLED` | Turn failed-login throttling off entirely. Default off. |
-| `ROLTER_UPDATE_CHECK` | Set to `false` to stop the control plane and the `rolter` CLI from asking GitHub whether a newer stable release exists. Default on; see [Update check](#update-check). |
+| Variable                           | Purpose                                                                                                                                                                                                                                       |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ROLTER_CONTROL_HOST`              | Listen host for the control-plane HTTP server.                                                                                                                                                                                                |
+| `ROLTER_CONTROL_PORT`              | Listen port for the control-plane HTTP server.                                                                                                                                                                                                |
+| `ROLTER_UI_DIR`                    | Filesystem path to the built UI assets served by the control plane.                                                                                                                                                                           |
+| `ROLTER_UI_DOCS_BASE_URL`          | Base URL of the documentation site the dashboard deep-links into, e.g. `https://docs.example.com`. Unset by default, which suppresses every documentation link in the dashboard — see [Documentation links](/deployment/documentation-links). |
+| `ROLTER_KEK`                       | AES-256-GCM master key used to encrypt provider credentials at rest in PostgreSQL. It is not part of a database dump — see [Backup, restore and KEK rotation](/deployment/backup-and-restore).                                                |
+| `ROLTER_KEK_OLD`                   | Read only by `rolter kek rotate`: the KEK being rotated away from. Never set it on a running gateway or control plane.                                                                                                                        |
+| `DATABASE_URL`                     | PostgreSQL connection string, e.g. `postgres://user:pass@localhost:5432/rolter`.                                                                                                                                                              |
+| `ROLTER_DB_MAX_CONNECTIONS`        | Ceiling on open PostgreSQL connections. Default `10`.                                                                                                                                                                                         |
+| `ROLTER_DB_MIN_CONNECTIONS`        | Connections kept open while idle. Default `0`.                                                                                                                                                                                                |
+| `ROLTER_DB_ACQUIRE_TIMEOUT_SECS`   | How long a request waits for a free connection before failing. Default `30`.                                                                                                                                                                  |
+| `ROLTER_DB_IDLE_TIMEOUT_SECS`      | Close a connection idle for longer than this. `0` means never. Default `600`.                                                                                                                                                                 |
+| `ROLTER_DB_MAX_LIFETIME_SECS`      | Retire a connection older than this regardless of use. `0` disables. Default `1800`.                                                                                                                                                          |
+| `ROLTER_LOGIN_MAX_FAILURES`        | Failed sign-ins one account tolerates before it locks. Default `5`.                                                                                                                                                                           |
+| `ROLTER_LOGIN_IP_MAX_FAILURES`     | Failed sign-ins one client address tolerates across every account it tries. Default `50`.                                                                                                                                                     |
+| `ROLTER_LOGIN_FAILURE_WINDOW_SECS` | How long a failure counter survives without a new failure. Default `900`.                                                                                                                                                                     |
+| `ROLTER_LOGIN_LOCK_SECS`           | The first lock once the budget is spent; each further failure doubles it. Default `60`.                                                                                                                                                       |
+| `ROLTER_LOGIN_MAX_LOCK_SECS`       | Ceiling on that doubling, so a lock is always a bounded outage. Default `900`.                                                                                                                                                                |
+| `ROLTER_LOGIN_MAX_DELAY_MS`        | Ceiling on the delay added to a rejected sign-in. Default `2000`.                                                                                                                                                                             |
+| `ROLTER_LOGIN_TRUST_FORWARDED_FOR` | Count failures against the `X-Forwarded-For` client instead of the socket peer. Default off.                                                                                                                                                  |
+| `ROLTER_LOGIN_THROTTLE_DISABLED`   | Turn failed-login throttling off entirely. Default off.                                                                                                                                                                                       |
+| `ROLTER_UPDATE_CHECK`              | Set to `false` to stop the control plane and the `rolter` CLI from asking GitHub whether a newer stable release exists. Default on; see [Update check](#update-check).                                                                        |
 
 ### Sizing the connection pool
 
@@ -79,7 +79,7 @@ Two counters run independently:
 
 Before the lock engages, each rejected attempt is answered a little more slowly than the last, up to `ROLTER_LOGIN_MAX_DELAY_MS`. A locked attempt is answered `429` with a `Retry-After` header, so a client waits rather than polling.
 
-Every counter is keyed on the *submitted* address, never on an account that was found, so throttling reveals nothing about which addresses are registered. Failed attempts, engaged locks and sign-ins that follow one are written to the audit log, and `rolter_control_login_attempts` counts them by outcome so a credential-stuffing run is visible on your dashboards.
+Every counter is keyed on the _submitted_ address, never on an account that was found, so throttling reveals nothing about which addresses are registered. Failed attempts, engaged locks and sign-ins that follow one are written to the audit log, and `rolter_control_login_attempts` counts them by outcome so a credential-stuffing run is visible on your dashboards.
 
 <Note>
   **Locks always expire on their own.** A lock is a timer, not a flag an administrator has to clear — a lock somebody else can *set* would be a way to shut a colleague out of their own account. The worst an attacker achieves is a bounded outage capped by `ROLTER_LOGIN_MAX_LOCK_SECS`.
@@ -94,16 +94,17 @@ Every counter is keyed on the *submitted* address, never on an account that was 
 <Warning>
   `ROLTER_KEK` is the most sensitive secret in your Rolter deployment. Any party who holds this key can decrypt every stored provider credential. Generate a strong value before first run and store it in a secrets manager:
 
-  ```bash
-  openssl rand -hex 32
-  ```
+```bash
+openssl rand -hex 32
+```
 
-  Once the database is populated, rotating this key requires re-encrypting all stored credentials. Treat it with the same care as a private CA key.
+Once the database is populated, rotating this key requires re-encrypting all stored credentials. Treat it with the same care as a private CA key.
+
 </Warning>
 
 ### Update check
 
-The control plane asks `https://api.github.com/repos/rolter-ai/rolter/releases/latest` once at boot and every six hours whether a newer **stable** release exists, and serves the answer from [`GET /api/v1/version`](/api/version) so the dashboard footer can show a small *v0.2.0 available* hint. The `rolter` CLI runs the same check beside whatever command you start, caches the answer in `~/.cache/rolter/update-check.json` for 24 hours, and prints one line to stderr:
+The control plane asks `https://api.github.com/repos/rolter-ai/rolter/releases/latest` once at boot and every six hours whether a newer **stable** release exists, and serves the answer from [`GET /api/v1/version`](/api/version) so the dashboard footer can show a small _v0.2.0 available_ hint. The `rolter` CLI runs the same check beside whatever command you start, caches the answer in `~/.cache/rolter/update-check.json` for 24 hours, and prints one line to stderr:
 
 ```text
 rolter 0.1.0 is installed; 0.2.0 is available: https://github.com/rolter-ai/rolter/releases/latest
@@ -124,14 +125,14 @@ What the check does and does not do:
 
 These variables apply to both the gateway and the control plane.
 
-| Variable | Purpose |
-| --- | --- |
-| `REDIS_URL` | Redis/Valkey connection string. Used by the gateway for rate limits and budget tracking, and by the control plane for config-version pub/sub. |
-| `RUST_LOG` | Log filter string passed to the `tracing` subscriber, e.g. `info` or `rolter_gateway=debug,rolter_control=info`. |
+| Variable                      | Purpose                                                                                                                                                                                                                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `REDIS_URL`                   | Redis/Valkey connection string. Used by the gateway for rate limits and budget tracking, and by the control plane for config-version pub/sub.                                                                                                                                        |
+| `RUST_LOG`                    | Log filter string passed to the `tracing` subscriber, e.g. `info` or `rolter_gateway=debug,rolter_control=info`.                                                                                                                                                                     |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint for span export, e.g. `http://otel-collector:4317`. Setting it turns on trace export; leaving it unset keeps tracing stdout-only. (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces.) Metrics stay on the Prometheus `/metrics` scrape path. |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP transport: `grpc` (default) or `http/protobuf`. Match your collector's receiver port (gRPC `4317`, HTTP `4318`). |
-| `OTEL_EXPORTER_OTLP_HEADERS` | OTLP authentication headers as a comma-separated `key=value` list, e.g. `Authorization=Bearer <token>`. |
-| `OTEL_SERVICE_NAME` | The service name reported in OTel spans (default `rolter`), e.g. `rolter-gateway` or `rolter-control`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP transport: `grpc` (default) or `http/protobuf`. Match your collector's receiver port (gRPC `4317`, HTTP `4318`).                                                                                                                                                                |
+| `OTEL_EXPORTER_OTLP_HEADERS`  | OTLP authentication headers as a comma-separated `key=value` list, e.g. `Authorization=Bearer <token>`.                                                                                                                                                                              |
+| `OTEL_SERVICE_NAME`           | The service name reported in OTel spans (default `rolter`), e.g. `rolter-gateway` or `rolter-control`.                                                                                                                                                                               |
 
 ---
 
@@ -155,12 +156,12 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 Common provider key variables in use:
 
-| Variable | Typical provider |
-| --- | --- |
-| `OPENAI_API_KEY` | OpenAI |
-| `ANTHROPIC_API_KEY` | Anthropic |
-| `TOGETHER_API_KEY` | Together AI |
-| `GROQ_API_KEY` | Groq |
+| Variable            | Typical provider |
+| ------------------- | ---------------- |
+| `OPENAI_API_KEY`    | OpenAI           |
+| `ANTHROPIC_API_KEY` | Anthropic        |
+| `TOGETHER_API_KEY`  | Together AI      |
+| `GROQ_API_KEY`      | Groq             |
 
 <Tip>
   Always use `api_key_env` rather than writing your provider key inline in `rolter.toml`. Inline keys end up in version control, Docker image layers, and config backups. With `api_key_env`, your `rolter.toml` is safe to commit; only the environment running the gateway ever sees the actual key.

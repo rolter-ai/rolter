@@ -42,7 +42,7 @@ The migration chain selects steps with `MIGRATIONS.iter().filter(|m| m.from >= f
 
 `an_exported_config_has_no_pending_migrations` and `the_export_uses_the_tiered_provider_spelling` pin the two halves. Source the stamp from `rolter_core::config_migrate::CURRENT_SCHEMA_VERSION`, never as a literal.
 
-Emitting both tiers is also what keeps the export lossless. The flat array *is* the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
+Emitting both tiers is also what keeps the export lossless. The flat array _is_ the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
 
 ## Why some tables are out
 
@@ -79,7 +79,7 @@ directly is what made a plural-form provider import with no credential at all
 (#1514).
 
 The split between the two accessors is the safety property: `api_key_env_name()`
-returns a variable *name* and is the only one an exported document can reach,
+returns a variable _name_ and is the only one an exported document can reach,
 while `inline_api_key()` returns a secret and has exactly one caller, the seal
 into `provider_keys`.
 

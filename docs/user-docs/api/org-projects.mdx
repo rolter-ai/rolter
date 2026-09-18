@@ -5,7 +5,7 @@ description: "GET /api/v1/orgs/{org_id}/projects returns every project in an org
 ---
 
 Projects live under teams, so `GET /api/v1/teams/{team_id}/projects` answers for
-one team at a time. Anything that has to name a project *anywhere* in the
+one team at a time. Anything that has to name a project _anywhere_ in the
 organization — an SCIM or SSO group mapping, a scope picker, a report that walks
 the whole tenancy — would otherwise list the teams and then issue one request
 per team. In an org with 40 teams that is 41 round trips to fill one list.
@@ -54,13 +54,13 @@ There are no query parameters. The organization id is the only input.
 ]
 ```
 
-| Field | Type | Meaning |
-|---|---|---|
-| `id` | uuid | the project |
-| `team_id` | uuid | the team that owns it |
-| `team_name` | string | that team's name, carried on the row |
-| `name` | string | the project's name, unique only within its team |
-| `created_at` | RFC 3339 | when the project was created |
+| Field        | Type     | Meaning                                         |
+| ------------ | -------- | ----------------------------------------------- |
+| `id`         | uuid     | the project                                     |
+| `team_id`    | uuid     | the team that owns it                           |
+| `team_name`  | string   | that team's name, carried on the row            |
+| `name`       | string   | the project's name, unique only within its team |
+| `created_at` | RFC 3339 | when the project was created                    |
 
 Rows are ordered by team name and then project name, so the result arrives
 already grouped.

@@ -5,7 +5,7 @@ description: "POST /api/v1/ui-events records structural dashboard usability tele
 ---
 
 Browser spans tell you how long a screen took and whether it errored. They do
-not tell you whether it was *usable*: which screens are slow to become
+not tell you whether it was _usable_: which screens are slow to become
 interactive, where people back out, which forms get abandoned, which error
 states are actually reached. `POST /api/v1/ui-events` is the endpoint behind
 that stream.
@@ -63,19 +63,19 @@ most **100** events per request; a larger batch is rejected with `400`.
 
 ### Fields
 
-| Field | Required | Notes |
-|---|---|---|
-| `event_id` | yes | client-generated id, ≤ 96 chars |
-| `screen` | yes | stable screen key (a route id), **not** a URL |
-| `action` | yes | see the enum below |
-| `outcome` | no | `ok`, `error` or `cancelled`; defaults to `ok` |
-| `target` | no | name of the form, control or validation rule |
-| `from_screen` | no | previous screen, so navigation paths are queryable |
-| `duration_ms` | no | time-to-interactive, form dwell, or save-to-confirmation |
-| `trace_id` | no | joins to the gateway request this caused |
-| `session_id` | no | groups a single browsing session |
-| `org_id` / `team_id` / `project_id` | no | grouping labels |
-| `app_version` | no | dashboard build |
+| Field                               | Required | Notes                                                    |
+| ----------------------------------- | -------- | -------------------------------------------------------- |
+| `event_id`                          | yes      | client-generated id, ≤ 96 chars                          |
+| `screen`                            | yes      | stable screen key (a route id), **not** a URL            |
+| `action`                            | yes      | see the enum below                                       |
+| `outcome`                           | no       | `ok`, `error` or `cancelled`; defaults to `ok`           |
+| `target`                            | no       | name of the form, control or validation rule             |
+| `from_screen`                       | no       | previous screen, so navigation paths are queryable       |
+| `duration_ms`                       | no       | time-to-interactive, form dwell, or save-to-confirmation |
+| `trace_id`                          | no       | joins to the gateway request this caused                 |
+| `session_id`                        | no       | groups a single browsing session                         |
+| `org_id` / `team_id` / `project_id` | no       | grouping labels                                          |
+| `app_version`                       | no       | dashboard build                                          |
 
 `action` is one of `screen_view`, `time_to_interactive`, `navigate`,
 `back_out`, `form_submit`, `form_abandon`, `validation_error`, `empty_state`,

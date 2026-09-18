@@ -47,6 +47,7 @@ Docker Compose brings up the complete Rolter stack — gateway, control plane, P
     OPENAI_API_KEY=sk-...
     ANTHROPIC_API_KEY=sk-ant-...
     ```
+
   </Step>
   <Step title="Start the stack">
     ```bash
@@ -59,6 +60,7 @@ Docker Compose brings up the complete Rolter stack — gateway, control plane, P
     | --- | --- |
     | Gateway (data plane) | [http://localhost:4000](http://localhost:4000) |
     | Control plane \+ UI | [http://localhost:4001](http://localhost:4001) |
+
   </Step>
 </Steps>
 
@@ -119,13 +121,13 @@ org/team/project, and serve config from Postgres.
 
 ## Default ports
 
-| Port | Service |
-| --- | --- |
-| `4000` | Gateway — handles all `/v1/*` AI requests from your clients |
-| `4001` | Control plane — hosts the dashboard and configuration API |
-| `5432` | PostgreSQL (Docker Compose only) |
-| `6379` | Redis (Docker Compose only) |
-| `8123` / `9000` | ClickHouse HTTP / native (Docker Compose only) |
+| Port            | Service                                                     |
+| --------------- | ----------------------------------------------------------- |
+| `4000`          | Gateway — handles all `/v1/*` AI requests from your clients |
+| `4001`          | Control plane — hosts the dashboard and configuration API   |
+| `5432`          | PostgreSQL (Docker Compose only)                            |
+| `6379`          | Redis (Docker Compose only)                                 |
+| `8123` / `9000` | ClickHouse HTTP / native (Docker Compose only)              |
 
 <Warning>
   Do not expose port `4001` (control plane) to the public internet. Place the gateway (port `4000`) behind a TLS-terminating load balancer or ingress, and keep the control plane on an internal network.

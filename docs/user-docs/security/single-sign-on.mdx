@@ -53,6 +53,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
     </ParamField>
 
     Three more are optional: **Scopes** (`openid email profile` by default), **Group claim** (`groups` by default), and **Default role**.
+
   </Step>
 
   <Step title="Paste the client secret">
@@ -63,6 +64,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
     <Warning>
     Storing a client secret needs `ROLTER_KEK` configured on the control plane. Without it, saving a provider *with* a secret is refused — Rolter will not fall back to storing one in the clear.
     </Warning>
+
   </Step>
 
   <Step title="Copy the login URL">
@@ -109,7 +111,7 @@ provider.
 
 Confirming sends `client_secret: ""` to `PUT /api/v1/sso-providers/{id}` — the
 wire's third value, distinct from omitting the field (keep) and from sending one
-(rotate). The card's **Client secret** row then reads *Not set* and the
+(rotate). The card's **Client secret** row then reads _Not set_ and the
 **No client secret** badge appears.
 
 <Warning>
@@ -150,11 +152,11 @@ This is the same mapping model [SCIM provisioning](/security/user-provisioning) 
 
 The **Org sign-in policy** card at the top of the screen carries two switches, and they are saved together.
 
-| Password sign-in | Single sign-on | What the sign-in screen shows |
-| --- | --- | --- |
-| on | on | the email and password form, plus one button per enabled provider |
-| off | on | only the provider buttons |
-| on | off | only the email and password form |
+| Password sign-in | Single sign-on | What the sign-in screen shows                                     |
+| ---------------- | -------------- | ----------------------------------------------------------------- |
+| on               | on             | the email and password form, plus one button per enabled provider |
+| off              | on             | only the provider buttons                                         |
+| on               | off            | only the email and password form                                  |
 
 Two combinations are refused, with the reason shown inline:
 

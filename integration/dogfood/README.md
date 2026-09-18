@@ -16,11 +16,11 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 
 ## What is here
 
-| File | What it is |
-|---|---|
-| `fleet.ts` | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015` |
+| File           | What it is                                                                           |
+| -------------- | ------------------------------------------------------------------------------------ |
+| `fleet.ts`     | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  |
 | `dogfood.toml` | the matching rolter config — fifteen providers, three provider groups, eleven routes |
-| `keys.env` | the API keys the fleet expects (fake, loopback-only, checked in on purpose) |
+| `keys.env`     | the API keys the fleet expects (fake, loopback-only, checked in on purpose)          |
 
 ## The fleet
 
@@ -62,7 +62,7 @@ The three `[[provider_groups]]` in `dogfood.toml` are what makes `group-slug/mod
 addressing exercisable — `vllm-a100` is the whole rack, `vllm-a100-fast` the
 subset without the slow card (two providers are in both), and `openai-pool` is a
 pool of one with a model name that carries no vendor prefix. Seeding them is
-currently the *only* way to get a group in front of the gateway: a group created
+currently the _only_ way to get a group in front of the gateway: a group created
 through the dashboard never bumps `config_version`, so it does not propagate
 until the gateway restarts (#1643).
 
@@ -88,7 +88,7 @@ OTEL_SERVICE_NAME=rolter-gateway \
 
 `[logging].clickhouse_url` in `dogfood.toml` is what makes the dashboard's
 analytics screens fill; the control plane's `CLICKHOUSE_URL` only lets it
-*read* the table (#929).
+_read_ the table (#929).
 
 ## Browser tracing
 
@@ -110,11 +110,11 @@ portless alias rolter 4001 && portless alias api.rolter 4000
 portless alias signoz 8080 && portless alias otel 4318
 ```
 
-| URL | What |
-|---|---|
-| `https://rolter.localhost` | dashboard |
-| `https://api.rolter.localhost` | gateway (`/v1/*`) |
-| `https://signoz.localhost` | traces, metrics, logs |
+| URL                            | What                  |
+| ------------------------------ | --------------------- |
+| `https://rolter.localhost`     | dashboard             |
+| `https://api.rolter.localhost` | gateway (`/v1/*`)     |
+| `https://signoz.localhost`     | traces, metrics, logs |
 
 ## Credentials
 
@@ -122,12 +122,12 @@ portless alias signoz 8080 && portless alias otel 4318
 justfile, `provision-signoz.sh` and `sheet.sh` all read it, so changing it there
 changes it everywhere. The dashboard and SigNoz share one login:
 
-| Service | User | Password |
-|---|---|---|
-| rolter dashboard | `dev@rolter.local` | `rolter-dev-2026` |
-| SigNoz | `dev@rolter.local` | `rolter-dev-2026` |
-| postgres | `rolter` | `rolter` |
-| redis, ClickHouse, OTLP | — | unauthenticated on loopback |
+| Service                 | User               | Password                    |
+| ----------------------- | ------------------ | --------------------------- |
+| rolter dashboard        | `dev@rolter.local` | `rolter-dev-2026`           |
+| SigNoz                  | `dev@rolter.local` | `rolter-dev-2026`           |
+| postgres                | `rolter`           | `rolter`                    |
+| redis, ClickHouse, OTLP | —                  | unauthenticated on loopback |
 
 These are checked in and printed on every run. That is safe only because the
 stack binds to loopback, talks to fake providers and holds nothing real — do not
@@ -176,10 +176,10 @@ Traces survive that — they live in ClickHouse, not in the database it removes.
 The dashboards can always be imported by hand instead: **Dashboards → Import
 JSON** in SigNoz, using the files in `signoz/dashboards/`.
 
-| Dashboard | What it shows |
-|---|---|
-| `rolter · overview` | request rate, p95 and errors across gateway, control plane and dashboard; slowest operations |
-| `rolter · dashboard UX` | the SPA's own browser tracing: which API calls fail, with which status, on which path |
+| Dashboard               | What it shows                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `rolter · overview`     | request rate, p95 and errors across gateway, control plane and dashboard; slowest operations |
+| `rolter · dashboard UX` | the SPA's own browser tracing: which API calls fail, with which status, on which path        |
 
 Both query `signoz_traces` with ClickHouse SQL rather than the query builder, so
 they survive SigNoz changing the builder's shape between releases. The UX board

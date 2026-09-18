@@ -12,16 +12,16 @@ See the decision record: [`docs/dev-docs/adr/2026-07-21-e2e-test-harness.md`](..
 
 ## Layout
 
-| Path | Purpose |
-| --- | --- |
-| `docker-compose.e2e.yml` | full stack; gateway runs in DB-snapshot mode, RBAC on (`ROLTER_ADMIN_TOKEN` set) |
-| `rolter_e2e/client.py` | `ControlClient` / `GatewayClient` — typed wrappers over every endpoint used |
-| `rolter_e2e/stack.py` | `docker compose up/down/--wait` + health polling |
-| `rolter_e2e/bootstrap.py` | tenant + fake-vLLM fleet bootstrap (`register_fleet`) |
-| `conftest.py` | session fixtures: `stack`, `admin`, `gateway` |
-| `tests/test_smoke.py` | the harness acceptance gate (#614) |
-| `rolter_e2e/keycloak.py` | admin-API driver for the real identity provider (#714) |
-| `tests/test_sso.py` | OIDC login + SCIM against Keycloak; needs `--idp` |
+| Path                      | Purpose                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| `docker-compose.e2e.yml`  | full stack; gateway runs in DB-snapshot mode, RBAC on (`ROLTER_ADMIN_TOKEN` set) |
+| `rolter_e2e/client.py`    | `ControlClient` / `GatewayClient` — typed wrappers over every endpoint used      |
+| `rolter_e2e/stack.py`     | `docker compose up/down/--wait` + health polling                                 |
+| `rolter_e2e/bootstrap.py` | tenant + fake-vLLM fleet bootstrap (`register_fleet`)                            |
+| `conftest.py`             | session fixtures: `stack`, `admin`, `gateway`                                    |
+| `tests/test_smoke.py`     | the harness acceptance gate (#614)                                               |
+| `rolter_e2e/keycloak.py`  | admin-API driver for the real identity provider (#714)                           |
+| `tests/test_sso.py`       | OIDC login + SCIM against Keycloak; needs `--idp`                                |
 
 ## Run
 
@@ -57,13 +57,13 @@ rewrites the host on its own requests — see `rolter_e2e/keycloak.py`.
 
 ### Useful env toggles
 
-| Var | Effect |
-| --- | --- |
-| `ROLTER_E2E_NO_MANAGE=1` | don't manage compose; test an already-running stack |
-| `ROLTER_E2E_NO_BUILD=1` | `up` without `--build` (reuse existing images) |
-| `ROLTER_E2E_KEEP=1` | leave the stack up after the run (for debugging) |
-| `ROLTER_E2E_CONTROL_URL` / `ROLTER_E2E_GATEWAY_URL` | point at non-default hosts |
-| `ROLTER_E2E_KEYCLOAK_URL` / `ROLTER_E2E_KEYCLOAK_INTERNAL_URL` | the IdP's host-published and compose-internal URLs |
+| Var                                                            | Effect                                              |
+| -------------------------------------------------------------- | --------------------------------------------------- |
+| `ROLTER_E2E_NO_MANAGE=1`                                       | don't manage compose; test an already-running stack |
+| `ROLTER_E2E_NO_BUILD=1`                                        | `up` without `--build` (reuse existing images)      |
+| `ROLTER_E2E_KEEP=1`                                            | leave the stack up after the run (for debugging)    |
+| `ROLTER_E2E_CONTROL_URL` / `ROLTER_E2E_GATEWAY_URL`            | point at non-default hosts                          |
+| `ROLTER_E2E_KEYCLOAK_URL` / `ROLTER_E2E_KEYCLOAK_INTERNAL_URL` | the IdP's host-published and compose-internal URLs  |
 
 ## Notes
 

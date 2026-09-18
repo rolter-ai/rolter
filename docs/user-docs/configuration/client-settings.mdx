@@ -30,7 +30,7 @@ Some headers can never be forwarded, because forwarding them would hand a caller
 
 Every inbound header beginning with `anthropic-` is forwarded to an Anthropic-dialect upstream **unchanged, without an allowlist entry** — including values Rolter has never seen.
 
-Anthropic extends its protocol through headers: a capability pairs an `anthropic-beta` value with body fields, and the pair travels together. A closed allowlist against a vendor that ships new capabilities *as new header values* means every new beta breaks until someone adds it by name, and it does not fail gracefully — stripping the header while the body passes returns a hard `400` (`Extra inputs are not permitted`), while capabilities such as extended context simply never take effect.
+Anthropic extends its protocol through headers: a capability pairs an `anthropic-beta` value with body fields, and the pair travels together. A closed allowlist against a vendor that ships new capabilities _as new header values_ means every new beta breaks until someone adds it by name, and it does not fail gracefully — stripping the header while the body passes returns a hard `400` (`Extra inputs are not permitted`), while capabilities such as extended context simply never take effect.
 
 <Note>
   The match requires the separator, so a header merely starting with those letters (`anthropicfoo`) is not in the namespace. These headers are also dropped again for a provider that does not speak the Anthropic dialect, so an OpenAI-shaped upstream never receives them.
@@ -44,7 +44,7 @@ Anthropic extends its protocol through headers: a capability pairs an `anthropic
 
 Static name/value pairs Rolter adds to every upstream request — a partner id, a routing tag, a billing dimension your provider expects.
 
-Injected headers are applied *before* trace context, so a trace header of the same name still wins. Values are treated as deployment credential material: they reach the gateway through the snapshot, but they are never written to the audit log. The log records which header **names** changed, not what they were set to.
+Injected headers are applied _before_ trace context, so a trace header of the same name still wins. Values are treated as deployment credential material: they reach the gateway through the snapshot, but they are never written to the audit log. The log records which header **names** changed, not what they were set to.
 
 The same reserved list applies here.
 

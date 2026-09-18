@@ -37,7 +37,7 @@ Both run in CI only from dispatch-gated workflows, never the per-PR gate:
 `quality.yml` takes no secrets by design (#734) so dependabot and fork PRs pass
 exactly the same checks. Assertions in the live suites carry the upstream
 response body in their failure message — with an inferred field name, the
-provider's complaint *is* the finding, and a bare status-code assertion would
+provider's complaint _is_ the finding, and a bare status-code assertion would
 throw it away.
 
 ### Configuring the Gemini smoke
@@ -63,15 +63,15 @@ rather than by spending another call.
 
 What the suite covers, and why each probe exists:
 
-| Probe | Confirms |
-|---|---|
-| text turn | turn mapping, `system_instruction`, `generation_config`, usage — all documented |
-| inline image part | the inferred `mime_type`/`data` inline part shape |
-| remote image part | the inferred `file_uri` shape — the *other* branch, which the inline probe never reaches |
-| tool call round trip | `function_call` out, `function_result` back, and `call_id` correlation |
-| interaction threading | the id rolter surfaces as the response `id` is the one Google accepts back |
-| every client dialect | Chat Completions, Messages and Responses have separate response translators |
-| every client dialect, streaming | the inferred `step.delta` variants, through all three separate SSE emitters |
+| Probe                           | Confirms                                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------------------- |
+| text turn                       | turn mapping, `system_instruction`, `generation_config`, usage — all documented          |
+| inline image part               | the inferred `mime_type`/`data` inline part shape                                        |
+| remote image part               | the inferred `file_uri` shape — the _other_ branch, which the inline probe never reaches |
+| tool call round trip            | `function_call` out, `function_result` back, and `call_id` correlation                   |
+| interaction threading           | the id rolter surfaces as the response `id` is the one Google accepts back               |
+| every client dialect            | Chat Completions, Messages and Responses have separate response translators              |
+| every client dialect, streaming | the inferred `step.delta` variants, through all three separate SSE emitters              |
 
 A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
@@ -119,7 +119,7 @@ are handled by a sweep the first `TestSchema` in a process performs:
 The sweep drops every `test_<pid>_<seq>` schema whose pid is not a live
 process, in batches: each schema carries the full migration set, and dropping
 thousands in one transaction runs the lock table out of shared memory. It is
-deliberately one-sided — a schema whose pid *is* live is always kept, so a suite
+deliberately one-sided — a schema whose pid _is_ live is always kept, so a suite
 running concurrently in another process can never lose its schema, and a pid the
 operating system has recycled only defers a drop to a later run.
 
@@ -158,7 +158,7 @@ relations and `cascade` locks every one of them, so even ten schemas in a
 single transaction exhausts the lock table — the `out of shared memory` the
 issue describes is reachable at far fewer schemas than it sounds.
 
-When a failing test's rows *are* the evidence, set `ROLTER_TEST_KEEP_SCHEMA=1`:
+When a failing test's rows _are_ the evidence, set `ROLTER_TEST_KEEP_SCHEMA=1`:
 the guard then keeps every schema it creates (printing each name) and skips the
 sweep, so nothing is reclaimed until you drop it yourself.
 
@@ -337,6 +337,7 @@ docker run --rm -v "$PWD:/repo" -w /repo \
   ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
   dir . --config .github/config/gitleaks.toml --redact --exit-code 1
 ```
+
 ### Workflow security (zizmor)
 
 The `zizmor` job audits `.github/workflows/` and `.github/actions/` for workflow
@@ -374,12 +375,12 @@ the step retries, up to three attempts with a short backoff (#1509).
 What makes the retry safe is that zizmor's exit code already separates the two
 cases, so the retry never has to infer which one it is:
 
-| Exit | Meaning | Gate behaviour |
-|---|---|---|
-| `0` | audit completed, nothing to report | pass, first attempt |
-| `11`–`14` | audit completed, findings at informational…high | **fail, first attempt** |
-| `1` | no audit was produced | retry, but only when the output names a GitHub API failure |
-| `2`, `3` | bad arguments / no inputs collected | fail, first attempt |
+| Exit      | Meaning                                         | Gate behaviour                                             |
+| --------- | ----------------------------------------------- | ---------------------------------------------------------- |
+| `0`       | audit completed, nothing to report              | pass, first attempt                                        |
+| `11`–`14` | audit completed, findings at informational…high | **fail, first attempt**                                    |
+| `1`       | no audit was produced                           | retry, but only when the output names a GitHub API failure |
+| `2`, `3`  | bad arguments / no inputs collected             | fail, first attempt                                        |
 
 A completed run is a verdict, and a verdict is final immediately — a genuine
 finding can never be retried away because it never reaches the retryable branch.
@@ -401,8 +402,8 @@ from `audit.yml` rather than on each PR.
 It stays in the blocking PR gate anyway, and deliberately. zizmor has no flag
 that disables a single audit — the only granularity is `--no-online-audits`,
 which would also drop `impostor-commit` and `stale-action-refs`, and those two
-are precisely the audits that catch a bad action ref *introduced by the diff in
-front of you*. Trading away the audits that read the current diff to pre-empt an
+are precisely the audits that catch a bad action ref _introduced by the diff in
+front of you_. Trading away the audits that read the current diff to pre-empt an
 advisory that has not fired yet costs more than it saves, and the remedy in the
 noisy case is to bump the pin — the change we would want to make regardless, on
 whichever PR notices first. Revisit this if zizmor gains per-audit selection or
@@ -416,11 +417,11 @@ false positive for this repository, suppress that one rule on that one step with
 a bare suppression is indistinguishable from the noise this gate exists to stop.
 The four suppressions in the tree today are:
 
-| Where | Rule | Why |
-|---|---|---|
-| `engine-integration.yml` — `Swatinem/rust-cache` | `cache-poisoning` | nothing this workflow builds is published, so the cache cannot poison a release |
-| `release-plz.yml` — both `actions/checkout` steps | `artipacked` | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on |
-| `project-automation.yml` — `pull_request_target` | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id and literal field names to `run:` |
+| Where                                             | Rule                 | Why                                                                                                                                               |
+| ------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine-integration.yml` — `Swatinem/rust-cache`  | `cache-poisoning`    | nothing this workflow builds is published, so the cache cannot poison a release                                                                   |
+| `release-plz.yml` — both `actions/checkout` steps | `artipacked`         | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on                                |
+| `project-automation.yml` — `pull_request_target`  | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id and literal field names to `run:` |
 
 ### Storybook play tests
 
@@ -442,7 +443,7 @@ bun run test:stories src/pages/Keys.stories.tsx # or just these
 `Starting...`, exits, and leaves whatever was already listening in place —
 another worktree's Storybook, or a stale `python3 -m http.server --directory
 storybook-static` from an earlier session. `test-storybook --url
-http://localhost:<port>` then runs against *that* server and reports a green
+http://localhost:<port>` then runs against _that_ server and reports a green
 suite for a build that never contained the stories under test. Nothing in the
 output says so. This has happened twice in one day (#1648, #1684), and both
 times the only thing that caught it was fetching `/index.json` by hand.
@@ -450,7 +451,7 @@ times the only thing that caught it was fetching `/index.json` by hand.
 `bun run test:stories` (`ui/scripts/run-story-tests.ts`) closes that hole:
 
 - it picks a free port itself, or **fails** when the one passed to `--port` is
-  taken. The probe *connects* rather than binding — `python3 -m http.server` and
+  taken. The probe _connects_ rather than binding — `python3 -m http.server` and
   `Bun.serve` both set `SO_REUSEADDR`, so a second bind on a squatted port
   succeeds and a bind-only probe calls it free
 - it starts `storybook dev --ci` and waits for `/index.json`
@@ -459,7 +460,7 @@ times the only thing that caught it was fetching `/index.json` by hand.
   in it must be present. A Storybook that is not this project fails here, and so
   does a stale build of a file whose newest story is missing
 - **it identifies the process holding the port.** The index check above compares
-  *content*, so another worktree of this same repository sails through it — its
+  _content_, so another worktree of this same repository sails through it — its
   build indexes the same story ids under the same import paths. That is the case
   that actually happens here, and it did, on port 6032 (#1693). So the guard
   reads the listening pid with `lsof -ti :<port>` and asks for its working
@@ -523,7 +524,7 @@ allows them.
 
 Note that [#1672](https://github.com/rolter-ai/rolter/pull/1672)'s
 `configure({ asyncUtilTimeout: 5000 })` does **not** cover this. That budget is
-how long `waitFor` and `findBy*` are willing to *wait*; an assertion that never
+how long `waitFor` and `findBy*` are willing to _wait_; an assertion that never
 polls waits zero milliseconds however high it is set. The two are orthogonal.
 
 The job carries no `continue-on-error`, so it blocks: a failing story fails
@@ -547,7 +548,7 @@ is the only file running. Under the full parallel run it does not always:
 with the failure dump showing the screen still on its tab header — the
 assertion was right and the data was still in flight.
 
-The budget is a ceiling on how long a *failing* assertion waits, never a delay a
+The budget is a ceiling on how long a _failing_ assertion waits, never a delay a
 passing one pays, so the suite does not get slower. Prefer it over a
 per-assertion `{ timeout }`: a timeout written at one first-paint assertion is a
 timeout the next story will not have. The exceptions are the few places that
@@ -560,7 +561,7 @@ in the harness, rebuild, and re-run the file — and restart the static server
 after every rebuild, since a server left running over a replaced
 `storybook-static` keeps serving the build it started with.
 
-A raised budget only helps an assertion that *retries*. `getByRole` and a bare
+A raised budget only helps an assertion that _retries_. `getByRole` and a bare
 `expect` do not: they read the DOM once, so they wait zero milliseconds at any
 budget and pass only while the stub answers inside the same tick. That is what
 #1689 was — three plays acting on a control whose data is a request behind the
@@ -589,7 +590,7 @@ is not a waiter but `expectAllowed`.
 `expectAllowed(canvasElement, name, role?)` waits on the harness's own gate
 probe first: `Harness` renders a hidden `data-gate` span inside the
 `CapabilityProvider` whenever a story carries a `role`, reading `answered` only
-once the effective-permissions query has settled *with a payload*. Only then is
+once the effective-permissions query has settled _with a payload_. Only then is
 the control read — enabled, and carrying none of the refusal sentences, so a
 control disabled by its own form state cannot pass for a permitted one. The
 probe is the harness's and never the dashboard's: no production component
@@ -641,16 +642,16 @@ those are the ones worth checking.
 The gate shipped as serious+critical only (#1181); #1244 measured what the
 other half contained before turning it on. Over all 695 stories:
 
-| rule | impact | nodes | stories | decision |
-|---|---|---:|---:|---|
-| `region` | moderate | 3177 | 488 | off by default — page-level |
-| `landmark-one-main` | moderate | 593 | 593 | off by default — page-level |
-| `page-has-heading-one` | moderate | 570 | 570 | off by default — page-level |
-| `empty-table-header` | minor | 13 | 13 | fixed |
-| `heading-order` | moderate | 11 | 11 | fixed |
-| `landmark-unique` | moderate | 9 | 9 | fixed |
+| rule                   | impact   | nodes | stories | decision                    |
+| ---------------------- | -------- | ----: | ------: | --------------------------- |
+| `region`               | moderate |  3177 |     488 | off by default — page-level |
+| `landmark-one-main`    | moderate |   593 |     593 | off by default — page-level |
+| `page-has-heading-one` | moderate |   570 |     570 | off by default — page-level |
+| `empty-table-header`   | minor    |    13 |      13 | fixed                       |
+| `heading-order`        | moderate |    11 |      11 | fixed                       |
+| `landmark-unique`      | moderate |     9 |       9 | fixed                       |
 
-The three page-level rules all describe a *page*. A story normally mounts one
+The three page-level rules all describe a _page_. A story normally mounts one
 component, or one screen body, into a bare iframe with no app shell around it:
 the landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
 and `components/ScreenHeader.tsx`. Asserting them on a component story would
@@ -660,10 +661,10 @@ that ships nowhere — so `DISABLED_RULES` turns them off for the default case.
 They are off by default, not unchecked (#1353). Two story files mount a whole
 page and turn them back on by name:
 
-| Story file | What it mounts | Widths |
-|---|---|---|
-| `ui/src/App.stories.tsx` | the assembled shell — rail + header + screen, signed in (#1239) | 1280, 768, 375 |
-| `ui/src/pages/Login.stories.tsx` | the signed-out login page, which has no shell around it | desktop |
+| Story file                       | What it mounts                                                  | Widths         |
+| -------------------------------- | --------------------------------------------------------------- | -------------- |
+| `ui/src/App.stories.tsx`         | the assembled shell — rail + header + screen, signed in (#1239) | 1280, 768, 375 |
+| `ui/src/pages/Login.stories.tsx` | the signed-out login page, which has no shell around it         | desktop        |
 
 Both spread `withPageA11y` from `ui/src/lib/story-a11y.ts` into their meta
 `parameters`; `postVisit` merges `parameters.a11y.rules` over `DISABLED_RULES`,
@@ -680,10 +681,10 @@ level and ran green asserting nothing; it was caught by printing the merged
 rule map by hand. A gate that can be switched off without a word is the one
 failure worth spending code on, so the placement rule is now enforced twice:
 
-| Guard | Where | What it catches |
-|---|---|---|
-| `parameters.a11y.expectRules` | `.storybook/test-runner.ts` `postVisit` | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the runner fails the story if any of them is not enabled in the map it actually merged. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
-| `bun run check:stories` | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters` |
+| Guard                         | Where                                                             | What it catches                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `parameters.a11y.expectRules` | `.storybook/test-runner.ts` `postVisit`                           | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the runner fails the story if any of them is not enabled in the map it actually merged. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
+| `bun run check:stories`       | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters`                                                                                         |
 
 The shapes are read from the fixture modules rather than listed in the checker,
 so a fixture added later is covered the day it is written. A third story file
@@ -747,20 +748,20 @@ ship. There is no shared mock module: each screen's fixtures live in its own
 seeds a running control plane through `ui/e2e/seed.ts` instead. `ui/src/pages/story-harness.tsx` holds the shared pieces — it is not a
 `.stories.tsx` file, so Storybook never tries to render it as a screen:
 
-| Helper | What it is for |
-|---|---|
-| `Harness` | swaps `globalThis.fetch`, clears the persisted scope, renders under a fresh `QueryClient` with `retry: false` |
-| `scoped(handler)` | answers the org → team → project chain every scoped screen resolves first, then defers to `handler` |
-| `routes([...])` | fragment-matched routing table, matched in order so a longer path can precede the prefix it shares |
-| `pending` | a stub that never settles, for the loading state |
-| `json(body, status)` | a JSON `Response`, with no body for 204/205/304 so a success stub cannot throw |
-| `recording(handler)` | wraps a stub and keeps every call, so a story can assert the method, URL and body that actually left |
-| `clickWhenEnabled` | waits for a button to be *enabled*, not merely present |
-| `sheet()` / `expectSheetClosed()` | the editor sheet, which portals to `document.body` rather than into the canvas |
-| `withConfirm` / `expectClosesWithoutPrompting` | the discard guard from #868, asserted in both answers |
+| Helper                                         | What it is for                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `Harness`                                      | swaps `globalThis.fetch`, clears the persisted scope, renders under a fresh `QueryClient` with `retry: false` |
+| `scoped(handler)`                              | answers the org → team → project chain every scoped screen resolves first, then defers to `handler`           |
+| `routes([...])`                                | fragment-matched routing table, matched in order so a longer path can precede the prefix it shares            |
+| `pending`                                      | a stub that never settles, for the loading state                                                              |
+| `json(body, status)`                           | a JSON `Response`, with no body for 204/205/304 so a success stub cannot throw                                |
+| `recording(handler)`                           | wraps a stub and keeps every call, so a story can assert the method, URL and body that actually left          |
+| `clickWhenEnabled`                             | waits for a button to be _enabled_, not merely present                                                        |
+| `sheet()` / `expectSheetClosed()`              | the editor sheet, which portals to `document.body` rather than into the canvas                                |
+| `withConfirm` / `expectClosesWithoutPrompting` | the discard guard from #868, asserted in both answers                                                         |
 
 Two traps this encodes. Scope endpoints are matched on the whole pathname: a
-screen's own endpoint often *contains* one of them (`/api/v1/projects/{id}/virtual-keys`),
+screen's own endpoint often _contains_ one of them (`/api/v1/projects/{id}/virtual-keys`),
 and a substring match would answer it with the project list. And most screens
 disable their primary action until the three-request scope chain resolves, so
 `findByRole` followed by a click races and throws `pointer-events: none` —
@@ -800,7 +801,6 @@ headers were a `div role="button"` wrapping the info hint's own button
 `title` alone (`label-title-only`), and `StatusRow`'s `colorText` painted its
 label with the solid `--status-*` signal colour, which is below AA as text — the
 `--status-*-text` pair exists for exactly that.
-
 
 ### Full-stack compose smoke
 

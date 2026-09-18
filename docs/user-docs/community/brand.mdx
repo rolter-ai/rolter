@@ -25,12 +25,12 @@ lattice and the single centre stitch; the darker red fills the ring between
 them. That split is what makes it read as embroidery rather than as a pixel
 grid, so neither red may be dropped or recoloured independently.
 
-| | |
-| --- | --- |
-| **File** | `assets/logo.svg` (also vendored at `docs/user-docs/logo.svg` and `ui/public/logo-mark.svg`) |
-| **Geometry** | 29 rects, `6.2 × 6.2` with a `1` corner radius, pitch 7, `viewBox="0 0 63 63"` |
-| **Colours** | 17 stitches `#ff4017`, 12 stitches `#b41d21` |
-| **Background** | none — the mark is transparent and takes the surface under it |
+|                |                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| **File**       | `assets/logo.svg` (also vendored at `docs/user-docs/logo.svg` and `ui/public/logo-mark.svg`) |
+| **Geometry**   | 29 rects, `6.2 × 6.2` with a `1` corner radius, pitch 7, `viewBox="0 0 63 63"`               |
+| **Colours**    | 17 stitches `#ff4017`, 12 stitches `#b41d21`                                                 |
+| **Background** | none — the mark is transparent and takes the surface under it                                |
 
 ### Clear space
 
@@ -57,10 +57,10 @@ that size, rather than shrinking the mark further.
 red-on-transparent, and both reds carry their shape on a light and a dark
 surface:
 
-| Stitch colour | On `#ffffff` | On `--surface-base` `#111113` |
-| --- | --- | --- |
-| `#ff4017` `--red-500` | 3.50:1 | 5.38:1 |
-| `#b41d21` `--red-folk` | 6.69:1 | 2.82:1 |
+| Stitch colour          | On `#ffffff` | On `--surface-base` `#111113` |
+| ---------------------- | ------------ | ----------------------------- |
+| `#ff4017` `--red-500`  | 3.50:1       | 5.38:1                        |
+| `#b41d21` `--red-folk` | 6.69:1       | 2.82:1                        |
 
 The folk red is the weaker of the two on dark, but it never carries the
 silhouette: it only fills stitches held inside the bright-red lattice, so the
@@ -77,13 +77,13 @@ or in its own clear-space panel.
 
 Two reds, and they are not interchangeable.
 
-| Token | Value | Role |
-| --- | --- | --- |
-| `--red-500` | `#ff4017` | The **accent**. Interactive and attention colour: the active nav marker, a focus accent, the mark's lattice, the one rule on a hero. |
-| `--red-folk` | `#b41d21` | The **folkloric** red. Ornament only: the вышивка rule, the mark's inner stitches, a chart series. Never a label, never a link. |
+| Token        | Value     | Role                                                                                                                                 |
+| ------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `--red-500`  | `#ff4017` | The **accent**. Interactive and attention colour: the active nav marker, a focus accent, the mark's lattice, the one rule on a hero. |
+| `--red-folk` | `#b41d21` | The **folkloric** red. Ornament only: the вышивка rule, the mark's inner stitches, a chart series. Never a label, never a link.      |
 
 `--red-folk` is `2.82:1` on the dashboard surface, which is under the 4.5:1
-floor for text. When brand red has to *be* text, use `--red-folk-text`
+floor for text. When brand red has to _be_ text, use `--red-folk-text`
 (`#ff5a3c`, 6.09:1) — the same family lifted until it reads. The full set,
 including `--red-600`, `--red-700`, `--red-tint` and `--red-tint-strong`, is
 in `ui/src/index.css`.
@@ -177,7 +177,7 @@ of pointing at a hosted URL.
 - Do not rotate, skew, stretch or squash it — scale uniformly or not at all.
 - Do not put it on a busy photograph, a mid-tone grey, or a red background.
 - Do not enclose it in a circle, a rounded square or any other badge; the
-  diamond silhouette *is* the containment.
+  diamond silhouette _is_ the containment.
 - Do not rebuild it from the stitches into a different arrangement, and do not
   animate the stitches individually.
 - Do not set the wordmark in a font other than Geist, and do not capitalise it.

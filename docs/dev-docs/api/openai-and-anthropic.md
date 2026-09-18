@@ -2,7 +2,7 @@
 
 rolter speaks the OpenAI and Anthropic HTTP APIs so existing SDKs work unchanged — point them at the gateway base URL and use a rolter virtual key.
 
-What this surface guarantees across releases is the *dialect*, not a frozen schema: the `v1` in the path is OpenAI's, so there is no `/v2/` to move to, and following an upstream dialect change is not treated as a rolter breaking change. The rolter-owned parts — virtual-key auth, model addressing, the error envelope, `GET /v1/models` — are held stable on the same terms as the control API. See [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
+What this surface guarantees across releases is the _dialect_, not a frozen schema: the `v1` in the path is OpenAI's, so there is no `/v2/` to move to, and following an upstream dialect change is not treated as a rolter breaking change. The rolter-owned parts — virtual-key auth, model addressing, the error envelope, `GET /v1/models` — are held stable on the same terms as the control API. See [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 ## Authentication
 
@@ -13,30 +13,30 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 
 ## Endpoints (v1)
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| POST | `/v1/chat/completions` | OpenAI chat; streaming via `"stream": true` (SSE) |
-| POST | `/v1/completions` | OpenAI legacy completions |
-| POST | `/v1/responses` | OpenAI Responses; provider-native passthrough, streaming supported |
-| GET, DELETE | `/v1/responses/{id}` | retrieve or delete a tenant-scoped native Responses resource |
-| POST | `/v1/responses/{id}/cancel` | cancel a tenant-scoped native Responses resource |
-| GET | `/v1/responses/{id}/input_items` | list input items for a tenant-scoped native Responses resource |
-| POST | `/v1/messages` | Anthropic Messages; streaming supported |
-| POST | `/v1/embeddings` | OpenAI embeddings; non-streaming |
-| POST | `/v1/rerank` | Cohere/Jina rerank; non-streaming |
-| POST | `/v1/images/generations` | OpenAI image generation; non-streaming |
-| POST | `/v1/audio/speech` | OpenAI text-to-speech; binary audio response |
-| POST | `/v1/audio/transcriptions` | OpenAI speech-to-text; `multipart/form-data` upload |
-| POST | `/v1/audio/translations` | OpenAI audio translation; `multipart/form-data` upload |
-| GET | `/v1/realtime?model=…` | OpenAI-compatible Realtime API; WebSocket relay. **Experimental** — see below |
-| GET, POST, DELETE | `/mcp/{server}/{path…}` | authenticated Streamable HTTP/SSE MCP proxy |
-| GET | `/v1/models` | lists route names, provider-pinned and group addresses (see [Model listing](#model-listing)) |
-| GET | `/openapi.json` | OpenAPI 3.1 description of this request surface (self-contained, no external assets) |
-| GET | `/docs` | interactive Scalar API reference (assets embedded in the binary — works air-gapped) |
-| GET | `/` | service-info landing (version + links to docs/openapi/health) |
-| GET | `/healthz` | liveness — process is up, no dependency checks |
-| GET | `/readyz` | readiness — `503` while draining (see [Health & readiness](../architecture/health-and-readiness.md)) |
-| GET | `/metrics` | Prometheus exposition |
+| Method            | Path                             | Notes                                                                                                |
+| ----------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| POST              | `/v1/chat/completions`           | OpenAI chat; streaming via `"stream": true` (SSE)                                                    |
+| POST              | `/v1/completions`                | OpenAI legacy completions                                                                            |
+| POST              | `/v1/responses`                  | OpenAI Responses; provider-native passthrough, streaming supported                                   |
+| GET, DELETE       | `/v1/responses/{id}`             | retrieve or delete a tenant-scoped native Responses resource                                         |
+| POST              | `/v1/responses/{id}/cancel`      | cancel a tenant-scoped native Responses resource                                                     |
+| GET               | `/v1/responses/{id}/input_items` | list input items for a tenant-scoped native Responses resource                                       |
+| POST              | `/v1/messages`                   | Anthropic Messages; streaming supported                                                              |
+| POST              | `/v1/embeddings`                 | OpenAI embeddings; non-streaming                                                                     |
+| POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming                                                                    |
+| POST              | `/v1/images/generations`         | OpenAI image generation; non-streaming                                                               |
+| POST              | `/v1/audio/speech`               | OpenAI text-to-speech; binary audio response                                                         |
+| POST              | `/v1/audio/transcriptions`       | OpenAI speech-to-text; `multipart/form-data` upload                                                  |
+| POST              | `/v1/audio/translations`         | OpenAI audio translation; `multipart/form-data` upload                                               |
+| GET               | `/v1/realtime?model=…`           | OpenAI-compatible Realtime API; WebSocket relay. **Experimental** — see below                        |
+| GET, POST, DELETE | `/mcp/{server}/{path…}`          | authenticated Streamable HTTP/SSE MCP proxy                                                          |
+| GET               | `/v1/models`                     | lists route names, provider-pinned and group addresses (see [Model listing](#model-listing))         |
+| GET               | `/openapi.json`                  | OpenAPI 3.1 description of this request surface (self-contained, no external assets)                 |
+| GET               | `/docs`                          | interactive Scalar API reference (assets embedded in the binary — works air-gapped)                  |
+| GET               | `/`                              | service-info landing (version + links to docs/openapi/health)                                        |
+| GET               | `/healthz`                       | liveness — process is up, no dependency checks                                                       |
+| GET               | `/readyz`                        | readiness — `503` while draining (see [Health & readiness](../architecture/health-and-readiness.md)) |
+| GET               | `/metrics`                       | Prometheus exposition                                                                                |
 
 ## Request header forwarding
 
@@ -49,7 +49,7 @@ allowlist entry** (#1013). Any inbound header whose name begins with
 `anthropic-` is passed unchanged to an Anthropic-dialect upstream, whether or
 not anyone has heard of it.
 
-This is not a convenience. Anthropic extends its protocol *through headers*: a
+This is not a convenience. Anthropic extends its protocol _through headers_: a
 capability pairs an `anthropic-beta` value with body fields, and the pair
 travels together. An allowlist is a closed list against a vendor that ships new
 capabilities as new header values, so every new beta would silently break until
@@ -70,7 +70,7 @@ Two rules bound it:
 
 The client's value wins when it sends one; the configured
 `compatibility.anthropic_version` is the fallback. That pin exists for
-*translated* requests — an OpenAI-dialect call rewritten to Anthropic, where no
+_translated_ requests — an OpenAI-dialect call rewritten to Anthropic, where no
 client version exists — and that is still exactly what it does. Overriding a
 version a native client did state would silently change the protocol it asked
 for. Exactly one value is sent either way.
@@ -145,11 +145,11 @@ other modalities to a provider whose dialect carries them.
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's
 virtual key may reach:
 
-| Id | `owned_by` | Where it comes from |
-| --- | --- | --- |
-| a route name (`chat`) | `rolter` | every configured route, plus the built-in `fake-llm` unless a route shadows it |
+| Id                    | `owned_by`          | Where it comes from                                                                                              |
+| --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route shadows it                                   |
 | `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
-| `group-slug/model` | the group's name | the union of its member providers' models (a member with an explicit model rewrite contributes that one) |
+| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
 
 The provider-pinned half used to be derived from route targets alone, which
 under-reported a fleet: `provider-slug/model` resolves for **any** model the

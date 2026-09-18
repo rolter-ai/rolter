@@ -22,11 +22,11 @@ The whole feature is off by default. With `enabled` false — or with every fiel
 
 ## Sampling
 
-| Field | Range | Notes |
-| --- | --- | --- |
-| Temperature | 0 – 2 | |
-| Top-p | 0 – 1 | |
-| Max tokens | 1 – 1000000 | Completion-length cap |
+| Field       | Range       | Notes                 |
+| ----------- | ----------- | --------------------- |
+| Temperature | 0 – 2       |                       |
+| Top-p       | 0 – 1       |                       |
+| Max tokens  | 1 – 1000000 | Completion-length cap |
 
 These apply to chat-shaped traffic only: `/v1/chat/completions`, `/v1/messages` and `/v1/responses`. Embeddings, audio and image endpoints take no sampling parameters and are left alone.
 

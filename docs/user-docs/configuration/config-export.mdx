@@ -25,14 +25,14 @@ Exporting is read-only. It never writes to the database it reads.
 
 The export deliberately carries only the sections the importer consumes, so nothing in the file is dropped on the way back in.
 
-| Section | Notes |
-| --- | --- |
-| `[[providers.readonly]]` and `[[providers.default]]` | name, slug, kind, `api_base`, `api_key_env`, egress proxies, in both tiers |
-| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members |
-| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]` | strategy, admin parameter defaults, the override policy, and the weighted upstream targets |
-| `[[model_prices]]` | input, output and cached-input rates with their currency |
-| `[prompt_templates]` | published templates with their variables, decorators and route bindings |
-| `[logging.payload_capture]` | the capture policy, its size cap and its redaction and model filters |
+| Section                                                                             | Notes                                                                                      |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_key_env`, egress proxies, in both tiers                 |
+| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                    |
+| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets |
+| `[[model_prices]]`                                                                  | input, output and cached-input rates with their currency                                   |
+| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                    |
+| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                       |
 
 ### What is deliberately left out
 

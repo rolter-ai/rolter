@@ -25,14 +25,14 @@ The wheel bundles the compiled `rolter` launcher so Python users can install the
 
 Each release publishes five wheels plus a source distribution:
 
-| artifact | built on |
-|---|---|
-| `manylinux…x86_64` | `ubuntu-latest`, `target: x86_64` |
-| `manylinux…aarch64` | `ubuntu-latest`, `target: aarch64` |
-| `macosx…arm64` | `macos-latest` (Apple Silicon, native) |
-| `macosx…x86_64` | `macos-latest`, cross-compiled `target: x86_64-apple-darwin` |
-| `win_amd64` | `windows-latest` |
-| `.tar.gz` (sdist) | `ubuntu-latest`, `command: sdist` |
+| artifact            | built on                                                     |
+| ------------------- | ------------------------------------------------------------ |
+| `manylinux…x86_64`  | `ubuntu-latest`, `target: x86_64`                            |
+| `manylinux…aarch64` | `ubuntu-latest`, `target: aarch64`                           |
+| `macosx…arm64`      | `macos-latest` (Apple Silicon, native)                       |
+| `macosx…x86_64`     | `macos-latest`, cross-compiled `target: x86_64-apple-darwin` |
+| `win_amd64`         | `windows-latest`                                             |
+| `.tar.gz` (sdist)   | `ubuntu-latest`, `command: sdist`                            |
 
 The macOS x86_64 wheel is cross-compiled rather than built on an Intel runner —
 the macOS SDK carries both architectures, so it needs no extra runner. The sdist
@@ -63,13 +63,13 @@ crate inherits it. The line matters because release-plz derives the next version
 from Cargo's SemVer compatibility rules rather than from the commit type, and
 those rules change meaning below `1.0.0`:
 
-| Current version | `fix:` | `feat:` | breaking (`!`) |
-|---|---|---|---|
-| `>= 1.0.0` | patch | minor | major |
-| `0.x.y` (x >= 1) — **today** | patch | patch | minor |
-| `0.0.z` | patch | patch | patch |
+| Current version              | `fix:` | `feat:` | breaking (`!`) |
+| ---------------------------- | ------ | ------- | -------------- |
+| `>= 1.0.0`                   | patch  | minor   | major          |
+| `0.x.y` (x >= 1) — **today** | patch  | patch   | minor          |
+| `0.0.z`                      | patch  | patch   | patch          |
 
-rolter sat on `0.0.z` until #501, where *every* commit type collapsed to a patch
+rolter sat on `0.0.z` until #501, where _every_ commit type collapsed to a patch
 bump: a release could never express that a feature or a breaking change had
 landed. `0.1.0` restores that signal for breaking changes while deliberately
 withholding the stable-API promise `1.0.0` carries — a `feat` is still a patch
@@ -84,7 +84,7 @@ there.
 ### The helm chart's appVersion
 
 `charts/rolter/Chart.yaml` carries two numbers and they mean different things.
-`version:` is the *chart's* version, on its own cadence, and nothing here
+`version:` is the _chart's_ version, on its own cadence, and nothing here
 touches it. `appVersion:` is which rolter a chart release deploys — the value
 `helm list` prints and most dashboards surface — so it must equal the workspace
 version.
@@ -147,7 +147,7 @@ release.yml
   └─ check ─── verify-parity  (all channels serve {version})
 ```
 
-The stages are a barrier, not decoration. Every publish job depends on *every*
+The stages are a barrier, not decoration. Every publish job depends on _every_
 build and smoke job, so a release is all-or-nothing: a failed wheel can no
 longer leave container images published against a version that has nothing on
 PyPI. Before this split, `publish-docker` did not depend on `build-wheels` at
@@ -189,7 +189,7 @@ the ref, which is exactly the commit branch protection is looking at. Like the
 tag handoff, the job fails if the dispatch produces no run.
 
 It deliberately does **not** read the branch from the action's `prs` output:
-that output is populated only on the run that *creates* the PR, while the branch
+that output is populated only on the run that _creates_ the PR, while the branch
 is force-pushed on every later master commit and needs re-gating each time.
 
 One check is genuinely absent on a dispatched run: `pr-title` is
@@ -247,13 +247,13 @@ red instead of quietly leaving a channel behind.
 
 ### Publishing gates
 
-| Gate | Effect |
-|---|---|
-| `verify-external-checks` | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed |
-| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names the gate above requires (comma-separated) |
-| `PYPI_PUBLISH_ENABLED` repo variable | must be `"true"` or the PyPI publish is skipped |
-| `DOCKER_PUBLISH_ENABLED` repo variable | must be `"true"` or the image publish is skipped |
-| `pypi` environment | PyPI trusted publishing via OIDC; no long-lived token is stored |
+| Gate                                    | Effect                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------- |
+| `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed |
+| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names the gate above requires (comma-separated)            |
+| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                            |
+| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                           |
+| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored            |
 
 Wheels are built with `maturin-action` but uploaded with `pypa/gh-action-pypi-publish`:
 `maturin upload` is deprecated and slated for removal ([PyO3/maturin#2334]). The
@@ -270,7 +270,7 @@ holds.
 commit already passed it, by requiring `ci-ok` among the check-runs recorded for
 that SHA. That is deliberate, and it is what makes the gate correct:
 
-A local reusable workflow (`uses: ./…`) always checks out the *caller's* ref. On
+A local reusable workflow (`uses: ./…`) always checks out the _caller's_ ref. On
 a `workflow_dispatch` the caller ref is `master`, while `build-wheels` checks out
 `inputs.tag` — so a re-run verified master and shipped the tag ([#988]). It
 passed, and told you nothing about what was being packaged. Threading the tag
@@ -281,7 +281,7 @@ trusted runs later restore — cache poisoning, and CodeQL flags it.
 Asserting settles both. Every commit on master carries a `ci-ok` check-run from
 `ci.yml`, and release-plz re-runs the gate on the release commit before tagging,
 so a tagged commit is verified by construction. The assertion binds to the
-*tagged* SHA — which re-running never did — costs no duplicate 20-minute run,
+_tagged_ SHA — which re-running never did — costs no duplicate 20-minute run,
 and checks out nothing.
 
 Because release-plz dispatches the moment it finishes tagging, `ci-ok` is often
@@ -291,10 +291,10 @@ real non-success, and fails closed if a required check never appears.
 
 [#988]: https://github.com/rolter-ai/rolter/issues/988
 
-`RELEASE_REQUIRED_CHECKS` holds exact check-run *names*, so it rots whenever a
+`RELEASE_REQUIRED_CHECKS` holds exact check-run _names_, so it rots whenever a
 scanner is renamed or reconfigured — and since the gate is fail-closed, a stale
 name silently blocks every release instead of failing at the source. This bit
-rolter once already: the variable still named the CodeQL *default setup* jobs
+rolter once already: the variable still named the CodeQL _default setup_ jobs
 (`Analyze (rust)`, …) after the repo moved to advanced setup (`codeql (rust)`,
 …), so no release could publish even with a working tag dispatch. If the gate
 reports "required check … not found", compare it against the check-run names

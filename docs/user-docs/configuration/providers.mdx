@@ -4,7 +4,7 @@ sidebarTitle: "Providers"
 description: "How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it."
 ---
 
-A provider is one upstream endpoint plus the credential Rolter uses to reach it. That credential is the *provider key* — the one the provider issued to Rolter, never the virtual key a client sends ([which key do I need?](/security/which-key)). Routes and provider groups select *targets*, and every target names a provider.
+A provider is one upstream endpoint plus the credential Rolter uses to reach it. That credential is the _provider key_ — the one the provider issued to Rolter, never the virtual key a client sends ([which key do I need?](/security/which-key)). Routes and provider groups select _targets_, and every target names a provider.
 
 Add them from **Providers** in the dashboard, or through the management API.
 
@@ -51,12 +51,12 @@ It issues a `GET` against the provider kind's free model-list endpoint — the s
 
 ### Reading the result
 
-| Field | What it tells you |
-|---|---|
-| `probed_url` | the URL actually tried. A doubled `/v1` is the most common misconfiguration and is invisible without this |
-| `credential` | how the key was resolved — `stored`, `env`, or `none`. Separates "wrong key" from "no key configured" |
-| `models_found` | how many models the upstream listed. A provider can be reachable and still serve nothing |
-| `status` | absent when the request never completed at all (DNS, TLS, connection refused, timeout) |
+| Field          | What it tells you                                                                                         |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| `probed_url`   | the URL actually tried. A doubled `/v1` is the most common misconfiguration and is invisible without this |
+| `credential`   | how the key was resolved — `stored`, `env`, or `none`. Separates "wrong key" from "no key configured"     |
+| `models_found` | how many models the upstream listed. A provider can be reachable and still serve nothing                  |
+| `status`       | absent when the request never completed at all (DNS, TLS, connection refused, timeout)                    |
 
 A `401` names which credential source was used, so a rejected key points at the right place to fix it.
 
@@ -78,7 +78,7 @@ That case is reported as its own thing — a 2xx status with `reachable: false`:
 
 The usual cause is a duplicated path segment in `api_base` — see [the `/v1` rule](#where-the-credential-lives) — where the upstream's own catch-all answers `200` at the doubled path.
 
-The dashboard renders this as its own amber state — *Answered, but not with a model list* — rather than the red used for a refused connection or a rejected key. The host is up, and it is the URL or the service behind it that is wrong, which is a different thing to go and fix.
+The dashboard renders this as its own amber state — _Answered, but not with a model list_ — rather than the red used for a refused connection or a rejected key. The host is up, and it is the URL or the service behind it that is wrong, which is a different thing to go and fix.
 
 Kinds whose probe is a liveness endpoint rather than a catalogue keep 2xx as the criterion. Hugging Face TEI is probed at `/health`, which has no catalogue to return, so a bare `200` there is the whole verdict and `models_found` stays `null`.
 

@@ -42,7 +42,7 @@ Issuing, listing, and revoking tokens all require the **admin** role on the org 
 
 A provisioned account is deliberately minimal:
 
-- It joins the org with the **viewer** role, merely for existing. SCIM decides *who exists*; anything beyond a read comes from a group mapping you wrote (see [Map groups to teams](#map-groups-to-teams)).
+- It joins the org with the **viewer** role, merely for existing. SCIM decides _who exists_; anything beyond a read comes from a group mapping you wrote (see [Map groups to teams](#map-groups-to-teams)).
 - It has **no local password**. A `password` attribute sent by the IdP is ignored rather than stored — provisioned accounts are SSO-shaped by construction.
 - Deactivating a user through SCIM also drops their live sessions, so a leaver disabled in the IdP is logged out of Rolter rather than merely blocked from signing in again.
 - A SCIM `DELETE` deactivates the account and removes the org's identity mapping, but keeps the underlying user row: its memberships and audit trail have to outlive any one IdP. Re-provisioning the same person adopts the existing account instead of creating a duplicate.
@@ -51,20 +51,20 @@ Every provisioning action is written to the [audit log](/observability/logs-and-
 
 ## Supported operations
 
-| Operation | Endpoint | Notes |
-| --- | --- | --- |
-| List / search users | `GET /scim/v2/Users` | Supports the `userName eq "value"` filter that IdPs use for reconciliation; other filters are rejected explicitly rather than silently ignored |
-| Create user | `POST /scim/v2/Users` | Idempotent — a replayed create returns a `uniqueness` conflict instead of a second account |
-| Read user | `GET /scim/v2/Users/{id}` | |
-| Replace user | `PUT /scim/v2/Users/{id}` | |
-| Patch user | `PATCH /scim/v2/Users/{id}` | The `active` attribute, in both the `path: "active"` and bare-value shapes IdPs send |
-| Deprovision | `DELETE /scim/v2/Users/{id}` | Deactivates and unmaps; the account row survives, and its group-granted roles go with the identity |
-| List / search groups | `GET /scim/v2/Groups` | Supports the `displayName eq "value"` filter |
-| Create group | `POST /scim/v2/Groups` | Idempotent — a replayed create returns a `uniqueness` conflict |
-| Read group | `GET /scim/v2/Groups/{id}` | |
-| Replace group | `PUT /scim/v2/Groups/{id}` | Replaces the member list wholesale |
-| Patch group | `PATCH /scim/v2/Groups/{id}` | Member add / remove / replace in every shape IdPs send, plus `displayName` and `externalId` |
-| Delete group | `DELETE /scim/v2/Groups/{id}` | Removes the group and everything it granted |
+| Operation            | Endpoint                      | Notes                                                                                                                                          |
+| -------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| List / search users  | `GET /scim/v2/Users`          | Supports the `userName eq "value"` filter that IdPs use for reconciliation; other filters are rejected explicitly rather than silently ignored |
+| Create user          | `POST /scim/v2/Users`         | Idempotent — a replayed create returns a `uniqueness` conflict instead of a second account                                                     |
+| Read user            | `GET /scim/v2/Users/{id}`     |                                                                                                                                                |
+| Replace user         | `PUT /scim/v2/Users/{id}`     |                                                                                                                                                |
+| Patch user           | `PATCH /scim/v2/Users/{id}`   | The `active` attribute, in both the `path: "active"` and bare-value shapes IdPs send                                                           |
+| Deprovision          | `DELETE /scim/v2/Users/{id}`  | Deactivates and unmaps; the account row survives, and its group-granted roles go with the identity                                             |
+| List / search groups | `GET /scim/v2/Groups`         | Supports the `displayName eq "value"` filter                                                                                                   |
+| Create group         | `POST /scim/v2/Groups`        | Idempotent — a replayed create returns a `uniqueness` conflict                                                                                 |
+| Read group           | `GET /scim/v2/Groups/{id}`    |                                                                                                                                                |
+| Replace group        | `PUT /scim/v2/Groups/{id}`    | Replaces the member list wholesale                                                                                                             |
+| Patch group          | `PATCH /scim/v2/Groups/{id}`  | Member add / remove / replace in every shape IdPs send, plus `displayName` and `externalId`                                                    |
+| Delete group         | `DELETE /scim/v2/Groups/{id}` | Removes the group and everything it granted                                                                                                    |
 
 ## Map groups to teams
 

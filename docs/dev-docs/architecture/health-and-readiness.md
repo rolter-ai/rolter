@@ -3,10 +3,10 @@
 Both rolter binaries serve two operational endpoints that answer two different
 questions. They are unauthenticated, cheap, and safe to probe on every pod.
 
-| Endpoint | Question | Failure means |
-|---|---|---|
-| `GET /healthz` | Is the process alive and its runtime not wedged? | Kubernetes **kills and restarts** the pod |
-| `GET /readyz` | Can this process actually serve traffic right now? | Kubernetes **removes the pod from the Service** and nothing else |
+| Endpoint       | Question                                           | Failure means                                                    |
+| -------------- | -------------------------------------------------- | ---------------------------------------------------------------- |
+| `GET /healthz` | Is the process alive and its runtime not wedged?   | Kubernetes **kills and restarts** the pod                        |
+| `GET /readyz`  | Can this process actually serve traffic right now? | Kubernetes **removes the pod from the Service** and nothing else |
 
 The words mean the same thing on `rolter-gateway` and `rolter-control`.
 
@@ -20,7 +20,7 @@ of which failure to accept:
   `/internal/snapshot` traffic — which every gateway in the fleet polls — at a
   control pod whose migrations have not run and whose pool has no connection.
 - If the single endpoint instead checks Postgres, a database blip fails the
-  *liveness* probe and Kubernetes kills every control pod at once. A
+  _liveness_ probe and Kubernetes kills every control pod at once. A
   recoverable dependency outage becomes a restart storm, and the restarts make
   the outage worse by reconnecting a stampede at the recovering database.
 
@@ -99,5 +99,5 @@ a wedged process. Tune the periods under `control.probes` in `values.yaml`.
 - **`/readyz` down for longer than a failover** — the control plane cannot
   reach its database, or is running against a schema it has not migrated. Page.
 - **`/healthz` flapping** — the process itself is crashing or wedging. Page.
-- **`/readyz` down on a *single* gateway** — usually just a drained instance,
+- **`/readyz` down on a _single_ gateway** — usually just a drained instance,
   which is expected during a rolling update. Do not page on this alone.

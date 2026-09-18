@@ -7,12 +7,12 @@ description: "How Rolter authenticates to an MCP server — bearer tokens, heade
 An MCP server Rolter dials usually wants to know who is calling. Rolter supports
 four answers, set per server under `auth_kind`.
 
-| `auth_kind` | Rolter sends | Use it when |
-|---|---|---|
-| `none` | nothing | the server is open, or reachable only inside your network |
-| `bearer` | `Authorization: Bearer <credential>` | the server issued you a long-lived token |
-| `header` | `<your header>: <credential>` | the server wants an API key in its own header |
-| `oauth` | a token minted per user by the consent flow | the server supports OAuth and you want per-user attribution |
+| `auth_kind` | Rolter sends                                | Use it when                                                 |
+| ----------- | ------------------------------------------- | ----------------------------------------------------------- |
+| `none`      | nothing                                     | the server is open, or reachable only inside your network   |
+| `bearer`    | `Authorization: Bearer <credential>`        | the server issued you a long-lived token                    |
+| `header`    | `<your header>: <credential>`               | the server wants an API key in its own header               |
+| `oauth`     | a token minted per user by the consent flow | the server supports OAuth and you want per-user attribution |
 
 <Note>
   A `bearer` or `header` credential is one secret shared by the whole
@@ -31,7 +31,7 @@ are one credential shared by the deployment.
 ## In the dashboard
 
 **MCP Catalog → Configure** sets everything on this page without `curl`. The
-*Authentication* section shows one choice per `auth_kind` and only the fields
+_Authentication_ section shows one choice per `auth_kind` and only the fields
 that kind uses:
 
 - **None — unauthenticated** asks for nothing. It means Rolter calls the server
@@ -57,7 +57,7 @@ again.
 If the control plane has no `ROLTER_KEK`, the form says so and keeps what you
 typed. Set the variable, restart the control plane and save again.
 
-*Transport overrides* holds the three per-server settings described
+_Transport overrides_ holds the three per-server settings described
 [below](#per-server-timeouts). A blank field inherits the default, clearing a
 field sends `null`, and a field you did not touch is not sent at all.
 
@@ -177,8 +177,8 @@ connected — including one that then timed out — is reported rather than retr
 **stdio servers.** Rolter is a hosted gateway; it dials MCP servers over the
 network and does not spawn local subprocesses, so `stdio` was removed as a
 transport. The MCP specification points the same way — it says stdio
-implementations *"SHOULD NOT"* use its authorization flow and should
-*"retrieve credentials from the environment"* instead, so there is nothing for
+implementations _"SHOULD NOT"_ use its authorization flow and should
+_"retrieve credentials from the environment"_ instead, so there is nothing for
 Rolter to store for one.
 
 **mTLS.** A client certificate is an identity rather than a string, and Rolter

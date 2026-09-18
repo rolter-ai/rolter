@@ -10,10 +10,10 @@ Virtual keys are the bearer tokens your applications present to Rolter's gateway
 
 Rolter accepts virtual keys in the same two ways that OpenAI and Anthropic do, so existing SDKs work without modification:
 
-| Style | Header |
-| --- | --- |
-| OpenAI-style | `Authorization: Bearer <key>` |
-| Anthropic-style | `x-api-key: <key>` |
+| Style           | Header                        |
+| --------------- | ----------------------------- |
+| OpenAI-style    | `Authorization: Bearer <key>` |
+| Anthropic-style | `x-api-key: <key>`            |
 
 On each request, Rolter hashes the presented key (with an optional server-side pepper) and compares it in constant time against the stored digest. If no match is found, or if the matching key is disabled or expired, the gateway returns `401 Unauthorized`.
 
@@ -27,13 +27,13 @@ On each request, Rolter hashes the presented key (with an optional server-side p
 
 You declare virtual keys in `rolter.toml` under `[[virtual_keys]]`:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `key` | string | The bearer token value clients present — stored as a hash |
-| `name` | string | Human-readable label for logs and dashboards |
-| `models` | list | Model names this key may access; empty list means **all models allowed** |
-| `disabled` | bool | Set `true` to revoke the key without deleting it (default: `false`) |
-| `expires_at` | RFC 3339 datetime | Optional expiry — the key stops working at or after this instant |
+| Field        | Type              | Description                                                              |
+| ------------ | ----------------- | ------------------------------------------------------------------------ |
+| `key`        | string            | The bearer token value clients present — stored as a hash                |
+| `name`       | string            | Human-readable label for logs and dashboards                             |
+| `models`     | list              | Model names this key may access; empty list means **all models allowed** |
+| `disabled`   | bool              | Set `true` to revoke the key without deleting it (default: `false`)      |
+| `expires_at` | RFC 3339 datetime | Optional expiry — the key stops working at or after this instant         |
 
 ### Example
 
@@ -105,6 +105,7 @@ the config file leaves optional:
     outlives what you chose. Omitting the field is the only way to ask for a
     key that never expires. `0` is refused — it reads like "no expiry" but
     would mean "already expired".
+
   </Accordion>
 
   <Accordion title="Rotation keeps the original deadline">

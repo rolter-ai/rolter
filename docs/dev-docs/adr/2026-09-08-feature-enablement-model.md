@@ -12,18 +12,18 @@ written boundaries. The survey below found **eight**.
 
 ### What exists today
 
-| # | Mechanism | Where | Subsystems |
-|---|---|---|---|
-| 1 | Deployment-wide DB-backed flag | `FeatureFlagsConfig`, `config.rs:171`; applied by `apply_feature_flags()`, `config.rs:201` | `response_cache`, `cache_aware_routing`, `circuit_breaker`, `active_health_checks`, `complexity_routing`, `guardrails` |
-| 2 | Per-subsystem `enabled: bool` in config | the subsystem's own config struct | cache, health, breaker, guardrails, guardrail webhook, PII sanitizer, prompt templates, payload capture |
-| 3 | `Option<T>` presence | `RouteConfig.semantic`, `config.rs:1868` | semantic cache (per route) |
-| 4 | Empty collection | `PluginsConfig.instances`, `GatewayConfig.mcp_servers` | plugins, MCP servers |
-| 5 | Numeric sentinel | `RealtimeConfig` (`0` = no cap), `usage_recording.sample_rate = 0` | realtime caps, request-log rows |
-| 6 | Per-object `enabled` row | provider, route, guardrail rule, MCP server, SSO provider tables | those objects individually |
-| 7 | Compile-time cargo feature | `rolter-control{ldap,postgres}`, `rolter-core{otlp}`, `rolter-store{postgres}`, `rolter{postgres}` | LDAP, postgres store, OTLP export |
-| 8 | Implicit infrastructure capability | `unavailable_flags()`, `feature_flags.rs:44`; `ui_events` "inert anyway without `clickhouse_url`" | response cache (needs Redis), cache-aware routing (needs a provider publishing KV/LMCache signals), UI events (needs ClickHouse) |
+| #   | Mechanism                               | Where                                                                                              | Subsystems                                                                                                                       |
+| --- | --------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Deployment-wide DB-backed flag          | `FeatureFlagsConfig`, `config.rs:171`; applied by `apply_feature_flags()`, `config.rs:201`         | `response_cache`, `cache_aware_routing`, `circuit_breaker`, `active_health_checks`, `complexity_routing`, `guardrails`           |
+| 2   | Per-subsystem `enabled: bool` in config | the subsystem's own config struct                                                                  | cache, health, breaker, guardrails, guardrail webhook, PII sanitizer, prompt templates, payload capture                          |
+| 3   | `Option<T>` presence                    | `RouteConfig.semantic`, `config.rs:1868`                                                           | semantic cache (per route)                                                                                                       |
+| 4   | Empty collection                        | `PluginsConfig.instances`, `GatewayConfig.mcp_servers`                                             | plugins, MCP servers                                                                                                             |
+| 5   | Numeric sentinel                        | `RealtimeConfig` (`0` = no cap), `usage_recording.sample_rate = 0`                                 | realtime caps, request-log rows                                                                                                  |
+| 6   | Per-object `enabled` row                | provider, route, guardrail rule, MCP server, SSO provider tables                                   | those objects individually                                                                                                       |
+| 7   | Compile-time cargo feature              | `rolter-control{ldap,postgres}`, `rolter-core{otlp}`, `rolter-store{postgres}`, `rolter{postgres}` | LDAP, postgres store, OTLP export                                                                                                |
+| 8   | Implicit infrastructure capability      | `unavailable_flags()`, `feature_flags.rs:44`; `ui_events` "inert anyway without `clickhouse_url`"  | response cache (needs Redis), cache-aware routing (needs a provider publishing KV/LMCache signals), UI events (needs ClickHouse) |
 
-Mechanisms 1 and 2 are not alternatives — 1 *drives* 2. `apply_feature_flags()`
+Mechanisms 1 and 2 are not alternatives — 1 _drives_ 2. `apply_feature_flags()`
 writes the deployment flag into the subsystem's own `enabled` field, and for two
 flags it does something else entirely: `cache_aware_routing` off rewrites every
 cache-aware route's strategy to `PowerOfTwo`, and `complexity_routing` off
@@ -41,7 +41,7 @@ subsystem should not have to edit every row.
 
 **The dashboard does not react.** `ui/src/lib/nav.tsx:167` and
 `ui/src/App.tsx:131` reference feature flags exactly once each, and only to
-register the FeatureFlags *screen itself*. No other nav entry or route consults
+register the FeatureFlags _screen itself_. No other nav entry or route consults
 flag state, so disabling a subsystem leaves its nav entry and screen in place,
 reachable, backed by an API that now returns nothing useful.
 
@@ -63,7 +63,7 @@ locally reasonable choice made without a rule to follow.
 Per-object `enabled` rows (6) stay, and are explicitly **not** part of this
 model: they answer "should this provider be used", not "does this deployment
 run provider health checks". The ADR's rule is that a subsystem must never be
-disabled *only* by emptying its collection or unsetting an `Option` —
+disabled _only_ by emptying its collection or unsetting an `Option` —
 mechanisms 3, 4 and 5 are demoted from enablement mechanisms to configuration
 details, and each gains a real flag.
 
@@ -74,14 +74,14 @@ honour it", and it should be extended rather than duplicated.
 
 ### B. Off semantics by class
 
-| Class | Subsystems | "Off" means |
-|---|---|---|
-| Request-path filter | PII sanitizer, guardrails, guardrail webhook, plugins, prompt templates | **Bypass silently.** The request proceeds unmodified. A filter that fails closed when disabled would make the switch an outage. |
-| Optimisation | response cache, semantic cache, cache-aware routing, complexity routing, circuit breaker, active health checks | **Bypass, fall back to the simple path.** Already the behaviour `apply_feature_flags()` implements for cache-aware routing. |
-| Gateway surface | MCP gateway, realtime | **`501 Not Implemented`** with a body naming the flag. Not 404: the path exists in this build and a 404 is indistinguishable from a typo, which turns an operator's deliberate choice into a debugging session. |
-| Enforcement | budgets, rate limits | **Bypass, and say so.** Disabling enforcement is a security-relevant act, so it is audited on write and reported by `rolter check`. |
-| Recording | usage recording, payload capture, analytics, UI events | **Drop at ingest.** The hot path must not pay for a disabled recorder. |
-| UI-only surface | any screen whose whole subsystem is off | **Hide the nav entry and route.** |
+| Class               | Subsystems                                                                                                     | "Off" means                                                                                                                                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request-path filter | PII sanitizer, guardrails, guardrail webhook, plugins, prompt templates                                        | **Bypass silently.** The request proceeds unmodified. A filter that fails closed when disabled would make the switch an outage.                                                                                 |
+| Optimisation        | response cache, semantic cache, cache-aware routing, complexity routing, circuit breaker, active health checks | **Bypass, fall back to the simple path.** Already the behaviour `apply_feature_flags()` implements for cache-aware routing.                                                                                     |
+| Gateway surface     | MCP gateway, realtime                                                                                          | **`501 Not Implemented`** with a body naming the flag. Not 404: the path exists in this build and a 404 is indistinguishable from a typo, which turns an operator's deliberate choice into a debugging session. |
+| Enforcement         | budgets, rate limits                                                                                           | **Bypass, and say so.** Disabling enforcement is a security-relevant act, so it is audited on write and reported by `rolter check`.                                                                             |
+| Recording           | usage recording, payload capture, analytics, UI events                                                         | **Drop at ingest.** The hot path must not pay for a disabled recorder.                                                                                                                                          |
+| UI-only surface     | any screen whose whole subsystem is off                                                                        | **Hide the nav entry and route.**                                                                                                                                                                               |
 
 The rule behind the table: **a disabled subsystem never changes an answer the
 client already had a right to.** Filters and optimisations bypass; surfaces that
@@ -125,7 +125,7 @@ subsystem removes its flag in the same change.
   trigger, snapshot plumbing, an off-semantic implementation and a dashboard
   switch. That is the follow-up work, sized per subsystem rather than as one
   change.
-- Mechanisms 3, 4 and 5 do not disappear; they stop being *the* way to disable
+- Mechanisms 3, 4 and 5 do not disappear; they stop being _the_ way to disable
   something. Existing behaviour is unchanged — an empty plugin list is still
   inert — but it is no longer the documented control.
 - The `501` choice for gateway surfaces is a wire-visible decision. It is the

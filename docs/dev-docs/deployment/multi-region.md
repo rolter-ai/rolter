@@ -2,11 +2,11 @@
 
 Rolter gateways are stateless. Run one gateway/control pair per region behind a global load balancer, and keep their operational state in shared managed services:
 
-| State | Recommended topology | Failure behaviour |
-| --- | --- | --- |
-| Postgres | primary with cross-region replica / managed HA | control writes go to the primary; gateways retain their last atomic snapshot during a control outage |
-| Redis / Valkey | multi-AZ primary with replica or managed global datastore | response-cache and rate-limit state are shared; a Redis outage degrades to uncached/local operation |
-| ClickHouse | replicated cluster or regional ingest plus central query endpoint | observability can lag; request forwarding is never blocked |
+| State          | Recommended topology                                              | Failure behaviour                                                                                    |
+| -------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Postgres       | primary with cross-region replica / managed HA                    | control writes go to the primary; gateways retain their last atomic snapshot during a control outage |
+| Redis / Valkey | multi-AZ primary with replica or managed global datastore         | response-cache and rate-limit state are shared; a Redis outage degrades to uncached/local operation  |
+| ClickHouse     | replicated cluster or regional ingest plus central query endpoint | observability can lag; request forwarding is never blocked                                           |
 
 Use the same bootstrap configuration and `ROLTER_KEY_PEPPER` in every region. The control plane publishes config-version changes through Redis; gateways also poll `/internal/snapshot`, so a missed pub/sub event converges without a restart.
 

@@ -11,11 +11,11 @@ never mentions it.
 
 ## The three supported deployments
 
-| Deployment | Configuration | Login screen |
-| --- | --- | --- |
-| Local accounts only | no `sso_providers` rows | email + password |
-| SSO only | a provider, and `allow_password_login = false` on the org | one "Continue with …" button |
-| Both | a provider, and password login left enabled | password form *and* the button |
+| Deployment          | Configuration                                             | Login screen                   |
+| ------------------- | --------------------------------------------------------- | ------------------------------ |
+| Local accounts only | no `sso_providers` rows                                   | email + password               |
+| SSO only            | a provider, and `allow_password_login = false` on the org | one "Continue with …" button   |
+| Both                | a provider, and password login left enabled               | password form _and_ the button |
 
 The dashboard asks `GET /api/v1/auth/methods` — the one unauthenticated
 endpoint in this area — and renders whichever of the three it is told. That
@@ -109,11 +109,11 @@ somewhere the IdP does not gate.
 
 ## Configuration
 
-| Setting | Where | Notes |
-| --- | --- | --- |
-| `ROLTER_PUBLIC_URL` | env | the control plane's externally reachable base URL; the redirect URI is derived from it. Defaults to `http://localhost:4001`, and is read once at startup so a change needs a restart |
-| `ROLTER_KEK` | env | required to store or read a client secret; the secret is sealed with AES-256-GCM exactly like provider credentials |
-| `ROLTER_SESSION_PEPPER` | env | session tokens are stored as peppered digests, same as local logins |
+| Setting                 | Where | Notes                                                                                                                                                                                |
+| ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ROLTER_PUBLIC_URL`     | env   | the control plane's externally reachable base URL; the redirect URI is derived from it. Defaults to `http://localhost:4001`, and is read once at startup so a change needs a restart |
+| `ROLTER_KEK`            | env   | required to store or read a client secret; the secret is sealed with AES-256-GCM exactly like provider credentials                                                                   |
+| `ROLTER_SESSION_PEPPER` | env   | session tokens are stored as peppered digests, same as local logins                                                                                                                  |
 
 Register the redirect URI `"$ROLTER_PUBLIC_URL/auth/sso/{slug}/callback"` with
 the identity provider.

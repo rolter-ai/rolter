@@ -60,10 +60,10 @@ each time. A deployment can run invitations only, SSO only, or both at once.
 
 ## Configuration
 
-| Setting | Where | Notes |
-| --- | --- | --- |
-| `ROLTER_PUBLIC_URL` | env | the `accept_url` is built from it; set it correctly behind a proxy or the link you hand out points at localhost. Read once at startup, so a change needs a restart |
-| `ROLTER_SESSION_PEPPER` | env | peppers the stored token digest, same as session tokens |
+| Setting                 | Where | Notes                                                                                                                                                              |
+| ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ROLTER_PUBLIC_URL`     | env   | the `accept_url` is built from it; set it correctly behind a proxy or the link you hand out points at localhost. Read once at startup, so a change needs a restart |
+| `ROLTER_SESSION_PEPPER` | env   | peppers the stored token digest, same as session tokens                                                                                                            |
 
 rolter does not send the email itself: it returns the link and lets the operator
 deliver it however their organization already delivers things. That keeps the

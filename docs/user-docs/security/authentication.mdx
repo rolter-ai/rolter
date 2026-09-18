@@ -15,12 +15,14 @@ Rolter recognises two authentication headers. Use whichever your SDK or client a
     `Authorization: Bearer <virtual-key>`
 
     Used with `/v1/chat/completions`, `/v1/completions`, and `/v1/models`.
+
   </Card>
 
   <Card title="Anthropic style" icon="key">
     `x-api-key: <virtual-key>`
 
     Used with `/v1/messages`.
+
   </Card>
 </CardGroup>
 
@@ -137,6 +139,7 @@ picks up on its next config poll — no restart, no redeploy.
     A `require_auth` line in a gateway's own config file still wins, in either
     direction. That is deliberate: the file belongs to whoever runs the
     process, who may not be the person holding the dashboard.
+
   </Accordion>
 
   <Accordion title="Required headers">
@@ -149,6 +152,7 @@ picks up on its next config poll — no restart, no redeploy.
     secret can safely be one. `/healthz` and `/readyz` are exempt: a probe is
     your own deployment's traffic, and filtering it takes the gateway down
     rather than protecting it.
+
   </Accordion>
 
   <Accordion title="Auth bypass routes">
@@ -158,6 +162,7 @@ picks up on its next config poll — no restart, no redeploy.
 
     Nothing is attributed to a key on a bypassed path, because no key was
     presented. Budgets and per-key rate limits do not apply there.
+
   </Accordion>
 </AccordionGroup>
 
@@ -189,11 +194,11 @@ Rolter returns standard HTTP error codes for authentication and authorisation fa
 directly, so a failed sign-in says what went wrong instead of appearing to
 succeed:
 
-| Code | Status | What the sign-in screen shows |
-| --- | --- | --- |
-| `invalid_credentials` | 401 | that email and password do not match an account |
-| `password_login_disabled` | 403 | the organization requires [single sign-on](/security/single-sign-on) |
-| `too_many_attempts` | 429 | how long the lock lasts, read from `Retry-After` |
+| Code                      | Status | What the sign-in screen shows                                        |
+| ------------------------- | ------ | -------------------------------------------------------------------- |
+| `invalid_credentials`     | 401    | that email and password do not match an account                      |
+| `password_login_disabled` | 403    | the organization requires [single sign-on](/security/single-sign-on) |
+| `too_many_attempts`       | 429    | how long the lock lasts, read from `Retry-After`                     |
 
 The email-only gate — where the dashboard opens with no session at all — is
 reserved for an open-mode control plane running with no store, where the auth
@@ -211,7 +216,7 @@ literally:
   organization the scope switcher opens on are the server's view, not a stale
   copy from the last sign-in.
 - **401** — the session is over. The stored token is discarded and the sign-in
-  screen appears with *"Your session expired — sign in again."* Any other
+  screen appears with _"Your session expired — sign in again."_ Any other
   request that is refused the same way ends the session too, so an expired
   token cannot linger behind a screen that merely fails to load.
 - **anything else** — a network failure, a 5xx, or a control plane that does

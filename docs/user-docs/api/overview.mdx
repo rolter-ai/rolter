@@ -24,10 +24,10 @@ The default port is `4000`, configurable via `[server] port` in `rolter.toml`.
 
 Every inference endpoint requires a virtual key. You can pass it in either of two ways, matching the convention of the SDK you are using:
 
-| Style | Header |
-| --- | --- |
-| OpenAI-style | `Authorization: Bearer <virtual-key>` |
-| Anthropic-style | `x-api-key: <virtual-key>` |
+| Style           | Header                                |
+| --------------- | ------------------------------------- |
+| OpenAI-style    | `Authorization: Bearer <virtual-key>` |
+| Anthropic-style | `x-api-key: <virtual-key>`            |
 
 When no virtual keys are configured in `rolter.toml` the gateway runs open, which is convenient for local development. In production, define at least one key under `[[virtual_keys]]`.
 
@@ -37,15 +37,15 @@ When no virtual keys are configured in `rolter.toml` the gateway runs open, whic
 
 ## Endpoints
 
-| Method | Path | Description |
-| --- | --- | --- |
+| Method | Path                   | Description                                                   |
+| ------ | ---------------------- | ------------------------------------------------------------- |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE) |
-| `POST` | `/v1/completions` | OpenAI legacy text completions |
-| `POST` | `/v1/messages` | Anthropic Messages API; streaming supported |
-| `GET` | `/v1/models` | List configured model route names your key can access |
-| `GET` | `/healthz` | Liveness check — returns `200 OK` when the gateway is running |
-| `GET` | `/readyz` | Readiness check — `503` while the instance is draining |
-| `GET` | `/metrics` | Prometheus metrics in exposition format |
+| `POST` | `/v1/completions`      | OpenAI legacy text completions                                |
+| `POST` | `/v1/messages`         | Anthropic Messages API; streaming supported                   |
+| `GET`  | `/v1/models`           | List configured model route names your key can access         |
+| `GET`  | `/healthz`             | Liveness check — returns `200 OK` when the gateway is running |
+| `GET`  | `/readyz`              | Readiness check — `503` while the instance is draining        |
+| `GET`  | `/metrics`             | Prometheus metrics in exposition format                       |
 
 ## Routing via the `model` field
 
@@ -126,12 +126,12 @@ Rolter returns OpenAI-style JSON error bodies on every error path, so existing e
 }
 ```
 
-| Status | Meaning |
-| --- | --- |
-| `401 Unauthorized` | Missing or invalid virtual key |
-| `403 Forbidden` | Key is valid but not permitted to use the requested model |
-| `402 Payment Required` | A spend budget for the key, project, team, or org has been exceeded |
-| `429 Too Many Requests` | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header |
-| `404 Not Found` | No route matches the requested `model` name |
-| `502 Bad Gateway` | All upstream targets failed or were unreachable after retries |
-| `503 Service Unavailable` | Route has no available targets |
+| Status                    | Meaning                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `401 Unauthorized`        | Missing or invalid virtual key                                                      |
+| `403 Forbidden`           | Key is valid but not permitted to use the requested model                           |
+| `402 Payment Required`    | A spend budget for the key, project, team, or org has been exceeded                 |
+| `429 Too Many Requests`   | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header |
+| `404 Not Found`           | No route matches the requested `model` name                                         |
+| `502 Bad Gateway`         | All upstream targets failed or were unreachable after retries                       |
+| `503 Service Unavailable` | Route has no available targets                                                      |

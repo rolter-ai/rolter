@@ -33,11 +33,11 @@ Creating, editing, enabling, or deleting a registry entry increments `config_ver
 
 ## API endpoints
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET`, `POST` | `/api/v1/guardrails/rules` | List or create rules |
-| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}` | Update or delete a rule |
-| `GET`, `POST` | `/api/v1/guardrails/providers` | List or register providers |
+| Method          | Endpoint                            | Purpose                     |
+| --------------- | ----------------------------------- | --------------------------- |
+| `GET`, `POST`   | `/api/v1/guardrails/rules`          | List or create rules        |
+| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}`     | Update or delete a rule     |
+| `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers  |
 | `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider |
 
 Every mutation is audit logged. Provider bodies accept `auth_kind` as `none`, `bearer`, or `shared_secret`; `auth_env` is required for the latter two and contains only the environment variable name.

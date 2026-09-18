@@ -10,12 +10,12 @@ wrong one fails silently.
 
 ## What has to be in the backup set
 
-| Item | Where it lives | What its loss costs |
-|---|---|---|
-| the control-plane database | Postgres | everything below, plus routes, budgets, RBAC and the audit log |
-| `ROLTER_KEK` | your secret manager, **not** the database | every sealed secret in that database, permanently |
-| `ROLTER_KEY_PEPPER` | your secret manager | every virtual key hash stops matching; keys must be reissued |
-| the gateway's `rolter.toml`, if it has one | config management | reconstructible, but not from the dump |
+| Item                                       | Where it lives                            | What its loss costs                                            |
+| ------------------------------------------ | ----------------------------------------- | -------------------------------------------------------------- |
+| the control-plane database                 | Postgres                                  | everything below, plus routes, budgets, RBAC and the audit log |
+| `ROLTER_KEK`                               | your secret manager, **not** the database | every sealed secret in that database, permanently              |
+| `ROLTER_KEY_PEPPER`                        | your secret manager                       | every virtual key hash stops matching; keys must be reissued   |
+| the gateway's `rolter.toml`, if it has one | config management                         | reconstructible, but not from the dump                         |
 
 A backup of the database alone is not a backup. The KEK is stored separately by
 design — that is the whole point of encrypting at rest — which means the one
@@ -31,7 +31,7 @@ pg_dump "$ROLTER_DATABASE_URL" --format=custom --file rolter-$(date +%F).dump
 parallelised and selective. Nothing in the schema requires a special dump
 option; there are no large objects and no extensions beyond `pgcrypto`.
 
-Verify the KEK is in your secret manager under a name that ties it to *this*
+Verify the KEK is in your secret manager under a name that ties it to _this_
 database, not to "production" in general. Two deployments with two KEKs and one
 label is the most common way to restore onto the wrong key.
 
@@ -130,18 +130,18 @@ reversible, so a pepper change is a reissue, not a rotation.
 
 `rolter kek verify` samples every sealed column in the schema:
 
-| Table | Holds |
-|---|---|
-| `provider_keys` | upstream provider credentials |
-| `sso_providers` | SSO client secrets |
-| `alert_channels` | alert channel webhook secrets |
-| `security_settings` | the dashboard's own upstream credential |
-| `observability_connectors` | observability connector credentials |
-| `user_totp_factors` | TOTP second-factor shared secrets |
-| `mcp_servers` | MCP OAuth client secrets |
-| `mcp_servers` | MCP static bearer tokens and header api keys |
-| `mcp_oauth_login_states` | in-flight MCP OAuth PKCE verifiers |
-| `mcp_oauth_sessions` | MCP access and refresh tokens |
+| Table                      | Holds                                        |
+| -------------------------- | -------------------------------------------- |
+| `provider_keys`            | upstream provider credentials                |
+| `sso_providers`            | SSO client secrets                           |
+| `alert_channels`           | alert channel webhook secrets                |
+| `security_settings`        | the dashboard's own upstream credential      |
+| `observability_connectors` | observability connector credentials          |
+| `user_totp_factors`        | TOTP second-factor shared secrets            |
+| `mcp_servers`              | MCP OAuth client secrets                     |
+| `mcp_servers`              | MCP static bearer tokens and header api keys |
+| `mcp_oauth_login_states`   | in-flight MCP OAuth PKCE verifiers           |
+| `mcp_oauth_sessions`       | MCP access and refresh tokens                |
 
 The inventory lives in `crates/rolter-store/src/postgres/kek_audit.rs`. A test
 asks the schema for every `*_ciphertext` column and fails when one is missing
@@ -153,7 +153,7 @@ row in the maintenance matrix is still the thing to read when adding one.
 A backup nobody has restored is a hypothesis. The property this page depends on
 is covered by tests in `kek_audit.rs`: a seeded store is dumped, restored into a
 freshly migrated database, and the sealed credential is asserted to still
-decrypt — then asserted to be *caught*, not booted into, under a different KEK.
+decrypt — then asserted to be _caught_, not booted into, under a different KEK.
 
 Run the same drill against your own deployment on the cadence your recovery
 objective implies, and make step "does `rolter kek verify` pass" part of it.

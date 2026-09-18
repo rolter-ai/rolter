@@ -14,12 +14,12 @@ Backing up PostgreSQL is a solved problem. The part that catches people out is t
 
 ## What has to be in the backup set
 
-| Item | Where it lives | What its loss costs |
-| --- | --- | --- |
-| The control-plane database | PostgreSQL | Everything below, plus routes, budgets, RBAC and the audit log |
-| `ROLTER_KEK` | Your secret manager — **not** the database | Every sealed secret in that database, permanently |
-| `ROLTER_KEY_PEPPER` | Your secret manager | Every virtual key hash stops matching; keys must be reissued |
-| The gateway's `rolter.toml`, if it has one | Config management | Reconstructible, but not from the dump |
+| Item                                       | Where it lives                             | What its loss costs                                            |
+| ------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------- |
+| The control-plane database                 | PostgreSQL                                 | Everything below, plus routes, budgets, RBAC and the audit log |
+| `ROLTER_KEK`                               | Your secret manager — **not** the database | Every sealed secret in that database, permanently              |
+| `ROLTER_KEY_PEPPER`                        | Your secret manager                        | Every virtual key hash stops matching; keys must be reissued   |
+| The gateway's `rolter.toml`, if it has one | Config management                          | Reconstructible, but not from the dump                         |
 
 A backup of the database alone is not a backup. The KEK is stored separately by design — that is what encryption at rest means — so the one thing `pg_dump` cannot carry is the one thing a restore needs most.
 
@@ -45,6 +45,7 @@ pg_dump "$ROLTER_DATABASE_URL" --format=custom --file rolter-$(date +%F).dump
     createdb rolter_restored
     pg_restore --dbname "$RESTORED_URL" --no-owner --no-privileges rolter-2026-09-02.dump
     ```
+
   </Step>
 
   <Step title="Prove the KEK matches, before starting anything">
@@ -57,6 +58,7 @@ pg_dump "$ROLTER_DATABASE_URL" --format=custom --file rolter-$(date +%F).dump
     ```
 
     `rolter check --connect` runs the same audit as part of pre-boot validation, so a deployment that already gates on `rolter check` gets this for free.
+
   </Step>
 
   <Step title="Start the control plane">
@@ -99,6 +101,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
     ```
 
     Rotation is not reversible without the old KEK.
+
   </Step>
 
   <Step title="Stop the writers">
@@ -107,6 +110,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
     ```bash
     kubectl scale deployment/rolter-control --replicas 0
     ```
+
   </Step>
 
   <Step title="Dry run">
@@ -117,6 +121,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
     ```
 
     The dry run reports what would be resealed and confirms the old KEK still opens all of it. Both values are read from the environment rather than from flags, because a KEK on a command line lands in shell history, in `ps` output, and in whatever collects a container's arguments.
+
   </Step>
 
   <Step title="Apply, then publish the new KEK">
@@ -126,6 +131,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
     ```
 
     Between these two commands the fleet is split: a gateway still holding the old value can no longer read a stored credential. Keep the window short, and roll the gateways **after** the control plane so `/internal/snapshot` is already serving secrets the new KEK sealed.
+
   </Step>
 </Steps>
 
@@ -137,18 +143,18 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
 
 `rolter kek verify` samples every sealed column in the schema:
 
-| Table | Holds |
-| --- | --- |
-| `provider_keys` | Upstream provider credentials |
-| `sso_providers` | SSO client secrets |
-| `alert_channels` | Alert channel webhook secrets |
-| `security_settings` | The dashboard's own upstream credential |
-| `observability_connectors` | Observability connector credentials |
-| `user_totp_factors` | TOTP second-factor shared secrets |
-| `mcp_servers` | MCP OAuth client secrets |
-| `mcp_servers` | MCP static bearer tokens and header api keys |
-| `mcp_oauth_login_states` | In-flight MCP OAuth PKCE verifiers |
-| `mcp_oauth_sessions` | MCP access and refresh tokens |
+| Table                      | Holds                                        |
+| -------------------------- | -------------------------------------------- |
+| `provider_keys`            | Upstream provider credentials                |
+| `sso_providers`            | SSO client secrets                           |
+| `alert_channels`           | Alert channel webhook secrets                |
+| `security_settings`        | The dashboard's own upstream credential      |
+| `observability_connectors` | Observability connector credentials          |
+| `user_totp_factors`        | TOTP second-factor shared secrets            |
+| `mcp_servers`              | MCP OAuth client secrets                     |
+| `mcp_servers`              | MCP static bearer tokens and header api keys |
+| `mcp_oauth_login_states`   | In-flight MCP OAuth PKCE verifiers           |
+| `mcp_oauth_sessions`       | MCP access and refresh tokens                |
 
 ## Run restore drills
 

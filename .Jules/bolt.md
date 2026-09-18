@@ -1,15 +1,17 @@
 ## 2026-07-29 - Pre-allocate String and Vector buffers
+
 **Learning:** Anticipating and pre-allocating buffer capacities based on input sizes mitigates reallocation overhead in batch operations and array mapping, which can be critical for high-throughput processing in tight loops.
 **Action:** Always prefer `String::with_capacity` and `Vec::with_capacity` when the final item count can be reasonably predicted or heuristically inferred.
 
 ## Redis MGET Batching
+
 When iterating over limits or lists and fetching Redis keys for each item inside a loop (like `windowed_count` being awaited in a loop), we incur an N+1 query problem resulting in N roundtrips to Redis.
 To solve this, we can pre-collect all the keys required into a `Vec<String>`, perform a single `conn.mget(&keys).await`, and then iterate over the results. This significantly reduced latency (from 5.9ms to 3.2ms in a local benchmark of 6 rate limits).
 
 ## Performance optimization context
 
-* Attempted to run criterion benchmarks natively in `rolter-gateway` but ran into workspace dependency resolution / linking errors on missing `main` when relying on `criterion_main` macros in the context of the workspace configuration.
-* Opted for asserting the O(N) to O(1) network topology improvement instead by moving from `conn.get(key)` inside the applicable budget `for` loop to pipelined queries using `MGET`.
+- Attempted to run criterion benchmarks natively in `rolter-gateway` but ran into workspace dependency resolution / linking errors on missing `main` when relying on `criterion_main` macros in the context of the workspace configuration.
+- Opted for asserting the O(N) to O(1) network topology improvement instead by moving from `conn.get(key)` inside the applicable budget `for` loop to pipelined queries using `MGET`.
 
 ## Redis Pipeline Optimizations
 
@@ -17,45 +19,66 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 - Benchmarks showed a latency drop from ~35ms to ~1ms for 100 iterations of batched calls by avoiding round-trips.
 
 ## 2026-07-30 - Iterator to String allocation avoidance
+
 **Learning:** Avoid `collect::<Vec<_>>().join("\n")` when working with iterators yielding strings, especially in hot paths like SSE frame processing. This pattern allocates an intermediate `Vec` on the heap and then allocates the final `String`.
 **Action:** Extract a helper that pre-allocates a `String::with_capacity` based on a heuristic or known upper bound (like the length of the source buffer) and iterates to `push_str()` directly, bypassing the intermediate vector entirely.
+
 ## 2026-08-02 - [Iterator Collection]
+
 **Learning:** When dealing with iterators containing mapping closures with potentially expensive operations (like JSON lookups via `v.get("text")`), using a two-pass approach (`clone().map().sum()` followed by `for s in strings`) will cause the closure to execute twice per element. This can cause a severe performance regression that outweighs the cost of a small Vec allocation.
 **Action:** If pre-allocating an exact String capacity would require double-evaluating an expensive closure, rely on the `FromIterator` implementation of `String` (via `.collect::<String>()`) instead. It still avoids the intermediate `Vec` allocation and lets the standard library handle amortized capacity growth efficiently.
+
 ## 2026-08-04 - String Concatenation Pattern in `inject_anthropic`
 
 **Learning:** When refactoring to eliminate intermediate `Vec` allocations during string formatting (like `inject_anthropic`), relying solely on a two-pass `String::with_capacity` approach combined with iterative closure evaluation can cause severe CPU regressions if the closure mapping involves expensive lookups (like JSON property resolution on each iteration). The original implementation was building intermediate `Vec<&str>` via `collect()`, converting an `Option` to `String`, checking lengths, extending vectors and eventually calling `join("\n\n")`. By pre-calculating the final target length (including separator offsets `(parts - 1) * 2`) and using a single mutable lambda `push` to handle inserting conditional `\n\n` dividers, we eliminated 4 vectors and an unneeded String heap allocation while retaining O(n) traversal.
 **Action:** When migrating away from `.collect::<Vec<_>>().join(sep)`, pre-calculate capacity exactly (accounting for separators `(N - 1) * sep.len()`) and use a stateful boolean loop flag (`first = true`) alongside `String::push_str` to build exactly what's needed without intermediate container allocations.
+
 ## 2026-08-04 - Array iteration allocations
+
 **Learning:** When processing `serde_json::Value` arrays (like prompt cache `breakpoints`) in tight loops, using `.collect::<Vec<_>>().into_iter()` introduces an unnecessary heap allocation just to iterate.
 **Action:** Iterate directly over the Option/Array via `if let Some(values) = ...and_then(Value::as_array)` to consume values without allocating an intermediate `Vec`.
 
 ## 2026-08-04 - Avoiding intermediate string buffers and joining
+
 **Learning:** During JSON-to-JSON request translation (like in `openai_to_interactions`), pushing concatenated string output into a `Vec<String>` and calling `.join("\\n")` later incurs unnecessary string allocations and an intermediate collection.
 **Action:** Accumulate string output directly into a single `String::new()` via `.push_str()` inside the translation loop, managing separators manually.
 
 ## 2024-05-18 - [Rust Vec Search Inefficiency in RBAC]
+
 **Learning:** Found an O(n^2) inefficiency in `held_roles` within `crates/rolter-control/src/rbac_matrix.rs`. It was using a `Vec::new()` for tracking `seen` pairs of `(Uuid, Uuid)` and doing `seen.contains()` during a loop over grants, which scales poorly if the user is a member of many groups/roles.
 **Action:** Replaced linear `Vec` searches with `std::collections::HashSet` to ensure O(1) deduplication lookups. Also ensured `views` is pre-allocated via `Vec::with_capacity(grants.len())`.
+
 ## 2024-08-13 - [Safely Serializing to Pre-Allocated Buffers]
+
 **Learning:** When using `serde_json::to_writer` to serialize directly into a pre-allocated `Vec<u8>` (avoiding intermediate `String` allocations), you must handle the edge case where serialization partially fails midway. If unhandled, this leaves incomplete/malformed JSON in the stream.
 **Action:** Always store the initial length of the buffer (`let start_len = buffer.len();`) before calling `serde_json::to_writer(&mut buffer, data)`. On `Err`, explicitly truncate the buffer back to the start length (`buffer.truncate(start_len);`) to maintain stream integrity.
+
 ## 2026-08-04 - Hex encoding allocations via format!
+
 **Learning:** Avoid using `format!("{b:02x}")` within an iterator map (e.g. `bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()`) for hex-encoding byte arrays. This invokes the expensive formatting macro machinery and allocates a tiny string for every single byte before joining them, causing a significant CPU and allocation bottleneck, especially when generating frequent items like credentials, session tokens, or hashes.
 **Action:** Use a specialized hex encoding function that pre-allocates a `String::with_capacity(bytes.len() * 2)` and uses a static lookup table (`b"0123456789abcdef"`) to directly map bit-shifts into characters via `String::push`.
 
 ## 2026-08-16 - Preserving Error Semantics During Serialization Optimization
+
 **Learning:** When refactoring serialization code (like switching from `serde_json::to_string` to `to_writer` to avoid `String` allocations), it is crucial to preserve existing error handling behavior. If the original code propagates errors (e.g., using `?`), the optimized version must also propagate them rather than silently truncating buffers and continuing. Swallowing errors causes functional regressions like silent data loss.
 **Action:** When using `to_writer` on a `Vec<u8>` for optimization, use the `?` operator if the original code did, rather than matching on `Ok`/`Err` unless specifically implementing partial failure fallback (like in `rolter-gateway`'s log sink).
+
 ## 2025-09-07 - Avoid intermediate `Vec` allocations in `join`
+
 **Learning:** In `crates/rolter-gateway/src/genai.rs`, the `encoding_formats` function previously used `.collect::<Vec<_>>().join(",")` to construct a string from an iterator. This pattern introduces an unnecessary heap allocation for the intermediate `Vec`.
 **Action:** When joining strings from iterators in Rust, do not collect into a `Vec` just to call `join()`. Use direct string iteration, `push`, and `push_str` on a mutable `String` instead to avoid the allocation. Alternatively, use standard `.collect::<String>()` when commas are part of the mapped output, but avoid the `Vec` either way.
+
 ## 2026-09-11 - Eager Evaluation in unwrap_or
+
 **Learning:** Using `.unwrap_or()` with arguments that perform heap allocations (like `String::new()` via `Value::String` or the `json!()` macro) causes eager evaluation. This means the allocation happens every time, even when the `Some` branch is taken, which introduces severe overhead on hot paths like JSON translation loops.
 **Action:** Always prefer `.unwrap_or_else(|| ...)` for fallbacks that allocate memory (like strings, vecs, or `serde_json::Value` structures) to guarantee lazy evaluation and avoid unnecessary heap allocations.
+
 ## 2026-09-12 - Eager Evaluation in unwrap_or for generic values
+
 **Learning:** Using `.unwrap_or()` with arguments that perform heap allocations (like `Value::String("...".into())` or the `json!()` macro) causes eager evaluation. The argument is evaluated and allocated even if the Option is `Some`, leading to severe overhead in tight parsing loops like the Gemini/OpenAI translation loop.
 **Action:** Always prefer `.unwrap_or_else(|| ...)` for fallbacks that allocate memory (like strings, vecs, or dynamically constructed `serde_json::Value` structures) to guarantee lazy evaluation and avoid unnecessary heap allocations. Be careful to not use `unwrap_or_else` when moving existing enum variants (like `Value::Object(m)`) to avoid `clippy::unnecessary_lazy_evaluations`.
+
 ## 2026-09-11 - Hex encoding via table lookup
+
 **Learning:** Reusing crate implementations or adding dependency between auth and store layers can break build topologies. Replacing slow `format!` mapping closures for byte-hex mapping with statically sized table lookup and string allocation avoids dynamic memory footprint per byte iteration and crate interdependencies.
 **Action:** Use static byte-to-char lookups in a pre-allocated `String::with_capacity` for hex encoding rather than using external auth crates or heavy formatting macros.

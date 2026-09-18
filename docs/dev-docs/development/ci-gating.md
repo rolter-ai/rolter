@@ -24,7 +24,7 @@ tree.
 
 Every run of `ci.yml` writes a check-run named `ci-ok` against the pull
 request's **head sha**. Branch protection, and anything reading
-`check-runs?check_name=ci-ok`, resolves the *newest* check-run with that name.
+`check-runs?check_name=ci-ok`, resolves the _newest_ check-run with that name.
 
 An `edited` run finishes in under a minute, because it only runs `pr-title`. So
 retitling a PR while the real gate run on the same sha is still in progress
@@ -37,17 +37,17 @@ run green at 17:50:08Z, one real `pull_request` run still `in_progress` — and
 `master` survived on luck (#1328).
 
 An earlier round of this (#767) had already made the `edited` run harmless in
-one direction, by giving it a per-run concurrency group so it cannot *cancel*
+one direction, by giving it a per-run concurrency group so it cannot _cancel_
 the gate run it is racing. What was left was the other direction: it could still
-*outrank* it.
+_outrank_ it.
 
 ## The rule
 
 The `edited` fast path may report green only when the gate has demonstrably
 already finished, successfully, on this exact head sha. `ci-ok` asserts that
 before it accepts a skipped `quality`, by listing the other runs of `ci.yml` on
-the same head sha (`.github/workflows/ci.yml`, the *assert the gate already ran
-for this commit* step):
+the same head sha (`.github/workflows/ci.yml`, the _assert the gate already ran
+for this commit_ step):
 
 - **Any other `ci.yml` run on this sha that is not `completed`** — `queued`,
   `in_progress`, `waiting` — fails the step. The commit is not gated yet, and
@@ -55,7 +55,7 @@ for this commit* step):
   finishes, so nothing is lost by refusing here.
 - **No completed run on this sha whose `gate-ok` job succeeded** fails the step
   too. This closes the same hole in its other shape: a retitle over a gate run
-  that *failed* also used to write a newer green `ci-ok`.
+  that _failed_ also used to write a newer green `ci-ok`.
 - **A `cancelled` run does not count as a pass.** It is `completed`, so it does
   not block as in-flight, but it carries no verdict — it is treated exactly like
   a missing run, which is to say the fast path stays red until a real gate run
@@ -65,10 +65,10 @@ for this commit* step):
 
 ### `gate-ok`: what the guard actually asks
 
-The question the fast path needs answered is narrow — *did the heavy gate run on
-this sha, and did it pass* — and for a long time it was asked in a way that
-answered something broader: *is there a run on this sha whose **overall
-conclusion** is `success`*.
+The question the fast path needs answered is narrow — _did the heavy gate run on
+this sha, and did it pass_ — and for a long time it was asked in a way that
+answered something broader: _is there a run on this sha whose **overall
+conclusion** is `success`_.
 
 Those differ whenever a run fails on something that is not the gate. A run can
 pass `quality` and `codeql` and still end `failure` because `session-urls`
@@ -133,10 +133,10 @@ body, then add the follow-up issue numbers once those issues exist — so this
 red is common. The two branches of the guard are worded to be told apart at a
 glance, because they mean opposite things:
 
-| Message | Means | Action |
-|---|---|---|
-| `gate still running on <sha>` | the gate is fine and unfinished | none; the in-flight run supersedes this |
-| `no completed, successful ci run on <sha>` | the gate failed, was cancelled, or never ran | push a fix or re-run the gate |
+| Message                                    | Means                                        | Action                                  |
+| ------------------------------------------ | -------------------------------------------- | --------------------------------------- |
+| `gate still running on <sha>`              | the gate is fine and unfinished              | none; the in-flight run supersedes this |
+| `no completed, successful ci run on <sha>` | the gate failed, was cancelled, or never ran | push a fix or re-run the gate           |
 
 The one case that needs a human is the narrow race where the gate run completes
 between the listing and the assertion — then the red `edited` `ci-ok` is the
@@ -191,7 +191,7 @@ second gate to keep in sync.
 
 This is the one rule where the queue and the title-edit fast path meet, and it
 runs the wrong way by default if nobody thinks about it. The fast path reports
-green *without running the gate*, on the strength of an earlier run against the
+green _without running the gate_, on the strength of an earlier run against the
 same head sha. A merge-group tree has no earlier run — it was assembled seconds
 ago and nothing has ever built it — so "the gate already passed here" is not a
 claim that can be true. A merge-group run that took the fast path would report
@@ -203,11 +203,11 @@ Today `merge_group` carries `action: checks_requested`, so a guard written as
 of GitHub's event vocabulary, not a rule. So every guard around the fast path is
 scoped to the event as well as the action:
 
-| | guard |
-|---|---|
-| `quality`, `codeql`, `gate-ok` | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'` |
-| `ci-ok`'s *assert the gate already ran* step | `github.event_name == 'pull_request' && github.event.action == 'edited'` |
-| `ci-ok`'s shell branch for the skipped gate | `"${GITHUB_EVENT_NAME}" = "pull_request"` **and** `"${GITHUB_EVENT_ACTION}" = "edited"` |
+|                                              | guard                                                                                   |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `quality`, `codeql`, `gate-ok`               | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'`              |
+| `ci-ok`'s _assert the gate already ran_ step | `github.event_name == 'pull_request' && github.event.action == 'edited'`                |
+| `ci-ok`'s shell branch for the skipped gate  | `"${GITHUB_EVENT_NAME}" = "pull_request"` **and** `"${GITHUB_EVENT_ACTION}" = "edited"` |
 
 These are equivalent to the old conditions on every event that exists now. The
 change is that they cannot stop being equivalent when GitHub adds an event or
@@ -215,12 +215,12 @@ reuses an action name.
 
 ### What runs, and what is allowed to skip
 
-| Job | On `merge_group` | Why |
-|---|---|---|
-| `quality`, `codeql`, `gate-ok` | run | the point of the run |
-| `session-urls` (pr body) | runs | a squash merge writes the body into the commit message, and the queue is what performs the merge |
-| `dispatch-commit-urls` (commits) | runs, and must succeed | the only thing that reads the commit messages of PRs batched ahead of this one |
-| `pr-title` | skipped | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
+| Job                              | On `merge_group`       | Why                                                                                                                |
+| -------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `quality`, `codeql`, `gate-ok`   | run                    | the point of the run                                                                                               |
+| `session-urls` (pr body)         | runs                   | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
+| `dispatch-commit-urls` (commits) | runs, and must succeed | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
+| `pr-title`                       | skipped                | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
 
 The two session-url jobs resolve their subject differently here, because a queue
 ref belongs to no pull request head and `--pr-for-ref` cannot match it:
@@ -228,7 +228,7 @@ ref belongs to no pull request head and `--pr-for-ref` cannot match it:
 - the **body** is fetched with `--pr-for-queue-ref`, which parses the PR number
   out of `gh-readonly-queue/<base>/pr-<n>-<sha>` and looks it up in the open-PR
   listing. A queued PR is open until the queue merges it, so not finding it is a
-  hard failure rather than a pass — the same *no answer is not an answer* rule
+  hard failure rather than a pass — the same _no answer is not an answer_ rule
   the rest of this file follows. Like the other modes it honours
   `ROLTER_PULLS_JSON`, so it is runnable against a fixture:
 
@@ -247,7 +247,7 @@ resolving a pull request needs a token and `quality.yml` deliberately takes none
 
 One job inside `quality.yml` did need adjusting. `migrations append-only` diffs
 against `origin/master`, and a merge-queue checkout is a synthetic ref with no
-`origin/master` fetched — the script's *no such ref; skipping* branch would have
+`origin/master` fetched — the script's _no such ref; skipping_ branch would have
 turned the gate into a silent no-op on exactly the runs that matter. It now takes
 its base from `github.event.merge_group.base_sha`, which the payload provides and
 which is an ancestor of the queue head, falling back to `origin/master`
@@ -259,7 +259,7 @@ secret is involved.
 
 `merge_group` runs get a per-run concurrency group, alongside `push` and
 `edited`. A cancelled run is not a passing required check, so cancelling a
-merge-group run dequeues the PR it was testing *and* everything batched behind
+merge-group run dequeues the PR it was testing _and_ everything batched behind
 it. GitHub does give each queue entry its own ref, so `github.ref` alone would
 usually be unique — but the queue re-forms that ref when an entry ahead of it
 fails, and the replacement must not shoot down a run that is still reporting. The
@@ -297,7 +297,7 @@ The convention, for a human or an agent opening a PR:
    creation path only, so a direct `PATCH` does not re-trigger it and the edit
    sticks. **Wait for the `opened` run to finish before you strip** — stripping
    immediately makes the `edited` run race the gate and costs a second edit; see
-   *Recovering a sha whose `opened` run saw a dirty body* below.
+   _Recovering a sha whose `opened` run saw a dirty body_ below.
 3. For a commit message, the equivalent is an amend or rebase that drops the
    trailer before the push — `quality.yml` re-checks every commit in the range,
    so a `--no-verify` push does not get through.
@@ -402,11 +402,11 @@ title went unvalidated rather than letting a silent skip imply otherwise.
 
 `session-urls` reads `${{ github.event.pull_request.body }}` — the snapshot the
 webhook froze, not the PR's live body. So if a session URL is present when the
-`opened` event fires, *that run's* `session-urls` fails permanently: no later
+`opened` event fires, _that run's_ `session-urls` fails permanently: no later
 `PATCH` can change what an already-delivered payload contained.
 
 That used to strand the head sha. The `opened` run is the only one that runs the
-heavy gate, and the `edited` fast path — which *does* re-read the live body, and
+heavy gate, and the `edited` fast path — which _does_ re-read the live body, and
 passes once the footer is stripped — could not report green because it found no
 **successful run** to point at. The only ways out were a new commit or a
 manually dispatched run, neither of them documented, and the latter only working
@@ -423,32 +423,32 @@ opening gate has finished**:
 3. The `edited` run re-checks the live body, finds the `opened` run's passing
    `gate-ok`, and `ci-ok` goes green. No new commit, no dispatch.
 
-Step 2 says *wait* for a reason, and it is the step people get wrong. The
+Step 2 says _wait_ for a reason, and it is the step people get wrong. The
 obvious thing to do — and what the first version of this section told you to do
 — is to strip the footer the moment the PR exists. The `edited` run then starts
 while the gate is still running, `gate-ok` has not run yet, and `ci-ok` declines
-on the *unfinished gate* branch. The PR is red again and a **second** edit is
+on the _unfinished gate_ branch. The PR is red again and a **second** edit is
 needed once the gate finishes.
 
 This is not the guard misbehaving; it is the guard working exactly as #1511
 describes. But it costs a cycle every time, so the order matters. Seen on #1565,
 the first PR opened after `gate-ok` landed (#1566):
 
-| Run | Event | Started | Outcome |
-|---|---|---|---|
+| Run         | Event    | Started  | Outcome                                                           |
+| ----------- | -------- | -------- | ----------------------------------------------------------------- |
 | 35249017068 | `opened` | 16:50:04 | `session-urls` failed on the frozen body; **`gate-ok` succeeded** |
-| 35249064201 | `edited` | 16:50:35 | `ci-ok` red — *gate still running*, the strip was too early |
-| 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit |
+| 35249064201 | `edited` | 16:50:35 | `ci-ok` red — _gate still running_, the strip was too early       |
+| 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit           |
 
 The third run is what the second would have been, had the strip waited.
 
 Which red you are looking at is written in the message, and the two mean
 opposite things:
 
-| `ci-ok` says | Means | Do |
-|---|---|---|
-| `gate still running on <sha>` | the strip was early, or the gate simply has not finished | wait for the gate, then edit the body once |
-| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran | fix the commit; no amount of editing helps |
+| `ci-ok` says                                                  | Means                                                    | Do                                         |
+| ------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------ |
+| `gate still running on <sha>`                                 | the strip was early, or the gate simply has not finished | wait for the gate, then edit the body once |
+| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran    | fix the commit; no amount of editing helps |
 
 **Reading the live body in `session-urls` was considered and not done.** It
 would not help the case that matters: the `opened` run starts seconds after the
@@ -480,8 +480,8 @@ by `c6a96378` and `master` had no completed `ci` run for it.
 
 Push runs now get a per-run concurrency group, so a `master` run is never
 cancelled and never queued behind another. `cancel-in-progress: false` would
-*not* have fixed this — it queues the newer run instead of cancelling the older
-one, and a third push cancels the *pending* one, so the middle commit still ends
+_not_ have fixed this — it queues the newer run instead of cancelling the older
+one, and a third push cancels the _pending_ one, so the middle commit still ends
 up ungated.
 
 This matters because of the working rule in

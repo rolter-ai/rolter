@@ -82,7 +82,7 @@ prek run --all-files
 prek run --all-files --hook-stage pre-push
 ```
 
-The clippy line above only builds the *default* feature set, so it cannot see a
+The clippy line above only builds the _default_ feature set, so it cannot see a
 lint that fires under one feature combination alone — `dead_code` on a helper
 whose only caller is `#[cfg(feature = "otlp")]`, for instance. CI closes that
 gap in the `feature matrix` job, which runs `cargo hack` with
