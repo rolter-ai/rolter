@@ -171,6 +171,100 @@ commit is broken. If this becomes painful again, the fix worth considering is
 not the conclusion but the ordering — the red is only a problem while it is the
 newest `ci-ok` on the sha.
 
+## The merge queue
+
+`master` merges through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
+so `ci.yml` also triggers on `merge_group`. (The trigger is inert until the queue
+is switched on in branch protection — see
+[merge protection on `master`](merge-protection.md).) That run checks out a synthetic ref —
+`refs/heads/gh-readonly-queue/master/pr-<n>-<sha>` — holding `master` plus every
+entry ahead of this one in the queue, and reports the same `ci-ok` against it. It
+is the only run that ever sees the tree that will actually exist, which is the
+whole point: `ci-ok` on a PR head says nothing about a semantic conflict with
+something that landed after the branch was cut (#1318).
+
+`ci-ok` stays the single required status check. The queue asks the repository for
+its required checks by name, so there is no second name to configure and no
+second gate to keep in sync.
+
+### A merge-group ref must never take the fast path
+
+This is the one rule where the queue and the title-edit fast path meet, and it
+runs the wrong way by default if nobody thinks about it. The fast path reports
+green *without running the gate*, on the strength of an earlier run against the
+same head sha. A merge-group tree has no earlier run — it was assembled seconds
+ago and nothing has ever built it — so "the gate already passed here" is not a
+claim that can be true. A merge-group run that took the fast path would report
+green having tested nothing, inside the mechanism that exists to stop exactly
+that.
+
+Today `merge_group` carries `action: checks_requested`, so a guard written as
+`github.event.action != 'edited'` already lets the gate run. That is an accident
+of GitHub's event vocabulary, not a rule. So every guard around the fast path is
+scoped to the event as well as the action:
+
+| | guard |
+|---|---|
+| `quality`, `codeql`, `gate-ok` | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'` |
+| `ci-ok`'s *assert the gate already ran* step | `github.event_name == 'pull_request' && github.event.action == 'edited'` |
+| `ci-ok`'s shell branch for the skipped gate | `"${GITHUB_EVENT_NAME}" = "pull_request"` **and** `"${GITHUB_EVENT_ACTION}" = "edited"` |
+
+These are equivalent to the old conditions on every event that exists now. The
+change is that they cannot stop being equivalent when GitHub adds an event or
+reuses an action name.
+
+### What runs, and what is allowed to skip
+
+| Job | On `merge_group` | Why |
+|---|---|---|
+| `quality`, `codeql`, `gate-ok` | run | the point of the run |
+| `session-urls` (pr body) | runs | a squash merge writes the body into the commit message, and the queue is what performs the merge |
+| `dispatch-commit-urls` (commits) | runs, and must succeed | the only thing that reads the commit messages of PRs batched ahead of this one |
+| `pr-title` | skipped | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
+
+The two session-url jobs resolve their subject differently here, because a queue
+ref belongs to no pull request head and `--pr-for-ref` cannot match it:
+
+- the **body** is fetched with `--pr-for-queue-ref`, which parses the PR number
+  out of `gh-readonly-queue/<base>/pr-<n>-<sha>` and looks it up in the open-PR
+  listing. A queued PR is open until the queue merges it, so not finding it is a
+  hard failure rather than a pass — the same *no answer is not an answer* rule
+  the rest of this file follows. Like the other modes it honours
+  `ROLTER_PULLS_JSON`, so it is runnable against a fixture:
+
+  ```bash
+  ROLTER_PULLS_JSON=pulls.json bash scripts/check-agent-session-urls.sh \
+    --pr-for-queue-ref rolter-ai/rolter gh-readonly-queue/master/pr-1318-deadbeef
+  ```
+
+- the **commits** need no lookup at all: the `merge_group` payload names both
+  endpoints, so the range is `base_sha..head_sha` through the plain
+  `--commit-range` mode.
+
+Both of those jobs live in `ci.yml` rather than in `quality.yml`, because
+resolving a pull request needs a token and `quality.yml` deliberately takes none
+(#734).
+
+One job inside `quality.yml` did need adjusting. `migrations append-only` diffs
+against `origin/master`, and a merge-queue checkout is a synthetic ref with no
+`origin/master` fetched — the script's *no such ref; skipping* branch would have
+turned the gate into a silent no-op on exactly the runs that matter. It now takes
+its base from `github.event.merge_group.base_sha`, which the payload provides and
+which is an ancestor of the queue head, falling back to `origin/master`
+everywhere else. A called workflow sees the original event, so the expression
+resolves inside `quality.yml` without ci.yml having to pass anything in, and no
+secret is involved.
+
+### Concurrency
+
+`merge_group` runs get a per-run concurrency group, alongside `push` and
+`edited`. A cancelled run is not a passing required check, so cancelling a
+merge-group run dequeues the PR it was testing *and* everything batched behind
+it. GitHub does give each queue entry its own ref, so `github.ref` alone would
+usually be unique — but the queue re-forms that ref when an entry ahead of it
+fails, and the replacement must not shoot down a run that is still reporting. The
+per-run group makes that impossible rather than unlikely.
+
 ## Agent session urls
 
 `scripts/check-agent-session-urls.sh` rejects a coding-agent session or

@@ -20,7 +20,7 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 **Learning:** Avoid `collect::<Vec<_>>().join("\n")` when working with iterators yielding strings, especially in hot paths like SSE frame processing. This pattern allocates an intermediate `Vec` on the heap and then allocates the final `String`.
 **Action:** Extract a helper that pre-allocates a `String::with_capacity` based on a heuristic or known upper bound (like the length of the source buffer) and iterates to `push_str()` directly, bypassing the intermediate vector entirely.
 ## 2026-08-02 - [Iterator Collection]
-**Learning:** When dealing with iterators containing mapping closures with potentially expensive operations (like JSON lookups via `v.get("text")`), using a two-pass approach (`clone().map().sum()` followed by `for s in strings`) will cause the closure to execute twice per element. This can cause a severe performance regression that outweights the cost of a small Vec allocation.
+**Learning:** When dealing with iterators containing mapping closures with potentially expensive operations (like JSON lookups via `v.get("text")`), using a two-pass approach (`clone().map().sum()` followed by `for s in strings`) will cause the closure to execute twice per element. This can cause a severe performance regression that outweighs the cost of a small Vec allocation.
 **Action:** If pre-allocating an exact String capacity would require double-evaluating an expensive closure, rely on the `FromIterator` implementation of `String` (via `.collect::<String>()`) instead. It still avoids the intermediate `Vec` allocation and lets the standard library handle amortized capacity growth efficiently.
 ## 2026-08-04 - String Concatenation Pattern in `inject_anthropic`
 

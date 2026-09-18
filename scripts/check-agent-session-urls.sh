@@ -15,6 +15,11 @@
 #   check-agent-session-urls.sh --pr-for-ref REPO REF            # that pr's body
 #   check-agent-session-urls.sh --commit-range-for-ref REPO REF  # base..head messages
 #
+# and one for a merge-queue run, whose ref is synthetic and whose payload also
+# carries no pull request (#1318):
+#
+#   check-agent-session-urls.sh --pr-for-queue-ref REPO REF      # that pr's body
+#
 # flags combine; the script fails if any check finds a match.
 set -euo pipefail
 
@@ -127,6 +132,34 @@ while [ "$#" -gt 0 ]; do
           check_text "commit $sha" "$(git log -1 --format=%B "$sha")"
         done < <(git rev-list "${base}..${head}")
       fi
+      shift 3
+      ;;
+    # a merge-queue run checks out `gh-readonly-queue/<base>/pr-<n>-<sha>`, a
+    # ref that belongs to no pull request head, so --pr-for-ref cannot resolve
+    # it. the pr number is in the ref name, and the pr is necessarily still
+    # open while its entry sits in the queue, so look it up by number in the
+    # same listing the other modes use (#1318). this matters because a squash
+    # merge writes the pr body into the commit message, and that is the half of
+    # the rule a later edit cannot fix
+    --pr-for-queue-ref)
+      repo="$2"
+      ref="$3"
+      if [[ ! "$ref" =~ /pr-([0-9]+)-[0-9a-f]+$ ]]; then
+        echo "::error::${ref} is not a merge-queue ref of the form gh-readonly-queue/<base>/pr-<n>-<sha>; refusing to report its body as checked" >&2
+        exit 1
+      fi
+      number="${BASH_REMATCH[1]}"
+      pulls="$(open_pulls_file "$repo")" || exit 1
+      matched="$(jq --argjson n "$number" '[.[] | select(.number == $n)] | length' "$pulls")"
+      if [ "$matched" -eq 0 ]; then
+        # a queued pr is open until the queue merges it, so not finding it
+        # means the listing is wrong rather than that there is nothing to
+        # check. same rule as everywhere else here: no answer is not an answer
+        echo "::error::pull request #${number} from ${ref} is not in the open listing for ${repo}; refusing to report its body as checked" >&2
+        exit 1
+      fi
+      body="$(jq -r --argjson n "$number" '[.[] | select(.number == $n)] | .[0].body // ""' "$pulls")"
+      check_text "pr body for #${number} (merge queue)" "$body"
       shift 3
       ;;
     *)
