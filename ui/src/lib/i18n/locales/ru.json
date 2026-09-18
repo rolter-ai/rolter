@@ -195,7 +195,9 @@
       "twoFactor": "двухфакторную аутентификацию",
       "twoFactorSecret": "ключ настройки",
       "promptTemplates": "шаблоны промптов",
-      "skills": "навыки"
+      "skills": "навыки",
+      "complexityPolicies": "политики сложности",
+      "complexityPolicy": "политику сложности этого маршрута"
     },
     "requestFailed": "запрос не удался: {{status}}",
     "gateway": {
@@ -1998,7 +2000,18 @@
       "policyTitle": "Политика сложности",
       "policySubtitle": "{{model}} · уровни проверяются по порядку по размеру ввода",
       "tierNamePlaceholder": "имя уровня",
-      "addTier": "Добавить уровень"
+      "addTier": "Добавить уровень",
+      "policyLoadFailed": "Не удалось прочитать политику",
+      "policyUnknownHint": "Политику сложности этого маршрута не удалось прочитать, поэтому он не показан ни как настроенный, ни как пустой.",
+      "checkingPolicy": "Проверяем наличие политики",
+      "checkingPolicies_one": "Ещё читаем политику для {{count}} маршрута",
+      "checkingPolicies_few": "Ещё читаем политики для {{count}} маршрутов",
+      "checkingPolicies_many": "Ещё читаем политики для {{count}} маршрутов",
+      "checkingPolicies_other": "Ещё читаем политики для {{count}} маршрутов",
+      "unreadPolicies_one": "Не удалось прочитать политику {{count}} маршрута",
+      "unreadPolicies_few": "Не удалось прочитать политики {{count}} маршрутов",
+      "unreadPolicies_many": "Не удалось прочитать политики {{count}} маршрутов",
+      "unreadPolicies_other": "Не удалось прочитать политики {{count}} маршрутов"
     },
     "health": {
       "closed": "замкнут",

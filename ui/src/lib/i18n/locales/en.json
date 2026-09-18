@@ -189,7 +189,9 @@
       "twoFactor": "two-factor authentication",
       "twoFactorSecret": "the setup key",
       "promptTemplates": "prompt templates",
-      "skills": "skills"
+      "skills": "skills",
+      "complexityPolicies": "complexity policies",
+      "complexityPolicy": "this route's complexity policy"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -1900,7 +1902,14 @@
       "policyTitle": "Complexity policy",
       "policySubtitle": "{{model}} · tiers checked in order by input size",
       "tierNamePlaceholder": "tier name",
-      "addTier": "Add tier"
+      "addTier": "Add tier",
+      "policyLoadFailed": "Policy could not be read",
+      "policyUnknownHint": "This route's complexity policy could not be read, so it is shown neither as configured nor as empty.",
+      "checkingPolicy": "Checking for a policy",
+      "checkingPolicies_one": "Still reading the policy for {{count}} route",
+      "checkingPolicies_other": "Still reading the policy for {{count}} routes",
+      "unreadPolicies_one": "{{count}} route's policy could not be read",
+      "unreadPolicies_other": "{{count}} routes' policies could not be read"
     },
     "health": {
       "closed": "closed",

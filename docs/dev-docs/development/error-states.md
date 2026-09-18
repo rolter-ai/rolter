@@ -104,6 +104,34 @@ beneath the summary. The dashboard's classification is a helpful gloss, not a
 replacement — #962 happened because the gloss was the only thing on screen and
 it was wrong.
 
+## A screen that makes one request per row
+
+A screen whose list read is followed by a detail read per row has a failure the
+single-query screens do not: the list arrives, some of the detail reads do not,
+and the rows they belong to still have to render as *something*. Defaulting
+them to the empty answer is the bug #1461 was filed over — the Complexity
+Router mapped `policyQueries[i]?.data?.tiers ?? []` and so drew a route whose
+policy had 500'd, 403'd or simply not landed yet in the group headed "No policy
+yet", beside a button offering to create the policy it already had.
+
+Keep the four states apart and let each one say what it is:
+
+- **loading** — a skeleton for that row, not an empty answer;
+- **failed** — one `LoadError` for the group, the affected rows named under it,
+  and *no way in*: an editor seeded from a read that failed saves a fresh draft
+  over contents nobody has seen;
+- **configured** and **unconfigured** — the two real answers.
+
+Two consequences fall out of this. A count in the screen's summary counts only
+the rows that resolved, because a denominator that includes the unread ones
+states them as empty. And `useScreenReady` / `useErrorState` follow the detail
+reads too — a screen that reports itself interactive while every row is still
+a skeleton is measuring the wrong moment.
+
+An editor opened from such a row re-reads its own record (`refetchOnMount:
+"always"`) rather than seeding from the list's cache, so it has the same two
+ways of holding nothing and has to render both.
+
 ## Adding a screen
 
 Add the resource noun to `errors.resources.*` in **every** catalog under
