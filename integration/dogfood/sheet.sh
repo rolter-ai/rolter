@@ -9,6 +9,7 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEK_FILE="${ROLTER_DOGFOOD_KEK_FILE:-$DIR/.kek}"
+TOKENS_FILE="${ROLTER_DOGFOOD_TOKENS_FILE:-$DIR/.tokens.env}"
 
 # the one place credentials are defined (#956); the sheet only prints them
 # shellcheck source=integration/dogfood/creds.env
@@ -75,6 +76,28 @@ if [ -f "$KEK_FILE" ]; then
   dim "  (both planes must share this, or stored provider keys will not decrypt)"
 else
   dim "  ROLTER_KEK not generated yet — 'just dogfood' makes one"
+fi
+echo
+
+rule
+bold "Operator auth · the stack enforces RBAC"
+rule
+if [ -f "$TOKENS_FILE" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$TOKENS_FILE"
+  set +a
+  printf '  %-22s %s\n' "ROLTER_ADMIN_TOKEN" "$ROLTER_ADMIN_TOKEN"
+  printf '  %-22s %s\n' "ROLTER_INTERNAL_TOKEN" "$ROLTER_INTERNAL_TOKEN"
+  printf '  %-22s %s\n' "ROLTER_KEY_PEPPER" "$ROLTER_KEY_PEPPER"
+  printf '  %-22s %s\n' "ROLTER_SESSION_PEPPER" "$ROLTER_SESSION_PEPPER"
+  dim "  curl the operator API with: -H \"authorization: Bearer \$ROLTER_ADMIN_TOKEN\""
+  dim "  /internal/* is on its own port, 4002, behind the internal token (#636)"
+  dim "  the dashboard login is unaffected: a session is a session, not a token"
+  dim "  generated per machine in integration/dogfood/.tokens.env, never checked in"
+else
+  dim "  no tokens generated yet — 'just dogfood' makes them"
+  dim "  without them RBAC does not enforce at all and /internal/* is public"
 fi
 echo
 

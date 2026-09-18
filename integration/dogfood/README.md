@@ -134,6 +134,25 @@ stack binds to loopback, talks to fake providers and holds nothing real — do n
 carry them anywhere else, and leave `docker/docker-compose.yml` and the Helm
 chart on their own defaults.
 
+### Operator tokens
+
+`creds.env` holds the human logins. The machine credentials — `ROLTER_ADMIN_TOKEN`,
+`ROLTER_INTERNAL_TOKEN`, `ROLTER_KEY_PEPPER` and `ROLTER_SESSION_PEPPER` — are
+**generated per machine** into `integration/dogfood/.tokens.env` on the first
+`just dogfood` and are not checked in (#1649). Two of them are peppers: one is
+mixed into every stored virtual-key digest and the other into every session, so
+they must outlive a restart exactly like the KEK, and a shared checked-in value
+would be the pepper of every developer's stack at once.
+
+With them set, RBAC actually enforces and `/internal/*` moves to its own port
+(`4002`) behind the internal token, which is how the e2e stack and a real
+deployment run. Without them the operator API is open and the snapshot is served
+on the public port, which is the configuration least able to surface an auth bug.
+The dashboard login is unaffected — a session is a session, not a token — but a
+hand-rolled `curl` against the operator API now needs
+`-H "authorization: Bearer $ROLTER_ADMIN_TOKEN"`. `just dogfood-sheet` prints
+all four.
+
 `just dev-creds` brings an already-running stack in line without a full restart.
 It also runs an `ALTER USER` on Postgres, which is necessary because
 `POSTGRES_PASSWORD` is only applied when the data directory is first

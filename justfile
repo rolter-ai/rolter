@@ -167,6 +167,26 @@ dogfood:
     [ -f "$d/.kek" ] || openssl rand -hex 32 > "$d/.kek"
     kek="$(cat "$d/.kek")"
 
+    # RBAC only enforces once the control plane has an admin token, so a stack
+    # started without one runs with the operator API wide open and /internal/*
+    # on the public port — the one shape of bug dogfooding exists to catch
+    # (#942 was invisible that way). the four values live in a generated file
+    # rather than creds.env because two of them are peppers: a pepper that
+    # changes invalidates every stored key digest and every live session, so
+    # like the KEK they must outlive a restart of this stack (#1649)
+    if [ ! -f "$d/.tokens.env" ]; then
+      umask 077
+      {
+        echo "ROLTER_ADMIN_TOKEN=$(openssl rand -hex 32)"
+        echo "ROLTER_INTERNAL_TOKEN=$(openssl rand -hex 32)"
+        echo "ROLTER_KEY_PEPPER=$(openssl rand -hex 32)"
+        echo "ROLTER_SESSION_PEPPER=$(openssl rand -hex 32)"
+      } > "$d/.tokens.env"
+    fi
+    set -a; . "$d/.tokens.env"; set +a
+    # /internal/* off the public port, as the e2e stack runs it (#636)
+    export ROLTER_INTERNAL_ADDR=127.0.0.1:4002
+
     echo "[dogfood] docker: postgres, redis, clickhouse, signoz"
     docker compose -f docker/docker-compose.yml -f docker/docker-compose.signoz.yml \
       up -d postgres redis clickhouse signoz-zookeeper signoz-clickhouse \
@@ -213,7 +233,11 @@ dogfood:
     # its cluster heartbeat and its adaptive-routing telemetry with no node
     # header, the control plane drops both with a 204, and the Cluster and
     # Adaptive Routing screens are empty forever with nothing logged (#1644)
-    ( OTEL_SERVICE_NAME=rolter-gateway ROLTER_SNAPSHOT_URL=http://127.0.0.1:4001/internal/snapshot \
+    # the snapshot now lives on the internal port, behind the internal token.
+    # ROLTER_KEY_PEPPER must match control's: the snapshot carries no pepper, so
+    # the gateway hashes a presented virtual key with its own and a mismatch
+    # rejects every key with 401 "invalid api key"
+    ( OTEL_SERVICE_NAME=rolter-gateway ROLTER_SNAPSHOT_URL=http://127.0.0.1:4002/internal/snapshot \
         ROLTER_NODE_ID=dogfood-gw-1 \
         cargo run -q -p rolter-gateway -- --config "$d/gateway.toml" 2>&1 \
         | sed 's/^/[gateway] /' ) &
@@ -234,6 +258,11 @@ dogfood-key:
     #!/usr/bin/env bash
     set -euo pipefail
     c=http://127.0.0.1:4001/api/v1
+    # sourced so the recipe works when run on its own, not only from `just
+    # dogfood` where the environment already carries it
+    if [ -f integration/dogfood/.tokens.env ]; then
+      set -a; . integration/dogfood/.tokens.env; set +a
+    fi
     # RBAC only enforces when the control plane has an admin token, and the
     # stack can be started either way. sending the header when one is set keeps
     # this recipe working on both instead of 401ing on the authenticated one.
