@@ -74,7 +74,12 @@
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
-    }
+    },
+    "lock": {
+      "locked": "Locked — clients can't override. Click to unlock.",
+      "unlocked": "Unlocked — clients can override. Click to lock."
+    },
+    "noneAvailable": "none available"
   },
   "errors": {
     "load": {
@@ -252,9 +257,7 @@
       "manual": "Manual",
       "noteLockAll": "Locked: clients cannot override any parameter — these server-side values are enforced.",
       "noteUnlockAll": "Open: clients may override any parameter. Values here act as defaults only.",
-      "noteManual": "Manual: lock individual parameters below; unlocked ones stay client-overridable.",
-      "buttonLocked": "Locked — clients can't override. Click to unlock.",
-      "buttonUnlocked": "Unlocked — clients can override. Click to lock."
+      "noteManual": "Manual: lock individual parameters below; unlocked ones stay client-overridable."
     },
     "params": {
       "name": "Param name",
@@ -335,8 +338,7 @@
       "baseUrl": "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value."
-    },
-    "noneAvailable": "none available"
+    }
   },
   "nav": {
     "playground": "Playground",
