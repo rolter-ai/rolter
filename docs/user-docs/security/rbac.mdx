@@ -144,7 +144,14 @@ Creating or editing a role opens a grant grid: one row per resource the deployme
   A role can also carry grants naming a resource this build no longer defines — after a downgrade, say. They are not on the grid, since there is no row to tick them on, but the sheet counts them and saving keeps them exactly as they are. Editing a role for an unrelated reason never quietly rewrites it.
 </Note>
 
-**Access Profiles** reads `GET /api/v1/access-profiles/{id}` for each profile, so a card shows the roles composed into it, everyone it reaches, and the model policy it carries — the policy in particular has no list endpoint, and before this it could be written and never seen again. The same sheet creates and edits: name, the custom roles to compose, and the four allow/deny pattern lists, saved in one request. Roles picked here are composed at **organization scope**; a narrower team- or project-scoped composition is still API-only.
+**Access Profiles** reads `GET /api/v1/access-profiles/{id}` for each profile, so a card shows the roles composed into it, everyone it reaches, and the model policy it carries — the policy in particular has no list endpoint, and before this it could be written and never seen again. The same sheet creates and edits: name, the custom roles to compose, and the four allow/deny pattern lists, saved in one request.
+
+Ticking a role opens **Where _role_ applies** beside it, so the `curl` above — "auditor across the org, and deploy admin on one project" — is one profile written on screen:
+
+- The default is the whole organization, which is the scope the control plane assumes when a composition names none. A profile written without touching the picker is exactly the profile the sheet wrote before.
+- The list covers the whole org: every team, and every project in any of those teams grouped under the team that owns it. A project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so and offers only itself.
+- A scope is never wider than the profile's own org, whatever is picked — the control plane validates it on the way in.
+- An existing composition opens at the scope it was stored with, so editing a profile's name cannot quietly widen a project-scoped role, and a card lists any role that is narrower than the org as `role on scope`.
 
 ## Model and route policy
 

@@ -13,10 +13,14 @@ import {
   expectSkeleton,
   Harness,
   json,
+  openOptions,
   pending,
+  pickOption,
+  PROJECT,
   recording,
   scoped,
   sheet,
+  TEAM,
   Toasted,
   expectToast,
   type FetchStub,
@@ -120,11 +124,15 @@ const ROLES: CustomRoleRow[] = [
  * `/access-profiles`, and answering the detail with the list would leave the
  * card reporting a profile that carries nothing.
  */
-function stub(profiles: () => Promise<Response>, roles = ROLES): FetchStub {
+function stub(
+  profiles: () => Promise<Response>,
+  roles = ROLES,
+  details: Record<string, AccessProfileDetail> = DETAILS,
+): FetchStub {
   return scoped(async (input) => {
     const url = String(input);
     const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
-    if (detail) return json(DETAILS[detail[1]] ?? {});
+    if (detail) return json(details[detail[1]] ?? {});
     if (url.includes("/access-profiles")) return profiles();
     if (url.includes("/custom-roles")) return json(roles);
     return json([]);
@@ -462,5 +470,192 @@ export const RefusedToAViewerWhenEmpty: Story = {
     // the placeholder `Add profile`, and a loose regex would match both and
     // fail on the ambiguity rather than on the gate
     await expectRefused(canvasElement, "Add profile");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #1251: a composition is a `(role, scope)` pair, not just a role
+//
+// `ProfileRoleBody` has taken `org_id`/`team_id`/`project_id` since #534 and
+// `GET /api/v1/access-profiles/{id}` has always answered with them. The sheet
+// sent `roles: [{ role_id }]` and read the scope back only to discard it, so
+// "auditor across the org, and deploy admin on one project" — the shape
+// `user-docs/security/rbac.mdx` documents with curl — could not be written or
+// even seen from the dashboard.
+
+const NARROW_PROFILE = profile({
+  id: "p-3",
+  slug: "deploy-admins",
+  name: "Deploy admins",
+  description: "Deploy admin on the gateway project, and nothing org-wide",
+});
+
+const NARROW_DETAIL: AccessProfileDetail = {
+  ...NARROW_PROFILE,
+  roles: [
+    {
+      id: "pr-3",
+      profile_id: "p-3",
+      role_id: "role-2",
+      org_id: null,
+      team_id: null,
+      project_id: PROJECT.id,
+      created_at: "2026-08-01T10:00:00Z",
+    },
+  ],
+  assignments: [],
+  policy: null,
+};
+
+// its own profile and detail map rather than a third card in `PROFILES`: the
+// loaded story reads several of its counts with `getByText`, and a second
+// unassigned, policy-less profile would make those ambiguous
+const narrow = (): FetchStub =>
+  stub(async () => json([NARROW_PROFILE]), ROLES, { "p-3": NARROW_DETAIL });
+
+/**
+ * A role pinned to one project is *drawn* as such.
+ *
+ * "1 custom role" is true of an org-wide composition and of a project-scoped
+ * one alike, so without the chip the card cannot tell an operator that this
+ * profile grants nothing outside Gateway.
+ */
+export const ShowsAProjectScopedRoleOnTheCard: Story = {
+  render: () => (
+    <Harness fetchStub={narrow()}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the role's name and the project's name, both resolved — a raw uuid on a
+    // card is not an answer to "what does this profile grant"
+    await waitFor(() =>
+      expect(canvas.getByText("Deploy admin on Gateway")).toBeVisible(),
+    );
+    await expect(canvas.queryByText(PROJECT.id)).not.toBeInTheDocument();
+    await expect(canvas.queryByText("role-2")).not.toBeInTheDocument();
+  },
+};
+
+// the create path: the scope picked beside the role reaches the POST body
+const composesAtTeamScope = recording(stub(async () => json([])));
+
+export const ComposesARoleAtTeamScope: Story = {
+  render: () => (
+    <Harness fetchStub={composesAtTeamScope.stub}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "+ Add profile");
+
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "Platform support");
+
+    // the scope is only a question once the role is actually composed, so an
+    // unchecked role carries no picker to answer
+    await expect(
+      form.queryByLabelText("Where Support engineer applies"),
+    ).not.toBeInTheDocument();
+    await userEvent.click(form.getByRole("checkbox", { name: /Support engineer/ }));
+
+    const picker = await form.findByLabelText("Where Support engineer applies");
+    // the org is the default, which is the scope the control plane would have
+    // defaulted to anyway: ignoring the picker writes what the sheet wrote
+    // before this
+    await expect(picker).toHaveValue("Whole organization");
+
+    // the whole org is on offer, not just the team the scope switcher holds
+    const listbox = await openOptions(picker);
+    await expect(
+      within(listbox).getByRole("option", { name: TEAM.name }),
+    ).toBeVisible();
+    await expect(
+      within(listbox).getByRole("option", { name: PROJECT.name }),
+    ).toBeVisible();
+    await userEvent.click(
+      within(listbox).getByRole("option", { name: TEAM.name }),
+    );
+
+    await userEvent.click(form.getByRole("button", { name: "Create profile" }));
+
+    const body = (await composesAtTeamScope.expectSentBody(
+      "POST",
+      "/access-profiles",
+    )) as { roles: Record<string, string>[] };
+    // `team_id` set and `project_id` absent rather than null: the control plane
+    // resolves the most specific id it is given, so a null project would still
+    // be the narrower scope if it were sent
+    expect(body.roles).toEqual([{ role_id: "role-1", team_id: TEAM.id }]);
+  },
+};
+
+/**
+ * The edit path, which is where discarding the scope actually did damage: the
+ * sheet seeded `roles` from the detail and dropped the ids, so saving a
+ * project-scoped profile after changing its *name* silently widened the role
+ * to the whole org.
+ */
+const keepsTheScopeOnEdit = recording(narrow());
+
+export const SeedsTheComposedScopeIntoTheSheet: Story = {
+  render: () => (
+    <Harness fetchStub={keepsTheScopeOnEdit.stub}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const edit = await canvas.findByRole("button", { name: "Edit Deploy admins" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    await userEvent.click(edit);
+
+    const form = within(sheet());
+    await expect(form.getByRole("checkbox", { name: /Deploy admin/ })).toBeChecked();
+    // the stored scope comes back into the picker rather than resetting to the
+    // org
+    await expect(
+      await form.findByLabelText("Where Deploy admin applies"),
+    ).toHaveValue(PROJECT.name);
+
+    await userEvent.click(form.getByRole("button", { name: "Save profile" }));
+
+    const body = (await keepsTheScopeOnEdit.expectSentBody(
+      "PUT",
+      "/access-profiles/p-3",
+    )) as { roles: Record<string, string>[] };
+    expect(body.roles).toEqual([{ role_id: "role-2", project_id: PROJECT.id }]);
+  },
+};
+
+// narrowing an existing composition further, and back out to the org: the
+// scope is editable, not just readable
+const rescopes = recording(narrow());
+
+export const WidensAComposedRoleBackToTheOrg: Story = {
+  render: () => (
+    <Harness fetchStub={rescopes.stub}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const edit = await canvas.findByRole("button", { name: "Edit Deploy admins" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    await userEvent.click(edit);
+
+    const form = within(sheet());
+    await pickOption(
+      await form.findByLabelText("Where Deploy admin applies"),
+      "Whole organization",
+    );
+    await userEvent.click(form.getByRole("button", { name: "Save profile" }));
+
+    const body = (await rescopes.expectSentBody("PUT", "/access-profiles/p-3")) as {
+      roles: Record<string, string>[];
+    };
+    // neither id, which the control plane reads as the profile's own org
+    expect(body.roles).toEqual([{ role_id: "role-2" }]);
   },
 };
