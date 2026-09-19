@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-        fn two_events_queued_apart_survive_one_batch_with_distinct_ts() {
+    fn two_events_queued_apart_survive_one_batch_with_distinct_ts() {
         // the bug: the row was stamped at ingest, so a batch flushed once every
         // few seconds put every event in it at the same instant (#1224)
         let mut first = event();
