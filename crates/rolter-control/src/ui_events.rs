@@ -307,13 +307,16 @@ mod tests {
     fn two_events_queued_apart_survive_one_batch_with_distinct_ts() {
         // the bug: the row was stamped at ingest, so a batch flushed once every
         // few seconds put every event in it at the same instant (#1224)
+        let now = DateTime::parse_from_rfc3339("2026-09-18T10:00:05.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
         let mut first = event();
         first.ts = Some("2026-09-18T10:00:00.250Z".to_string());
         let mut second = event();
         second.event_id = "01J8Z1".to_string();
         second.ts = Some("2026-09-18T10:00:04.750Z".to_string());
 
-        let now = Utc::now();
         let rows = [row(&first, "user-1", now), row(&second, "user-1", now)];
         assert_eq!(rows[0]["ts"], "2026-09-18T10:00:00.250Z");
         assert_eq!(rows[1]["ts"], "2026-09-18T10:00:04.750Z");

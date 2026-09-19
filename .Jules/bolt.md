@@ -82,3 +82,9 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 
 **Learning:** Reusing crate implementations or adding dependency between auth and store layers can break build topologies. Replacing slow `format!` mapping closures for byte-hex mapping with statically sized table lookup and string allocation avoids dynamic memory footprint per byte iteration and crate interdependencies.
 **Action:** Use static byte-to-char lookups in a pre-allocated `String::with_capacity` for hex encoding rather than using external auth crates or heavy formatting macros.
+## 2026-09-19 - [Rust JSON Array Borrowing]
+**Learning:** When writing translation functions that extract arrays from , returning an owned  forces a deep clone of the entire array tree (), introducing severe overhead on the hot path. We saw this in  where JSON payload arrays were cloned just to iterate over them.
+**Action:** Use  to return a slice borrow for  variants, avoiding the clone while still allowing fallback parsing to return an owned  if necessary.
+## 2025-02-18 - [Rust JSON Array Borrowing]
+**Learning:** When writing translation functions that extract arrays from `serde_json::Value`, returning an owned `Vec<Value>` forces a deep clone of the entire array tree, introducing severe overhead on the hot path. We saw this in `anthropic_content` where JSON payload arrays were cloned just to iterate over them.
+**Action:** Use `std::borrow::Cow<'a, [Value]>` to return a slice borrow for `Value::Array` variants, avoiding the clone while still allowing fallback parsing to return an owned `Vec` if necessary.
