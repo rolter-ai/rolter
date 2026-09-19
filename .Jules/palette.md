@@ -37,3 +37,8 @@
 
 **Learning:** Users lack visibility during async playground actions if only the disabled state is used without a loading spinner.
 **Action:** When creating async buttons in complex forms like the playground, always pair the `disabled={busy}` property with a `<Loader2 className="animate-spin" />` state to provide clear visual feedback.
+
+## 2024-11-21 - Standardise list row delete actions
+
+**Learning:** Custom `<button>` elements for row-level delete actions often drift from standardized accessibility and loading state patterns (e.g. duplicating icons/spinners). The shared `<DeleteIconButton>` component in `ui/src/components/ui/delete-icon-button.tsx` handles these concerns uniformly.
+**Action:** When updating or creating delete controls on list rows, always use `<DeleteIconButton>` instead of creating custom `<button>` elements to ensure consistent hover states, correct a11y roles, and standard loading visual feedback.
