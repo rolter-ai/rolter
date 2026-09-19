@@ -805,11 +805,11 @@ fn anthropic_request(mut v: Value) -> Value {
         let mut regular = Vec::new();
         let mut tool_calls = Vec::new();
         let mut tool_results = Vec::new();
-        for block in anthropic_content(message.get("content")) {
+        for block in anthropic_content(message.get("content")).as_ref() {
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => tool_calls.push(json!({"id":block["id"],"type":"function","function":{"name":block["name"],"arguments":serde_json::to_string(&block["input"]).unwrap_or_else(|_| "{}".into())}})),
                 Some("tool_result") => tool_results.push(json!({"role":"tool","tool_call_id":block["tool_use_id"],"content":content_text(block.get("content"))})),
-                _ => regular.push(anthropic_block_to_openai(block)),
+                _ => regular.push(anthropic_block_to_openai(block.clone())),
             }
         }
         if !regular.is_empty() || !tool_calls.is_empty() {
@@ -880,12 +880,12 @@ fn openai_content(content: Option<&Value>, system: bool) -> Vec<Value> {
     }
 }
 
-fn anthropic_content(content: Option<&Value>) -> Vec<Value> {
+fn anthropic_content<'a>(content: Option<&'a Value>) -> std::borrow::Cow<'a, [Value]> {
     match content {
-        Some(Value::String(text)) => vec![json!({"type":"text","text":text})],
-        Some(Value::Array(parts)) => parts.clone(),
-        Some(other) => vec![other.clone()],
-        None => Vec::new(),
+        Some(Value::Array(parts)) => std::borrow::Cow::Borrowed(parts.as_slice()),
+        Some(Value::String(text)) => std::borrow::Cow::Owned(vec![json!({"type":"text","text":text})]),
+        Some(other) => std::borrow::Cow::Owned(vec![other.clone()]),
+        None => std::borrow::Cow::Borrowed(&[]),
     }
 }
 
@@ -1066,10 +1066,15 @@ fn openai_finish(v: Option<&Value>) -> Value {
 fn content_text(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter_map(|v| v.get("text").and_then(Value::as_str))
-            .collect::<String>(),
+        Some(Value::Array(a)) => {
+            let mut s = String::new();
+            for v in a {
+                if let Some(text) = v.get("text").and_then(Value::as_str) {
+                    s.push_str(text);
+                }
+            }
+            s
+        }
         Some(v) => v.to_string(),
         None => String::new(),
     }
