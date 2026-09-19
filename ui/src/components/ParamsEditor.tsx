@@ -191,8 +191,7 @@ export interface ParamsEditorValue {
 }
 
 export type ParamsEditorResult =
-  | { ok: true; value: ParamsEditorValue }
-  | { ok: false; error: string };
+  { ok: true; value: ParamsEditorValue } | { ok: false; error: string };
 
 interface CommonProps {
   params?: Record<string, unknown>;
