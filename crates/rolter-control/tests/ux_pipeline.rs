@@ -201,7 +201,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
     let batch = json!({"events": [
         {
             "event_id": "ux-e2e-1",
-            "ts": "2026-09-18T10:00:00.250Z",
+            "ts": "2026-09-20T12:18:25.745Z",
             "screen": "providers",
             "action": "screen_view",
             "session_id": session,
@@ -210,7 +210,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
         },
         {
             "event_id": "ux-e2e-2",
-            "ts": "2026-09-18T10:00:04.750Z",
+            "ts": "2026-09-20T12:18:30.245Z",
             "screen": "providers",
             "action": "form_submit",
             "target": "provider-sheet",
@@ -237,13 +237,13 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
     assert_eq!(rows[0]["action"], "screen_view");
     assert_eq!(rows[0]["from_screen"], "dashboard");
     // the browser's instant, to the millisecond, not the batch's
-    assert_eq!(rows[0]["ts"], "2026-09-18 10:00:00.250");
+    assert_eq!(rows[0]["ts"], "2026-09-20 12:18:25.745");
 
     assert_eq!(rows[1]["action"], "form_submit");
     assert_eq!(rows[1]["target"], "provider-sheet");
     assert_eq!(rows[1]["outcome"], "ok");
     assert_eq!(rows[1]["duration_ms"], 1234);
-    assert_eq!(rows[1]["ts"], "2026-09-18 10:00:04.750");
+    assert_eq!(rows[1]["ts"], "2026-09-20 12:18:30.245");
     assert_ne!(
         rows[0]["ts"], rows[1]["ts"],
         "a batch collapsed onto one instant again (#1224)"
