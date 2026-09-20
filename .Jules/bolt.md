@@ -82,3 +82,8 @@ To solve this, we can pre-collect all the keys required into a `Vec<String>`, pe
 
 **Learning:** Reusing crate implementations or adding dependency between auth and store layers can break build topologies. Replacing slow `format!` mapping closures for byte-hex mapping with statically sized table lookup and string allocation avoids dynamic memory footprint per byte iteration and crate interdependencies.
 **Action:** Use static byte-to-char lookups in a pre-allocated `String::with_capacity` for hex encoding rather than using external auth crates or heavy formatting macros.
+
+## 2024-05-20 - [SSE Frame Reading Optimization]
+
+**Learning:** When streaming Server-Sent Events (SSE) and splitting a large `Vec<u8>` buffer into frames using a pattern like `while let Some(end) = find_frame(&pending)`, extracting the frame via `let raw: Vec<u8> = pending.drain(..end).collect();` is inefficient. It iterates element by element to collect into a vector, and then we drain the separator right after. Using `to_vec()` on a slice and explicit bulk `drain()` is measurably faster than element-wise `.drain().collect()`.
+**Action:** When extracting chunks from the front of a `Vec<u8>` in a loop, prefer slicing and `to_vec()` (e.g. `let raw = pending[..end].to_vec(); pending.drain(..end);`) instead of `.drain(..end).collect()`.

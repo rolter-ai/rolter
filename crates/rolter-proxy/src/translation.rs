@@ -1782,7 +1782,10 @@ impl SseConverter {
         self.pending.extend_from_slice(chunk);
         let mut frames = Vec::new();
         while let Some(end) = find_frame(&self.pending) {
-            let raw: Vec<u8> = self.pending.drain(..end).collect();
+            // PERF: use to_vec() and explicit drain to avoid O(N) element-wise
+            // shifting in repeated drain operations on large buffers.
+            let raw = self.pending[..end].to_vec();
+            self.pending.drain(..end);
             drain_separator(&mut self.pending);
             frames.extend(self.convert_frame(&raw));
         }
