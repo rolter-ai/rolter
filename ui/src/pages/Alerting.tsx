@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Loader2, Megaphone, Play, Trash2 } from "lucide-react";
+import { Gavel, History, Megaphone, Play } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -172,25 +173,17 @@ function AlertChannelsScreen() {
               {/* the label names the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
                   cannot tell apart (#1214) */}
-              <button
-                type="button"
+              <DeleteIconButton
                 title={
                   channelDeleteGate.reason ??
                   t("pages.alerting.channels.deleteAria", { name: c.name })
                 }
-                aria-label={t("pages.alerting.channels.deleteAria", { name: c.name })}
-                disabled={
-                  channelDeleteGate.denied || (remove.isPending && remove.variables === c.id)
-                }
+                label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                disabled={channelDeleteGate.denied}
+                pending={remove.isPending && remove.variables === c.id}
                 onClick={() => startDelete(c)}
-                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {remove.isPending && remove.variables === c.id ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-              </button>
+                className="ml-auto"
+              />
             </div>
           </div>
         ))}
@@ -489,24 +482,16 @@ function AlertRulesScreen() {
                   <Play className="h-3.5 w-3.5" />
                   {t("pages.alerting.rules.evaluateNow")}
                 </GatedButton>
-                <button
-                  type="button"
+                <DeleteIconButton
                   title={
                     ruleDeleteGate.reason ?? t("pages.alerting.rules.deleteAria", { name: r.name })
                   }
-                  aria-label={t("pages.alerting.rules.deleteAria", { name: r.name })}
-                  disabled={
-                    ruleDeleteGate.denied || (remove.isPending && remove.variables === r.id)
-                  }
+                  label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                  disabled={ruleDeleteGate.denied}
+                  pending={remove.isPending && remove.variables === r.id}
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {remove.isPending && remove.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                  className="ml-auto"
+                />
               </div>
             </div>
           );

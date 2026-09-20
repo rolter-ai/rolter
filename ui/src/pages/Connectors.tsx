@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cable, FileCode2, FlaskConical, Trash2, Loader2 } from "lucide-react";
+import { Cable, FileCode2, FlaskConical, Loader2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -325,20 +326,14 @@ function ConnectorsScreen() {
                     {t("pages.connectors.checkedAt", { time: fmt.time(c.health_checked_at) })}
                   </span>
                 )}
-                <button
-                  type="button"
+                <DeleteIconButton
                   title={deleteGate.reason ?? t("pages.connectors.deleteAria", { name: c.name })}
-                  aria-label={t("pages.connectors.deleteAria", { name: c.name })}
-                  disabled={deleteGate.denied || (remove.isPending && remove.variables === c.id)}
+                  label={t("pages.connectors.deleteAria", { name: c.name })}
+                  disabled={deleteGate.denied}
+                  pending={remove.isPending && remove.variables === c.id}
                   onClick={() => startDelete(c)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {remove.isPending && remove.variables === c.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                  className="ml-auto"
+                />
               </div>
             </div>
           );
