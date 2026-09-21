@@ -313,7 +313,11 @@ mod tests {
         second.event_id = "01J8Z1".to_string();
         second.ts = Some("2026-09-18T10:00:04.750Z".to_string());
 
-        let now = Utc::now();
+        // pinned beside the fixtures: against the wall clock both fall outside
+        // MAX_CLOCK_BEHIND a day after they were written and get replaced
+        let now = DateTime::parse_from_rfc3339("2026-09-18T10:00:05Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let rows = [row(&first, "user-1", now), row(&second, "user-1", now)];
         assert_eq!(rows[0]["ts"], "2026-09-18T10:00:00.250Z");
         assert_eq!(rows[1]["ts"], "2026-09-18T10:00:04.750Z");

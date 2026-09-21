@@ -27,6 +27,8 @@
 
 use std::net::SocketAddr;
 
+use chrono::Timelike;
+
 use rolter_store::postgres::test_database;
 use rolter_store::postgres::test_schema::TestSchema;
 use serde_json::{json, Value};
@@ -198,10 +200,22 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
     let (user_id, token) = seed_session(&pool, "ux-pipeline@example.com").await;
 
     let session = session_id();
+    // relative to the wall clock, not fixed: ingest replaces a ts more than a
+    // day behind it as a skewed client clock, so a dated fixture rots in 24h.
+    // two distinct sub-second instants, a minute back so they are never ahead
+    let base = chrono::Utc::now()
+        .with_nanosecond(0)
+        .expect("zero nanoseconds is always valid")
+        - chrono::Duration::minutes(1);
+    let first = base + chrono::Duration::milliseconds(250);
+    let second = base + chrono::Duration::milliseconds(4750);
+    let wire =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let stored = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
     let batch = json!({"events": [
         {
             "event_id": "ux-e2e-1",
-            "ts": "2026-09-18T10:00:00.250Z",
+            "ts": wire(first),
             "screen": "providers",
             "action": "screen_view",
             "session_id": session,
@@ -210,7 +224,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
         },
         {
             "event_id": "ux-e2e-2",
-            "ts": "2026-09-18T10:00:04.750Z",
+            "ts": wire(second),
             "screen": "providers",
             "action": "form_submit",
             "target": "provider-sheet",
@@ -237,13 +251,13 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
     assert_eq!(rows[0]["action"], "screen_view");
     assert_eq!(rows[0]["from_screen"], "dashboard");
     // the browser's instant, to the millisecond, not the batch's
-    assert_eq!(rows[0]["ts"], "2026-09-18 10:00:00.250");
+    assert_eq!(rows[0]["ts"], stored(first));
 
     assert_eq!(rows[1]["action"], "form_submit");
     assert_eq!(rows[1]["target"], "provider-sheet");
     assert_eq!(rows[1]["outcome"], "ok");
     assert_eq!(rows[1]["duration_ms"], 1234);
-    assert_eq!(rows[1]["ts"], "2026-09-18 10:00:04.750");
+    assert_eq!(rows[1]["ts"], stored(second));
     assert_ne!(
         rows[0]["ts"], rows[1]["ts"],
         "a batch collapsed onto one instant again (#1224)"
