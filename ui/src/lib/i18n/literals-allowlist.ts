@@ -20,6 +20,10 @@ export const NOT_COPY: AllowList = {
     TypeScript: "the language's own name, spelled the same in every locale",
     Markdown: "the format's own name, spelled the same in every locale",
   },
+  "src/components/ParamsEditor.tsx": {
+    temperature:
+      "an example parameter name in the name field's placeholder; it is the key the upstream API reads, typed verbatim",
+  },
   "src/components/ProviderGroupSheet.tsx": {
     "{…}/model · {…}":
       "the group's address pattern (`slug/model`) and its strategy id, both typed verbatim into client config",
@@ -28,11 +32,21 @@ export const NOT_COPY: AllowList = {
     "useAuth must be used within AuthProvider":
       "a developer invariant thrown when a component renders outside the provider; no operator path reaches it",
   },
+  "src/pages/AcceptInvite.tsx": {
+    rolter: "the product's name in the wordmark, spelled the same in every locale",
+  },
+  "src/pages/Connectors.tsx": {
+    datadog:
+      "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",
+  },
   "src/pages/Limits.tsx": {
     "{…} rpm":
       "a rate unit named after the `rpm` field the limit is set through; the badge is notation",
     "{…} tpm":
       "a rate unit named after the `tpm` field the limit is set through; the badge is notation",
+  },
+  "src/pages/Login.tsx": {
+    rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
   "src/pages/PromptRepository.tsx": {
     "v{…}": "a version number in `v3` notation, the same in every locale",
