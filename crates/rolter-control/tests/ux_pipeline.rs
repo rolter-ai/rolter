@@ -633,3 +633,79 @@ async fn a_batch_over_the_server_limit_is_refused_whole() {
     assert_eq!(response.status(), 400);
     assert!(rows_for_session(&http, &ch_url, &session).await.is_empty());
 }
+
+/// The deployment-level opt-out, set the way an operator sets it (#1748).
+///
+/// `logging.ui_events` used to exist only as a serde default: a postgres
+/// deployment had no column to store it in and no endpoint to change it, so the
+/// check at the top of the handler always read `true`. This switches it off
+/// through `PUT /api/v1/logging-settings`, then sends a valid batch and asserts
+/// the documented contract — `202`, and nothing written. Switching it back on
+/// and watching the same batch land is what proves the `202` came from the
+/// opt-out rather than from a batch that was never going to be stored.
+#[tokio::test]
+async fn switching_ui_events_off_answers_202_and_stores_nothing() {
+    let ch_url = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_table(&http, &ch_url).await;
+
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app_with_clickhouse(pool.clone(), &ch_url)
+            .await
+            .unwrap(),
+    )
+    .await;
+    // the seeded user is a superadmin, so the same session owns both writes
+    let (_, token) = seed_session(&pool, "ux-opt-out@example.com").await;
+
+    let set_ui_events = |enabled: bool| {
+        http.put(format!("http://{addr}/api/v1/logging-settings"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "sample_rate": 1.0,
+                "payload_capture_enabled": false,
+                "payload_capture_max_bytes": 32768,
+                "ui_events": enabled,
+            }))
+            .send()
+    };
+
+    let off = set_ui_events(false).await.unwrap();
+    assert_eq!(off.status(), 200);
+    let off: Value = off.json().await.unwrap();
+    assert_eq!(off["ui_events"], false);
+
+    let session = session_id();
+    let batch = json!({"events": [{
+        "event_id": "ux-opt-out-1",
+        "screen": "logs",
+        "action": "screen_view",
+        "session_id": session,
+    }]});
+    let response = http
+        .post(format!("http://{addr}/api/v1/ui-events"))
+        .bearer_auth(&token)
+        .json(&batch)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    assert!(
+        rows_for_session(&http, &ch_url, &session).await.is_empty(),
+        "an opted-out deployment still stored UX events"
+    );
+
+    let on = set_ui_events(true).await.unwrap();
+    assert_eq!(on.status(), 200);
+    let response = http
+        .post(format!("http://{addr}/api/v1/ui-events"))
+        .bearer_auth(&token)
+        .json(&batch)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    assert_eq!(rows_for_session(&http, &ch_url, &session).await.len(), 1);
+}

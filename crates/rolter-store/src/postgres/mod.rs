@@ -679,7 +679,7 @@ impl PostgresConfigStore {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
                     payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
-                    retention_days, payload_retention_hours, updated_at \
+                    retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
         .fetch_one(&self.pool)
@@ -1375,6 +1375,7 @@ impl ConfigStore for PostgresConfigStore {
         config.logging.payload_capture.redact_fields = logging.payload_capture_redact_fields;
         config.logging.payload_capture.models = logging.payload_capture_models;
         config.logging.payload_capture.virtual_key_ids = logging.payload_capture_virtual_key_ids;
+        config.logging.ui_events = logging.ui_events;
         config.retry.max_retries = runtime_policy.retry_max_retries.max(0) as u32;
         config.retry.base_backoff_ms = runtime_policy.retry_base_ms.max(0) as u64;
         config.retry.max_backoff_ms = runtime_policy.retry_max_ms.max(0) as u64;
@@ -2447,6 +2448,50 @@ mod tests {
             config.logging.payload_capture.virtual_key_ids,
             vec!["vk-1".to_string()]
         );
+    }
+
+    /// #1748: `logging.ui_events` is the opt-out the UX ingest endpoint reads,
+    /// and before the column existed a postgres deployment always saw the
+    /// serde default. The row has to reach the loaded config, and switching it
+    /// off has to bump `config_version` like any other write to the table.
+    #[tokio::test]
+    async fn ui_events_opt_out_projects_into_the_loaded_config() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore::new(pool.clone());
+        assert!(
+            store.load().await.unwrap().logging.ui_events,
+            "the migration default must keep the stream on for existing deployments"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update logging_settings set ui_events = false where id = true")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let after = current_version(&pool).await.unwrap();
+        assert!(
+            after > before,
+            "switching ui_events off left config_version at {before}"
+        );
+        assert!(!store.load().await.unwrap().logging.ui_events);
+
+        // a writer with no opinion on the column keeps what is stored
+        let repo = repo::LoggingSettingsRepo(&pool);
+        let row = repo
+            .update(1.0, false, 32768, &[], &[], &[], 90, 168, None)
+            .await
+            .unwrap();
+        assert!(!row.ui_events, "a None update re-enabled the stream");
+        let row = repo
+            .update(1.0, false, 32768, &[], &[], &[], 90, 168, Some(true))
+            .await
+            .unwrap();
+        assert!(row.ui_events);
     }
 
     #[tokio::test]

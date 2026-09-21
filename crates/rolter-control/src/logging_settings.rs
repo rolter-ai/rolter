@@ -1,4 +1,5 @@
-//! Global logging-policy API for request-log sampling and payload capture.
+//! Global logging-policy API for request-log sampling, payload capture,
+//! retention and the dashboard UX event opt-out.
 
 use axum::extract::State;
 use axum::routing::get;
@@ -46,6 +47,11 @@ struct UpdateLoggingSettings {
     /// how long captured raw payloads are kept, in hours
     #[serde(default = "default_payload_retention_hours")]
     payload_retention_hours: i32,
+    /// whether dashboard UX events are accepted; absent keeps the stored value
+    /// so a client that predates the field cannot re-enable a stream an
+    /// operator switched off
+    #[serde(default)]
+    ui_events: Option<bool>,
 }
 
 fn default_retention_days() -> i32 {
@@ -127,6 +133,7 @@ async fn update_logging_settings(
             &body.payload_capture_virtual_key_ids,
             body.retention_days,
             body.payload_retention_hours,
+            body.ui_events,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -163,6 +170,7 @@ async fn update_logging_settings(
                 "payload_capture_virtual_key_id_count": row.payload_capture_virtual_key_ids.len(),
                 "retention_days": row.retention_days,
                 "payload_retention_hours": row.payload_retention_hours,
+                "ui_events": row.ui_events,
             })),
         )
         .await
@@ -230,6 +238,7 @@ mod tests {
             payload_capture_virtual_key_ids: Vec::new(),
             retention_days,
             payload_retention_hours,
+            ui_events: None,
         }
     }
 

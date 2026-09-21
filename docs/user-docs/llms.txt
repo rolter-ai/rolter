@@ -95,7 +95,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Logs & Cost](/observability/logs-and-cost): Enable ClickHouse logging to record every proxied request with token counts, cost in USD, latency, and error details for analysis and billing.
 - [Tracing](/observability/tracing): Configure Rolter to export OpenTelemetry traces to Grafana, Honeycomb, Datadog, SigNoz, or Langfuse for end-to-end LLM observability.
 - [What to look at](/observability/what-to-look-at): The handful of queries and trace views that answer why a request was slow and whether a dashboard screen is usable — with the shape of a healthy answer, so you can tell a real problem from noise.
-- [Log Settings](/observability/log-settings): Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, and how long each half is kept.
+- [Log Settings](/observability/log-settings): Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, how long each half is kept, and whether dashboard usage events are recorded.
 - [Connectors](/observability/connectors): Configure outbound destinations for Rolter's request logs, traces and metrics — endpoint, credential and sampling rate — and verify each one with a test delivery before you turn it on.
 
 ### Deployment

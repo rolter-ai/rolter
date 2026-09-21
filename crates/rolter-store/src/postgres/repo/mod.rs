@@ -3509,7 +3509,7 @@ impl LoggingSettingsRepo<'_> {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
                     payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
-                    retention_days, payload_retention_hours, updated_at \
+                    retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
         .fetch_one(self.0)
@@ -3528,18 +3528,23 @@ impl LoggingSettingsRepo<'_> {
         payload_capture_virtual_key_ids: &[String],
         retention_days: i32,
         payload_retention_hours: i32,
+        ui_events: Option<bool>,
     ) -> Result<LoggingSettings> {
+        // `None` keeps the stored ui_events: a caller that has no opinion on it
+        // (the seed importer, a client written before the column) must not
+        // silently re-enable a stream an operator switched off
         sqlx::query_as(
             "update logging_settings set \
                 sample_rate = $1, payload_capture_enabled = $2, payload_capture_max_bytes = $3, \
                 payload_capture_redact_fields = $4, payload_capture_models = $5, \
                 payload_capture_virtual_key_ids = $6, retention_days = $7, \
-                payload_retention_hours = $8, updated_at = now() \
+                payload_retention_hours = $8, ui_events = coalesce($9, ui_events), \
+                updated_at = now() \
              where id = true \
              returning sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
                        payload_capture_redact_fields, payload_capture_models, \
                        payload_capture_virtual_key_ids, retention_days, \
-                       payload_retention_hours, updated_at",
+                       payload_retention_hours, ui_events, updated_at",
         )
         .bind(sample_rate)
         .bind(payload_capture_enabled)
@@ -3549,6 +3554,7 @@ impl LoggingSettingsRepo<'_> {
         .bind(payload_capture_virtual_key_ids)
         .bind(retention_days)
         .bind(payload_retention_hours)
+        .bind(ui_events)
         .fetch_one(self.0)
         .await
         .map_err(store_err)

@@ -36,7 +36,9 @@
 //! `payload_capture` block whether or not the file wrote one — importing it
 //! unconditionally would turn every re-import into a silent "capture off",
 //! undoing a decision an operator made in the dashboard. The raw TOML is
-//! therefore re-parsed to ask whether the key was actually written.
+//! therefore re-parsed to ask whether the key was actually written. The same
+//! goes for `logging.ui_events` (#1748), whose default is *on*: a file that
+//! never mentions it must not re-enable a stream the dashboard switched off.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -285,6 +287,41 @@ pub(crate) async fn import_bootstrap_toml(
     if declares_payload_capture(path)? {
         import_payload_capture(pool, &config.logging.payload_capture).await?;
     }
+    if declares_ui_events(path)? {
+        import_ui_events(pool, config.logging.ui_events).await?;
+    }
+    Ok(())
+}
+
+/// Whether the file at `path` writes `logging.ui_events` itself, for the same
+/// reason as [`declares_payload_capture`].
+fn declares_ui_events(path: &Path) -> anyhow::Result<bool> {
+    let text = std::fs::read_to_string(path)?;
+    let value: toml::Value = toml::from_str(&text)?;
+    Ok(value
+        .get("logging")
+        .and_then(|logging| logging.get("ui_events"))
+        .is_some())
+}
+
+/// Apply the file's UX event opt-out to the `logging_settings` row, leaving
+/// every other column as it is.
+async fn import_ui_events(pool: &PgPool, enabled: bool) -> anyhow::Result<()> {
+    let repo = LoggingSettingsRepo(pool);
+    let current = repo.get().await?;
+    repo.update(
+        current.sample_rate,
+        current.payload_capture_enabled,
+        current.payload_capture_max_bytes,
+        &current.payload_capture_redact_fields,
+        &current.payload_capture_models,
+        &current.payload_capture_virtual_key_ids,
+        current.retention_days,
+        current.payload_retention_hours,
+        Some(enabled),
+    )
+    .await?;
+    tracing::info!(enabled, "imported ui events policy");
     Ok(())
 }
 
@@ -319,6 +356,7 @@ async fn import_payload_capture(
         &capture.virtual_key_ids,
         current.retention_days,
         current.payload_retention_hours,
+        None,
     )
     .await?;
     tracing::info!(
@@ -775,8 +813,8 @@ async fn import_prompt_template(
 #[cfg(test)]
 mod tests {
     use super::{
-        declares_payload_capture, import_bootstrap_toml, import_prompt_template, lint_import_file,
-        slugify,
+        declares_payload_capture, declares_ui_events, import_bootstrap_toml,
+        import_prompt_template, lint_import_file, slugify,
     };
     use rolter_core::{
         Decorator, DecoratorPosition, DecoratorRole, PromptTemplate, TemplateVariable,
@@ -1070,6 +1108,51 @@ models = ["gpt-4o"]
         );
         assert_eq!(row.sample_rate, sample_rate);
         assert_eq!(row.retention_days, retention_days);
+    }
+
+    /// #1748: `logging.ui_events` is imported on presence, like capture. The
+    /// default is on, so a file silent about it must not undo a dashboard
+    /// opt-out, and one that writes `false` must reach the row the control
+    /// plane reads.
+    #[tokio::test]
+    async fn a_declared_ui_events_opt_out_lands_in_logging_settings() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let settings = rolter_store::postgres::repo::LoggingSettingsRepo(&pool);
+
+        let dir = tempdir("ui-events");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            "[logging]
+ui_events = false
+",
+        )
+        .unwrap();
+        assert!(declares_ui_events(&path).unwrap());
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert!(!settings.get().await.unwrap().ui_events);
+
+        std::fs::write(
+            &path,
+            "[logging]
+sample_rate = 1.0
+",
+        )
+        .unwrap();
+        assert!(!declares_ui_events(&path).unwrap());
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert!(
+            !settings.get().await.unwrap().ui_events,
+            "a file silent about ui_events switched the stream back on"
+        );
     }
 
     /// The upsert must not reach into `provider_keys`: a key rotated through

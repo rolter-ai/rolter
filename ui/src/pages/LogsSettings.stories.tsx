@@ -23,6 +23,7 @@ const BASE: LoggingSettingsDto = {
   payload_capture_virtual_key_ids: [],
   retention_days: 90,
   payload_retention_hours: 168,
+  ui_events: true,
   updated_at: "2026-07-30T12:00:00Z",
 };
 
@@ -163,6 +164,40 @@ export const SavesSampleRateAsFraction: Story = {
     await expectToast(canvasElement, /logs settings updated/i);
     // the response echoes the stored fraction, which renders back as percent
     await expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10");
+  },
+};
+
+/**
+ * The UX event opt-out is a real, saved setting (#1748).
+ *
+ * Before the column existed the switch had nowhere to live, so a postgres
+ * deployment could not turn the stream off at all. The story loads it on,
+ * switches it off and asserts the PUT carried `ui_events: false` — the field
+ * the ingest endpoint reads — and that the saved value renders back.
+ */
+export const SwitchesDashboardUsageEventsOff: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        const sent = JSON.parse(String(init.body)) as Partial<LoggingSettingsDto>;
+        if (sent.ui_events !== false) {
+          return json({ error: { message: "ui_events was not sent as false" } }, 422);
+        }
+        return json({ ...BASE, ...sent });
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("switch", { name: "Dashboard Usage Events" });
+    await expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await expect(toggle).not.toBeChecked();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expectToast(canvasElement, /logs settings updated/i);
+    await expect(canvas.getByRole("switch", { name: "Dashboard Usage Events" })).not.toBeChecked();
   },
 };
 

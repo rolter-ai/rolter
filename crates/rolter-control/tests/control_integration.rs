@@ -2056,6 +2056,7 @@ async fn logging_settings_are_superadmin_only_and_audited() {
         .await
         .unwrap();
     assert_eq!(baseline["sample_rate"], 1.0);
+    assert_eq!(baseline["ui_events"], true);
 
     let updated: Value = client
         .put(format!("{base}/api/v1/logging-settings"))
@@ -2081,6 +2082,9 @@ async fn logging_settings_are_superadmin_only_and_audited() {
     assert_eq!(updated["payload_capture_max_bytes"], 4096);
     assert_eq!(updated["retention_days"], 30);
     assert_eq!(updated["payload_retention_hours"], 24);
+    // the body above never names ui_events, and a client that predates the
+    // field must not flip it either way
+    assert_eq!(updated["ui_events"], true);
 
     // raw bodies may never outlive the metadata row they belong to
     let rejected = client

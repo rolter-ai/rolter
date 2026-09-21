@@ -8,6 +8,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -22,6 +23,7 @@ interface FormState {
   virtualKeyIds: string;
   retentionDays: string;
   payloadRetentionHours: string;
+  uiEvents: boolean;
 }
 
 const splitList = (value: string) =>
@@ -41,6 +43,7 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
   virtualKeyIds: dto.payload_capture_virtual_key_ids.join(", "),
   retentionDays: String(dto.retention_days),
   payloadRetentionHours: String(dto.payload_retention_hours),
+  uiEvents: dto.ui_events,
 });
 
 // mirrors the server's validation so a bad value is caught before the round
@@ -73,7 +76,8 @@ function validate(form: FormState): string | null {
 
 // global request-log policy, persisted via /api/v1/logging-settings (superadmin
 // only). controls how much traffic is sampled, whether raw payloads are
-// captured, what is redacted from them, and how long each is kept (#537)
+// captured, what is redacted from them, how long each is kept (#537), and
+// whether the dashboard's own UX events are accepted at all (#1748)
 function LogsSettingsScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -107,6 +111,7 @@ function LogsSettingsScreen() {
         payload_capture_virtual_key_ids: splitList(f.virtualKeyIds),
         retention_days: Number(f.retentionDays),
         payload_retention_hours: Number(f.payloadRetentionHours),
+        ui_events: f.uiEvents,
       }),
     onSuccess: (dto) => {
       queryClient.setQueryData(["logging-settings"], dto);
@@ -306,6 +311,15 @@ function LogsSettingsScreen() {
           </div>
         </div>
       </section>
+
+      {/* the deployment-level opt-out for the UX stream. before #1748 it was a
+          toml-only key that a postgres-backed control plane never read */}
+      <SwitchRow
+        title={t("pages.logsSettings.uiEvents")}
+        hint={t("pages.logsSettings.uiEventsHint")}
+        checked={form.uiEvents}
+        onChange={(v) => set({ uiEvents: v })}
+      />
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {localError && (

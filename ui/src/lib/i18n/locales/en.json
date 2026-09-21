@@ -2360,6 +2360,8 @@
       "retentionDaysAria": "Retention days",
       "payloadRetentionHours": "Captured payloads (hours)",
       "payloadRetentionHoursAria": "Payload retention hours",
+      "uiEvents": "Dashboard Usage Events",
+      "uiEventsHint": "Record how this dashboard is used — screen views, load times, abandoned forms, error states — for product analytics. Only structure is kept: screen, action, duration and ids, never a form value or prompt. Turn off to drop them on arrival; requires ClickHouse either way.",
       "errors": {
         "sampleRange": "Sample rate must be between 0 and 100 percent.",
         "maxBytes": "Max payload bytes must be a whole number between 0 and 1048576.",

@@ -2786,7 +2786,8 @@ export function updateModelDefaults(input: UpdateModelDefaultsInput): Promise<Mo
 }
 
 // ---------------------------------------------------------------------------
-// logging settings: request-log sampling, payload capture and retention
+// logging settings: request-log sampling, payload capture, retention and the
+// dashboard UX event opt-out
 
 export interface LoggingSettingsDto {
   sample_rate: number;
@@ -2797,6 +2798,8 @@ export interface LoggingSettingsDto {
   payload_capture_virtual_key_ids: string[];
   retention_days: number;
   payload_retention_hours: number;
+  /** whether the control plane accepts dashboard UX events (#1748) */
+  ui_events: boolean;
   updated_at: string;
 }
 

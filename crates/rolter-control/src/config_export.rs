@@ -77,7 +77,8 @@ const HEADER: &str = "\
 #
 # Round-trips: providers, provider groups and their members, routes with their
 # targets, parameter defaults and override policy, model prices, published
-# prompt templates, and the payload-capture policy.
+# prompt templates, the payload-capture policy and the dashboard UX-event
+# opt-out.
 #
 # Deliberately not exported, because the importer does not consume them and a
 # file that carried them would promise more than a re-import delivers: virtual
@@ -114,7 +115,7 @@ pub fn render(config: &GatewayConfig) -> String {
     render_routes(&mut out, config);
     render_model_prices(&mut out, config);
     render_prompt_templates(&mut out, config);
-    render_payload_capture(&mut out, config);
+    render_logging(&mut out, config);
     out
 }
 
@@ -325,7 +326,12 @@ fn template_slug(id: &str) -> &str {
     id.rsplit_once(':').map_or(id, |(_, slug)| slug)
 }
 
-fn render_payload_capture(out: &mut String, config: &GatewayConfig) {
+fn render_logging(out: &mut String, config: &GatewayConfig) {
+    // always written, even at the default: the importer applies ui_events only
+    // when the file names it, so an omitted key would let a re-import onto a
+    // deployment with the stream off leave it off where this one had it on
+    out.push_str("\n[logging]\n");
+    key(out, "ui_events", &config.logging.ui_events);
     let capture = &config.logging.payload_capture;
     out.push_str("\n[logging.payload_capture]\n");
     key(out, "enabled", &capture.enabled);
@@ -481,6 +487,9 @@ default = "a helpful support assistant"
 role = "system"
 position = "prepend"
 content = "You are {{ persona }}."
+
+[logging]
+ui_events = false
 
 [logging.payload_capture]
 enabled = true
@@ -937,6 +946,7 @@ models = ["gpt-4o"]
                 "[routes.param_policy]",
                 "[[model_prices]]",
                 "[[prompt_templates.templates]]",
+                "[logging]\nui_events = false",
                 "[logging.payload_capture]",
             ] {
                 assert!(first.contains(expected), "{expected} is missing:\n{first}");
