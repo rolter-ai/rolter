@@ -39,5 +39,6 @@
 **Action:** When creating async buttons in complex forms like the playground, always pair the `disabled={busy}` property with a `<Loader2 className="animate-spin" />` state to provide clear visual feedback.
 
 ## 2026-09-21 - Adding Loading Indicators to Destructive/Async Buttons
+
 **Learning:** Users lack feedback during asynchronous operations (like exporting configurations), especially when the action completes implicitly via a file download. Omitting a `Loader2` on `<GatedButton>` or `<Button>` during the `isPending` state of a `useMutation` makes the app feel unresponsive.
 **Action:** When working with buttons triggering async actions or mutations that take time (like downloading large configurations), always conditionally render a loading state (e.g., `<Loader2 className="... animate-spin" />`) in place of the default icon when `isPending` is true to improve perceived performance and prevent duplicate clicks.
