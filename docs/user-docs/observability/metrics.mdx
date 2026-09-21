@@ -58,6 +58,13 @@ metrics_path = "/internal/metrics"
 
   </Accordion>
 
+  <Accordion title="rolter_plugin_stream_rejections_total">
+    **Type:** Counter
+
+    Streamed requests refused with `plugin_streaming_unsupported` because a fail-closed `post_response` plugin applies to them. That plugin must approve every response and cannot see a stream. Clients that hit this should retry without `"stream": true`, or the plugin should be switched to fail open. See [Streamed responses](/configuration/plugins#streamed-responses).
+
+  </Accordion>
+
   <Accordion title="rolter_inflight_requests">
     **Type:** Gauge
 

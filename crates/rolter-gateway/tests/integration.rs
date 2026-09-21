@@ -3056,6 +3056,156 @@ async fn pre_route_plugin_block_rejects_before_the_route_is_resolved() {
     assert_eq!(body["error"]["message"], "denied by plugin");
 }
 
+/// Send a chat request with `stream` to the gateway's OpenAI surface.
+async fn chat(gw: SocketAddr, stream: bool) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model": "test-model",
+            "stream": stream,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// A fail-closed post_response plugin has to approve every response, and a
+/// stream cannot be shown to it: the stream is refused rather than delivered
+/// unexamined, on both dialects (#1776).
+#[tokio::test]
+async fn a_fail_closed_post_response_plugin_refuses_a_stream() {
+    let upstream =
+        serve(Router::new().route("/v1/chat/completions", post(mock_leaky_openai))).await;
+    let plugin = plugin_block_server().await;
+    let gw = serve_gateway(&config_with_plugin(
+        upstream,
+        format!("http://{plugin}/hook"),
+        rolter_core::PluginStage::PostResponse,
+        rolter_core::FailureMode::FailClosed,
+    ))
+    .await;
+
+    let refused = chat(gw, true).await;
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "plugin_streaming_unsupported");
+    assert_eq!(body["error"]["param"], "stream");
+    assert!(body["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("'audit'")));
+
+    let anthropic = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/messages"))
+        .json(&json!({
+            "model": "test-model",
+            "max_tokens": 16,
+            "stream": true,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anthropic.status(), 400);
+
+    // the same request without streaming reaches the plugin, which blocks it
+    let blocked = chat(gw, false).await;
+    assert_eq!(blocked.status(), 403);
+    let body: Value = blocked.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "plugin_blocked");
+
+    let metrics = reqwest::get(format!("http://{gw}/metrics"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        metrics.contains("rolter_plugin_stream_rejections_total 2"),
+        "{metrics}"
+    );
+}
+
+/// Fail-open is the operator's explicit choice of delivery over the plugin's
+/// verdict, so a stream still passes through unexamined.
+#[tokio::test]
+async fn a_fail_open_post_response_plugin_lets_a_stream_through() {
+    let upstream =
+        serve(Router::new().route("/v1/chat/completions", post(mock_leaky_openai))).await;
+    let plugin = plugin_block_server().await;
+    let gw = serve_gateway(&config_with_plugin(
+        upstream,
+        format!("http://{plugin}/hook"),
+        rolter_core::PluginStage::PostResponse,
+        rolter_core::FailureMode::FailOpen,
+    ))
+    .await;
+
+    let streamed = chat(gw, true).await;
+    assert_eq!(streamed.status(), 200);
+    assert!(streamed
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream")));
+    assert!(streamed.text().await.unwrap().contains("ops@corp.com"));
+}
+
+/// With the response cache on, a stream cached before the plugin existed is
+/// not replayed past it: the refusal comes before the cache lookup. Needs a
+/// Redis (`ROLTER_TEST_REDIS_URL`, set in CI); skipped without one.
+#[tokio::test]
+async fn a_fail_closed_post_response_plugin_refuses_a_cached_stream() {
+    let Some(redis) = std::env::var("ROLTER_TEST_REDIS_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+    else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let upstream =
+        serve(Router::new().route("/v1/chat/completions", post(mock_leaky_openai))).await;
+    let plugin = plugin_block_server().await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    config.cache.enabled = true;
+    config.cache.namespace = format!(
+        "test-1776-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
+    config.routes[0].cache = Some(serde_json::from_value(json!({"enabled": true})).unwrap());
+    let state = rolter_gateway::AppState::with_logging(&config, Some(&redis));
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+
+    let first = chat(gw, true).await;
+    assert_eq!(first.status(), 200);
+    let _ = first.text().await.unwrap();
+    let hit = chat(gw, true).await;
+    assert_eq!(hit.headers()["x-rolter-cache"], "HIT");
+    let _ = hit.text().await.unwrap();
+
+    config.plugins = config_with_plugin(
+        upstream,
+        format!("http://{plugin}/hook"),
+        rolter_core::PluginStage::PostResponse,
+        rolter_core::FailureMode::FailClosed,
+    )
+    .plugins;
+    state.reload(&config, 2);
+    let refused = chat(gw, true).await;
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "plugin_streaming_unsupported");
+}
+
 #[tokio::test]
 async fn post_response_plugin_masks_a_non_streaming_completion() {
     let upstream =
