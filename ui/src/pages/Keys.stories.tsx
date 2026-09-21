@@ -4,14 +4,19 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Keys from "./Keys";
 import {
   Harness,
+  cancelConfirmation,
   clickWhenEnabled,
+  confirmDestructive,
   expectClosesWithoutPrompting,
+  expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   json,
   openOptions,
   pending,
   pickOption,
+  recordUxEvents,
   recording,
   scoped,
   sheet,
@@ -19,10 +24,12 @@ import {
   type Recorder,
   answerDiscardPrompt,
   expectEmptyState,
+  uxEvents,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const UNIT_ID = "aaaaaaaa-0000-0000-0000-000000000001";
 const CUSTOMER_ID = "bbbbbbbb-0000-0000-0000-000000000001";
@@ -714,5 +721,58 @@ export const ExplainerHasNoLinkWithoutADocsHost: Story = {
     // the explainer itself is still there — only the link is suppressed
     await canvas.findByText(/Virtual keys are the credential clients send/);
     await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
+  },
+};
+
+/**
+ * Deleting a key confirms through the shared `ConfirmDialog` (#1738): the
+ * dialog names the key, a cancel sends nothing, and both outcomes reach the UX
+ * stream under the `virtual-key-delete` key the hand-rolled dialog emitted, so
+ * the series reads on across the swap.
+ */
+let deletes: Recorder;
+export const DeleteIsConfirmedAndReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    deletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={deletes.stub}>
+        <UxScreenProvider screen="keys">
+          <Keys />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Delete key backend service");
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Delete virtual key backend service?",
+      }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    deletes.expectNotSent("DELETE", "/virtual-keys/");
+    const abandon = await expectUxEvent("form_abandon", "virtual-key-delete");
+    await expect(abandon.screen).toBe("keys");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "virtual-key-delete");
+
+    await clickWhenEnabled(canvasElement, "Delete key backend service");
+    // the body carries the prefix, which is what a client actually sends
+    await confirmDestructive(/sk-rolter-backend/, "Delete key");
+    await deletes.expectSent("DELETE", "/virtual-keys/vk-1");
+    const submit = await expectUxEvent("form_submit", "virtual-key-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectSheetClosed();
+    // the confirmed delete is not also an abandon on its way out
+    await expect(
+      uxEvents().filter((e) => e.action === "form_abandon" && e.target === "virtual-key-delete"),
+    ).toHaveLength(1);
   },
 };
