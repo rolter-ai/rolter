@@ -3183,12 +3183,16 @@ pub(crate) fn pick_untried(
             || !health.is_healthy(&entry.route.targets[i].provider)
             || !breaker.allows(model, i)
     };
-    if let Some(i) = entry.balancer.pick(ctx, loads) {
+    let n = entry.route.targets.len();
+    // a pick past the target list is treated as no pick rather than indexed:
+    // a balancer shared across per-request pools (#1655) can be sized from a
+    // different list than the one it is picking over, and `skip` indexes
+    // `targets` directly (#1714)
+    if let Some(i) = entry.balancer.pick(ctx, loads).filter(|&i| i < n) {
         if !tried.contains(&i) && !skip(i) {
             return Some(i);
         }
     }
-    let n = entry.route.targets.len();
     // prefer an untried, non-skipped target; fail open to any untried one when
     // every remaining sibling is parked or unhealthy
     (0..n)
@@ -4618,6 +4622,43 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// #1714: a balancer sized for more targets than the route carries must
+    /// not panic the worker. Round robin over four slots walks past the one
+    /// real target within a few calls; every call still has to land on it.
+    #[test]
+    fn pick_untried_survives_a_balancer_pick_past_the_target_list() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![Target {
+                provider: "a".to_string(),
+                model: None,
+                weight: 1,
+            }],
+        };
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let ctx = RouteContext::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        for _ in 0..8 {
+            assert_eq!(
+                pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
+                Some(0)
+            );
+        }
     }
 
     #[test]
