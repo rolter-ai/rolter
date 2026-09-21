@@ -9,7 +9,7 @@ import { Glob } from "bun";
 
 import { NOT_COPY } from "../src/lib/i18n/literals-allowlist";
 import {
-  findLiterals,
+  findLiteralsInTree,
   newViolations,
   staleAllowed,
   unexplainedAllowed,
@@ -36,15 +36,16 @@ const SCANNED = [
 ];
 const SKIP = /\.(stories|test)\.tsx?$|(^|\/)(story|shell)-harness\.tsx$|^src\/lib\/i18n\//;
 
-const found: Literal[] = [];
+// read as one tree, so a table or helper exported by one file and rendered by
+// another is followed to where it is written (#1765)
+const files: Record<string, string> = {};
 for (const pattern of SCANNED) {
   for (const path of new Glob(pattern).scanSync(ROOT)) {
     if (SKIP.test(path)) continue;
-    const rel = path.replace(/\\/g, "/");
-    found.push(...findLiterals(readFileSync(join(ROOT, path), "utf8"), rel));
+    files[path.replace(/\\/g, "/")] = readFileSync(join(ROOT, path), "utf8");
   }
 }
-found.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+const found: Literal[] = findLiteralsInTree(files);
 
 const allowedSize = Object.values(NOT_COPY).reduce((n, v) => n + Object.keys(v).length, 0);
 const violations = newViolations(found, NOT_COPY);

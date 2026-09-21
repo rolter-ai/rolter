@@ -327,6 +327,23 @@ function codeMapLabels(inner: string, base: number): Candidate[] | null {
 
 /** a bare identifier rendered where copy goes: `{cta}` as children, `title={title}` */
 const RENDERED_IDENT = /^\s*([A-Za-z_$][\w$]*)\s*$/;
+/**
+ * one helper call rendered where copy goes: `{labelFor(row)}`, `title={hint(k)}`.
+ * the call has to be the whole expression — `{fmt.number(n)}` is a method and
+ * `{a(b) + c}` is arithmetic — and its `return` values are what renders (#1765)
+ */
+const RENDERED_CALL = /^\s*([A-Za-z_$][\w$]*)\s*\(/;
+/** calls that are never a helper of the screen's own */
+const NOT_A_HELPER = new Set(["t", "String", "Number", "Boolean", "Array", "Object", "JSON"]);
+/** a function declaration, whose body a rendered call reads the returns of */
+const FUNCTION_DECL = /\bfunction\s+([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/g;
+/** `const [log, setLog] = useState(…)`: a value and the setter that replaces it */
+const STATE =
+  /\bconst\s*\[\s*([A-Za-z_$][\w$]*)\s*,\s*(set[A-Za-z_$][\w$]*)\s*\]\s*=\s*(?:React\.)?useState\b/g;
+/** a named import list: `import { A, B as C, type D } from "…"` */
+const IMPORT =
+  /\bimport\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/g;
+
 /** one entry of a table rendered where copy goes: `{HINTS[mode]}`, `title={COPY.save}` */
 const RENDERED_ENTRY = /^\s*([A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\s*$/;
 /** a local binding whose value might be copy held for later */
@@ -345,9 +362,11 @@ interface Candidate {
  * A single lowercase word. Outside a rendered position it is far more often a
  * code (`chat`, `inherit`, `idle`) than a label, which is why `isNotCopy` lets
  * it go; in one, the dashboard's lowercase style makes it copy — `aria-label=
- * "close"`, `<span>optional</span>`, `{on ? "enabled" : "disabled"}` (#1745)
+ * "close"`, `<span>optional</span>`, `{on ? "enabled" : "disabled"}` (#1745).
+ * A status glyph in front does not make it notation: `● connected`, `→ retry`;
+ * path and flag punctuation does: `/model`, `--verbose` (#1765)
  */
-const LOWERCASE_WORD = /^[a-z]{3,}[.…:!?]?$/;
+const LOWERCASE_WORD = /^(?:[\p{So}\p{Sm}]\s?)?[a-z]{3,}[.…:!?]?$/u;
 
 /**
  * Is the literal spanning `[start, end)` of `expr` a value the expression can
@@ -649,22 +668,79 @@ function normalize(text: string): string {
  * than costing the whole line its scan. Skipping the entire line is what let a
  * translated header hide every other literal beside it (#1092): these screens
  * are written one dense statement per component, so "the rest of this line" is
- * routinely the rest of the component. Multi-line calls are blanked too.
+ * routinely the rest of the component. Multi-line calls are blanked too, key
+ * only: the options are read (#1765).
  */
-const T_CALL = /\bt\(\s*["'`]/g;
+const T_CALL = /\bt\(/g;
 
 /**
- * Blank every `t(…)` call through its own closing paren. The call used to be
- * read as far as the first `)`, so `t("k", { count: m.get(id) ?? 0 })` left `??
- * 0, })` behind with its brackets unbalanced, and the expression walker that
- * reads children lost track of where the expression holding it ended (#1745).
+ * Blank the key of every `t(…)` call, and its parens, but not its options.
+ *
+ * The whole call used to be blanked (#1745), which made `t("k", { what:
+ * "rule" })` invisible: the key was translated and the noun spliced into it was
+ * not (#1765). Now only `t(`, the first argument and the closing paren go, so
+ * the brackets stay balanced and the options survive to be read by
+ * `readOptions`. The option ranges are returned for that pass.
  */
-function blankTCalls(text: string): string {
-  let out = text;
+function blankTCalls(text: string): { text: string; options: [number, number][] } {
+  const out = text.split("");
+  const options: [number, number][] = [];
   for (const m of text.matchAll(T_CALL)) {
-    const open = m.index + m[0].indexOf("(");
-    const close = skipExpression(text, open + 1, "");
-    out = out.slice(0, m.index) + " ".repeat(close + 1 - m.index) + out.slice(close + 1);
+    const open = m.index + m[0].length - 1;
+    const keyEnd = skipExpression(text, open + 1, ",");
+    const close = text[keyEnd] === "," ? skipExpression(text, keyEnd + 1, "") : keyEnd;
+    for (let i = m.index; i < keyEnd; i++) out[i] = " ";
+    if (close < text.length && text[close] === ")") out[close] = " ";
+    if (text[keyEnd] === ",") options.push([keyEnd + 1, close]);
+  }
+  return { text: out.join(""), options };
+}
+
+/**
+ * i18next's own options, which steer the lookup rather than fill the string:
+ * `count` picks the plural and is a number, `context` picks a variant key
+ */
+const T_OPTION_KEYS = new Set([
+  "count",
+  "context",
+  "ns",
+  "lng",
+  "lngs",
+  "returnObjects",
+  "joinArrays",
+  "interpolation",
+  "postProcess",
+  "ordinal",
+  "keyPrefix",
+]);
+
+/** `values={{ … }}` on a `<Trans>`: the interpolations of a rich string */
+const TRANS_VALUES = /\bvalues\s*=\s*\{(?=\s*\{)/g;
+
+/**
+ * The values of an interpolation object, each read as it renders: spliced into
+ * translated copy, a literal there is copy too. `{ count: n }` and the other
+ * i18next switches are skipped, and a shorthand `{ name }` holds no literal.
+ */
+function optionValues(text: string, from: number, to: number): Candidate[] {
+  const out: Candidate[] = [];
+  let i = from;
+  while (i < to && text[i] !== "{") {
+    if (!/\s/.test(text[i])) return out;
+    i++;
+  }
+  if (text[i] !== "{") return out;
+  const end = skipExpression(text, i + 1, "");
+  let at = i + 1;
+  while (at < end) {
+    const stop = skipExpression(text, at, ",");
+    const member = text.slice(at, stop);
+    const key = /^\s*(["']?)([A-Za-z_$][\w$-]*)\1\s*:/.exec(member);
+    if (key && !T_OPTION_KEYS.has(key[2])) {
+      const valueAt = at + key[0].length;
+      out.push(...stringsIn(text.slice(valueAt, stop), valueAt, true));
+    }
+    at = stop + 1;
   }
   return out;
 }
@@ -1038,6 +1114,61 @@ function childRuns(masked: string, tags: Map<number, number>, inside: Set<number
   return out;
 }
 
+/**
+ * What a function can return, read as rendered copy: every `return` in a block
+ * body, or the whole expression of an arrow's. A return that opens with a tag
+ * is a component's render, whose text the JSX rules already read, so it is left
+ * to them. `text` is the function from its parameter list onward.
+ */
+function returnsOf(text: string, base: number): Candidate[] {
+  const arrow = /^\s*(?:async\s*)?(?:\([^]*?\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=>\s*/.exec(text);
+  let body: string;
+  let at: number;
+  if (arrow) {
+    at = arrow[0].length;
+    if (text[at] !== "{") {
+      const end = skipExpression(text, at, ",;");
+      const expr = text.slice(at, end);
+      return /^\s*\(?\s*</.test(expr) ? [] : stringsIn(expr, base + at, true);
+    }
+  } else {
+    // `function name(…): Type {`: past the parameters to the body's brace
+    const params = skipExpression(text, 1, "");
+    at = text.indexOf("{", params);
+    if (at === -1) return [];
+  }
+  body = text.slice(at, skipExpression(text, at + 1, "") + 1);
+  const out: Candidate[] = [];
+  for (const m of body.matchAll(/\breturn\s+/g)) {
+    const from = m.index + m[0].length;
+    const expr = body.slice(from, skipExpression(body, from, ";"));
+    if (/^\s*\(?\s*</.test(expr)) continue;
+    out.push(...stringsIn(expr, base + at + from, true));
+  }
+  return out;
+}
+
+/** what one file renders under names it does not define, keyed by that name */
+export interface Uses {
+  /** rendered bare: `{cta}` */
+  values: Map<string, Literal["kind"]>;
+  /** indexed where copy goes: `{HINTS[mode]}` */
+  tables: Map<string, Literal["kind"]>;
+  /** called where copy goes: `{labelFor(row)}` */
+  calls: Map<string, Literal["kind"]>;
+}
+
+const noUses = (): Uses => ({ values: new Map(), tables: new Map(), calls: new Map() });
+
+/** one file's findings, and what it renders from its imports */
+export interface FileScan {
+  literals: Literal[];
+  /** imported name -> the module it comes from and the name it has there */
+  imports: Map<string, { from: string; name: string }>;
+  /** the rendered names this file does not define itself */
+  uses: Uses;
+}
+
 function lineOf(source: string, index: number): number {
   let line = 1;
   for (let i = 0; i < index; i++) if (source.charCodeAt(i) === 10) line++;
@@ -1045,19 +1176,30 @@ function lineOf(source: string, index: number): number {
 }
 
 /**
- * Every hardcoded user-facing literal in one source file.
+ * Every hardcoded user-facing literal in one source file, read on its own —
+ * `findLiteralsInTree` is the gate's entry point, which also follows imports.
  *
- * The source is masked first (`maskSource`), then `t("pages.x.y")` calls are
- * blanked — that is exactly what this rule wants — and whatever remains is
+ * The source is masked first (`maskSource`), then the key of each
+ * `t("pages.x.y")` call is blanked — that is exactly what this rule wants — and whatever remains is
  * scanned as a whole, so prose that wraps across lines, a second literal on a
  * dense line, and the strings inside `{cond ? "A" : "B"}` are all seen (#1200),
  * regardless of how the file happens to be wrapped (#1143).
  */
 export function findLiterals(source: string, file: string): Literal[] {
+  return scanFile(source, file).literals;
+}
+
+/**
+ * `findLiterals`, plus what the file renders from other modules. `exported` is
+ * what other files render of this one's exports, found by `findLiteralsInTree`:
+ * those bindings are read here, where the literal is written, so the finding
+ * names the file an allow-list entry or a fix belongs to.
+ */
+export function scanFile(source: string, file: string, exported: Uses = noUses()): FileScan {
   const out: Literal[] = [];
   const seen = new Set<string>();
   const masked = maskSource(source);
-  const scanned = blankTCalls(masked.text);
+  const { text: scanned, options } = blankTCalls(masked.text);
   const tags = jsxTags(scanned);
   // the tag ends that open onto children; text after any other one is code
   const inside = childPositions(scanned, tags);
@@ -1078,15 +1220,26 @@ export function findLiterals(source: string, file: string): Literal[] {
 
   // identifiers rendered bare where copy goes, with the kind they render as.
   // their bindings are read once every position is known (#1537)
-  const rendered = new Map<string, Literal["kind"]>();
+  const rendered = new Map(exported.values);
   // tables with an entry rendered where copy goes, read value by value
-  const tables = new Map<string, Literal["kind"]>();
-  /** records a rendered identifier, or a table indexed where copy goes */
+  const tables = new Map(exported.tables);
+  // helpers called where copy goes, whose returns are read (#1765)
+  const calls = new Map(exported.calls);
+  // every expression rendered as children, for `shown` below
+  const childTexts: string[] = [];
+  /** records a rendered identifier, a table indexed or a helper called where copy goes */
   const noteRendered = (expr: string, kind: Literal["kind"]) => {
+    if (kind === "text") childTexts.push(expr);
     const ident = RENDERED_IDENT.exec(expr);
     if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? kind);
     const entry = RENDERED_ENTRY.exec(expr);
     if (entry) tables.set(entry[1], tables.get(entry[1]) ?? kind);
+    const call = RENDERED_CALL.exec(expr);
+    if (call && !NOT_A_HELPER.has(call[1])) {
+      const open = call.index + call[0].length - 1;
+      const close = skipExpression(expr, open + 1, "");
+      if (!expr.slice(close + 1).trim()) calls.set(call[1], calls.get(call[1]) ?? kind);
+    }
   };
   /** the start of capture group `n`'s text inside match `m` */
   const groupAt = (m: RegExpMatchArray, n: number) => (m.index ?? 0) + m[0].lastIndexOf(m[n]);
@@ -1095,6 +1248,13 @@ export function findLiterals(source: string, file: string): Literal[] {
     pushAll(stringsIn(m[n], groupAt(m, n), true), kind);
   };
 
+  // what a translated string splices in: `t("k", { what: "rule" })` and a
+  // `<Trans values={{ … }}>` (#1765)
+  for (const [from, to] of options) pushAll(optionValues(scanned, from, to), "text");
+  for (const m of scanned.matchAll(TRANS_VALUES)) {
+    const at = m.index + m[0].length;
+    pushAll(optionValues(scanned, at, skipExpression(scanned, at, "")), "text");
+  }
   for (const m of scanned.matchAll(DIALOG)) push(m.index, m[2], "dialog");
   for (const m of scanned.matchAll(THROWN)) push(m.index, m[2], "error");
   for (const m of scanned.matchAll(THROWN_TEMPLATE)) {
@@ -1148,18 +1308,49 @@ export function findLiterals(source: string, file: string): Literal[] {
       pushAll(stringsIn(expr, from, true), "text");
     }
   }
-  // English parked in a local and rendered later: `const cta = add ? "Create" :
-  // "Save"` then `<Button>{cta}</Button>` (#1537), or a table indexed where
-  // copy goes, `{HINTS[mode]}` (#1745). only a binding whose name is rendered
-  // is read, so a string that only ever reaches code stays out. a function is
-  // not a held value — its body is the rest of a component
-  if (rendered.size || tables.size) {
+  // state an operator reads: `const [log, setLog] = useState(…)` with `{log}` or
+  // `{log.map(…)}` rendered. every value handed to its setter is copy, and so
+  // is every value handed to a local function that calls the setter —
+  // `append("connected")` in a realtime log (#1765)
+  const shown = (name: string) =>
+    rendered.has(name) ||
+    childTexts.some((e) => new RegExp(`\\b${escapeRegExp(name)}\\.map\\(`).test(e));
+  const sinks = new Set<string>();
+  for (const m of scanned.matchAll(STATE)) if (shown(m[1])) sinks.add(m[2]);
+  const declared = new Set<string>();
+  for (const m of scanned.matchAll(BINDING)) declared.add(m[1]);
+  for (const m of scanned.matchAll(FUNCTION_DECL)) declared.add(m[1]);
+  if (sinks.size) {
+    const setters = [...sinks];
     for (const m of scanned.matchAll(BINDING)) {
       const at = m.index + m[0].length;
       const value = scanned.slice(at, skipExpression(scanned, at, ",;"));
+      if (value.includes("=>") && setters.some((f) => value.includes(`${f}(`))) sinks.add(m[1]);
+    }
+    for (const name of sinks) {
+      const call = new RegExp(`(?<![\\w$.])${escapeRegExp(name)}\\(`, "g");
+      for (const m of scanned.matchAll(call)) {
+        const at = m.index + m[0].length;
+        const arg = scanned.slice(at, skipExpression(scanned, at, ","));
+        // an updater is code; the value it computes is the next state
+        if (!arg.includes("=>")) pushAll(stringsIn(arg, at, true), "text");
+      }
+    }
+  }
+  // English parked in a local and rendered later: `const cta = add ? "Create" :
+  // "Save"` then `<Button>{cta}</Button>` (#1537), a table indexed where copy
+  // goes, `{HINTS[mode]}` (#1745), or a helper whose returns are rendered,
+  // `{labelFor(row)}` (#1765). only a binding whose name is rendered is read,
+  // so a string that only ever reaches code stays out
+  if (rendered.size || tables.size || calls.size) {
+    for (const m of scanned.matchAll(BINDING)) {
+      const at = m.index + m[0].length;
+      const value = scanned.slice(at, skipExpression(scanned, at, ",;"));
+      const isFunction = value.includes("=>") || /^\s*(?:async\s+)?function\b/.test(value);
       const kind = rendered.get(m[1]);
-      if (kind && !value.includes("=>") && !/^\s*(?:async\s+)?function\b/.test(value))
-        pushAll(stringsIn(value, at, true), kind);
+      if (kind && !isFunction) pushAll(stringsIn(value, at, true), kind);
+      const called = calls.get(m[1]);
+      if (called && isFunction) pushAll(returnsOf(value, at), called);
       const table = tables.get(m[1]);
       // only an object literal is a table; `const remove = useMutation({…})`
       // with `{remove.error}` rendered is a hook result, and its options are code
@@ -1168,9 +1359,99 @@ export function findLiterals(source: string, file: string): Literal[] {
       for (const e of value.matchAll(MAP_ENTRY))
         push(at + (e.index ?? 0) + e[0].lastIndexOf(e[4]), e[4], table, true);
     }
+    for (const m of scanned.matchAll(FUNCTION_DECL)) {
+      const called = calls.get(m[1]);
+      if (!called) continue;
+      const at = m.index + m[0].length - 1;
+      pushAll(returnsOf(scanned.slice(at, skipFunction(scanned, at)), at), called);
+    }
   }
   out.sort((a, b) => a.line - b.line);
-  return out;
+
+  const imports = new Map<string, { from: string; name: string }>();
+  for (const m of scanned.matchAll(IMPORT)) {
+    for (const part of m[1].split(",")) {
+      const spec = /^\s*(?:type\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(
+        part,
+      );
+      if (spec) imports.set(spec[2] ?? spec[1], { from: m[3], name: spec[1] });
+    }
+  }
+  const uses = noUses();
+  const foreign = (map: Map<string, Literal["kind"]>, into: Map<string, Literal["kind"]>) => {
+    for (const [name, kind] of map)
+      if (!declared.has(name) && imports.has(name)) into.set(name, kind);
+  };
+  foreign(rendered, uses.values);
+  foreign(tables, uses.tables);
+  foreign(calls, uses.calls);
+  return { literals: out, imports, uses };
+}
+
+/** `text` matched literally inside a `RegExp`, every special character escaped */
+function escapeRegExp(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
+}
+
+/** the end of a `function name(…) { … }` whose parameter list opens at `open` */
+function skipFunction(text: string, open: number): number {
+  const params = skipExpression(text, open + 1, "");
+  const brace = text.indexOf("{", params);
+  return brace === -1 ? params : skipExpression(text, brace + 1, "") + 1;
+}
+
+/** the scanned file an import specifier names, if it is one */
+function resolveImport(spec: string, from: string, files: Set<string>): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = `src/${spec.slice(2)}`;
+  else if (spec.startsWith(".")) {
+    const parts = from.split("/").slice(0, -1);
+    for (const seg of spec.split("/")) {
+      if (seg === "..") parts.pop();
+      else if (seg !== ".") parts.push(seg);
+    }
+    base = parts.join("/");
+  } else return null;
+  for (const ext of ["", ".ts", ".tsx", "/index.ts", "/index.tsx"])
+    if (files.has(base + ext)) return base + ext;
+  return null;
+}
+
+/**
+ * Every file's findings, with copy followed across imports (#1765).
+ *
+ * `findLiterals` reads one file, so a table, constant or helper exported from
+ * one module and rendered in another was never read: the renderer saw a name
+ * it could not resolve, and the defining file saw no reason to read it. This
+ * scans every file once, resolves what each renders from its imports through
+ * the module graph, and scans each defining file again with those names marked
+ * as rendered. Findings are reported where the literal is written.
+ */
+export function findLiteralsInTree(files: Record<string, string>): Literal[] {
+  const paths = new Set(Object.keys(files));
+  const first = new Map<string, FileScan>();
+  for (const [path, source] of Object.entries(files)) first.set(path, scanFile(source, path));
+
+  const wanted = new Map<string, Uses>();
+  for (const [path, scan] of first) {
+    for (const [kindOf, map] of Object.entries(scan.uses) as [keyof Uses, Uses[keyof Uses]][]) {
+      for (const [local, kind] of map) {
+        const imp = scan.imports.get(local);
+        const target = imp && resolveImport(imp.from, path, paths);
+        if (!imp || !target) continue;
+        const uses = wanted.get(target) ?? noUses();
+        if (!uses[kindOf].has(imp.name)) uses[kindOf].set(imp.name, kind);
+        wanted.set(target, uses);
+      }
+    }
+  }
+
+  const out: Literal[] = [];
+  for (const [path, scan] of first) {
+    const uses = wanted.get(path);
+    out.push(...(uses ? scanFile(files[path], path, uses).literals : scan.literals));
+  }
+  return out.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 }
 
 /** Findings not on the allow-list — the ones that fail the build. */
