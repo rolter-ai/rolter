@@ -4,18 +4,29 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Providers from "./Providers";
 import {
   Harness,
+  cancelConfirmation,
+  clickWhenEnabled,
+  confirmDestructive,
   expectEmptyState,
+  expectNoUxEvent,
+  expectSheetClosed,
+  expectUxEvent,
   expectLoadError,
   expectSkeleton,
   json,
   pending,
+  recordUxEvents,
+  recording,
   routes,
   scoped,
   Toasted,
   expectToast,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import type { LabelRow, ProviderRow } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: ProviderRow[] = [
   {
@@ -175,17 +186,23 @@ export const Tablet: Story = {
  * rather than closing over a provider that is still registered.
  */
 export const DeleteRejectedByTheServer: Story = {
+  beforeEach: recordUxEvents,
   render: () => (
     <Harness
-      fetchStub={scoped(async (input, init) =>
-        init?.method === "DELETE"
-          ? json({ error: { message: "openai-prod is the target of 4 live routes" } }, 409)
-          : loaded(input, init),
-      )}
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method !== "DELETE") return loaded(input, init);
+        // a real round trip: an answer in the same tick lands pending and the
+        // refusal in one render, and ConfirmDialog reads the failure from the
+        // pending -> settled edge
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return json({ error: { message: "openai-prod is the target of 4 live routes" } }, 409);
+      })}
     >
-      <Toasted>
-        <Providers />
-      </Toasted>
+      <UxScreenProvider screen="providers">
+        <Toasted>
+          <Providers />
+        </Toasted>
+      </UxScreenProvider>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -194,11 +211,68 @@ export const DeleteRejectedByTheServer: Story = {
       await canvas.findByRole("button", { name: "Delete provider openai-prod" }),
     );
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete provider" }));
+    // the press and the refusal are two rows under the same key, read before the
+    // toast waits so the queue's 5s flush timer cannot drain them first
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "provider-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
 
     await expectToast(canvasElement, /target of 4 live routes/, "error");
     await waitFor(() => expect(dialog.getByText(/target of 4 live routes/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The delete confirms through the shared `ConfirmDialog` (#1738), which names
+ * the provider, sends nothing when cancelled, and reports both outcomes to the
+ * UX stream under the `provider-delete` key the hand-rolled dialog used — so
+ * the series reads on across the swap.
+ */
+let deleted: Recorder;
+export const DeleteIsConfirmedAndReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    deleted = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? new Response(null, { status: 204 }) : loaded(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={deleted.stub}>
+        <UxScreenProvider screen="providers">
+          <Providers />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Delete provider openai-prod");
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Delete provider openai-prod?" }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    deleted.expectNotSent("DELETE", "/providers/");
+    const abandon = await expectUxEvent("form_abandon", "provider-delete");
+    await expect(abandon.screen).toBe("providers");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "provider-delete");
+
+    await clickWhenEnabled(canvasElement, "Delete provider openai-prod");
+    await confirmDestructive(/openai-prod/, "Delete provider");
+    await deleted.expectSent("DELETE", "/providers/p-1");
+    const submit = await expectUxEvent("form_submit", "provider-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectSheetClosed();
+    // the confirmed delete is not also an abandon on its way out
+    await expect(
+      uxEvents().filter((e) => e.action === "form_abandon" && e.target === "provider-delete"),
+    ).toHaveLength(1);
   },
 };
 

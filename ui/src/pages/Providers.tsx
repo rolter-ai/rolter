@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Plug, Tag, Loader2 } from "lucide-react";
+import { Building2, Plug, Tag } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
 import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
 import { GatedButton } from "@/components/GatedButton";
@@ -21,19 +21,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { deleteProvider, fetchConfigProblems, fetchProviders, type ProviderRow } from "@/lib/api";
 import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useFormTelemetry, useScreenReady } from "@/lib/ux-react";
+import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
 
@@ -86,7 +80,6 @@ export default function Providers() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!providers.isLoading);
   useErrorState(!!providers.error, "provider-list");
-  const deleteUx = useFormTelemetry("provider-delete", !!deleteTarget);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // editing and deleting a provider are an admin's, the same as adding one
@@ -268,55 +261,39 @@ export default function Providers() {
         onDone={invalidate}
       />
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.providers.deleteTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.providers.deleteHint"
-              values={{ name: deleteTarget?.name ?? "" }}
-              components={[<span key="name" className="font-mono" />]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        {removeProvider.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removeProvider.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removeProvider.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              deleteUx.submitted();
-              const name = deleteTarget.name;
-              removeProvider.mutate(deleteTarget.id, {
-                onSuccess: () => {
-                  deleteUx.saved();
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what: name }) });
-                },
-                onError: (error) => {
-                  deleteUx.failed();
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what: name }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {removeProvider.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t("common.delete")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        // stable key for the UX stream, the same one the hand-rolled dialog
+        // emitted under so the series stays continuous (#1738)
+        name="provider-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleteTarget(null);
+          // a failure from this row must not greet the next one opened
+          removeProvider.reset();
+        }}
+        title={t("pages.providers.confirm.deleteTitle", { name: deleteTarget?.name ?? "" })}
+        description={t("pages.providers.confirm.deleteBody")}
+        confirmLabel={t("pages.providers.confirm.deleteConfirm")}
+        pending={removeProvider.isPending}
+        error={removeProvider.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const name = deleteTarget.name;
+          removeProvider.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what: name }) });
+            },
+            onError: (error) =>
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what: name }),
+                detail: errorDetail(error),
+              }),
+          });
+        }}
+      />
     </PageBody>
   );
 }

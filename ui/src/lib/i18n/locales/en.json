@@ -533,12 +533,16 @@
       "deleteTitle": "Delete provider",
       "deleteOne": "Delete provider {{name}}",
       "noMatch": "No providers match.",
-      "deleteHint": "<0>{{name}}</0> will stop being usable as a route target. This cannot be undone.",
       "emptyTitle": "No providers yet",
       "emptyBody": "A provider is an upstream the gateway can route to. Add one with its API base and credential to start serving traffic.",
       "noMatchBody": "Nothing matched your search. Clear it to see every provider in this organization.",
       "noOrgTitle": "Choose an organization",
-      "editOne": "Edit provider {{name}}"
+      "editOne": "Edit provider {{name}}",
+      "confirm": {
+        "deleteTitle": "Delete provider {{name}}?",
+        "deleteBody": "It stops being usable as a route target. This cannot be undone.",
+        "deleteConfirm": "Delete provider"
+      }
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -992,15 +996,18 @@
       "allModels": "all models",
       "shownOf_one": "{{shown}} of {{count}} key",
       "shownOf_other": "{{shown}} of {{count}} keys",
-      "deleteTitle": "Delete virtual key",
-      "deleteBody": "<0>{{prefix}}</0> will stop authenticating immediately. This cannot be undone.",
       "createTitle": "Create virtual key",
       "createSubtitle": "The plaintext key is shown once, right after creation — copy it then",
       "creating": "Creating…",
       "createdTitle": "Key created",
       "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
       "playground": "Playground",
-      "playgroundHint": "The Playground minted this key for one sitting, scoped to this project's routes. It expires on its own — nothing needs to delete it."
+      "playgroundHint": "The Playground minted this key for one sitting, scoped to this project's routes. It expires on its own — nothing needs to delete it.",
+      "confirm": {
+        "deleteTitle": "Delete virtual key {{name}}?",
+        "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
+        "deleteConfirm": "Delete key"
+      }
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",

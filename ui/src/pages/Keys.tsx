@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Pencil, Plus, Trash2, Key, Loader2 } from "lucide-react";
+import { Check, Copy, Pencil, Plus, Trash2, Key } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -32,6 +32,7 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -69,7 +70,7 @@ import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useFormTelemetry, useScreenReady } from "@/lib/ux-react";
+import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const KEYS_QUERY_KEY = ["virtual-keys"];
 
@@ -156,7 +157,6 @@ export default function Keys() {
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!keys.isLoading);
   useErrorState(!!keys.error, "virtual-key-list");
-  const deleteUx = useFormTelemetry("virtual-key-delete", !!deleteTarget);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
@@ -434,55 +434,47 @@ export default function Keys() {
         }}
       />
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.virtualKeys.deleteTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.virtualKeys.deleteBody"
-              values={{ prefix: `${deleteTarget?.key_prefix}…` }}
-              components={[<span key="prefix" className="font-mono" />]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        {removeKey.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removeKey.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removeKey.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              deleteUx.submitted();
-              const name = deleteTarget.name;
-              removeKey.mutate(deleteTarget.id, {
-                onSuccess: () => {
-                  deleteUx.saved();
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what: name }) });
-                },
-                onError: (error) => {
-                  deleteUx.failed();
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what: name }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {removeKey.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t("common.delete")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        // stable key for the UX stream, the same one the hand-rolled dialog
+        // emitted under so the series stays continuous (#1738)
+        name="virtual-key-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleteTarget(null);
+          // a failure from this row must not greet the next one opened
+          removeKey.reset();
+        }}
+        title={t("pages.virtualKeys.confirm.deleteTitle", {
+          name: deleteTarget?.name ?? deleteTarget?.key_prefix ?? "",
+        })}
+        description={
+          <Trans
+            i18nKey="pages.virtualKeys.confirm.deleteBody"
+            values={{ prefix: `${deleteTarget?.key_prefix}…` }}
+            components={[<span key="prefix" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("pages.virtualKeys.confirm.deleteConfirm")}
+        pending={removeKey.isPending}
+        error={removeKey.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const name = deleteTarget.name;
+          removeKey.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what: name }) });
+            },
+            onError: (error) =>
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what: name }),
+                detail: errorDetail(error),
+              }),
+          });
+        }}
+      />
 
       <CreatedKeyDialog created={created} onOpenChange={(open) => !open && setCreated(null)} />
     </PageBody>
