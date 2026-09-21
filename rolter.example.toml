@@ -496,7 +496,8 @@ disabled = false # revoke without deleting
 # payload_capture, because the schema is structural only — every column is a key,
 # an enum, a duration or an id, so a form value or prompt has nowhere to land.
 # Set false to drop them at the ingest endpoint; the stream is inert anyway
-# without clickhouse_url.
+# without clickhouse_url. With a database, this is the Dashboard Usage Events
+# switch on Logs Settings; rolter-seed --import copies it there when set here.
 # ui_events = false
 # Raw prompts/completions are sensitive and disabled by default. When enabled,
 # redacted bodies are kept in ClickHouse's short-retention request_payloads table.

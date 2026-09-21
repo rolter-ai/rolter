@@ -246,17 +246,17 @@ terminal and stops sending for the life of the tab, and treats everything else
 as transient — dropping the batch it was holding and trying again on the next
 flush.
 
-| What went wrong                                              | Server answers | Client does                    | Cost                                                                    | Who notices                        |
-| ------------------------------------------------------------ | -------------- | ------------------------------ | ----------------------------------------------------------------------- | ---------------------------------- |
-| ClickHouse is down or unreachable                            | `500`          | drops the batch, keeps sending | the events queued during the outage, and nothing after it               | the operator: a warn and a counter |
-| `ui_events` table missing (a data volume older than the DDL) | `500`          | drops the batch, keeps sending | **every event, for the whole run** — the condition never clears itself  | the operator: a warn and a counter |
-| one malformed event in a batch                               | `400`          | drops the batch, keeps sending | every event that shared that flush, not just the bad one                | nobody                             |
-| batch over 100 events                                        | `400`          | drops the batch, keeps sending | that flush; only reachable if the client's cap drifts from the server's | nobody                             |
-| session lapsed, or no session                                | `401`          | **disables itself**            | everything from that moment until the tab is reloaded                   | nobody                             |
-| control plane older than #805, or a proxy dropping the route | `404`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
-| a proxy rewriting the method                                 | `405`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
-| `CLICKHOUSE_URL` unset on the control plane                  | `500`          | drops the batch, keeps sending | everything, and one request per flush forever                           | the operator: a warn and a counter |
-| `logging.ui_events = false`                                  | `202`          | nothing — this is success      | everything                                                              | the operator                       |
+| What went wrong                                               | Server answers | Client does                    | Cost                                                                    | Who notices                        |
+| ------------------------------------------------------------- | -------------- | ------------------------------ | ----------------------------------------------------------------------- | ---------------------------------- |
+| ClickHouse is down or unreachable                             | `500`          | drops the batch, keeps sending | the events queued during the outage, and nothing after it               | the operator: a warn and a counter |
+| `ui_events` table missing (a data volume older than the DDL)  | `500`          | drops the batch, keeps sending | **every event, for the whole run** — the condition never clears itself  | the operator: a warn and a counter |
+| one malformed event in a batch                                | `400`          | drops the batch, keeps sending | every event that shared that flush, not just the bad one                | nobody                             |
+| batch over 100 events                                         | `400`          | drops the batch, keeps sending | that flush; only reachable if the client's cap drifts from the server's | nobody                             |
+| session lapsed, or no session                                 | `401`          | **disables itself**            | everything from that moment until the tab is reloaded                   | nobody                             |
+| control plane older than #805, or a proxy dropping the route  | `404`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
+| a proxy rewriting the method                                  | `405`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
+| `CLICKHOUSE_URL` unset on the control plane                   | `500`          | drops the batch, keeps sending | everything, and one request per flush forever                           | the operator: a warn and a counter |
+| UX events switched off (`logging_settings.ui_events = false`) | `202`          | nothing — this is success      | everything                                                              | the operator                       |
 
 "Nobody" is literal where it appears: the dashboard shows nothing, and the
 control plane does not log a rejected _request_. A store that cannot take the
@@ -281,6 +281,18 @@ The status stays `500` on purpose: `ux.ts` reads it as transient, so capture
 resumes by itself once the store is back. The logic lives in
 [`crates/rolter-control/src/ingest_failure.rs`](../../../crates/rolter-control/src/ingest_failure.rs).
 
-The last row is the only deliberate one, and it is only reachable from a
-bootstrap TOML: `logging.ui_events` is not projected out of the Postgres store,
-so a database-backed deployment always runs with it on.
+The last row is the only deliberate one. In a Postgres-backed deployment it is
+the `ui_events` column on the `logging_settings` singleton (migration `0073`,
+#1748): the **Dashboard Usage Events** switch on **Logs Settings**, or
+`ui_events` in the `PUT /api/v1/logging-settings` body. `PostgresConfigStore`
+projects it into `logging.ui_events`, which is what the handler reads, so the
+switch takes effect on the next batch with no restart. `rolter-seed --import`
+writes it too, but only when the file names `logging.ui_events` — the default is
+on, so a file silent about it must not undo an operator's opt-out. The same
+rule holds for the API: a `PUT` that omits `ui_events` leaves the stored value
+alone. Only a TOML-only control plane reads the key from `rolter.toml` directly.
+
+`switching_ui_events_off_answers_202_and_stores_nothing` in
+`crates/rolter-control/tests/ux_pipeline.rs` pins the row: it switches the
+stream off through the API, sends a valid batch, asserts the `202` and an empty
+read-back, then switches it on and watches the same batch land.

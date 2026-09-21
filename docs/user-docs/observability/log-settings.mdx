@@ -1,10 +1,10 @@
 ---
-title: "Log Settings: Sampling, Payload Capture and Retention"
+title: "Log Settings: Sampling, Payload Capture, Retention and UX Events"
 sidebarTitle: "Log Settings"
-description: "Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, and how long each half is kept."
+description: "Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, how long each half is kept, and whether dashboard usage events are recorded."
 ---
 
-Request logging is governed by one deployment-wide policy, edited from **Observability → Logs Settings** in the dashboard or through the management API. It decides three things: how much traffic is logged, whether raw payloads are captured alongside the metadata, and how long each is kept.
+Request logging is governed by one deployment-wide policy, edited from **Observability → Logs Settings** in the dashboard or through the management API. It decides four things: how much traffic is logged, whether raw payloads are captured alongside the metadata, how long each is kept, and whether the dashboard's own usage events are recorded.
 
 ---
 
@@ -69,6 +69,14 @@ Re-applying an unchanged policy is a no-op, so the startup pass is safe on every
 
 ---
 
+## Dashboard usage events
+
+The **Dashboard Usage Events** switch (`ui_events`) decides whether the control plane accepts the dashboard's own [UX events](/api/ui-events) — screen views, load times, abandoned forms, error states. It is **on by default**, unlike payload capture, because those events carry structure only: a screen, an action, a duration and ids, never a form value or prompt.
+
+Switching it off makes the ingest endpoint answer `202` and store nothing, from the next batch onward. Events already recorded are not deleted; they expire with the table's own TTL. The stream is inert anyway when ClickHouse is not configured.
+
+---
+
 ## API
 
 Both endpoints are **superadmin only**, and every update is audited.
@@ -87,9 +95,10 @@ curl -X PUT -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
         "payload_capture_models": [],
         "payload_capture_virtual_key_ids": [],
         "retention_days": 90,
-        "payload_retention_hours": 168
+        "payload_retention_hours": 168,
+        "ui_events": true
       }' \
   https://control.example.com/api/v1/logging-settings
 ```
 
-Send the full policy, not a patch. A successful update bumps `config_version`, so gateways pick it up on their next snapshot poll without a restart.
+Send the full policy, not a patch — with one exception: `ui_events` may be omitted, and then keeps its stored value, so a client written before the field existed cannot switch the stream back on. A successful update bumps `config_version`, so gateways pick it up on their next snapshot poll without a restart.

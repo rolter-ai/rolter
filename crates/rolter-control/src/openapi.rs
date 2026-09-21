@@ -1748,12 +1748,12 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/logging-settings",
                 "getLoggingSettings",
-                "Read the request-logging and retention settings",
+                "Read the request-logging, retention and UX-event settings",
             ),
             Op::put(
                 "/api/v1/logging-settings",
                 "updateLoggingSettings",
-                "Replace the request-logging and retention settings",
+                "Replace the request-logging, retention and UX-event settings",
             ),
             Op::get(
                 "/api/v1/client-settings",

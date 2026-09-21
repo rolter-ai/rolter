@@ -706,6 +706,9 @@ pub struct LoggingSettings {
     pub retention_days: i32,
     /// how long captured raw payloads are kept; always the shorter clock
     pub payload_retention_hours: i32,
+    /// whether the control plane accepts dashboard UX events at all; `false`
+    /// is the deployment-level opt-out behind `logging.ui_events`
+    pub ui_events: bool,
     pub updated_at: DateTime<Utc>,
 }
 

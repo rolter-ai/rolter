@@ -147,8 +147,14 @@ lost stream can be alerted on rather than discovered.
 Two independent switches:
 
 - **No `clickhouse_url`** — the stream is inert; there is nowhere to write.
-- **`logging.ui_events = false`** in `rolter.toml` — a deployment-level opt-out.
-  The endpoint still answers `202`, and stores nothing.
+- **The Dashboard Usage Events switch** on **Observability → Logs Settings** — a
+  deployment-level opt-out, also settable as `ui_events` through
+  [`PUT /api/v1/logging-settings`](/observability/log-settings#api). The
+  endpoint still answers `202`, and stores nothing. It takes effect on the next
+  batch, with no restart.
+
+A control plane without a database reads the same opt-out from `rolter.toml`,
+and `rolter-seed --import` copies it into the database when the file sets it:
 
 ```toml
 [logging]
