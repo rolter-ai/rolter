@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Trans, useTranslation } from "react-i18next";
-import { ArrowRight, Check, Download, ShieldCheck } from "lucide-react";
+import { ArrowRight, Check, Download, Loader2, ShieldCheck } from "lucide-react";
 import { Link } from "react-router";
 
 import { CopyButton } from "@/components/CopyButton";
@@ -195,7 +195,11 @@ function ExportButton() {
       disabled={exportConfig.isPending}
       onClick={() => exportConfig.mutate()}
     >
-      <Download className="h-3.5 w-3.5" />
+      {exportConfig.isPending ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Download className="h-3.5 w-3.5" />
+      )}
       {exportConfig.isPending ? t("pages.config.export.pending") : t("pages.config.export.action")}
     </GatedButton>
   );
