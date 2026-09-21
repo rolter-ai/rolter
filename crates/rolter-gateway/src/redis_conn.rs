@@ -21,7 +21,9 @@
 //! the client cannot tell "never sent" from "sent, reply lost", and replaying
 //! an `INCRBYFLOAT` on the second would charge the same spend twice. A write
 //! that meets a dead connection is dropped like any write during an outage, and
-//! the next one uses the new connection.
+//! the next one uses the new connection. A caller whose write is safe to
+//! repeat opts in with [`Lease::replay_writes`]; rate-limit admission does,
+//! and documents why.
 //!
 //! Connection attempts are single-flight — callers arriving during one wait for
 //! it rather than opening their own — and consecutive failures back off
@@ -163,6 +165,7 @@ impl ReconnectingRedis {
             conn,
             generation,
             shared: &self.shared,
+            replay_writes: false,
         })
     }
 
@@ -316,9 +319,24 @@ pub(crate) struct Lease<'a> {
     conn: MultiplexedConnection,
     generation: u64,
     shared: &'a Shared,
+    replay_writes: bool,
 }
 
 impl Lease<'_> {
+    /// Replay any command through this lease once on a fresh connection when
+    /// the first attempt met a dead one, not only the read-only ones.
+    ///
+    /// Only for a caller that has worked out what a double application costs
+    /// — a command that did run before its reply was lost runs again — and
+    /// decided it is the lesser failure. Spend recording must never use it.
+    pub(crate) fn replay_writes(&mut self) {
+        self.replay_writes = true;
+    }
+
+    fn replayable(&self, cmd: &Cmd) -> bool {
+        self.replay_writes || is_read_only(cmd)
+    }
+
     /// Evict this lease's connection if `result` shows it dead; reports
     /// whether it did.
     fn evict_if_dead<T>(&self, result: &RedisResult<T>) -> bool {
@@ -348,7 +366,7 @@ impl ConnectionLike for Lease<'_> {
     fn req_packed_command<'b>(&'b mut self, cmd: &'b Cmd) -> RedisFuture<'b, Value> {
         Box::pin(async move {
             let result = self.conn.req_packed_command(cmd).await;
-            if !self.evict_if_dead(&result) || !is_read_only(cmd) || !self.renew().await {
+            if !self.evict_if_dead(&result) || !self.replayable(cmd) || !self.renew().await {
                 return result;
             }
             let replayed = self.conn.req_packed_command(cmd).await;
@@ -366,7 +384,7 @@ impl ConnectionLike for Lease<'_> {
         Box::pin(async move {
             let result = self.conn.req_packed_commands(pipeline, offset, count).await;
             if !self.evict_if_dead(&result)
-                || !pipeline.cmd_iter().all(is_read_only)
+                || !pipeline.cmd_iter().all(|cmd| self.replayable(cmd))
                 || !self.renew().await
             {
                 return result;
@@ -406,6 +424,8 @@ pub(crate) mod testing {
         pub(crate) const BUDGETS: u8 = 12;
         pub(crate) const RATE_LIMITS: u8 = 13;
         pub(crate) const CACHE: u8 = 14;
+        /// no test kills connections here, so racing admissions stay intact
+        pub(crate) const RATE_ADMISSION: u8 = 15;
     }
 
     /// The server url with any database path removed, or `None` (and a skip

@@ -20,12 +20,11 @@
 //! [`crate::redis_conn`]), so fail-open lasts as long as the outage and no
 //! longer.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::budgets::ScopeIds;
 use crate::redis_conn::ReconnectingRedis;
 use chrono::Utc;
-use redis::AsyncCommands;
 use rolter_core::{BudgetScope, RateLimitConfig};
 
 /// window length in seconds; `rpm`/`tpm` are per this window
@@ -79,6 +78,84 @@ fn bucket_key(limit: &RateLimitConfig, kind: &str, bucket: i64) -> String {
     )
 }
 
+/// How much of the previous fixed bucket still lies inside the trailing window
+/// at unix second `now`: 1.0 on a bucket boundary, falling towards 0.0 as the
+/// current bucket fills.
+fn previous_bucket_weight(now: i64) -> f64 {
+    let elapsed = now.rem_euclid(WINDOW_SECS) as f64;
+    (WINDOW_SECS as f64 - elapsed) / WINDOW_SECS as f64
+}
+
+/// Admission as one server-side step: evaluate every applicable limit and,
+/// only when all of them pass, charge the request to every `rpm` bucket.
+///
+/// Redis runs a script to completion before serving any other command, so no
+/// request can read a counter between another request's read and its charge.
+/// That is what the old read (`MGET`), decide, then write (`INCR`) sequence
+/// lacked: 32 concurrent requests against `rpm = 1` could all read zero and all
+/// be admitted (#1484). Across replicas it is the same Redis, so the same
+/// holds.
+///
+/// Keys come four per limit — request bucket now and before, token bucket now
+/// and before — and arguments are the previous bucket's weight, the bucket TTL,
+/// then `rpm` and `tpm` per limit with `-1` for "not set". The reply is
+/// `{0, 0}` on admission, or the 1-based index of the first limit that refused
+/// and `1` for `rpm` or `2` for `tpm`. Limits are checked in scope-chain order
+/// and nothing is charged on a refusal, so most-restrictive-wins and "a request
+/// rejected by one scope costs no other scope anything" both hold.
+///
+/// **Replay.** The rule in [`crate::redis_conn`] is that writes are never
+/// replayed after a connection dies, because a spend increment could land
+/// twice. Admission opts in regardless. If the first attempt never ran (the
+/// usual case: the connection was already dead), the replay is exact. If it
+/// ran and only the reply was lost, the replay charges one extra request to a
+/// bucket that expires within two minutes, and may refuse where the lost reply
+/// would have admitted. Erring by one towards *stricter* for one window is the
+/// safer failure for a throughput control than the alternative, which is to
+/// admit the request unchecked and uncounted.
+///
+/// **Tokens.** `tpm` is read in the same step, so the decision sees one
+/// consistent snapshot, but tokens are only known after the response and are
+/// added by [`RateLimiter::record_tokens`]. Requests admitted concurrently can
+/// therefore still overshoot a `tpm` cap by their own usage — that is the
+/// documented reactive behaviour, not a race this script could close.
+static ADMIT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+local weight = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local limits = (#ARGV - 2) / 2
+
+local function windowed(current, previous)
+  local now = tonumber(redis.call('GET', current)) or 0
+  local before = tonumber(redis.call('GET', previous)) or 0
+  return now + before * weight
+end
+
+for i = 1, limits do
+  local rpm = tonumber(ARGV[1 + 2 * i])
+  local tpm = tonumber(ARGV[2 + 2 * i])
+  local k = (i - 1) * 4
+  if rpm >= 0 and windowed(KEYS[k + 1], KEYS[k + 2]) + 1 > rpm then
+    return {i, 1}
+  end
+  if tpm >= 0 and windowed(KEYS[k + 3], KEYS[k + 4]) >= tpm then
+    return {i, 2}
+  end
+end
+
+for i = 1, limits do
+  if tonumber(ARGV[1 + 2 * i]) >= 0 then
+    local key = KEYS[(i - 1) * 4 + 1]
+    redis.call('INCR', key)
+    redis.call('EXPIRE', key, ttl)
+  end
+end
+return {0, 0}
+"#,
+    )
+});
+
 /// Enforces throughput caps against Redis. Cheap to clone (shared connection).
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -102,27 +179,29 @@ impl RateLimiter {
         }
     }
 
-    /// Sliding-window estimate of a `kind` counter for `limit` at second `now`.
-    /// Reads the current and previous fixed buckets and weights the previous one
-    /// by the fraction still inside the trailing window.
-    fn windowed_count(curr: Option<u64>, prev: Option<u64>, now: i64) -> f64 {
-        let curr = curr.unwrap_or(0) as f64;
-        let prev = prev.unwrap_or(0) as f64;
-        // how much of the previous fixed window still lies within the trailing
-        // WINDOW_SECS: 1.0 at a bucket boundary, →0.0 as the current bucket fills
-        let elapsed = (now % WINDOW_SECS) as f64;
-        let prev_weight = (WINDOW_SECS as f64 - elapsed) / WINDOW_SECS as f64;
-        curr + prev * prev_weight
-    }
-
     /// Return the first applicable limit this request would breach, or `None`
     /// when admitted (also when disabled or Redis is down). On admission the
     /// request counter is incremented for every applicable `rpm` limit; token
     /// counts are recorded later via [`record_tokens`](Self::record_tokens).
+    ///
+    /// Evaluating the limits and charging the admitted request are one atomic
+    /// step on the Redis server (see [`ADMIT`]), so concurrent requests — from
+    /// one gateway or many — can never all see the same free slot (#1484).
     pub async fn check(
         &self,
         limits: &[RateLimitConfig],
         scope: &ScopeIds,
+    ) -> Option<RateLimitHit> {
+        self.check_at(limits, scope, Utc::now().timestamp()).await
+    }
+
+    /// [`check`](Self::check) at unix second `now`, so tests can place a
+    /// request anywhere in the window.
+    async fn check_at(
+        &self,
+        limits: &[RateLimitConfig],
+        scope: &ScopeIds,
+        now: i64,
     ) -> Option<RateLimitHit> {
         let redis = self.redis.as_ref()?;
         let applicable = scope.applicable_limits(limits);
@@ -130,84 +209,47 @@ impl RateLimiter {
             return None;
         }
         let mut conn = redis.get().await?;
-        let now = Utc::now().timestamp();
-        let retry_after = (WINDOW_SECS - (now % WINDOW_SECS)) as u64;
-        let bucket = now / WINDOW_SECS;
+        // the script is safe to replay on a fresh connection when the first
+        // one turned out dead: see the note on `ADMIT`
+        conn.replay_writes();
+        let bucket = now.div_euclid(WINDOW_SECS);
 
-        // collect all keys to mget in a single batch
-        let mut keys = Vec::with_capacity(applicable.len() * 4);
+        let mut invocation = ADMIT.prepare_invoke();
+        invocation
+            .arg(previous_bucket_weight(now))
+            .arg(BUCKET_TTL_SECS);
         for limit in &applicable {
-            if limit.rpm.is_some() {
-                keys.push(bucket_key(limit, "req", bucket));
-                keys.push(bucket_key(limit, "req", bucket - 1));
-            }
-            if limit.tpm.is_some() {
-                keys.push(bucket_key(limit, "tok", bucket));
-                keys.push(bucket_key(limit, "tok", bucket - 1));
-            }
+            invocation
+                .key(bucket_key(limit, "req", bucket))
+                .key(bucket_key(limit, "req", bucket - 1))
+                .key(bucket_key(limit, "tok", bucket))
+                .key(bucket_key(limit, "tok", bucket - 1))
+                .arg(limit.rpm.map_or(-1, i64::from))
+                .arg(limit.tpm.map_or(-1, i64::from));
         }
-
-        let mut values_iter = if keys.is_empty() {
-            vec![].into_iter()
-        } else {
-            let counts: redis::RedisResult<Vec<Option<u64>>> = conn.mget(&keys).await;
-            counts.unwrap_or_default().into_iter()
+        let verdict: (usize, u8) = match invocation.invoke_async(&mut conn).await {
+            Ok(verdict) => verdict,
+            Err(err) => {
+                tracing::warn!(error = %err, "rate-limit admission failed; failing open");
+                return None;
+            }
         };
 
-        // evaluate all caps before mutating any counter, so a request rejected
-        // on one limit is not counted against another
-        for limit in &applicable {
-            if let Some(rpm) = limit.rpm {
-                let curr = values_iter.next().flatten();
-                let prev = values_iter.next().flatten();
-                let est = Self::windowed_count(curr, prev, now);
-                if est + 1.0 > rpm as f64 {
-                    return Some(RateLimitHit {
-                        scope: limit.scope,
-                        id: limit.id.clone(),
-                        kind: "rpm",
-                        limit: rpm,
-                        retry_after,
-                    });
-                }
-            }
-            if let Some(tpm) = limit.tpm {
-                let curr = values_iter.next().flatten();
-                let prev = values_iter.next().flatten();
-                let est = Self::windowed_count(curr, prev, now);
-                // reactive: block once the trailing window is already at the cap
-                if est >= tpm as f64 {
-                    return Some(RateLimitHit {
-                        scope: limit.scope,
-                        id: limit.id.clone(),
-                        kind: "tpm",
-                        limit: tpm,
-                        retry_after,
-                    });
-                }
-            }
-        }
-
-        // admitted: count this request against every rpm-capped limit
-        let bucket = now / WINDOW_SECS;
-        let mut has_req = false;
-        let mut pipe = redis::pipe();
-        for limit in &applicable {
-            if limit.rpm.is_some() {
-                let key = bucket_key(limit, "req", bucket);
-                pipe.incr(&key, 1)
-                    .ignore()
-                    .expire(&key, BUCKET_TTL_SECS as i64)
-                    .ignore();
-                has_req = true;
-            }
-        }
-        if has_req {
-            if let Err(err) = pipe.query_async::<()>(&mut conn).await {
-                tracing::warn!(error = %err, "failed to record request rate-limit count");
-            }
-        }
-        None
+        let (index, kind) = verdict;
+        let limit = applicable.get(index.checked_sub(1)?)?;
+        let retry_after = (WINDOW_SECS - now.rem_euclid(WINDOW_SECS)) as u64;
+        let (kind, cap) = match kind {
+            1 => ("rpm", limit.rpm?),
+            2 => ("tpm", limit.tpm?),
+            _ => return None,
+        };
+        Some(RateLimitHit {
+            scope: limit.scope,
+            id: limit.id.clone(),
+            kind,
+            limit: cap,
+            retry_after,
+        })
     }
 
     /// Add `tokens` to the current window for every applicable `tpm` limit.
@@ -277,6 +319,8 @@ impl TokenRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::redis_conn::testing::{self, db};
+    use redis::AsyncCommands;
 
     fn limit(scope: BudgetScope, id: &str, rpm: Option<u32>, tpm: Option<u32>) -> RateLimitConfig {
         RateLimitConfig {
@@ -332,8 +376,6 @@ mod tests {
     /// recording tokens, rather than fail open until the gateway restarts.
     #[tokio::test]
     async fn an_existing_limiter_recovers_after_redis_drops_its_connection() {
-        use crate::redis_conn::testing::{self, db};
-
         let Some(url) = testing::url(db::RATE_LIMITS) else {
             return;
         };
@@ -375,5 +417,183 @@ mod tests {
         let tokens: Vec<Option<u64>> = conn.mget(&keys).await.unwrap();
         assert_eq!(tokens.into_iter().flatten().sum::<u64>(), 500);
         let _: () = conn.del(&keys).await.unwrap();
+    }
+
+    #[test]
+    fn the_previous_bucket_weighs_less_as_the_current_one_fills() {
+        assert_eq!(previous_bucket_weight(600), 1.0);
+        assert_eq!(previous_bucket_weight(630), 0.5);
+        assert!((previous_bucket_weight(659) - 1.0 / 60.0).abs() < 1e-9);
+    }
+
+    fn org_scope(prefix: &str) -> ScopeIds {
+        ScopeIds {
+            org: testing::unique(prefix),
+            ..Default::default()
+        }
+    }
+
+    async fn admitted_of(
+        limiters: &[RateLimiter],
+        limits: &[RateLimitConfig],
+        scope: &ScopeIds,
+        n: usize,
+    ) -> usize {
+        let limits = Arc::new(limits.to_vec());
+        let scope = Arc::new(scope.clone());
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..n {
+            let limiter = limiters[i % limiters.len()].clone();
+            let (limits, scope) = (limits.clone(), scope.clone());
+            tasks.spawn(async move { limiter.check(&limits, &scope).await.is_none() });
+        }
+        let mut admitted = 0;
+        while let Some(result) = tasks.join_next().await {
+            admitted += usize::from(result.unwrap());
+        }
+        admitted
+    }
+
+    async fn read_count(url: &str, key: &str) -> u64 {
+        let mut conn = redis::Client::open(url)
+            .unwrap()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let count: Option<u64> = conn.get(key).await.unwrap();
+        count.unwrap_or(0)
+    }
+
+    /// #1484: the reproduction from the issue. 64 requests racing one free
+    /// slot admit exactly one, and the counter says one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_requests_cannot_share_one_free_slot() {
+        let Some(url) = testing::url(db::RATE_ADMISSION) else {
+            return;
+        };
+        let scope = org_scope("race-org");
+        let limits = vec![limit(BudgetScope::Org, &scope.org, Some(1), None)];
+        let limiter = RateLimiter::new(&url);
+        assert_eq!(admitted_of(&[limiter], &limits, &scope, 64).await, 1);
+    }
+
+    /// The same across replicas: separate limiters with separate connections
+    /// share the counter, and a cap of five admits five, not five per replica.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn replicas_racing_each_other_admit_exactly_the_cap() {
+        let Some(url) = testing::url(db::RATE_ADMISSION) else {
+            return;
+        };
+        let scope = org_scope("replicas-org");
+        let limits = vec![limit(BudgetScope::Org, &scope.org, Some(5), None)];
+        let replicas = [
+            RateLimiter::new(&url),
+            RateLimiter::new(&url),
+            RateLimiter::new(&url),
+        ];
+        assert_eq!(admitted_of(&replicas, &limits, &scope, 96).await, 5);
+        let bucket = Utc::now().timestamp() / WINDOW_SECS;
+        let charged = read_count(&url, &bucket_key(&limits[0], "req", bucket)).await
+            + read_count(&url, &bucket_key(&limits[0], "req", bucket - 1)).await;
+        assert_eq!(charged, 5, "only admitted requests are counted");
+    }
+
+    /// Most-restrictive-wins, and a request refused by one scope costs no
+    /// other scope anything — including under concurrency.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn a_refusal_by_one_scope_charges_no_other_scope() {
+        let Some(url) = testing::url(db::RATE_ADMISSION) else {
+            return;
+        };
+        let scope = ScopeIds {
+            org: testing::unique("chain-org"),
+            key: testing::unique("chain-key"),
+            ..Default::default()
+        };
+        let limits = vec![
+            limit(BudgetScope::Org, &scope.org, Some(1_000), None),
+            limit(BudgetScope::Key, &scope.key, Some(2), None),
+        ];
+        let limiter = RateLimiter::new(&url);
+        assert_eq!(
+            admitted_of(std::slice::from_ref(&limiter), &limits, &scope, 40).await,
+            2
+        );
+        let hit = limiter
+            .check(&limits, &scope)
+            .await
+            .expect("the key is full");
+        assert_eq!(
+            (hit.scope, hit.kind, hit.limit),
+            (BudgetScope::Key, "rpm", 2)
+        );
+
+        let bucket = Utc::now().timestamp() / WINDOW_SECS;
+        let org_charged = read_count(&url, &bucket_key(&limits[0], "req", bucket)).await
+            + read_count(&url, &bucket_key(&limits[0], "req", bucket - 1)).await;
+        assert_eq!(
+            org_charged, 2,
+            "the org pays only for what the key admitted"
+        );
+    }
+
+    /// The sliding window at its edges: a full previous bucket counts in full
+    /// on the boundary and half way through counts for half. `check_at` pins
+    /// the clock; the buckets are real ones either side of now, so the keys
+    /// expire like any other.
+    #[tokio::test]
+    async fn the_previous_bucket_is_weighted_across_the_boundary() {
+        let Some(url) = testing::url(db::RATE_ADMISSION) else {
+            return;
+        };
+        let scope = org_scope("window-org");
+        let limits = vec![limit(BudgetScope::Org, &scope.org, Some(2), None)];
+        let limiter = RateLimiter::new(&url);
+        let start = (Utc::now().timestamp().div_euclid(WINDOW_SECS) - 1) * WINDOW_SECS;
+
+        // fill the previous bucket late in its minute
+        assert!(limiter
+            .check_at(&limits, &scope, start + 50)
+            .await
+            .is_none());
+        assert!(limiter
+            .check_at(&limits, &scope, start + 51)
+            .await
+            .is_none());
+        let refused = limiter.check_at(&limits, &scope, start + 52).await.unwrap();
+        assert_eq!(refused.retry_after, 8, "seconds left in that bucket");
+
+        // on the boundary the previous bucket weighs 1.0: 2 + 1 > 2
+        let next = start + WINDOW_SECS;
+        assert!(limiter.check_at(&limits, &scope, next).await.is_some());
+        // half way through it weighs 0.5: 2 * 0.5 + 1 <= 2, admitted
+        assert!(limiter.check_at(&limits, &scope, next + 30).await.is_none());
+        // and that admission now counts in the current bucket: 1 + 1 + 1 > 2
+        assert!(limiter.check_at(&limits, &scope, next + 30).await.is_some());
+    }
+
+    /// `tpm` is reactive: once recorded usage reaches the cap the next request
+    /// is refused, and a refusal on tokens charges no request slot.
+    #[tokio::test]
+    async fn a_full_token_window_refuses_without_charging_requests() {
+        let Some(url) = testing::url(db::RATE_ADMISSION) else {
+            return;
+        };
+        let scope = org_scope("tpm-org");
+        let limits = vec![limit(BudgetScope::Org, &scope.org, Some(100), Some(1_000))];
+        let limiter = RateLimiter::new(&url);
+        assert!(limiter.check(&limits, &scope).await.is_none());
+        limiter.record_tokens(&limits, &scope, 1_000).await;
+        for _ in 0..5 {
+            let hit = limiter
+                .check(&limits, &scope)
+                .await
+                .expect("tokens exhausted");
+            assert_eq!(hit.kind, "tpm");
+        }
+        let bucket = Utc::now().timestamp() / WINDOW_SECS;
+        let charged = read_count(&url, &bucket_key(&limits[0], "req", bucket)).await
+            + read_count(&url, &bucket_key(&limits[0], "req", bucket - 1)).await;
+        assert_eq!(charged, 1, "refused requests take no rpm slot");
     }
 }

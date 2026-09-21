@@ -55,16 +55,23 @@ connection only if it is read-only. The allowlist is `GET`, `MGET`, `LRANGE`,
 `EXISTS`, `TTL`, `PTTL` and `PING`. A pipeline is replayed only when every
 command in it is on that list.
 
-The admission reads are all on that list: the budget `MGET`, the rate-limit
-`MGET`, and the cache `GET`/`LRANGE`/`MGET`. So the first request after a drop
-is still checked against the counters, rather than failed open.
+The budget and cache admission reads are on that list: the budget `MGET` and
+the cache `GET`/`LRANGE`/`MGET`. So the first request after a drop is still
+checked against the counters, rather than failed open.
 
-Writes are never replayed. The client library reports "never sent" and "sent,
+Writes are not replayed by default. The client library reports "never sent" and "sent,
 reply lost" as the same `BrokenPipe`, and replaying an `INCRBYFLOAT` in the
 second case would charge one request's spend twice. A write that meets a dead
 connection is lost, the same way any write is lost during an outage. The
 write after it uses the new connection. In practice one request's spend or
 token count per consumer can go unrecorded at the moment a connection drops.
+
+A caller can opt a lease into replaying writes with `Lease::replay_writes`, but
+only after it has worked out what a double application costs. Rate-limit
+admission is the one caller that does. It is a single atomic script that both
+checks and charges, and replaying it can at worst over-count one request in a
+bucket that expires within two minutes. That is stricter, never looser. The
+trade-off is argued in [Rate limiting](rate-limiting.md#when-the-redis-connection-drops).
 
 The redis crate can report a closed socket before the next command is sent,
 through a synthesized `Disconnection` push. Rolter does not use it, because the
