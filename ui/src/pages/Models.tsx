@@ -42,7 +42,6 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -239,10 +238,6 @@ export default function Models() {
   });
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
-  // a db-backed model row is really its route, and forgetting a model outright
-  // is deployment-wide — two different capabilities on one row (#1258)
-  const routeUpdateGate = useGate("route:update");
-  const deleteGate = useGate("model:delete");
   const filtersActive = !!q || origin !== "all" || unpricedOnly || !!labelFilter;
   const clearFilters = () => {
     setSearch("");
@@ -441,24 +436,30 @@ export default function Models() {
             <div className="flex items-center justify-end gap-1.5">
               {/* a config-file model opens read-only, so only the
                   editable half of this control is gated (#1258) */}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t(
-                  r.origin === "config" ? "pages.models.viewAria" : "pages.models.editAria",
-                  { model: r.name },
-                )}
-                title={r.origin === "config" ? undefined : routeUpdateGate.reason}
-                disabled={r.origin === "db" && (!r.route || routeUpdateGate.denied)}
-                onClick={() =>
-                  r.origin === "config"
-                    ? setSheet({ mode: "view", configModel: r.entry })
-                    : r.route && setSheet({ mode: "edit", route: r.route })
-                }
-              >
-                {r.origin === "config" ? t("pages.models.view") : t("pages.models.edit")}
-              </Button>
+              {r.origin === "config" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.models.viewAria", { model: r.name })}
+                  onClick={() => setSheet({ mode: "view", configModel: r.entry })}
+                >
+                  {t("pages.models.view")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="route:update"
+                  control="model-edit"
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.models.editAria", { model: r.name })}
+                  disabled={!r.route}
+                  onClick={() => r.route && setSheet({ mode: "edit", route: r.route })}
+                >
+                  {t("pages.models.edit")}
+                </GatedButton>
+              )}
               <Button
                 size="sm"
                 variant="outline"
@@ -468,11 +469,13 @@ export default function Models() {
               >
                 <Tag className="h-3.5 w-3.5" />
               </Button>
+              {/* a db-backed row's edit is its route, but forgetting a model
+                  outright is deployment-wide: two capabilities on one row (#1258) */}
               {r.origin === "db" && (
                 <DeleteIconButton
+                  gate="model:delete"
+                  control="model-delete"
                   label={t("pages.models.deleteAria", { model: r.name })}
-                  title={deleteGate.reason ?? t("pages.models.deleteAria", { model: r.name })}
-                  disabled={deleteGate.denied}
                   pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
                   onClick={() => setDeleteTarget(r.entry)}
                 />

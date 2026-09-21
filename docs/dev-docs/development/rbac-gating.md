@@ -55,10 +55,19 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
 - **The per-row controls.** Every edit, delete, retire, revoke, rotate, drain
   and enabled toggle on a row is gated on the same row's
   `<resource>:update` / `<resource>:delete` (#1258). A `Button` becomes a
-  `GatedButton`, a `Switch` becomes a `GatedSwitch`, `RowIconButton` takes a
-  `gate` prop, and a hand-rolled `<button>` reads `useGate()` at the top of the
-  screen — one call for the whole list, because the answer does not vary by
-  row.
+  `GatedButton`, a `Switch` becomes a `GatedSwitch`, a `Combobox` becomes a
+  `GatedCombobox`, and `RowIconButton` and `DeleteIconButton` take a `gate`
+  prop. A screen never gates a control by reading `useGate()` itself and
+  passing `denied` down: the control is disabled either way, but only the
+  primitives record the reach for it as a `refused_click`, so a hand-gated
+  control is invisible to the struggle signal (#1759, see
+  [UX telemetry](ux-telemetry.md#why-a-refused-click-takes-a-wrapper)). A
+  control none of them fits gets a `gate` prop on the nearest primitive, the
+  way `DeleteIconButton` did.
+  `ui/src/components/gated-controls.test.ts` fails on a `useGate()` outside the
+  primitives unless the comment above it carries
+  `// use-gate-allow: <reason>` — for a genuine non-control use, such as
+  `GettingStarted` choosing between a link and a `GatedButton`.
 - **The settings cards that save a whole form.** A card whose only mutating
   control is one Save — the sign-in policy on the SSO screen is the model — is
   gated on that resource's `:update` (`org_auth_policy:update`). The fields

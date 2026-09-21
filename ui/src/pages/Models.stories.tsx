@@ -16,8 +16,11 @@ import {
   scoped,
   Toasted,
   expectToast,
+  expectUxEvent,
+  recordUxEvents,
 } from "./story-harness";
 import type { EffectiveModelDto, LabelRow, RouteRow, RouteTargetRow } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const MODELS: EffectiveModelDto[] = [
   { model: "gpt-4o", strategy: "weighted", targets: 2, source: "db" },
@@ -59,6 +62,7 @@ const meta = {
   title: "Screens/Models",
   component: Models,
   parameters: { layout: "fullscreen" },
+  beforeEach: recordUxEvents,
 } satisfies Meta<typeof Models>;
 
 export default meta;
@@ -226,6 +230,34 @@ export const RefusedToAViewer: Story = {
     await expectRefused(canvasElement, /add model/i);
     await expectRefused(canvasElement, "Edit gpt-4o");
     await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+  },
+};
+
+// the row's edit and delete used to be disabled from the screen's own
+// `useGate`, which disabled them silently: a viewer reaching for either left no
+// trace in the UX stream. Through the gated primitives each reach is recorded,
+// under a slug that says which of the two it was (#1759)
+export const RefusedRowRecordsTheReach: Story = {
+  render: () => (
+    <Harness fetchStub={oneRoutedModel} role="viewer">
+      <UxScreenProvider screen="models">
+        <Models />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+    await userEvent.click(canvas.getByRole("button", { name: "Delete model gpt-4o" }), {
+      pointerEventsCheck: 0,
+    });
+    await expectUxEvent("refused_click", "model-delete:model:delete");
+
+    await expectRefused(canvasElement, "Edit gpt-4o");
+    await userEvent.click(canvas.getByRole("button", { name: "Edit gpt-4o" }), {
+      pointerEventsCheck: 0,
+    });
+    await expectUxEvent("refused_click", "model-edit:route:update");
   },
 };
 

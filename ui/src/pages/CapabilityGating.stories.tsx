@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { useTranslation } from "react-i18next";
 
 import { AlertChannels } from "./Alerting";
@@ -9,6 +9,8 @@ import Providers from "./Providers";
 import Security from "./Security";
 import {
   expectForbidden,
+  expectUxEvent,
+  recordUxEvents,
   Harness,
   json,
   NEEDS_ADMIN,
@@ -27,6 +29,7 @@ import type {
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { visibleNav, type NavDef } from "@/lib/nav";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 // What each role sees of the same three screens (#1183).
 //
@@ -168,6 +171,7 @@ async function expectRowOffered(
 const meta = {
   title: "Screens/Capability gating",
   parameters: { layout: "fullscreen" },
+  beforeEach: recordUxEvents,
 } satisfies Meta;
 
 export default meta;
@@ -402,6 +406,32 @@ export const KeyRowsAsViewer: Story = {
       "Response cache policy for backend service",
       NEEDS_ADMIN,
     );
+  },
+};
+
+// Keys disabled these three from its own `useGate` until #1759, so a viewer
+// reaching for any of them left no trace. Each reach is now recorded, under
+// the slug that says which control it was
+export const KeyRowsRecordTheReach: Story = {
+  render: () => (
+    <Harness fetchStub={oneKey} role="viewer">
+      <UxScreenProvider screen="keys">
+        <Keys />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const reaches: [role: "button" | "combobox", name: string, target: string][] = [
+      ["button", "Edit key backend service", "key-edit:virtual_key:update"],
+      ["button", "Delete key backend service", "key-delete:virtual_key:delete"],
+      ["combobox", "Response cache policy for backend service", "key-cache:virtual_key:update"],
+    ];
+    for (const [role, name, target] of reaches) {
+      await expectRowRefused(canvasElement, role, name, NEEDS_ADMIN);
+      await userEvent.click(canvas.getByRole(role, { name }), { pointerEventsCheck: 0 });
+      await expectUxEvent("refused_click", target);
+    }
   },
 };
 

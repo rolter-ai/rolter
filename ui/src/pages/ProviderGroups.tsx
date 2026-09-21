@@ -36,7 +36,6 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -91,7 +90,6 @@ export default function ProviderGroups() {
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // a group is edited and deleted by the same admin that may add one (#1258)
-  const deleteGate = useGate("provider_group:delete");
 
   const q = search.trim().toLowerCase();
   const filtered = (groups.data ?? []).filter(
@@ -235,11 +233,9 @@ export default function ProviderGroups() {
                 <Tag className="h-3.5 w-3.5" />
               </Button>
               <DeleteIconButton
+                gate="provider_group:delete"
+                control="provider-group-delete"
                 label={t("pages.providerGroups.deleteOne", { name: group.name })}
-                title={
-                  deleteGate.reason ?? t("pages.providerGroups.deleteOne", { name: group.name })
-                }
-                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(group)}
               />
             </div>

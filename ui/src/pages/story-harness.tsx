@@ -328,11 +328,15 @@ export const NEEDS_MEMBER = en.rbac.needsRole.replace("{{role}}", en.shell.roles
  * awaited rather than asserted at once, because the effective-permissions
  * query is one request behind the first paint and the control renders enabled
  * until it lands.
+ *
+ * `role` is the ARIA role to look the control up by, as on `expectAllowed` —
+ * a gated picker is a `combobox` (#1759).
  */
 export async function expectRefused(
   canvasElement: HTMLElement,
   name: RegExp | string,
   reason: string = NEEDS_ADMIN,
+  role: string = "button",
 ): Promise<void> {
   const canvas = within(canvasElement);
   // the control is looked up again on every poll rather than captured once
@@ -352,7 +356,7 @@ export async function expectRefused(
     // every match, not the first: a screen repeats its primary action in the
     // empty state, and a gate that refused one of the two and not the other
     // would be a gate that leaks
-    const buttons = canvas.getAllByRole("button", { name });
+    const buttons = canvas.getAllByRole(role, { name });
     for (const button of buttons) {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", reason);

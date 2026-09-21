@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cable, FileCode2, FlaskConical, Trash2, Loader2 } from "lucide-react";
+import { Cable, FileCode2, FlaskConical, Loader2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
@@ -32,7 +33,6 @@ import {
   updateConnector,
   type ConnectorRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -195,7 +195,6 @@ function ConnectorsScreen() {
   };
   // a connector has no tenancy scope, so its row controls are the superadmin's
   // exactly as the add button is (#1258)
-  const deleteGate = useGate("connector:delete");
 
   return (
     <PageBody>
@@ -335,20 +334,14 @@ function ConnectorsScreen() {
                     {t("pages.connectors.checkedAt", { time: fmt.time(c.health_checked_at) })}
                   </span>
                 )}
-                <button
-                  type="button"
-                  title={deleteGate.reason ?? t("pages.connectors.deleteAria", { name: c.name })}
-                  aria-label={t("pages.connectors.deleteAria", { name: c.name })}
-                  disabled={deleteGate.denied || (remove.isPending && remove.variables === c.id)}
+                <DeleteIconButton
+                  gate="connector:delete"
+                  control="connector-delete"
+                  className="ml-auto"
+                  label={t("pages.connectors.deleteAria", { name: c.name })}
+                  pending={remove.isPending && remove.variables === c.id}
                   onClick={() => startDelete(c)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {remove.isPending && remove.variables === c.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                />
               </div>
             </div>
           );

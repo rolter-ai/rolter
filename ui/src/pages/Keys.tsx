@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Pencil, Plus, Trash2, Key } from "lucide-react";
+import { Check, Copy, Pencil, Plus, Key } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -27,6 +27,8 @@ import {
 } from "@/components/KeyAttributionFields";
 
 import { GatedButton } from "@/components/GatedButton";
+import { GatedCombobox } from "@/components/GatedCombobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -34,9 +36,15 @@ import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
-import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ListHeader, ListRow, ListTable, PageBody, SearchInput } from "@/components/screen";
+import {
+  ListHeader,
+  ListRow,
+  ListTable,
+  PageBody,
+  RowIconButton,
+  SearchInput,
+} from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,7 +74,6 @@ import {
   type ProviderRow,
   type VirtualKeyRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -82,10 +89,6 @@ export default function Keys() {
   const fmt = useFormat();
   const queryClient = useQueryClient();
   const scope = useScope();
-  // the row controls are the same capabilities the mint button is: editing a
-  // key, flipping it off and deleting it are all an admin's (#1258)
-  const updateGate = useGate("virtual_key:update");
-  const deleteGate = useGate("virtual_key:delete");
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -311,14 +314,15 @@ export default function Keys() {
               unit={unitName(key.business_unit_id)}
               customer={customerName(key.customer_id)}
             />
-            <Combobox
+            <GatedCombobox
+              gate="virtual_key:update"
+              control="key-cache"
               aria-label={t("pages.virtualKeys.cacheAria", {
                 name: key.name ?? key.key_prefix,
               })}
-              title={updateGate.reason}
               className="h-8 text-xs"
               value={cacheMode(key.cache_enabled)}
-              disabled={setCache.isPending || updateGate.denied}
+              disabled={setCache.isPending}
               onChange={(picked) => setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })}
               options={[
                 { value: "inherit", label: "inherit" },
@@ -339,35 +343,26 @@ export default function Keys() {
               }
             />
             <div className="flex items-center justify-self-end">
-              <button
-                type="button"
-                title={updateGate.reason ?? t("pages.virtualKeys.edit")}
+              <RowIconButton
+                gate="virtual_key:update"
+                control="key-edit"
+                title={t("pages.virtualKeys.edit")}
                 aria-label={t("pages.virtualKeys.editKey", {
                   name: key.name ?? key.key_prefix,
                 })}
-                disabled={scopeBlocked || updateGate.denied}
+                disabled={scopeBlocked}
                 onClick={() => setEditTarget(key)}
-                className="flex rounded-[6px] p-1 text-[color:var(--text-subtle)] transition-colors hover:bg-[color:var(--surface-hover)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                title={
-                  deleteGate.reason ??
-                  t("pages.virtualKeys.deleteKey", {
-                    name: key.name ?? key.key_prefix,
-                  })
-                }
-                aria-label={t("pages.virtualKeys.deleteKey", {
+              </RowIconButton>
+              <DeleteIconButton
+                gate="virtual_key:delete"
+                control="key-delete"
+                label={t("pages.virtualKeys.deleteKey", {
                   name: key.name ?? key.key_prefix,
                 })}
-                disabled={deleteGate.denied}
                 onClick={() => setDeleteTarget(key)}
-                className="flex rounded-[6px] p-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
           </ListRow>
         ))}

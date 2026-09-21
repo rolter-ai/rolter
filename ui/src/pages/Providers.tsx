@@ -24,7 +24,6 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { deleteProvider, fetchConfigProblems, fetchProviders, type ProviderRow } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -84,7 +83,6 @@ export default function Providers() {
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // editing and deleting a provider are an admin's, the same as adding one
   // (#1258)
-  const deleteGate = useGate("provider:delete");
 
   const q = search.trim().toLowerCase();
   const rows = (providers.data ?? []).filter(
@@ -199,9 +197,10 @@ export default function Providers() {
                 <Tag className="h-3.5 w-3.5" />
               </Button>
               <DeleteIconButton
+                gate="provider:delete"
+                control="provider-delete"
                 label={t("pages.providers.deleteOne", { name: provider.name })}
-                title={deleteGate.reason ?? t("pages.providers.deleteTitle")}
-                disabled={deleteGate.denied}
+                title={t("pages.providers.deleteTitle")}
                 onClick={() => setDeleteTarget(provider)}
               />
             </div>

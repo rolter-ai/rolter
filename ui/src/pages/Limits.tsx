@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gauge, Plus, Trash2, Loader2, Wallet } from "lucide-react";
+import { Gauge, Plus, Wallet } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -32,7 +33,6 @@ import {
   type RateLimitRow,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -392,7 +392,6 @@ function BudgetCard({
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
-  const deleteGate = useGate("budget:delete");
   // the label names the row: the grid is a wall of identical cards otherwise,
   // and "Delete budget" said three times tells a screen reader nothing (#1214)
   const label = t("pages.limits.deleteBudgetAria", {
@@ -417,20 +416,14 @@ function BudgetCard({
             })}
           </Badge>
         )}
-        <button
-          type="button"
-          title={deleteGate.reason ?? label}
-          aria-label={label}
-          disabled={deleting || deleteGate.denied}
+        <DeleteIconButton
+          gate="budget:delete"
+          control="budget-delete"
+          className="ml-auto"
+          label={label}
+          pending={deleting}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </button>
+        />
       </div>
       <div className="flex items-center gap-1.5">
         <Badge tone="neutral">{budget.scope_type}</Badge>
@@ -452,7 +445,6 @@ function RateLimitCard({
   deleting: boolean;
 }) {
   const { t } = useTranslation();
-  const deleteGate = useGate("rate_limit:delete");
   // the caps are the only thing that tells two limits on one scope apart, so
   // they are what the accessible name carries (#1214)
   const caps =
@@ -471,20 +463,14 @@ function RateLimitCard({
         {limit.rpm == null && limit.tpm == null && (
           <Badge tone="neutral">{t("pages.limits.noCaps")}</Badge>
         )}
-        <button
-          type="button"
-          title={deleteGate.reason ?? label}
-          aria-label={label}
-          disabled={deleting || deleteGate.denied}
+        <DeleteIconButton
+          gate="rate_limit:delete"
+          control="rate-limit-delete"
+          className="ml-auto"
+          label={label}
+          pending={deleting}
           onClick={onDelete}
-          className="ml-auto flex rounded-[6px] border border-[color:var(--border-subtle)] px-1.5 py-1 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </button>
+        />
       </div>
       <div className="flex items-center gap-1.5">
         <Badge tone="neutral">{limit.scope_type}</Badge>
