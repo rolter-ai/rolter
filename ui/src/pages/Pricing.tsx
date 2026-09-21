@@ -88,6 +88,7 @@ export default function Pricing() {
             create capability to gate on (#1258) */}
         <GatedButton
           gate="model_price:update"
+          control="price-new"
           className="ml-auto"
           onClick={() => {
             setEditTarget(null);
@@ -116,6 +117,7 @@ export default function Pricing() {
           actions={
             <GatedButton
               gate="model_price:update"
+              control="price-new-empty"
               onClick={() => {
                 setEditTarget(null);
                 setEditOpen(true);
@@ -167,6 +169,7 @@ export default function Pricing() {
             <div className="flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
               <GatedButton
                 gate="model_price:update"
+                control="price-edit"
                 size="sm"
                 variant="outline"
                 aria-label={t("pages.pricing.editAria", { model: price.model })}

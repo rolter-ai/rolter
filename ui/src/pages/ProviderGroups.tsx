@@ -121,6 +121,7 @@ export default function ProviderGroups() {
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <GatedButton
           gate="provider_group:create"
+          control="provider-group-new"
           className="ml-auto"
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.orgId}
@@ -215,6 +216,7 @@ export default function ProviderGroups() {
             <div className="flex items-center justify-end gap-1.5">
               <GatedButton
                 gate="provider_group:update"
+                control="provider-group-edit"
                 size="sm"
                 variant="outline"
                 className="h-[30px]"
@@ -273,6 +275,7 @@ export default function ProviderGroups() {
               ) : (
                 <GatedButton
                   gate="provider_group:create"
+                  control="provider-group-new-empty"
                   disabled={scopeBlocked || !scope.orgId}
                   onClick={() => setSheet({ mode: "add" })}
                 >

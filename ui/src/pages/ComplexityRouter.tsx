@@ -213,6 +213,7 @@ export default function ComplexityRouter() {
                   is the route's own update capability (#1258) */}
               <GatedButton
                 gate="route:update"
+                control="complexity-policy-edit"
                 size="sm"
                 variant="outline"
                 aria-label={t("pages.complexityRouter.editPolicyAria", {

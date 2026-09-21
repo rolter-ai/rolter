@@ -251,6 +251,7 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
         )}
         <GatedButton
           gate="org_auth_policy:update"
+          control="sso-policy-save"
           className="ml-auto"
           size="sm"
           disabled={!dirty || bothOff || save.isPending}
@@ -406,6 +407,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
               <RowIconButton
                 danger
                 gate="sso_group_mapping:delete"
+                control="sso-mapping-remove"
                 title={t("pages.sso.mappings.remove")}
                 aria-label={t("pages.sso.mappings.removeNamed", {
                   group: mapping.group_name,
@@ -444,6 +446,7 @@ function GroupMappings({ provider }: { provider: SsoProviderRow }) {
         />
         <GatedButton
           gate="sso_group_mapping:create"
+          control="sso-mapping-add"
           size="sm"
           variant="outline"
           // every provider card carries one of these, so the label names which
@@ -569,6 +572,7 @@ function ProviderCard({
           aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
         />
         <RowIconButton
+          control="sso-provider-edit"
           title={t("pages.sso.providers.edit")}
           aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
           onClick={() => onEdit(provider)}
@@ -582,6 +586,7 @@ function ProviderCard({
         {provider.has_client_secret && (
           <RowIconButton
             gate="sso_provider:update"
+            control="sso-provider-secret-clear"
             title={t("pages.sso.providers.clearSecret")}
             aria-label={t("pages.sso.providers.clearSecretNamed", {
               name: provider.name,
@@ -599,6 +604,7 @@ function ProviderCard({
         <RowIconButton
           danger
           gate="sso_provider:delete"
+          control="sso-provider-delete"
           title={t("pages.sso.providers.delete")}
           aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
           disabled={deleting}
@@ -1006,6 +1012,7 @@ export default function SingleSignOn() {
         </span>
         <GatedButton
           gate="sso_provider:create"
+          control="sso-provider-new"
           className="ml-auto"
           disabled={!canManage}
           onClick={openCreate}
@@ -1031,7 +1038,12 @@ export default function SingleSignOn() {
             title={t("pages.sso.empty.title")}
             description={t("pages.sso.empty.body")}
             actions={
-              <GatedButton gate="sso_provider:create" disabled={!canManage} onClick={openCreate}>
+              <GatedButton
+                gate="sso_provider:create"
+                control="sso-provider-new-empty"
+                disabled={!canManage}
+                onClick={openCreate}
+              >
                 <Plus className="h-4 w-4" aria-hidden />
                 {t("pages.sso.providers.add")}
               </GatedButton>

@@ -240,8 +240,11 @@ export function RowIconButton({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   danger?: boolean;
   gate?: Capability;
-  /** names this control in the UX stream when it is refused (#1731) */
-  control?: string;
+  /**
+   * names this control in the UX stream when it is refused (#1731) — a stable
+   * slug, required so a new row action cannot forget it (#1750)
+   */
+  control: string;
 }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);

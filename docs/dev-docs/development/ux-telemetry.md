@@ -123,9 +123,46 @@ nothing is deduplicated: reaching for the same refused control four times is
 the signal, not noise.
 
 `GatedButton`, `GatedSwitch` and `RowIconButton` are wired, which is every
-shared gated control. Each takes an optional `control` — a stable slug such as
-`provider-new`, never the label — and falls back to the control's kind, so an
-un-named call site still records the capability and the screen.
+shared gated control.
+
+### Naming the control
+
+Every event already carries its `screen` and the capability that refused it,
+which says _which permission boundary_ is in the way. The `control` slug is the
+part that says which of the refused controls on that screen was reached for —
+on Users, the difference between "the role grant is gated" and "deactivating is
+gated" (#1750). So each of the three components takes a **required** `control`,
+the way `EditorSheet` requires `name`: a required prop is what stopped form
+instrumentation drifting, and it does the same here.
+
+The slug is
+
+- **kebab-case `<noun>-<verb>`** — `provider-new`, `alert-rule-toggle`,
+  `sso-provider-secret-clear`. The noun is the thing the control acts on as the
+  screen names it, the verb is what the control does to it.
+- **a string literal at the call site** — never the button's label, never a
+  translation, never anything read off the row it sits in. A label changes
+  with the locale and a row's name is the operator's content; either one turns
+  the target from a key back into free text. `sanitizeKey` drops a control key
+  that is not a plausible slug, but the rule is that it never gets that far.
+- **unique within its file**, so no two controls share a target. The empty
+  state's call to action is a different control from the header button that
+  does the same thing, and says so with an `-empty` suffix —
+  `provider-new-empty` — because "people reach for the empty-state button"
+  is itself worth knowing.
+- **stable across copy changes.** A slug is a series key: renaming one splits
+  its history in two. A control whose label flips with row state (retire and
+  restore, drain and return) keeps one slug, named for the action it gates.
+
+A slug does not repeat the resource for its own sake — the capability travels
+beside it, so `attribution-new` on Cost Attribution resolves to
+`attribution-new:business_unit:create` or `…:customer:create` by itself.
+
+`ui/src/components/gated-controls.test.ts` enforces the shape from the source:
+every shipped call site passes a literal, kebab-case slug, and no file repeats
+one. The component still falls back to its kind — `button`, `switch`,
+`row-action` — for anything that reaches it untyped, so such a call site is
+degraded rather than silent: it still records the capability and the screen.
 
 ### What a refused row carries, and why it is on by default
 

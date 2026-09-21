@@ -145,6 +145,7 @@ function ClusterScreen() {
                 "Drain" is N controls a screen reader cannot tell apart (#1214) */}
             <GatedButton
               gate="cluster_node:update"
+              control="node-drain"
               variant="outline"
               size="sm"
               aria-label={t(draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria", {
@@ -162,6 +163,7 @@ function ClusterScreen() {
                 forgetting is only meaningful once it has gone stale */}
             <GatedButton
               gate="cluster_node:delete"
+              control="node-forget"
               variant="ghost"
               size="sm"
               aria-label={t("pages.cluster.forgetAria", { node: row.id })}

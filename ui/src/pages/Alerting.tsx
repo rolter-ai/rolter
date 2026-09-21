@@ -110,6 +110,7 @@ function AlertChannelsScreen() {
         </span>
         <GatedButton
           gate="alert_channel:create"
+          control="alert-channel-new"
           className="ml-auto"
           onClick={() => setAddOpen(true)}
         >
@@ -132,7 +133,11 @@ function AlertChannelsScreen() {
           title={t("pages.alerting.channels.emptyTitle")}
           description={t("pages.alerting.channels.emptyBody")}
           actions={
-            <GatedButton gate="alert_channel:create" onClick={() => setAddOpen(true)}>
+            <GatedButton
+              gate="alert_channel:create"
+              control="alert-channel-new-empty"
+              onClick={() => setAddOpen(true)}
+            >
               {t("pages.alerting.channels.add")}
             </GatedButton>
           }
@@ -154,6 +159,7 @@ function AlertChannelsScreen() {
               </div>
               <GatedSwitch
                 gate="alert_channel:update"
+                control="alert-channel-toggle"
                 checked={c.enabled}
                 disabled={toggle.isPending}
                 aria-label={t("pages.alerting.channels.toggleAria", { name: c.name })}
@@ -392,7 +398,12 @@ function AlertRulesScreen() {
         <span className="text-sm text-muted-foreground">
           {t("pages.alerting.ruleSummary", { count: rules.data?.length ?? 0 })}
         </span>
-        <GatedButton gate="alert_rule:create" className="ml-auto" onClick={() => setAddOpen(true)}>
+        <GatedButton
+          gate="alert_rule:create"
+          control="alert-rule-new"
+          className="ml-auto"
+          onClick={() => setAddOpen(true)}
+        >
           + Add rule
         </GatedButton>
       </Toolbar>
@@ -416,7 +427,11 @@ function AlertRulesScreen() {
               : t("pages.alerting.rules.emptyBody")
           }
           actions={
-            <GatedButton gate="alert_rule:create" onClick={() => setAddOpen(true)}>
+            <GatedButton
+              gate="alert_rule:create"
+              control="alert-rule-new-empty"
+              onClick={() => setAddOpen(true)}
+            >
               {t("pages.alerting.rules.add")}
             </GatedButton>
           }
@@ -438,6 +453,7 @@ function AlertRulesScreen() {
                 </Pill>
                 <GatedSwitch
                   gate="alert_rule:update"
+                  control="alert-rule-toggle"
                   className="ml-auto"
                   checked={r.enabled}
                   disabled={toggle.isPending}
@@ -480,6 +496,7 @@ function AlertRulesScreen() {
                     capability the control plane guards it with */}
                 <GatedButton
                   gate="alert_history:create"
+                  control="alert-rule-evaluate"
                   size="sm"
                   variant="outline"
                   aria-label={t("pages.alerting.rules.evaluateAria", { name: r.name })}

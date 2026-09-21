@@ -219,6 +219,7 @@ export default function Keys() {
           </Button>
           <GatedButton
             gate="virtual_key:create"
+            control="key-new"
             onClick={() => setAddOpen(true)}
             disabled={scopeBlocked || !scope.projectId}
           >
@@ -327,6 +328,7 @@ export default function Keys() {
             />
             <GatedSwitch
               gate="virtual_key:update"
+              control="key-toggle"
               checked={!key.disabled}
               disabled={toggleDisabled.isPending}
               aria-label={t("pages.virtualKeys.toggleAria", {
@@ -385,6 +387,7 @@ export default function Keys() {
               ) : (
                 <GatedButton
                   gate="virtual_key:create"
+                  control="key-new-empty"
                   disabled={scopeBlocked || !scope.projectId}
                   onClick={() => setAddOpen(true)}
                 >

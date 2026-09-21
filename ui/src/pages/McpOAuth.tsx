@@ -273,6 +273,7 @@ export function OAuthGrants() {
                       {g.active ? "ACTIVE" : "REVOKED"}
                     </Badge>
                     <RowIconButton
+                      control="oauth-grant-revoke"
                       danger
                       title={
                         g.active
@@ -502,6 +503,7 @@ export function AuthSessions() {
                         stored, and a revoked session has nothing to renew */}
                     <RowIconButton
                       gate="mcp_oauth_session:update"
+                      control="oauth-session-refresh"
                       title={t("pages.mcpOAuth.refresh.action", { server })}
                       aria-label={t("pages.mcpOAuth.sessions.refreshAria", {
                         owner,
@@ -521,6 +523,7 @@ export function AuthSessions() {
                       )}
                     </RowIconButton>
                     <RowIconButton
+                      control="oauth-session-revoke"
                       danger
                       title={
                         state === "revoked"
