@@ -186,7 +186,7 @@ export default function RoutingRules() {
                 <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
                   <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-[0.6875rem] uppercase text-[color:var(--text-subtle)]">
-                    disabled
+                    {t("pages.routing.disabledBadge")}
                   </span>
                 )}
               </div>

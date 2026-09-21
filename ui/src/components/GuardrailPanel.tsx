@@ -1,5 +1,6 @@
 import type * as React from "react";
 import { ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -53,6 +54,7 @@ export function PolicyCard({
   details: React.ReactNode;
   actions: React.ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <article className="flex min-h-[172px] flex-col rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-4 transition-colors hover:border-[color:var(--border-default)]">
       <div className="flex items-start justify-between gap-3">
@@ -60,7 +62,7 @@ export function PolicyCard({
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-sm font-semibold">{title}</h2>
             <Badge tone={enabled ? "success" : "neutral"} dot>
-              {enabled ? "enforced" : "paused"}
+              {enabled ? t("guardrailPanel.enforced") : t("guardrailPanel.paused")}
             </Badge>
           </div>
           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{description}</p>

@@ -393,7 +393,7 @@ export function ProviderSheet({
             value={draft.apiKey}
             onChange={(e) => set({ apiKey: e.target.value })}
             autoComplete="off"
-            placeholder={mode === "edit" ? "unchanged" : undefined}
+            placeholder={mode === "edit" ? t("providerSheet.fields.apiKeyUnchanged") : undefined}
           />
         </Field>
 
