@@ -121,6 +121,7 @@ export default function RoutingRules() {
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <GatedButton
           gate="route:create"
+          control="route-new"
           className="ml-auto"
           onClick={() => setAddOpen(true)}
           disabled={!scope.projectId}
@@ -154,6 +155,7 @@ export default function RoutingRules() {
             ) : (
               <GatedButton
                 gate="route:create"
+                control="route-new-empty"
                 disabled={!scope.projectId}
                 onClick={() => setAddOpen(true)}
               >

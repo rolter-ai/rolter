@@ -14,7 +14,8 @@ import { useRefusedClick } from "@/lib/ux-react";
  * why — and unlike `Button`, the switch's disabled styling does not set
  * `pointer-events-none`, so the native tooltip survives without help.
  *
- * `control` names the toggle in the UX stream when it is refused (#1731).
+ * `control` names the toggle in the UX stream when it is refused (#1731) —
+ * required for the same reason it is on `GatedButton` (#1750).
  */
 export function GatedSwitch({
   gate,
@@ -22,7 +23,7 @@ export function GatedSwitch({
   disabled,
   title,
   ...props
-}: SwitchProps & { gate: Capability; control?: string }) {
+}: SwitchProps & { gate: Capability; control: string }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
   return (

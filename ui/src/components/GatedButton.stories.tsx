@@ -29,7 +29,7 @@ const meta = {
   parameters: { layout: "centered" },
   // every story supplies its own `render`; these are the args the docs page
   // introspects, and `gate` is required so they cannot be left off
-  args: { gate: "provider:create", children: "Add provider" },
+  args: { gate: "provider:create", control: "provider-new", children: "Add provider" },
   beforeEach: recordUxEvents,
 } satisfies Meta<typeof GatedButton>;
 
@@ -39,7 +39,9 @@ type Story = StoryObj<typeof meta>;
 export const Allowed: Story = {
   render: () => (
     <Harness fetchStub={stub} role="admin">
-      <GatedButton gate="provider:create">Add provider</GatedButton>
+      <GatedButton gate="provider:create" control="provider-new">
+        Add provider
+      </GatedButton>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -53,7 +55,9 @@ export const Allowed: Story = {
 export const Refused: Story = {
   render: () => (
     <Harness fetchStub={stub} role="viewer">
-      <GatedButton gate="provider:create">Add provider</GatedButton>
+      <GatedButton gate="provider:create" control="provider-new">
+        Add provider
+      </GatedButton>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -67,7 +71,9 @@ export const Refused: Story = {
 export const RefusedToEveryone: Story = {
   render: () => (
     <Harness fetchStub={stub} role="admin">
-      <GatedButton gate="feature_flags:update">Save changes</GatedButton>
+      <GatedButton gate="feature_flags:update" control="flags-save">
+        Save changes
+      </GatedButton>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -84,7 +90,9 @@ export const Unknown: Story = {
     // no role, so no provider and no answer: exactly what a control plane a
     // version behind, or one that never answers, leaves the dashboard with
     <Harness fetchStub={stub}>
-      <GatedButton gate="provider:create">Add provider</GatedButton>
+      <GatedButton gate="provider:create" control="provider-new">
+        Add provider
+      </GatedButton>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -97,7 +105,7 @@ export const Unknown: Story = {
 export const AlreadyDisabled: Story = {
   render: () => (
     <Harness fetchStub={stub} role="admin">
-      <GatedButton gate="provider:create" disabled>
+      <GatedButton gate="provider:create" control="provider-new" disabled>
         Add provider
       </GatedButton>
     </Harness>
@@ -117,7 +125,11 @@ export const RefusedSwallowsTheClick: Story = {
     return (
       <Harness fetchStub={stub} role="viewer">
         <div className="flex flex-col items-center gap-2">
-          <GatedButton gate="provider:create" onClick={() => setClicks((n) => n + 1)}>
+          <GatedButton
+            gate="provider:create"
+            control="provider-new"
+            onClick={() => setClicks((n) => n + 1)}
+          >
             Add provider
           </GatedButton>
           <span data-testid="clicks">{clicks}</span>

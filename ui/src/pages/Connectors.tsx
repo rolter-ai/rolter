@@ -216,7 +216,11 @@ function ConnectorsScreen() {
           <FileCode2 className="h-4 w-4" aria-hidden />
           {t("pages.connectors.collectorConfig.open")}
         </Button>
-        <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>
+        <GatedButton
+          gate="connector:create"
+          control="connector-new"
+          onClick={() => setAddOpen(true)}
+        >
           + {t("pages.connectors.add")}
         </GatedButton>
       </Toolbar>
@@ -239,7 +243,11 @@ function ConnectorsScreen() {
           title={t("pages.connectors.emptyTitle")}
           description={t("pages.connectors.emptyBody")}
           actions={
-            <GatedButton gate="connector:create" onClick={() => setAddOpen(true)}>
+            <GatedButton
+              gate="connector:create"
+              control="connector-new-empty"
+              onClick={() => setAddOpen(true)}
+            >
               {t("pages.connectors.emptyAction")}
             </GatedButton>
           }
@@ -263,6 +271,7 @@ function ConnectorsScreen() {
                 </div>
                 <GatedSwitch
                   gate="connector:update"
+                  control="connector-toggle"
                   checked={c.enabled}
                   disabled={toggle.isPending}
                   aria-label={t("pages.connectors.toggleAria", { name: c.name })}
@@ -307,6 +316,7 @@ function ConnectorsScreen() {
                     control plane guards it as an update */}
                 <GatedButton
                   gate="connector:update"
+                  control="connector-test"
                   size="sm"
                   variant="outline"
                   aria-label={t("pages.connectors.testAria", { name: c.name })}

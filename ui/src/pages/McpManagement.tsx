@@ -659,7 +659,11 @@ export function McpCatalog() {
       <PageLead
         eyebrow={t("pages.mcpCatalog.eyebrow")}
         action={
-          <GatedButton gate="mcp_server:create" onClick={() => setEditing(null)}>
+          <GatedButton
+            gate="mcp_server:create"
+            control="mcp-server-new"
+            onClick={() => setEditing(null)}
+          >
             <Plus className="h-4 w-4" aria-hidden />
             {t("pages.mcpCatalog.registerServer")}
           </GatedButton>
@@ -690,7 +694,11 @@ export function McpCatalog() {
           title={t("pages.mcpCatalog.emptyTitle")}
           description={t("pages.mcpCatalog.emptyBody")}
           actions={
-            <GatedButton gate="mcp_server:create" onClick={() => setEditing(null)}>
+            <GatedButton
+              gate="mcp_server:create"
+              control="mcp-server-new-empty"
+              onClick={() => setEditing(null)}
+            >
               {t("pages.mcpCatalog.registerServer")}
             </GatedButton>
           }
@@ -719,6 +727,7 @@ export function McpCatalog() {
                 </div>
                 <GatedSwitch
                   gate="mcp_server:update"
+                  control="mcp-server-toggle"
                   checked={server.enabled}
                   aria-label={t("pages.mcpCatalog.servers.toggleAria", { name: server.name })}
                   onCheckedChange={() => toggle.mutate(server)}
@@ -737,6 +746,7 @@ export function McpCatalog() {
                   <ConnectButton server={server} />
                   <GatedButton
                     gate="mcp_server:delete"
+                    control="mcp-server-delete"
                     variant="ghost"
                     aria-label={t("pages.mcpCatalog.servers.deleteAria", { name: server.name })}
                     onClick={() => setDeleting(server)}
@@ -745,6 +755,7 @@ export function McpCatalog() {
                   </GatedButton>
                   <GatedButton
                     gate="mcp_server:update"
+                    control="mcp-server-configure"
                     variant="outline"
                     aria-label={t("pages.mcpCatalog.servers.configureAria", { name: server.name })}
                     onClick={() => setEditing(server)}
@@ -937,6 +948,7 @@ function CredentialSection({
         {stored && (
           <GatedButton
             gate="mcp_server:update"
+            control="mcp-server-credential-clear"
             type="button"
             variant="outline"
             size="sm"
@@ -1518,6 +1530,7 @@ export function ToolGroups() {
               <div className="mt-4 flex justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="mcp_tool_group:delete"
+                  control="tool-group-delete"
                   variant="ghost"
                   aria-label={t("pages.mcpCatalog.groups.deleteAria", { name: group.name })}
                   disabled={remove.isPending && remove.variables === group.id}
@@ -1530,6 +1543,7 @@ export function ToolGroups() {
                 </GatedButton>
                 <GatedButton
                   gate="mcp_tool_group:update"
+                  control="tool-group-configure"
                   variant="outline"
                   aria-label={t("pages.mcpCatalog.groups.configureAria", { name: group.name })}
                   onClick={() => setEditing(group)}

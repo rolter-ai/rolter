@@ -18,9 +18,11 @@ import { cn } from "@/lib/utils";
  * "disabled" on its own is the same non-answer the 403 was.
  *
  * `control` names the button in the UX stream when it is refused (#1731) — a
- * stable slug such as `provider-new`, never the label. It falls back to
- * `button`, so an un-named call site still records the capability that refused
- * it and the screen it happened on.
+ * stable slug such as `provider-new`, never the label and never anything read
+ * off a row (docs/dev-docs/development/ux-telemetry.md). It is required, the
+ * way `EditorSheet`'s `name` is, so a new call site cannot forget it (#1750);
+ * the `button` fallback stays for anything that reaches it untyped, so that
+ * call site still records the capability that refused it and the screen.
  */
 export function GatedButton({
   gate,
@@ -30,7 +32,7 @@ export function GatedButton({
   title,
   style,
   ...props
-}: ButtonProps & { gate: Capability; control?: string }) {
+}: ButtonProps & { gate: Capability; control: string }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
 

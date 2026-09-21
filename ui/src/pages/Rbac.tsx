@@ -568,6 +568,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
         <p className="max-w-2xl text-sm text-muted-foreground">{t("pages.rbac.custom.intro")}</p>
         <GatedButton
           gate="custom_role:create"
+          control="role-new"
           className="ml-auto"
           disabled={!orgId}
           onClick={startCreate}
@@ -591,7 +592,12 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           title={t("pages.rbac.custom.emptyTitle")}
           description={t("pages.rbac.custom.emptyBody")}
           actions={
-            <GatedButton gate="custom_role:create" disabled={!orgId} onClick={startCreate}>
+            <GatedButton
+              gate="custom_role:create"
+              control="role-new-empty"
+              disabled={!orgId}
+              onClick={startCreate}
+            >
               {t("pages.rbac.custom.emptyAction")}
             </GatedButton>
           }
@@ -647,6 +653,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
               <div className="flex flex-none items-center gap-1">
                 <RowIconButton
                   gate="custom_role:update"
+                  control="role-edit"
                   aria-label={t("pages.rbac.custom.editRole", { name: role.name })}
                   title={t("pages.rbac.custom.editRole", { name: role.name })}
                   onClick={() => startEdit(role)}
@@ -656,6 +663,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
                 <RowIconButton
                   danger
                   gate="custom_role:delete"
+                  control="role-delete"
                   aria-label={t("pages.rbac.custom.deleteRole", { name: role.name })}
                   title={t("pages.rbac.custom.deleteRole", { name: role.name })}
                   onClick={() => startDelete(role)}

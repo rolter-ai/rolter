@@ -418,7 +418,11 @@ export default function PromptRepository() {
               title={t("pages.promptRepo.emptyTitle")}
               description={t("pages.promptRepo.emptyDescription")}
               actions={
-                <GatedButton gate="prompt_template:create" onClick={() => setCreateOpen(true)}>
+                <GatedButton
+                  gate="prompt_template:create"
+                  control="prompt-new-empty"
+                  onClick={() => setCreateOpen(true)}
+                >
                   {t("pages.promptRepo.createTemplate")}
                 </GatedButton>
               }
@@ -535,6 +539,7 @@ function TemplateIndex({
         </div>
         <GatedButton
           gate="prompt_template:create"
+          control="prompt-new"
           variant="ghost"
           onClick={onCreate}
           aria-label={t("pages.promptRepo.createTemplate")}
@@ -654,6 +659,7 @@ function PromptWorkbench({
             {baseVersion && !selectedPublished && (
               <GatedButton
                 gate="prompt_template:update"
+                control="prompt-publish"
                 variant="outline"
                 disabled={pending}
                 onClick={() => onPublish(baseVersion.version)}
@@ -664,6 +670,7 @@ function PromptWorkbench({
             )}
             <GatedButton
               gate="prompt_template:update"
+              control="prompt-save-draft"
               disabled={pending || !!problem}
               onClick={onSave}
             >
@@ -672,6 +679,7 @@ function PromptWorkbench({
             </GatedButton>
             <GatedButton
               gate="prompt_template:update"
+              control="prompt-rename"
               variant="ghost"
               aria-label={t("pages.promptRepo.renameAction", { name: template.name })}
               onClick={onRename}
@@ -680,6 +688,7 @@ function PromptWorkbench({
             </GatedButton>
             <GatedButton
               gate="prompt_template:delete"
+              control="prompt-delete"
               variant="ghost"
               aria-label={t("pages.promptRepo.deleteAction", { name: template.name })}
               onClick={onDelete}
@@ -1281,6 +1290,7 @@ export function VersionRail({
                 {!published && template.published_version && (
                   <GatedButton
                     gate="prompt_template:update"
+                    control="prompt-rollback"
                     variant="ghost"
                     onClick={() => onRollback(version.version)}
                   >

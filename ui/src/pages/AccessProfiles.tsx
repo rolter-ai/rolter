@@ -151,6 +151,7 @@ function ProfileCard({
         <div className="flex flex-none items-center gap-1">
           <GatedButton
             gate="access_profile:update"
+            control="access-profile-edit"
             variant="ghost"
             size="icon"
             title={t("pages.accessProfiles.editProfile", { name: profile.name })}
@@ -162,6 +163,7 @@ function ProfileCard({
           </GatedButton>
           <GatedButton
             gate="access_profile:delete"
+            control="access-profile-delete"
             variant="ghost"
             size="icon"
             title={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
@@ -372,6 +374,7 @@ export default function AccessProfiles() {
         </span>
         <GatedButton
           gate="access_profile:create"
+          control="access-profile-new"
           className="ml-auto"
           disabled={!orgId}
           onClick={startCreate}
@@ -395,7 +398,12 @@ export default function AccessProfiles() {
           description={t("pages.accessProfiles.emptyBody")}
           uxTarget="access-profiles"
           actions={
-            <GatedButton gate="access_profile:create" disabled={!orgId} onClick={startCreate}>
+            <GatedButton
+              gate="access_profile:create"
+              control="access-profile-new-empty"
+              disabled={!orgId}
+              onClick={startCreate}
+            >
               {t("pages.accessProfiles.emptyAction")}
             </GatedButton>
           }

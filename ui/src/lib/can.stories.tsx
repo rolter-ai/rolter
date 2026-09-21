@@ -36,7 +36,11 @@ function chain(depth: "org" | "team"): FetchStub {
 }
 
 function Gated() {
-  return <GatedButton gate="team:create">New team</GatedButton>;
+  return (
+    <GatedButton gate="team:create" control="team-new">
+      New team
+    </GatedButton>
+  );
 }
 
 const meta = {

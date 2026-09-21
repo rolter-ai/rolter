@@ -269,6 +269,7 @@ export default function Models() {
             button takes is the route's (#1258) */}
         <GatedButton
           gate="route:create"
+          control="model-new"
           className="ml-auto"
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.projectId}
@@ -497,6 +498,7 @@ export default function Models() {
               ) : (
                 <GatedButton
                   gate="route:create"
+                  control="model-new-empty"
                   disabled={scopeBlocked || !scope.projectId}
                   onClick={() => setSheet({ mode: "add" })}
                 >

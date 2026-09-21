@@ -143,7 +143,7 @@ export default function Plugins() {
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
         </div>
-        <GatedButton gate="plugin:create" onClick={() => setEditing(null)}>
+        <GatedButton gate="plugin:create" control="plugin-install" onClick={() => setEditing(null)}>
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.plugins.install")}
         </GatedButton>
       </header>
@@ -163,7 +163,11 @@ export default function Plugins() {
           title={t("pages.plugins.emptyTitle")}
           description={t("pages.plugins.emptyDescription")}
           actions={
-            <GatedButton gate="plugin:create" onClick={() => setEditing(null)}>
+            <GatedButton
+              gate="plugin:create"
+              control="plugin-install-empty"
+              onClick={() => setEditing(null)}
+            >
               {t("pages.plugins.installFirst")}
             </GatedButton>
           }
@@ -314,6 +318,7 @@ function StageLane({
                 </div>
                 <GatedSwitch
                   gate="plugin:update"
+                  control="plugin-toggle"
                   checked={plugin.enabled}
                   disabled={togglingId === plugin.id || removingId === plugin.id}
                   aria-label={t("pages.plugins.toggleAria", {
@@ -341,6 +346,7 @@ function StageLane({
               <div className="mt-4 flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="plugin:delete"
+                  control="plugin-delete"
                   variant="ghost"
                   aria-label={t("pages.plugins.deleteAria", { name: plugin.name })}
                   disabled={removingId === plugin.id}
@@ -351,6 +357,7 @@ function StageLane({
                 </GatedButton>
                 <GatedButton
                   gate="plugin:update"
+                  control="plugin-configure"
                   variant="outline"
                   aria-label={t("pages.plugins.configureAria", { name: plugin.name })}
                   onClick={() => onEdit(plugin)}

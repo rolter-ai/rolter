@@ -196,6 +196,7 @@ export default function Users() {
         </div>
         <GatedButton
           gate="invitation:create"
+          control="user-invite"
           className="ml-auto"
           onClick={() => setInviteOpen(true)}
           disabled={!orgId}
@@ -291,6 +292,7 @@ export default function Users() {
                     screen reader gets, so it names the account (#1214) */}
                 <RowIconButton
                   gate="membership:create"
+                  control="user-role-grant"
                   title={t("pages.users.grantRole", { email: user.email })}
                   aria-label={t("pages.users.grantRole", { email: user.email })}
                   onClick={() => setRoleUser(user)}
@@ -299,6 +301,7 @@ export default function Users() {
                 </RowIconButton>
                 <RowIconButton
                   gate="user:update"
+                  control="user-edit"
                   title={t("pages.users.editUser", { email: user.email })}
                   aria-label={t("pages.users.editUser", { email: user.email })}
                   onClick={() => setEditUser(user)}
@@ -307,6 +310,7 @@ export default function Users() {
                 </RowIconButton>
                 <RowIconButton
                   gate="user:update"
+                  control="user-deactivate"
                   danger={active}
                   title={t(active ? "pages.users.deactivate" : "pages.users.reactivate", {
                     email: user.email,
@@ -341,6 +345,7 @@ export default function Users() {
               ) : (
                 <GatedButton
                   gate="invitation:create"
+                  control="user-invite-empty"
                   disabled={!orgId}
                   onClick={() => setInviteOpen(true)}
                 >

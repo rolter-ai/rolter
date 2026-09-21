@@ -85,6 +85,7 @@ export default function Teams() {
         </span>
         <GatedButton
           gate="team:create"
+          control="team-new"
           className="ml-auto"
           onClick={() => setAddOpen(true)}
           disabled={!scope.orgId}
@@ -110,6 +111,7 @@ export default function Teams() {
           actions={
             <GatedButton
               gate="team:create"
+              control="team-new-empty"
               disabled={!scope.orgId}
               onClick={() => setAddOpen(true)}
             >

@@ -368,7 +368,11 @@ export default function SkillsRepository() {
               title={t("pages.skillsRepo.emptyTitle")}
               description={t("pages.skillsRepo.emptyDescription")}
               actions={
-                <GatedButton gate="skill:create" onClick={() => setCreateOpen(true)}>
+                <GatedButton
+                  gate="skill:create"
+                  control="skill-new-empty"
+                  onClick={() => setCreateOpen(true)}
+                >
                   {t("pages.skillsRepo.createSkill")}
                 </GatedButton>
               }
@@ -574,6 +578,7 @@ function SkillIndex({
         </div>
         <GatedButton
           gate="skill:create"
+          control="skill-new"
           variant="ghost"
           onClick={onCreate}
           aria-label={t("pages.skillsRepo.createSkill")}
@@ -677,11 +682,17 @@ function SkillWorkbench({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <GatedButton gate="skill:update" variant="ghost" onClick={onSettings}>
+            <GatedButton
+              gate="skill:update"
+              control="skill-settings"
+              variant="ghost"
+              onClick={onSettings}
+            >
               <Settings2 className="h-4 w-4" /> {t("pages.skillsRepo.settings")}
             </GatedButton>
             <GatedButton
               gate="skill:delete"
+              control="skill-delete"
               variant="ghost"
               aria-label={t("pages.skillsRepo.deleteAction", { name: skill.name })}
               onClick={onDelete}
@@ -691,6 +702,7 @@ function SkillWorkbench({
             {baseVersion && !selectedPublished && !skill.retired_at && (
               <GatedButton
                 gate="skill:update"
+                control="skill-publish"
                 variant="outline"
                 disabled={pending}
                 onClick={() => onPublish(baseVersion.version)}
@@ -701,6 +713,7 @@ function SkillWorkbench({
             )}
             <GatedButton
               gate="skill:update"
+              control="skill-save-version"
               disabled={pending || !!problem || !!skill.retired_at}
               onClick={onSave}
             >
@@ -968,6 +981,7 @@ function VersionRail({
                 {!published && skill.published_version && !skill.retired_at && (
                   <GatedButton
                     gate="skill:update"
+                    control="skill-rollback"
                     variant="ghost"
                     onClick={() => onRollback(version.version)}
                   >

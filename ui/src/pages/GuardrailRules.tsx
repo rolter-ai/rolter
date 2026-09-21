@@ -133,7 +133,11 @@ function GuardrailRulesScreen() {
             {t("pages.guardrailRules.intro")}
           </p>
         </div>
-        <GatedButton gate="guardrail_rule:create" onClick={() => setEditing(null)}>
+        <GatedButton
+          gate="guardrail_rule:create"
+          control="guardrail-rule-new"
+          onClick={() => setEditing(null)}
+        >
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailRules.addRule")}
         </GatedButton>
       </div>
@@ -154,7 +158,11 @@ function GuardrailRulesScreen() {
           title={t("pages.guardrailRules.emptyTitle")}
           description={t("pages.guardrailRules.emptyBody")}
           action={
-            <GatedButton gate="guardrail_rule:create" onClick={() => setEditing(null)}>
+            <GatedButton
+              gate="guardrail_rule:create"
+              control="guardrail-rule-new-empty"
+              onClick={() => setEditing(null)}
+            >
               {t("pages.guardrailRules.addFirst")}
             </GatedButton>
           }
@@ -201,6 +209,7 @@ function GuardrailRulesScreen() {
                 <>
                   <GatedButton
                     gate="guardrail_rule:delete"
+                    control="guardrail-rule-delete"
                     variant="ghost"
                     aria-label={t("pages.guardrailRules.deleteAria", { name: rule.name })}
                     onClick={() => startDelete(rule)}
@@ -213,6 +222,7 @@ function GuardrailRulesScreen() {
                   </GatedButton>
                   <GatedButton
                     gate="guardrail_rule:update"
+                    control="guardrail-rule-edit"
                     variant="outline"
                     aria-label={t("pages.guardrailRules.editAria", { name: rule.name })}
                     onClick={() => setEditing(rule)}

@@ -75,7 +75,9 @@ export const RefusedSurvivesARemount: Story = {
   render: () => (
     <Harness fetchStub={slowScope} role="viewer">
       <Replaced>
-        <GatedButton gate="custom_role:create">New role</GatedButton>
+        <GatedButton gate="custom_role:create" control="role-new">
+          New role
+        </GatedButton>
       </Replaced>
     </Harness>
   ),

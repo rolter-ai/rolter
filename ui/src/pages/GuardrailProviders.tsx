@@ -116,7 +116,11 @@ function GuardrailProvidersScreen() {
             {t("pages.guardrailProviders.intro")}
           </p>
         </div>
-        <GatedButton gate="guardrail_provider:create" onClick={() => setEditing(null)}>
+        <GatedButton
+          gate="guardrail_provider:create"
+          control="guardrail-provider-new"
+          onClick={() => setEditing(null)}
+        >
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailProviders.addProvider")}
         </GatedButton>
       </div>
@@ -153,7 +157,11 @@ function GuardrailProvidersScreen() {
           title={t("pages.guardrailProviders.emptyTitle")}
           description={t("pages.guardrailProviders.emptyBody")}
           action={
-            <GatedButton gate="guardrail_provider:create" onClick={() => setEditing(null)}>
+            <GatedButton
+              gate="guardrail_provider:create"
+              control="guardrail-provider-new-empty"
+              onClick={() => setEditing(null)}
+            >
               {t("pages.guardrailProviders.emptyAction")}
             </GatedButton>
           }
@@ -184,6 +192,7 @@ function GuardrailProvidersScreen() {
                 <>
                   <GatedButton
                     gate="guardrail_provider:delete"
+                    control="guardrail-provider-delete"
                     variant="ghost"
                     aria-label={t("pages.guardrailProviders.deleteAria", {
                       name: provider.name,
@@ -198,6 +207,7 @@ function GuardrailProvidersScreen() {
                   </GatedButton>
                   <GatedButton
                     gate="guardrail_provider:update"
+                    control="guardrail-provider-edit"
                     variant="outline"
                     aria-label={t("pages.guardrailProviders.editAria", {
                       name: provider.name,

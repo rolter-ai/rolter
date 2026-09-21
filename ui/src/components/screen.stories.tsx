@@ -73,10 +73,10 @@ function ProviderList({ rows = ROWS }: { rows?: ProviderRow[] }) {
             </Pill>
             <span className="text-right font-mono text-xs">{row.latency} ms</span>
             <span className="flex justify-end gap-1.5">
-              <RowIconButton aria-label={`Edit ${row.name}`}>
+              <RowIconButton control="provider-edit" aria-label={`Edit ${row.name}`}>
                 <Pencil className="h-3.5 w-3.5" />
               </RowIconButton>
-              <RowIconButton danger aria-label={`Delete ${row.name}`}>
+              <RowIconButton control="provider-delete" danger aria-label={`Delete ${row.name}`}>
                 <Trash2 className="h-3.5 w-3.5" />
               </RowIconButton>
             </span>
@@ -206,7 +206,12 @@ export const RowIconButtonRefused: Story = {
   render: () => (
     <Harness fetchStub={routes([])} role="viewer">
       <PageBody>
-        <RowIconButton danger gate="provider:delete" aria-label="Delete openai-prod">
+        <RowIconButton
+          danger
+          gate="provider:delete"
+          control="provider-delete"
+          aria-label="Delete openai-prod"
+        >
           <Trash2 className="h-3.5 w-3.5" />
         </RowIconButton>
       </PageBody>
@@ -224,7 +229,12 @@ export const RowIconButtonAllowed: Story = {
   render: () => (
     <Harness fetchStub={routes([])} role="admin">
       <PageBody>
-        <RowIconButton danger gate="provider:delete" aria-label="Delete openai-prod">
+        <RowIconButton
+          danger
+          gate="provider:delete"
+          control="provider-delete"
+          aria-label="Delete openai-prod"
+        >
           <Trash2 className="h-3.5 w-3.5" />
         </RowIconButton>
       </PageBody>

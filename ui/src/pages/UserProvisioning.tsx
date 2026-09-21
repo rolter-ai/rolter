@@ -198,6 +198,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
                 <RowIconButton
                   danger
                   gate="scim_group_mapping:delete"
+                  control="scim-mapping-remove"
                   title={t("pages.userProvisioning.mappings.remove")}
                   aria-label={t("pages.userProvisioning.mappings.removeNamed", {
                     group: mapping.group_name,
@@ -236,6 +237,7 @@ function GroupMappings({ orgId, canManage }: { orgId: string; canManage: boolean
           />
           <GatedButton
             gate="scim_group_mapping:create"
+            control="scim-mapping-add"
             size="sm"
             variant="outline"
             disabled={!canManage || !group.trim() || create.isPending}
@@ -368,6 +370,7 @@ export default function UserProvisioning() {
       render: (_v, row) => (
         <GatedButton
           gate="scim_token:delete"
+          control="scim-token-revoke"
           variant="outline"
           size="sm"
           aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
@@ -407,6 +410,7 @@ export default function UserProvisioning() {
         <div className="ml-auto">
           <GatedButton
             gate="scim_token:create"
+            control="scim-token-new"
             disabled={!canManage}
             onClick={() => setIssueOpen(true)}
           >
@@ -446,6 +450,7 @@ export default function UserProvisioning() {
               actions={
                 <GatedButton
                   gate="scim_token:create"
+                  control="scim-token-new-empty"
                   disabled={!canManage}
                   onClick={() => setIssueOpen(true)}
                 >

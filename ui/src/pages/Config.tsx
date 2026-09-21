@@ -190,6 +190,7 @@ function ExportButton() {
   return (
     <GatedButton
       gate="config_export:read"
+      control="config-export"
       variant="outline"
       size="sm"
       disabled={exportConfig.isPending}

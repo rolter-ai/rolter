@@ -264,6 +264,7 @@ export function LabelSheet({
                   />
                   <GatedButton
                     gate={api.deleteGate}
+                    control="label-remove"
                     variant="ghost"
                     size="sm"
                     aria-label={t("labels.removeOne", { label: labelText(row) })}
@@ -324,6 +325,7 @@ export function LabelSheet({
               </Field>
               <GatedButton
                 gate={api.createGate}
+                control="label-add"
                 className="mb-[1px]"
                 disabled={!key.trim() || duplicate || add.isPending}
                 onClick={() => add.mutate()}

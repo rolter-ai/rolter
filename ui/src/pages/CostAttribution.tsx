@@ -455,7 +455,13 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             {mutationError.message}
           </span>
         )}
-        <GatedButton gate={gate} className="ml-auto" disabled={disabled} onClick={startCreate}>
+        <GatedButton
+          gate={gate}
+          control="attribution-new"
+          className="ml-auto"
+          disabled={disabled}
+          onClick={startCreate}
+        >
           + {t(createKey)}
         </GatedButton>
       </div>
@@ -477,7 +483,12 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
               : t("pages.costAttribution.customerEmptyBody")
           }
           actions={
-            <GatedButton gate={gate} disabled={disabled} onClick={startCreate}>
+            <GatedButton
+              gate={gate}
+              control="attribution-new-empty"
+              disabled={disabled}
+              onClick={startCreate}
+            >
               + {t(createKey)}
             </GatedButton>
           }
@@ -522,6 +533,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                 <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
                   <GatedButton
                     gate={updateGate}
+                    control="attribution-edit"
                     variant="outline"
                     size="sm"
                     aria-label={t("pages.costAttribution.editAria", { name: row.name })}
@@ -533,6 +545,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   {/* retiring keeps the history a delete would strand */}
                   <GatedButton
                     gate={updateGate}
+                    control="attribution-retire"
                     variant="ghost"
                     size="sm"
                     aria-label={t(
@@ -550,6 +563,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </GatedButton>
                   <GatedButton
                     gate={deleteGate}
+                    control="attribution-delete"
                     variant="ghost"
                     size="sm"
                     className="ml-auto text-[color:var(--status-danger-text)]"

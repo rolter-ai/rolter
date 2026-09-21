@@ -21,7 +21,12 @@ const meta = {
   parameters: { layout: "centered" },
   // every story supplies its own `render`; these are the args the docs page
   // introspects, and `gate` is required so they cannot be left off
-  args: { gate: "provider:update", checked: true, "aria-label": "Enable openai-prod" },
+  args: {
+    gate: "provider:update",
+    control: "provider-toggle",
+    checked: true,
+    "aria-label": "Enable openai-prod",
+  },
 } satisfies Meta<typeof GatedSwitch>;
 
 export default meta;
@@ -30,7 +35,12 @@ type Story = StoryObj<typeof meta>;
 export const Allowed: Story = {
   render: () => (
     <Harness fetchStub={stub} role="admin">
-      <GatedSwitch gate="provider:update" checked aria-label="Enable openai-prod" />
+      <GatedSwitch
+        gate="provider:update"
+        control="provider-toggle"
+        checked
+        aria-label="Enable openai-prod"
+      />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -44,7 +54,12 @@ export const Allowed: Story = {
 export const Refused: Story = {
   render: () => (
     <Harness fetchStub={stub} role="viewer">
-      <GatedSwitch gate="provider:update" checked aria-label="Enable openai-prod" />
+      <GatedSwitch
+        gate="provider:update"
+        control="provider-toggle"
+        checked
+        aria-label="Enable openai-prod"
+      />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -61,7 +76,12 @@ export const Unknown: Story = {
     // dashboard here, and a toggle that disables itself over that would look
     // like the deployment went read-only
     <Harness fetchStub={stub}>
-      <GatedSwitch gate="provider:update" checked aria-label="Enable openai-prod" />
+      <GatedSwitch
+        gate="provider:update"
+        control="provider-toggle"
+        checked
+        aria-label="Enable openai-prod"
+      />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -73,7 +93,13 @@ export const Unknown: Story = {
 export const AlreadyDisabled: Story = {
   render: () => (
     <Harness fetchStub={stub} role="admin">
-      <GatedSwitch gate="provider:update" checked disabled aria-label="Enable openai-prod" />
+      <GatedSwitch
+        gate="provider:update"
+        control="provider-toggle"
+        checked
+        disabled
+        aria-label="Enable openai-prod"
+      />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -92,6 +118,7 @@ export const RefusedDoesNotFlip: Story = {
         <div className="flex flex-col items-center gap-2">
           <GatedSwitch
             gate="provider:update"
+            control="provider-toggle"
             checked={on}
             onCheckedChange={setOn}
             aria-label="Enable openai-prod"

@@ -254,6 +254,7 @@ export default function Limits() {
           </div>
           <GatedButton
             gate="budget:create"
+            control="budget-new"
             size="sm"
             className="ml-auto"
             onClick={() => setAddBudgetOpen(true)}
@@ -280,6 +281,7 @@ export default function Limits() {
             actions={
               <GatedButton
                 gate="budget:create"
+                control="budget-new-empty"
                 disabled={!scopeId}
                 onClick={() => setAddBudgetOpen(true)}
               >
@@ -310,6 +312,7 @@ export default function Limits() {
           </div>
           <GatedButton
             gate="rate_limit:create"
+            control="rate-limit-new"
             size="sm"
             className="ml-auto"
             onClick={() => setAddRateLimitOpen(true)}
@@ -336,6 +339,7 @@ export default function Limits() {
             actions={
               <GatedButton
                 gate="rate_limit:create"
+                control="rate-limit-new-empty"
                 disabled={!scopeId}
                 onClick={() => setAddRateLimitOpen(true)}
               >
