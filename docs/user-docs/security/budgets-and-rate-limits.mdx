@@ -277,6 +277,8 @@ Like budgets, rate limits follow **most-restrictive-wins** across the scope chai
 
 Rolter maintains sliding-window counters in Redis — one counter per (scope, id, window bucket) combination. Each counter is updated atomically on every request, so limits remain accurate even when you run multiple gateway instances behind a load balancer. The `Retry-After` response header on a 429 tells the client how many seconds to wait before the trailing window slides enough to admit the next request.
 
+Spend and tokens are recorded from what the **provider billed**, not from what the caller received. If an output guardrail or a `post_response` plugin blocks an answer the provider already generated, the caller gets a `403`, but the tokens and cost still count toward every budget and `tpm` limit in scope. Usage is read before any policy runs, so a plugin that rewrites the `usage` object cannot lower the bill. A response-cache hit costs nothing, blocked or not. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
+
 ## Complete example
 
 The following snippet brings together pricing, a budget, and a rate limit for a production setup:

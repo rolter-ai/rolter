@@ -44,6 +44,8 @@ At each stage the gateway sends the request or response body under inspection to
 
 A `block` from any plugin in the chain stops it immediately — later plugins in the same stage never run.
 
+A `post_response` block, or a `transform` that rewrites the `usage` object, does not change what the request is billed. The provider has already generated the answer, so its reported usage counts toward budgets and is logged with `withheld = 1` when delivery is refused. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
+
 ## Secrets
 
 `secret_env` contains only an environment variable name such as `ROLTER_PLUGIN_TOKEN`. Put the value in the gateway environment. The control-plane API never accepts or returns the secret itself.

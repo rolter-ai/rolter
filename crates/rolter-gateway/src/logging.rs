@@ -161,6 +161,22 @@ pub struct RequestLog {
     /// traffic cost" are the same zero, and an operator can run a fleet for a
     /// month, see $0.00, and conclude spend is under control.
     pub unpriced: u8,
+    /// 1 when the upstream produced (and billed) this response but a post-call
+    /// policy — an output guardrail or a post-response plugin — refused to
+    /// hand it to the caller (#1478).
+    ///
+    /// `status` is what the caller received (403); the token and cost columns
+    /// are what the provider charged. Keeping both on one row is the point:
+    /// a refusal is a delivery outcome, not a billing one, and summing
+    /// `cost_usd` has to include money spent on answers nobody saw.
+    pub withheld: u8,
+    /// 1 when the upstream answered successfully but reported no token usage,
+    /// so the zero token and cost columns are unknown rather than free (#1478).
+    ///
+    /// Typical causes are an OpenAI-style stream without
+    /// `stream_options.include_usage`, or a provider that omits the usage
+    /// object altogether.
+    pub usage_unknown: u8,
     pub latency_ms: u32,
     pub ttft_ms: u32,
     pub error: String,
@@ -209,6 +225,8 @@ impl Default for RequestLog {
             total_tokens: 0,
             cost_usd: 0.0,
             unpriced: 0,
+            withheld: 0,
+            usage_unknown: 0,
             latency_ms: 0,
             ttft_ms: 0,
             error: String::new(),
@@ -480,6 +498,9 @@ pub struct Usage {
     pub total: u32,
     pub cache_read: u32,
     pub cache_write: u32,
+    /// whether the body carried a usage object at all. Without it an all-zero
+    /// usage is indistinguishable from an upstream that said nothing (#1478)
+    pub reported: bool,
 }
 
 /// Extract token usage from a fully-buffered upstream response body.
@@ -540,7 +561,10 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
     // usage can sit at the top level (openai, anthropic non-stream / message_delta)
     // or under `message` (anthropic message_start event)
     for holder in [value.get("usage"), value.pointer("/message/usage")] {
-        let Some(u) = holder else { continue };
+        let Some(u) = holder.filter(|u| u.is_object()) else {
+            continue;
+        };
+        usage.reported = true;
         let prompt = u32_field(u, "prompt_tokens").or_else(|| u32_field(u, "input_tokens"));
         let completion =
             u32_field(u, "completion_tokens").or_else(|| u32_field(u, "output_tokens"));
@@ -613,6 +637,11 @@ pub struct UsageLoggingStream {
     /// mid-answer — the tokens are still billed, so the row is kept and marked
     /// rather than discarded (#1083)
     completed: bool,
+    /// usage read from the upstream body before any policy transformed it.
+    /// When set it is what gets billed, instead of whatever the delivered bytes
+    /// say — a guardrail, plugin or sanitizer may rewrite or drop the usage
+    /// object, and spend must follow the provider rather than the policy (#1478)
+    billed: Option<Usage>,
 }
 
 impl UsageLoggingStream {
@@ -645,7 +674,48 @@ impl UsageLoggingStream {
             completion_observer: None,
             genai_span: None,
             completed: false,
+            billed: None,
         }
+    }
+
+    /// Bill `usage` — read from the upstream body before any post-call policy
+    /// touched it — rather than whatever the forwarded bytes report (#1478).
+    ///
+    /// The buffered path runs output guardrails, post-response plugins and the
+    /// PII sanitizer over the body before it reaches this stream. Any of those
+    /// can rewrite or remove the usage object, and none of them changes what
+    /// the provider charged.
+    pub fn with_billed_usage(mut self, usage: Usage) -> Self {
+        self.billed = Some(usage);
+        self
+    }
+
+    /// Account a response the upstream produced but a post-call policy refused
+    /// to deliver, then drop the stream without forwarding anything (#1478).
+    ///
+    /// The row keeps the billed tokens and cost and still feeds the budget and
+    /// rate-limit counters — the provider was paid whether or not the caller
+    /// saw the answer. `status` is the refusal the caller received and
+    /// `reason` names the policy that refused; the rejected content is never
+    /// captured, since the body never enters this stream. Pair it with
+    /// [`UsageLoggingStream::with_billed_usage`], as there is nothing here to
+    /// parse usage from.
+    pub fn withhold(mut self, status: u16, reason: String) {
+        if let Some(log) = self.pending.as_mut() {
+            log.status = status;
+            log.error = reason;
+            log.withheld = 1;
+        }
+        // a refusal is a finished exchange, not a caller that hung up
+        self.completed = true;
+        // the observer records a delivered body (the responses registry);
+        // nothing was delivered
+        self.completion_observer = None;
+        self.sink
+            .metrics()
+            .withheld_responses_total
+            .fetch_add(1, Relaxed);
+        // dropping runs `finalize` exactly once
     }
 
     pub fn with_completion_observer(mut self, observer: Option<CompletionObserver>) -> Self {
@@ -669,6 +739,10 @@ impl UsageLoggingStream {
         let Some(mut log) = self.pending.take() else {
             return;
         };
+        // read before a disconnect rewrites the status: an upstream that
+        // answered successfully but reported no usage leaves the zeros below
+        // unknown, not free. an upstream error is taken as unbilled (#1478)
+        let upstream_answered = log.withheld == 1 || log.status < 400;
         // the client hung up before the body ended. everything generated so far
         // was still produced (and billed) upstream, so the row keeps its tokens
         // and cost and is marked instead of dropped — abandoned spend has to be
@@ -683,7 +757,11 @@ impl UsageLoggingStream {
                 .client_disconnects_total
                 .fetch_add(1, Relaxed);
         }
-        let usage = parse_usage(self.is_sse, &self.buf);
+        let usage = self
+            .billed
+            .take()
+            .unwrap_or_else(|| parse_usage(self.is_sse, &self.buf));
+        log.usage_unknown = u8::from(upstream_answered && !usage.reported);
         // the conventions want token counts on the inference span, and this is
         // the first moment they are known (#808)
         if let Some(span) = self.genai_span.take() {
@@ -1270,6 +1348,7 @@ mod tests {
                 prompt: 11,
                 completion: 22,
                 total: 33,
+                reported: true,
                 ..Usage::default()
             }
         );
@@ -1285,6 +1364,7 @@ mod tests {
                 prompt: 7,
                 completion: 5,
                 total: 12,
+                reported: true,
                 ..Usage::default()
             }
         );
@@ -1301,6 +1381,7 @@ data: [DONE]\n\n";
                 prompt: 3,
                 completion: 9,
                 total: 12,
+                reported: true,
                 ..Usage::default()
             }
         );
@@ -1319,6 +1400,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
                 prompt: 40,
                 completion: 25,
                 total: 65,
+                reported: true,
                 ..Usage::default()
             }
         );
@@ -2181,5 +2263,191 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             sink.log(RequestLog::default());
         }
         assert!(metrics.logs_dropped_total.load(Relaxed) > 0);
+    }
+
+    /// A body with no usage object parses to zeros, and says so: the zeros are
+    /// unknown, not a free request (#1478).
+    #[test]
+    fn a_body_without_usage_is_not_reported() {
+        let silent = parse_usage(false, br#"{"choices":[]}"#);
+        assert_eq!(silent, Usage::default());
+        assert!(!silent.reported);
+        let null = parse_usage(false, br#"{"usage":null}"#);
+        assert!(!null.reported);
+        let zero = parse_usage(
+            false,
+            br#"{"usage":{"prompt_tokens":0,"completion_tokens":0}}"#,
+        );
+        assert!(zero.reported, "an explicit zero is a known zero");
+        let streamed = parse_usage(true, b"data: {\"choices\":[]}\n\ndata: [DONE]\n\n");
+        assert!(!streamed.reported);
+    }
+
+    /// Accept one ClickHouse insert on a raw socket and return the request text.
+    async fn capture_one_insert() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        (addr, server)
+    }
+
+    /// A withheld response bills what the upstream reported, not what the
+    /// delivered bytes say, is marked `withheld`, and never captures the
+    /// rejected body (#1478).
+    #[tokio::test]
+    async fn a_withheld_response_keeps_its_billed_usage_and_drops_its_body() {
+        let (addr, server) = capture_one_insert().await;
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            1,
+            Duration::from_millis(20),
+            100,
+            metrics.clone(),
+        );
+        // a dollar a token, so the cost is the token count
+        let price: rolter_core::ModelPriceConfig = serde_json::from_value(serde_json::json!({
+            "model": "gpt-4o",
+            "input_per_mtok": 1_000_000,
+            "output_per_mtok": 1_000_000,
+        }))
+        .unwrap();
+        let billed = parse_usage(
+            false,
+            br#"{"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#,
+        );
+        UsageLoggingStream::new(
+            Box::pin(futures_util::stream::empty()),
+            false,
+            Instant::now(),
+            sink,
+            Some(price),
+            RequestLog {
+                request_id: "req-withheld".to_string(),
+                model: "gpt-4o".to_string(),
+                status: 200,
+                capture_payloads: true,
+                payload_max_bytes: 4096,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .with_billed_usage(billed)
+        .withhold(403, "guardrail_blocked: email".to_string());
+
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert!(req.contains("\"request_id\":\"req-withheld\""), "{req}");
+        assert!(req.contains("\"status\":403"), "{req}");
+        assert!(req.contains("\"withheld\":1"), "{req}");
+        assert!(req.contains("\"usage_unknown\":0"), "{req}");
+        assert!(req.contains("\"total_tokens\":7"), "{req}");
+        assert!(req.contains("\"cost_usd\":7.0"), "{req}");
+        assert!(req.contains("guardrail_blocked: email"), "{req}");
+        assert_eq!(metrics.withheld_responses_total.load(Relaxed), 1);
+        // a refusal is not a hang-up
+        assert_eq!(metrics.client_disconnects_total.load(Relaxed), 0);
+    }
+
+    /// A billed-usage override wins over whatever the delivered body says, so
+    /// a policy that rewrites the usage object cannot change the bill (#1478).
+    #[tokio::test]
+    async fn billed_usage_overrides_the_delivered_body() {
+        use futures_util::StreamExt;
+        let (addr, server) = capture_one_insert().await;
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            1,
+            Duration::from_millis(20),
+            100,
+            metrics,
+        );
+        let delivered = Bytes::from_static(br#"{"usage":{"total_tokens":0}}"#);
+        let mut wrapped = UsageLoggingStream::new(
+            Box::pin(futures_util::stream::iter(vec![
+                Ok::<Bytes, reqwest::Error>(delivered),
+            ])),
+            false,
+            Instant::now(),
+            sink,
+            None,
+            RequestLog {
+                request_id: "req-rewritten".to_string(),
+                status: 200,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        )
+        .with_billed_usage(parse_usage(
+            false,
+            br#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ));
+        while wrapped.next().await.is_some() {}
+        drop(wrapped);
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert!(req.contains("\"total_tokens\":2"), "{req}");
+        assert!(req.contains("\"withheld\":0"), "{req}");
+        // no price row: unpriced, which is a different fact from unknown usage
+        assert!(req.contains("\"unpriced\":1"), "{req}");
+        assert!(req.contains("\"usage_unknown\":0"), "{req}");
+    }
+
+    /// A successful answer with no usage object is logged as unknown usage.
+    #[tokio::test]
+    async fn a_successful_answer_without_usage_is_logged_as_unknown() {
+        use futures_util::StreamExt;
+        let (addr, server) = capture_one_insert().await;
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            1,
+            Duration::from_millis(20),
+            100,
+            metrics,
+        );
+        let mut wrapped = UsageLoggingStream::new(
+            Box::pin(futures_util::stream::iter(vec![
+                Ok::<Bytes, reqwest::Error>(Bytes::from_static(br#"{"choices":[]}"#)),
+            ])),
+            false,
+            Instant::now(),
+            sink,
+            None,
+            RequestLog {
+                request_id: "req-silent".to_string(),
+                status: 200,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        );
+        while wrapped.next().await.is_some() {}
+        drop(wrapped);
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert!(req.contains("\"usage_unknown\":1"), "{req}");
+        assert!(req.contains("\"total_tokens\":0"), "{req}");
     }
 }

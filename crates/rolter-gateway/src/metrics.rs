@@ -186,6 +186,11 @@ pub struct Metrics {
     /// counted is that the tokens generated before the caller vanished were
     /// still billed (#1083)
     pub client_disconnects_total: AtomicU64,
+    /// responses the upstream produced and billed but a post-call policy (an
+    /// output guardrail or a post-response plugin) refused to deliver. Their
+    /// spend is still recorded; this is how an operator sees how much of it
+    /// bought nothing (#1478)
+    pub withheld_responses_total: AtomicU64,
     /// requests rejected because their selected provider's queue was full
     pub provider_queue_rejections_total: AtomicU64,
     /// requests that timed out waiting for a provider queue slot
@@ -597,6 +602,12 @@ impl Metrics {
                 name: "rolter_client_disconnects_total",
                 help: "requests whose client disconnected before the response completed",
                 value: self.client_disconnects_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_withheld_responses_total",
+                help: "billed upstream responses a post-call policy refused to deliver",
+                value: self.withheld_responses_total.load(Relaxed),
             },
             Scalar {
                 kind: "counter",

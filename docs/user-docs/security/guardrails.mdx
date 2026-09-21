@@ -14,6 +14,8 @@ Rules run by ascending position. Each rule uses exactly one source:
 
 Choose `annotate` to count a match without changing traffic, `block` to reject matching traffic, or `redact` to replace matches. System messages are excluded unless **Inspect system messages** is enabled. A paused rule stays stored and ordered but does not enter gateway snapshots.
 
+A response rule that blocks runs after the provider has generated and billed the answer. The caller gets a `403 guardrail_blocked`, but the request is still billed and counts toward budgets. Its log row is marked `withheld` and names the rule, and the blocked text is never stored. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
+
 The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule without deleting the registry.
 
 ## External providers

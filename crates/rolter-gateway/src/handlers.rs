@@ -2222,6 +2222,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     match response.bytes().await {
                         Ok(bytes) => {
                             let bytes = translation.translate_response(bytes, is_sse);
+                            // what the provider charged, read before any
+                            // policy below can rewrite or withhold the body
+                            // (#1478)
+                            let billed = crate::logging::parse_usage(is_sse, &bytes);
                             // skip storing bodies over the configured ceiling
                             // (0 = no limit); they're still served normally
                             let limit = snap.cache.max_entry_bytes;
@@ -2264,7 +2268,20 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                     crate::guardrails::OutputDecision::Unchanged => bytes,
                                     crate::guardrails::OutputDecision::Masked(masked) => masked,
                                     crate::guardrails::OutputDecision::Blocked(rule) => {
-                                        return guardrail_output_blocked(&rule)
+                                        return withheld_response(
+                                            guardrail_output_blocked(&rule),
+                                            guardrail_withheld_reason(&rule),
+                                            billed,
+                                            is_sse,
+                                            started,
+                                            state.log.clone(),
+                                            price,
+                                            log,
+                                            recorder,
+                                            token_recorder,
+                                            inflight_guard,
+                                            genai_span.clone(),
+                                        );
                                     }
                                 },
                                 None => bytes,
@@ -2281,6 +2298,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             };
                             return buffered_response(
                                 bytes,
+                                billed,
                                 status,
                                 content_type,
                                 is_sse,
@@ -3280,12 +3298,29 @@ async fn stream_response(
         return match response.bytes().await {
             Ok(bytes) => {
                 let bytes = translation.translate_response(bytes, false);
+                // what the provider charged, read before the guardrails,
+                // plugins and sanitizer below can rewrite or withhold the body
+                // (#1478)
+                let billed = crate::logging::parse_usage(false, &bytes);
                 let bytes = match output.filter(|_| status.is_success()) {
                     Some(guard) => match guard.apply(&bytes) {
                         crate::guardrails::OutputDecision::Unchanged => bytes,
                         crate::guardrails::OutputDecision::Masked(masked) => masked,
                         crate::guardrails::OutputDecision::Blocked(rule) => {
-                            return guardrail_output_blocked(&rule)
+                            return withheld_response(
+                                guardrail_output_blocked(&rule),
+                                guardrail_withheld_reason(&rule),
+                                billed,
+                                false,
+                                started,
+                                sink,
+                                price,
+                                log,
+                                recorder,
+                                token_recorder,
+                                inflight_guard,
+                                genai_span,
+                            );
                         }
                     },
                     None => bytes,
@@ -3298,12 +3333,24 @@ async fn stream_response(
                             Bytes::from(bytes)
                         }
                         crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
-                            return crate::error::ApiError::new(
-                                StatusCode::FORBIDDEN,
-                                reason.unwrap_or_else(|| "response withheld by plugin".to_string()),
-                            )
-                            .with_code("plugin_blocked")
-                            .into_response();
+                            let reason =
+                                reason.unwrap_or_else(|| "response withheld by plugin".to_string());
+                            return withheld_response(
+                                crate::error::ApiError::new(StatusCode::FORBIDDEN, reason.clone())
+                                    .with_code("plugin_blocked")
+                                    .into_response(),
+                                format!("plugin_blocked: {reason}"),
+                                billed,
+                                false,
+                                started,
+                                sink,
+                                price,
+                                log,
+                                recorder,
+                                token_recorder,
+                                inflight_guard,
+                                genai_span,
+                            );
                         }
                     },
                     None => bytes,
@@ -3316,6 +3363,7 @@ async fn stream_response(
                 };
                 buffered_response(
                     bytes,
+                    billed,
                     status.as_u16(),
                     content_type,
                     false,
@@ -3471,6 +3519,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
 #[allow(clippy::too_many_arguments)]
 fn buffered_response(
     bytes: Bytes,
+    billed: crate::logging::Usage,
     status: u16,
     content_type: String,
     is_sse: bool,
@@ -3499,7 +3548,8 @@ fn buffered_response(
         inflight_guard,
     )
     .with_completion_observer(completion_observer)
-    .with_genai_span(genai_span);
+    .with_genai_span(genai_span)
+    .with_billed_usage(billed);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
@@ -3510,6 +3560,47 @@ fn buffered_response(
             "failed to build response",
         )
     })
+}
+
+/// Refuse delivery of a response the upstream already produced — and billed —
+/// while still accounting for it (#1478).
+///
+/// A post-call policy decides what the caller receives, not what the provider
+/// charged. `billed` is the usage read from the upstream body before the policy
+/// ran, so the budget and rate-limit counters advance and the log row carries
+/// the real tokens and cost, marked `withheld` with `reason` as its error. The
+/// rejected body is never handed to the accounting stream, so it cannot reach
+/// payload capture. `refusal` is returned to the caller unchanged.
+#[allow(clippy::too_many_arguments)]
+fn withheld_response(
+    refusal: Response,
+    reason: String,
+    billed: crate::logging::Usage,
+    is_sse: bool,
+    started: Instant,
+    sink: crate::logging::LogSink,
+    price: Option<rolter_core::ModelPriceConfig>,
+    log: RequestLog,
+    recorder: SpendRecorder,
+    token_recorder: TokenRecorder,
+    inflight_guard: Option<crate::load::LoadGuard>,
+    genai_span: Option<tracing::Span>,
+) -> Response {
+    crate::logging::UsageLoggingStream::new(
+        Box::pin(futures_util::stream::empty()),
+        is_sse,
+        started,
+        sink,
+        price,
+        log,
+        Some(recorder),
+        Some(token_recorder),
+        inflight_guard,
+    )
+    .with_genai_span(genai_span)
+    .with_billed_usage(billed)
+    .withhold(refusal.status().as_u16(), reason);
+    refusal
 }
 
 /// Log context captured on the request path for a response served from cache.
@@ -3706,14 +3797,13 @@ fn cached_response(
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
     let mut body = Bytes::from(hit.body);
+    let mut withheld = None;
     if status.is_success() {
         if let Some(guard) = output {
             match guard.apply(&body) {
                 crate::guardrails::OutputDecision::Unchanged => {}
                 crate::guardrails::OutputDecision::Masked(masked) => body = masked,
-                crate::guardrails::OutputDecision::Blocked(rule) => {
-                    return guardrail_output_blocked(&rule)
-                }
+                crate::guardrails::OutputDecision::Blocked(rule) => withheld = Some(rule),
             }
         }
     }
@@ -3736,6 +3826,21 @@ fn cached_response(
         sample_rate: ctx.sample_rate,
         ..Default::default()
     };
+    // a withheld hit still gets its row, so a refusal is visible, but with zero
+    // tokens and cost: nothing was generated upstream for this request (#1478)
+    if let Some(rule) = withheld {
+        let refusal = guardrail_output_blocked(&rule);
+        sink.metrics()
+            .withheld_responses_total
+            .fetch_add(1, Relaxed);
+        sink.log(RequestLog {
+            status: refusal.status().as_u16(),
+            withheld: 1,
+            error: guardrail_withheld_reason(&rule),
+            ..log
+        });
+        return refusal;
+    }
     let decision = DecisionHeaders::from_log(&log);
     sink.log(log);
     let mut builder = Response::builder()
@@ -3763,6 +3868,12 @@ fn guardrail_output_blocked(rule: &str) -> Response {
     )
     .with_code("guardrail_blocked")
     .into_response()
+}
+
+/// The log-row `error` for a completion a post-call rule withheld. Names the
+/// rule, never the text it matched (#1478).
+fn guardrail_withheld_reason(rule: &str) -> String {
+    format!("guardrail_blocked: {rule}")
 }
 
 /// `x-rolter-*` response headers that expose the routing decision for a request:

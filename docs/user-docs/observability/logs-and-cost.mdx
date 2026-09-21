@@ -25,23 +25,25 @@ Logging is disabled when `clickhouse_url` is unset — there's no placeholder or
 
 Every proxied request writes one row to the `request_logs` table with the following fields:
 
-| Field               | Type          | Description                                                                                                                |
-| ------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `ts`                | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                   |
-| `request_id`        | String        | Unique request identifier, echoed in the `x-request-id` response header                                                    |
-| `model`             | String        | The public model name the client requested                                                                                 |
-| `provider`          | String        | The upstream provider that served the request                                                                              |
-| `target`            | String        | The specific upstream target within the provider                                                                           |
-| `status`            | UInt16        | HTTP status code returned to the client                                                                                    |
-| `prompt_tokens`     | UInt32        | Prompt / input token count reported by the upstream                                                                        |
-| `completion_tokens` | UInt32        | Completion / output token count reported by the upstream                                                                   |
-| `cost_usd`          | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                 |
-| `unpriced`          | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic)) |
-| `latency_ms`        | UInt32        | End-to-end request latency in milliseconds                                                                                 |
-| `ttft_ms`           | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                   |
-| `cached`            | Bool          | Whether the response was served from the upstream's prompt cache                                                           |
-| `error`             | String        | Error message if the request failed; empty on success                                                                      |
-| `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                            |
+| Field               | Type          | Description                                                                                                                           |
+| ------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                              |
+| `request_id`        | String        | Unique request identifier, echoed in the `x-request-id` response header                                                               |
+| `model`             | String        | The public model name the client requested                                                                                            |
+| `provider`          | String        | The upstream provider that served the request                                                                                         |
+| `target`            | String        | The specific upstream target within the provider                                                                                      |
+| `status`            | UInt16        | HTTP status code returned to the client                                                                                               |
+| `prompt_tokens`     | UInt32        | Prompt / input token count reported by the upstream                                                                                   |
+| `completion_tokens` | UInt32        | Completion / output token count reported by the upstream                                                                              |
+| `cost_usd`          | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                            |
+| `unpriced`          | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))            |
+| `withheld`          | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses)) |
+| `usage_unknown`     | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free              |
+| `latency_ms`        | UInt32        | End-to-end request latency in milliseconds                                                                                            |
+| `ttft_ms`           | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                              |
+| `cached`            | Bool          | Whether the response was served from the upstream's prompt cache                                                                      |
+| `error`             | String        | Error message if the request failed; empty on success                                                                                 |
+| `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
 
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
@@ -177,6 +179,31 @@ unpriced_policy = "block"   # ignore (default) | warn | block
 Two Prometheus counters track this: `rolter_unpriced_served_total` (requests served with no price — non-zero means your spend figures are a floor) and `rolter_unpriced_blocks_total` (requests refused by `block`).
 
 Rows written before the `unpriced` column existed default to `0`. That under-reports the unpriced share of historical data rather than inventing one.
+
+### Withheld responses
+
+An output [guardrail](/security/guardrails) with `block`, or a `post_response` [plugin](/configuration/plugins) that blocks, runs **after** the provider has generated the answer. The caller gets a `403` and never sees the answer. The provider still charged for it, so Rolter bills it anyway:
+
+- The row's `status` is `403` (what the caller received) and `withheld` is `1`.
+- `prompt_tokens`, `completion_tokens` and `cost_usd` are the provider's figures, and they count toward budgets and token rate limits like any delivered request.
+- `error` names the policy, either `guardrail_blocked: <rule name>` or `plugin_blocked: <plugin reason>`. The rejected answer itself is never stored, even with payload capture on.
+
+Usage is read from the provider's response **before** any guardrail, plugin or PII sanitizer runs. A plugin that rewrites or strips the `usage` object changes what the caller sees, not what you are billed.
+
+A response-cache hit that a rule blocks is logged with `cache_hit = 1`, `withheld = 1` and zero cost, since nothing was generated upstream for it. The original miss was billed when it happened.
+
+To see what blocked output is costing you:
+
+```sql
+select sum(cost_usd)            as withheld_spend,
+       count()                  as withheld_requests
+from request_logs
+where withheld = 1 and ts > now() - interval 30 day;
+```
+
+`rolter_withheld_responses_total` counts the same refusals in Prometheus. A sustained rate usually means a prompt is steering the model into output your policy forbids, and you pay for every attempt.
+
+`usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. Rows written before these columns existed default to `0`.
 
 ## Paging the invocation log
 

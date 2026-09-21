@@ -51,6 +51,13 @@ metrics_path = "/internal/metrics"
 
   </Accordion>
 
+  <Accordion title="rolter_withheld_responses_total">
+    **Type:** Counter
+
+    Responses the provider generated and billed, but that an output guardrail or a `post_response` plugin refused to deliver. The caller got a `403`. The spend was still recorded against budgets, so this is how much you are paying for answers nobody received. Blocked response-cache hits are counted too, at no cost. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
+
+  </Accordion>
+
   <Accordion title="rolter_inflight_requests">
     **Type:** Gauge
 
