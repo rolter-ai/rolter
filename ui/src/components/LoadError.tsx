@@ -54,9 +54,12 @@ export function LoadError({
   const detail = error instanceof Error ? error.message : null;
 
   return (
+    // an opaque tint, not --red-tint: this lands inside panels as often as on
+    // the page, and a translucent one let a --surface-subtle band drag the
+    // detail line under AA (#1725)
     <div
       role="alert"
-      className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--red-tint)] px-4 py-3.5"
+      className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--red-tint-opaque)] px-4 py-3.5"
     >
       <Icon
         aria-hidden

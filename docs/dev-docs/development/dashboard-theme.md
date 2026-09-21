@@ -85,6 +85,24 @@ darker half carries a shape, the lighter half carries a glyph.
 reads `text-[color:var(--status-danger-text)]`. `--danger-text` is an alias of
 the same token.
 
+## A translucent tint takes on what is behind it
+
+`--red-tint` is `rgba(255, 64, 23, 0.12)`, so the colour a reader actually sees
+is the tint composited over whatever it is laid on — and it gets lighter with
+that surface, taking the contrast of the text on it down too. `--text-subtle` is
+5.55:1 on the tint over `--surface-base` and 4.36:1 on the tint over
+`--surface-subtle`, under the AA floor. That is how `LoadError`'s detail line
+failed axe once a screen put the alert inside a `--surface-subtle` band (#1725).
+
+A component that can land inside a panel as well as on the page paints
+`--red-tint-opaque` instead: the same tint composited onto `--surface-base` with
+`color-mix()`, so it is opaque and its text reads the `--surface-base` numbers
+wherever it sits. `LoadError` is the one that needs it, since it carries
+`--text-subtle`; its `OnSubtleSurface` story renders it inside the lighter panels
+and axe fails that story if the background turns translucent again. Keep
+`--red-tint` for hovers, chips and badges, whose text is chosen to clear AA on
+the tint over every surface.
+
 ## Categorical palettes are tokens too
 
 A series colour and an avatar chip are picked by _index_, not by meaning, so
