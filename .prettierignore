@@ -25,3 +25,9 @@ charts/rolter/templates/
 # changing a thing the runner sees, and actionlint plus zizmor already own these
 # files. see #1723
 .github/workflows/
+
+# the scheduled Jules agents keep their own learning journals here and append
+# to them from environments that do not run prettier; an unformatted entry
+# would fail the docs gate on every one of their PRs, and nothing reads these
+# files but the agents themselves
+.Jules/

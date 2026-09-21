@@ -13,7 +13,7 @@ production and upgrade promptly when advisories are published.
 Report privately via one of:
 
 - **GitHub Security Advisories** (preferred): open a private report at
-  <https://github.com/ormeilu/rolter/security/advisories/new>.
+  <https://github.com/rolter-ai/rolter/security/advisories/new>.
 - **Email**: lubenets.ilya.igorevich@gmail.com — include "rolter security" in
   the subject.
 
