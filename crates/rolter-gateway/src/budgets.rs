@@ -9,14 +9,17 @@
 //! Counters live in Redis so enforcement is shared across gateway replicas. When
 //! no Redis url is configured — or Redis is unreachable — enforcement fails open
 //! (requests pass, spend is not recorded) so a counter store outage never takes
-//! the data plane down.
+//! the data plane down. A lost connection is re-established on its own once
+//! Redis is reachable again (see [`crate::redis_conn`]), so fail-open lasts as
+//! long as the outage and no longer.
 
 use std::sync::Arc;
 
 use chrono::Utc;
 use rolter_core::{BudgetConfig, BudgetScope, UnpricedPolicy};
 use rust_decimal::Decimal;
-use tokio::sync::OnceCell;
+
+use crate::redis_conn::ReconnectingRedis;
 
 /// Scope identity of a request, taken from its virtual key. An empty string
 /// means "no id at this level" and never matches a budget.
@@ -77,47 +80,22 @@ fn spend_key(budget: &BudgetConfig, now: chrono::DateTime<Utc>) -> String {
 /// Enforces spend caps against Redis. Cheap to clone (shared connection).
 #[derive(Clone)]
 pub struct BudgetEnforcer {
-    inner: Option<Arc<Inner>>,
-}
-
-struct Inner {
-    client: redis::Client,
-    // a shared multiplexed connection, lazily established on first use
-    conn: OnceCell<redis::aio::MultiplexedConnection>,
+    redis: Option<ReconnectingRedis>,
 }
 
 impl BudgetEnforcer {
     /// A disabled enforcer: every check passes and spend is never recorded.
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self { redis: None }
     }
 
     /// Build an enforcer against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match redis::Client::open(redis_url) {
-            Ok(client) => Self {
-                inner: Some(Arc::new(Inner {
-                    client,
-                    conn: OnceCell::new(),
-                })),
-            },
+        match ReconnectingRedis::new(redis_url, "budgets") {
+            Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
                 tracing::warn!(error = %err, "invalid redis url; budget enforcement disabled");
                 Self::disabled()
-            }
-        }
-    }
-
-    async fn connection(inner: &Inner) -> Option<redis::aio::MultiplexedConnection> {
-        let conn = inner
-            .conn
-            .get_or_try_init(|| inner.client.get_multiplexed_async_connection())
-            .await;
-        match conn {
-            Ok(conn) => Some(conn.clone()),
-            Err(err) => {
-                tracing::warn!(error = %err, "redis unavailable; budgets fail open");
-                None
             }
         }
     }
@@ -129,12 +107,12 @@ impl BudgetEnforcer {
         budgets: &[BudgetConfig],
         scope: &ScopeIds,
     ) -> Option<BudgetConfig> {
-        let inner = self.inner.as_ref()?;
+        let redis = self.redis.as_ref()?;
         let applicable = scope.applicable(budgets);
         if applicable.is_empty() {
             return None;
         }
-        let mut conn = Self::connection(inner).await?;
+        let mut conn = redis.get().await?;
         let now = Utc::now();
 
         let keys: Vec<String> = applicable.iter().map(|b| spend_key(b, now)).collect();
@@ -170,14 +148,14 @@ impl BudgetEnforcer {
         if cost <= 0.0 {
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(redis) = self.redis.as_ref() else {
             return;
         };
         let applicable = scope.applicable(budgets);
         if applicable.is_empty() {
             return;
         }
-        let Some(mut conn) = Self::connection(inner).await else {
+        let Some(mut conn) = redis.get().await else {
             return;
         };
         let now = Utc::now();
@@ -575,5 +553,51 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(spend_key(&b, now), "rolter:budget:team:team-9:202607");
+    }
+
+    /// #1483: a connection Redis closed (a restart, a failover, `CLIENT KILL`)
+    /// must not leave an existing enforcer failing open for the rest of the
+    /// process. The same instance has to see the spend recorded before the
+    /// drop and keep recording after it.
+    #[tokio::test]
+    async fn an_existing_enforcer_recovers_after_redis_drops_its_connection() {
+        use crate::redis_conn::testing::{self, db};
+        use redis::AsyncCommands;
+
+        let Some(url) = testing::url(db::BUDGETS) else {
+            return;
+        };
+        let scope = ScopeIds {
+            org: testing::unique("reconnect-org"),
+            ..Default::default()
+        };
+        let budgets = vec![BudgetConfig {
+            limit_usd: d("1"),
+            ..budget(BudgetScope::Org, &scope.org)
+        }];
+        let enforcer = BudgetEnforcer::new(&url);
+        enforcer.record(&budgets, &scope, 2.0).await;
+        assert!(enforcer.exceeded(&budgets, &scope).await.is_some());
+
+        let killed = testing::kill_clients_on_db(db::BUDGETS).await;
+        assert!(killed >= 1, "the enforcer's connection was closed");
+
+        // admission: the very first check after the drop is enforced, against
+        // the counter that survived it
+        assert!(
+            enforcer.exceeded(&budgets, &scope).await.is_some(),
+            "a healthy redis must restore the existing enforcer"
+        );
+        // recording: spend lands through the new connection
+        enforcer.record(&budgets, &scope, 0.5).await;
+        let key = spend_key(&budgets[0], Utc::now());
+        let mut conn = redis::Client::open(url.as_str())
+            .unwrap()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let spent: String = conn.get(&key).await.unwrap();
+        assert_eq!(spent.parse::<Decimal>().unwrap(), d("2.5"));
+        let _: () = conn.del(&key).await.unwrap();
     }
 }

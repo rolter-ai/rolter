@@ -23,6 +23,7 @@
 - [Observability](architecture/observability.md)
 - [Client disconnects](architecture/client-disconnects.md)
 - [Billed but withheld](architecture/billed-but-withheld.md)
+- [Redis connections](architecture/redis-connections.md)
 - [Performance](architecture/performance.md)
 
 # Decisions

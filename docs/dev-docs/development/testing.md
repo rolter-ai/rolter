@@ -224,6 +224,36 @@ coverage job runs every test in a binary as a thread, so a value one test wanted
 was read by another test's in-flight request. Pass it into the app under test
 instead — `test_app_with_public_url` is the model.
 
+## The Redis test server
+
+The tests that exercise the gateway's Redis connections — budgets, rate limits,
+the response cache and the reconnecting connection they share — self-skip
+unless `ROLTER_TEST_REDIS_URL` names a Redis they may use. A throwaway container
+on a free port is enough:
+
+```bash
+docker run -d --rm --name rolter-test-redis -p 127.0.0.1:6390:6379 redis:8-alpine
+ROLTER_TEST_REDIS_URL=redis://127.0.0.1:6390 cargo nextest run -p rolter-gateway
+docker rm -f rolter-test-redis
+```
+
+The url names the **server**; any database path on it is ignored. Each test
+selects a logical database of its own (the `db` constants in
+`crates/rolter-gateway/src/redis_conn.rs`), because the reconnect tests close
+connections with `CLIENT KILL` and must only close their own: the kill targets
+the clients that have that test's database selected, so parallel tests — and
+the nextest process-per-test model — never cut each other's connections. Keys
+carry a per-run suffix and are deleted afterwards, and nothing is flushed, so a
+shared development Redis is safe to point at. A new Redis-backed test picks the
+next unused number there; there are 16 databases by default.
+
+The outage-and-restart tests do not touch the server at all: they put a TCP
+forwarder (`testing::Outage`) in front of it and take that down and back up.
+
+The `nextest / doctests` and coverage jobs in `quality.yml` run a Redis service
+and set the variable, so these tests run in CI rather than passing as silent
+no-ops.
+
 ## Layout
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.

@@ -9,14 +9,18 @@
 //! Entries live in Redis so the cache is shared across gateway replicas. With no
 //! Redis url — or when Redis is unreachable — the cache is inert: every request
 //! is a miss and the data plane is unaffected (fail open), exactly like the
-//! rate-limit and budget enforcers.
+//! rate-limit and budget enforcers. A lost connection is re-established on its
+//! own once Redis is reachable again (see [`crate::redis_conn`]).
 
+// only the test-only in-memory backend shares state through an Arc
+#[cfg(test)]
 use std::sync::Arc;
 
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::OnceCell;
+
+use crate::redis_conn::ReconnectingRedis;
 
 /// A stored upstream response: enough to reconstruct the client reply byte-for-byte.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,23 +41,18 @@ struct SemanticEntry {
 /// no Redis url is configured; disabled instances treat every request as a miss.
 #[derive(Clone)]
 pub struct ResponseCache {
-    inner: Option<Arc<Inner>>,
+    redis: Option<ReconnectingRedis>,
     /// in-process stand-in for Redis so HTTP-level cache tests run where no
     /// Redis exists, CI included
     #[cfg(test)]
     memory: Option<Arc<parking_lot::Mutex<memory::Store>>>,
 }
 
-struct Inner {
-    client: redis::Client,
-    conn: OnceCell<redis::aio::MultiplexedConnection>,
-}
-
 impl ResponseCache {
     /// A disabled cache: every lookup misses and stores are dropped.
     pub fn disabled() -> Self {
         Self {
-            inner: None,
+            redis: None,
             #[cfg(test)]
             memory: None,
         }
@@ -63,19 +62,16 @@ impl ResponseCache {
     #[cfg(test)]
     pub(crate) fn in_memory() -> Self {
         Self {
-            inner: None,
+            redis: None,
             memory: Some(Arc::default()),
         }
     }
 
     /// Build a cache against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match redis::Client::open(redis_url) {
-            Ok(client) => Self {
-                inner: Some(Arc::new(Inner {
-                    client,
-                    conn: OnceCell::new(),
-                })),
+        match ReconnectingRedis::new(redis_url, "response cache") {
+            Ok(redis) => Self {
+                redis: Some(redis),
                 #[cfg(test)]
                 memory: None,
             },
@@ -92,7 +88,7 @@ impl ResponseCache {
         if self.memory.is_some() {
             return true;
         }
-        self.inner.is_some()
+        self.redis.is_some()
     }
 
     /// Derive the Redis key for a request. `per_key_scope` is the virtual-key id
@@ -143,20 +139,6 @@ impl ResponseCache {
         )
     }
 
-    async fn connection(inner: &Inner) -> Option<redis::aio::MultiplexedConnection> {
-        match inner
-            .conn
-            .get_or_try_init(|| inner.client.get_multiplexed_async_connection())
-            .await
-        {
-            Ok(conn) => Some(conn.clone()),
-            Err(err) => {
-                tracing::warn!(error = %err, "redis unavailable; response cache misses");
-                None
-            }
-        }
-    }
-
     /// Look up a cached response for `key`. Returns `None` on a miss, when
     /// disabled, when Redis is down, or when the stored blob fails to decode.
     pub async fn get(&self, key: &str) -> Option<CachedResponse> {
@@ -165,8 +147,7 @@ impl ResponseCache {
             let raw = memory.lock().values.get(key).cloned()?;
             return serde_json::from_slice(&raw).ok();
         }
-        let inner = self.inner.as_ref()?;
-        let mut conn = Self::connection(inner).await?;
+        let mut conn = self.redis.as_ref()?.get().await?;
         let raw: Option<Vec<u8>> = conn.get(key).await.unwrap_or(None);
         let raw = raw?;
         match serde_json::from_slice(&raw) {
@@ -196,10 +177,10 @@ impl ResponseCache {
             memory.lock().values.insert(key.to_string(), blob);
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(redis) = self.redis.as_ref() else {
             return;
         };
-        let Some(mut conn) = Self::connection(inner).await else {
+        let Some(mut conn) = redis.get().await else {
             return;
         };
         let res: redis::RedisResult<()> = conn.set_ex(key, blob, ttl_secs).await;
@@ -237,8 +218,7 @@ impl ResponseCache {
                 });
             return nearest(blobs, embedding, threshold);
         }
-        let inner = self.inner.as_ref()?;
-        let mut conn = Self::connection(inner).await?;
+        let mut conn = self.redis.as_ref()?.get().await?;
         let ids: Vec<String> = conn
             .lrange(index_key, 0, max_candidates.saturating_sub(1) as isize)
             .await
@@ -289,10 +269,10 @@ impl ResponseCache {
             list.truncate(max_candidates);
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(redis) = self.redis.as_ref() else {
             return;
         };
-        let Some(mut conn) = Self::connection(inner).await else {
+        let Some(mut conn) = redis.get().await else {
             return;
         };
         let result: redis::RedisResult<()> = redis::pipe()
@@ -463,5 +443,39 @@ mod tests {
         assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]), Some(0.0));
         assert_eq!(cosine_similarity(&[1.0], &[1.0, 0.0]), None);
         assert_eq!(cosine_similarity(&[0.0, 0.0], &[0.0, 0.0]), None);
+    }
+
+    /// #1483, for the response cache: after Redis closes the cache's
+    /// connection the same instance serves the entry stored before the drop,
+    /// and stores new ones through the new connection.
+    #[tokio::test]
+    async fn an_existing_cache_recovers_after_redis_drops_its_connection() {
+        use crate::redis_conn::testing::{self, db};
+
+        let Some(url) = testing::url(db::CACHE) else {
+            return;
+        };
+        let cache = ResponseCache::new(&url);
+        let response = |body: &str| CachedResponse {
+            status: 200,
+            content_type: "application/json".to_string(),
+            body: body.as_bytes().to_vec(),
+        };
+        let before = testing::unique("rolter:test:cache:before");
+        cache.put(&before, &response("{\"n\":1}"), 60).await;
+        assert!(cache.get(&before).await.is_some());
+
+        let killed = testing::kill_clients_on_db(db::CACHE).await;
+        assert!(killed >= 1, "the cache's connection was closed");
+
+        let hit = cache
+            .get(&before)
+            .await
+            .expect("a healthy redis must restore the existing cache");
+        assert_eq!(hit.body, b"{\"n\":1}");
+
+        let after = testing::unique("rolter:test:cache:after");
+        cache.put(&after, &response("{\"n\":2}"), 60).await;
+        assert!(cache.get(&after).await.is_some());
     }
 }
