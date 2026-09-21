@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   findLiterals,
+  findLiteralsInTree,
   newViolations,
   staleAllowed,
   unexplainedAllowed,
@@ -890,5 +891,180 @@ describe("findLiterals reads copy the text-node scan cannot see", () => {
       '<p>{pending ? t("common.saving") : t("common.save")}</p>',
     ].join("\n");
     expect(texts(source)).toEqual([]);
+  });
+});
+
+// #1765: the shapes a per-file scan of JSX and props could not reach
+describe("findLiterals reads what a translated string splices in", () => {
+  test("catches a literal interpolated into t()", () => {
+    const source = [
+      '<p>{t("toast.deleted", { what: "rule" })}</p>',
+      'toast.push({ title: t("toast.saveFailed", { what: "Provider group", detail: err }) });',
+      'const label = t(open ? "a.open" : "a.closed", { target: row.kind || "unknown" });',
+    ].join("\n");
+    expect(texts(source)).toEqual(["rule", "Provider group", "unknown"]);
+  });
+
+  test("catches a literal in a <Trans> values object", () => {
+    expect(texts('<Trans i18nKey="k" values={{ server: "the default server" }} />')).toEqual([
+      "the default server",
+    ]);
+  });
+
+  test("leaves the key, i18next's own switches and values that are not literals", () => {
+    const source = [
+      '<p>{t("pages.cluster.summary", { count: rows.length, live })}</p>',
+      '<p>{t("k", { context: "female", ns: "common", name: user.name })}</p>',
+      '<p>{t("k", { what: t("common.provider"), when: format.date(at, { dateStyle: "medium" }) })}</p>',
+      '<p>{t("k", { list: items.join(", ") })}</p>',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("keeps its place past the options it no longer blanks", () => {
+    const source = [
+      "<p>",
+      '  {open && t("k", { count: counts.get(id) ?? 0, what: label(row) })}',
+      "  Forget",
+      "</p>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["{…} Forget"]);
+  });
+});
+
+describe("findLiterals reads what a helper returns into the screen", () => {
+  test("catches a declared helper's returns when its call is rendered", () => {
+    const source = [
+      "function stateLabel(s: State): string {",
+      '  if (s.revoked_at) return "revoked";',
+      '  return s.active ? "Active" : "expired";',
+      "}",
+      "<Td>{stateLabel(row)}</Td>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["revoked", "Active", "expired"]);
+  });
+
+  test("catches an arrow helper rendered into a copy prop", () => {
+    const source = [
+      'const hint = (on: boolean) => (on ? "always cached" : "never cached");',
+      "<Field hint={hint(enabled)} />",
+    ].join("\n");
+    expect(texts(source)).toEqual(["always cached", "never cached"]);
+  });
+
+  test("leaves a helper whose result is only code, and a component's render", () => {
+    const source = [
+      'function languageOf(v: string) { if (!v) return "text"; return "json"; }',
+      "<CodeBlock language={languageOf(raw)} />",
+      'function Badge({ on }: P) { return <span className="px-2">{on ? t("a") : t("b")}</span>; }',
+      "<p>{Badge({ on })}</p>",
+      '<p>{fmt.number(n)}</p><p>{cellFor(row) + " "}</p>',
+      'function cellFor(r: Row) { return "idle"; }',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});
+
+describe("findLiterals reads a line handed to state an operator reads", () => {
+  const log = [
+    "const [log, setLog] = React.useState<string[]>([]);",
+    "const append = (line: string) => setLog((l) => [...l.slice(-40), line]);",
+    "<div>{log.map((line) => <p key={line}>{line}</p>)}</div>",
+  ];
+
+  test("catches a literal appended through a local function", () => {
+    const source = [
+      ...log,
+      'ws.onopen = () => append("● connected");',
+      'ws.onerror = () => append("socket error, realtime needs a realtime upstream");',
+    ].join("\n");
+    expect(texts(source)).toEqual([
+      "● connected",
+      "socket error, realtime needs a realtime upstream",
+    ]);
+  });
+
+  test("catches a literal set straight into a rendered state", () => {
+    const source = [
+      "const [notice, setNotice] = React.useState<string | null>(null);",
+      "<p>{notice}</p>",
+      'onSuccess: () => setNotice("saved"),',
+    ].join("\n");
+    expect(texts(source)).toEqual(["saved"]);
+  });
+
+  test("reads a word behind a status glyph, but not behind path punctuation", () => {
+    const source = [
+      '<p>{on ? "● live" : "○ idle"}</p>',
+      '<Input placeholder="--verbose" />',
+      "<Trans values={{ address: `${slug}/model` }} />",
+    ].join("\n");
+    expect(texts(source)).toEqual(["● live", "○ idle"]);
+  });
+
+  test("leaves translated lines, raw data and state that is never shown", () => {
+    const source = [
+      ...log,
+      'ws.onopen = () => append(`● ${t("pages.playground.realtimeLog.connected")}`);',
+      'ws.onmessage = (ev) => append("← " + String(ev.data));',
+      'const [tab, setTab] = React.useState("chat");',
+      "<Tabs value={tab} onChange={setTab} />",
+      'setTab("audio");',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});
+
+describe("findLiteralsInTree follows copy across imports", () => {
+  const found = (files: Record<string, string>) =>
+    findLiteralsInTree(files).map((l) => `${l.file}: ${l.text}`);
+
+  test("catches an imported table, constant and helper where they are written", () => {
+    const files = {
+      "src/lib/copy.ts": [
+        'export const STATUS = { pending: "waiting", done: "finished" };',
+        'export const EMPTY = "nothing here";',
+        'export function roleLabel(r: string) { return r === "admin" ? "Admin" : "member"; }',
+      ].join("\n"),
+      "src/pages/A.tsx": [
+        'import { STATUS, EMPTY as NONE } from "@/lib/copy";',
+        'import { roleLabel } from "../lib/copy";',
+        "<p>{STATUS[s]}</p><p>{NONE}</p><Badge label={roleLabel(r)} />",
+      ].join("\n"),
+    };
+    expect(found(files)).toEqual([
+      "src/lib/copy.ts: waiting",
+      "src/lib/copy.ts: finished",
+      "src/lib/copy.ts: nothing here",
+      "src/lib/copy.ts: Admin",
+      "src/lib/copy.ts: member",
+    ]);
+  });
+
+  test("leaves an export only code imports, and one a file shadows locally", () => {
+    const files = {
+      "src/lib/codes.ts": [
+        'export const MODES = { allow: "allowed", deny: "denied" };',
+        'export const ENDPOINT = "the endpoint";',
+      ].join("\n"),
+      "src/pages/B.tsx": [
+        'import { MODES, ENDPOINT } from "@/lib/codes";',
+        "const mode = MODES[k];",
+        "fetch(ENDPOINT);",
+        'const ENDPOINT_LABEL = t("pages.b.endpoint");',
+        "<p>{ENDPOINT_LABEL}</p>",
+      ].join("\n"),
+      "src/pages/C.tsx": [
+        'import { ENDPOINT } from "@/lib/codes";',
+        'const ENDPOINT = t("pages.c.endpoint");',
+        "<p>{ENDPOINT}</p>",
+      ].join("\n"),
+    };
+    expect(found(files)).toEqual([]);
+  });
+
+  test("matches findLiterals file by file when nothing crosses a module", () => {
+    const source = '<p title="Save changes">{open ? "hide" : "show"}</p>';
+    expect(findLiteralsInTree({ "src/a.tsx": source })).toEqual(findLiterals(source, "src/a.tsx"));
   });
 });

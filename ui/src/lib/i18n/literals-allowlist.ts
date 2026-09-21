@@ -48,6 +48,12 @@ export const NOT_COPY: AllowList = {
   "src/pages/Login.tsx": {
     rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
+  "src/pages/Playground.tsx": {
+    nova: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
+    onyx: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
+    shimmer:
+      "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
+  },
   "src/pages/PromptRepository.tsx": {
     "v{…}": "a version number in `v3` notation, the same in every locale",
   },
