@@ -3,12 +3,24 @@ import * as React from "react";
 import { expect, userEvent, within } from "storybook/test";
 
 import { DeleteIconButton } from "./delete-icon-button";
+import { UxScreenProvider } from "@/lib/ux-react";
+import {
+  expectAllowed,
+  expectNoUxEvent,
+  expectRefused,
+  expectUxEvent,
+  Harness,
+  recordUxEvents,
+  routes,
+} from "@/pages/story-harness";
 
 const meta = {
   title: "Primitives/DeleteIconButton",
   component: DeleteIconButton,
   parameters: { layout: "padded" },
   args: { label: "Delete provider openai" },
+  // a fresh UX queue per story, so a reach recorded by one is never read by the next
+  beforeEach: recordUxEvents,
 } satisfies Meta<typeof DeleteIconButton>;
 
 export default meta;
@@ -17,10 +29,6 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Pending: Story = { args: { pending: true } };
-
-export const Denied: Story = {
-  args: { disabled: true, title: "You need providers:write to delete a provider" },
-};
 
 /**
  * The control is an icon with no text, so `label` is the only name it has — and
@@ -67,13 +75,89 @@ export const PendingBlocksASecondPress: Story = {
   },
 };
 
-/** A gated row keeps the control visible and says why it is dead in the title. */
-export const DeniedSaysWhy: Story = {
-  args: { disabled: true, title: "You need providers:write to delete a provider" },
+const stub = routes([]);
+
+/**
+ * A gated row keeps the control visible and says why it is dead in the title.
+ *
+ * `gate` is the house pattern (#1759): a screen that disabled the button from
+ * its own `useGate` got the same look, but the reach for it never reached the
+ * UX stream.
+ */
+export const Refused: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="viewer">
+      <DeleteIconButton
+        gate="provider:delete"
+        control="provider-delete"
+        label="Delete provider openai"
+      />
+    </Harness>
+  ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const button = canvas.getByRole("button", { name: "Delete provider openai" });
+    await expectRefused(canvasElement, "Delete provider openai");
+  },
+};
+
+export const Allowed: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="admin">
+      <DeleteIconButton
+        gate="provider:delete"
+        control="provider-delete"
+        label="Delete provider openai"
+      />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Delete provider openai");
+    // an offered delete has no reason to give, so the title is the name again
+    await expect(
+      within(canvasElement).getByRole("button", { name: "Delete provider openai" }),
+    ).toHaveAttribute("title", "Delete provider openai");
+  },
+};
+
+/** A refused delete is recorded under its own slug, the way `GatedButton` is (#1731). */
+export const RefusedRecordsTheReach: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="viewer">
+      <UxScreenProvider screen="providers">
+        <DeleteIconButton
+          gate="provider:delete"
+          control="provider-delete"
+          label="Delete provider openai"
+        />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Delete provider openai");
+    const button = within(canvasElement).getByRole("button", { name: "Delete provider openai" });
+    await userEvent.click(button, { pointerEventsCheck: 0 });
+    const event = await expectUxEvent("refused_click", "provider-delete:provider:delete");
+    await expect(event.screen).toBe("providers");
+    // the row's name is on the button and never on the event
+    await expect(JSON.stringify(event)).not.toContain("openai");
+  },
+};
+
+/**
+ * A delete disabled for its own reason — no row selected, a write in flight —
+ * records nothing: only a permission refusal is a struggle signal.
+ */
+export const UngatedRecordsNothing: Story = {
+  render: () => (
+    <UxScreenProvider screen="providers">
+      <DeleteIconButton label="Delete provider openai" disabled />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button", { name: "Delete provider openai" });
+    // story-wait-allow: disabled by its own prop from the first paint, and no
+    // gate is asked, so there is no answer to wait for
     await expect(button).toBeDisabled();
-    await expect(button).toHaveAttribute("title", "You need providers:write to delete a provider");
+    await userEvent.click(button, { pointerEventsCheck: 0 });
+    expectNoUxEvent("refused_click");
   },
 };

@@ -122,8 +122,15 @@ A disabled control is not focusable, so there is no keyboard path to miss, and
 nothing is deduplicated: reaching for the same refused control four times is
 the signal, not noise.
 
-`GatedButton`, `GatedSwitch` and `RowIconButton` are wired, which is every
-shared gated control.
+`GatedButton`, `GatedSwitch`, `GatedCombobox`, `RowIconButton` and a gated
+`DeleteIconButton` are wired, which is every shared gated control — and the
+only way a screen gates one (#1759). A screen that read `useGate()` itself and
+disabled a plain button got the same look and recorded nothing: Keys and
+Models shipped their row edit and delete that way, the exact controls the
+struggle signal was meant to tell apart. The guard in
+`ui/src/components/gated-controls.test.ts` fails on a `useGate()` outside the
+primitives unless it carries a `// use-gate-allow: <reason>` waiver, and
+[RBAC gating](rbac-gating.md) states the rule from the gating side.
 
 ### Naming the control
 
@@ -131,9 +138,10 @@ Every event already carries its `screen` and the capability that refused it,
 which says _which permission boundary_ is in the way. The `control` slug is the
 part that says which of the refused controls on that screen was reached for —
 on Users, the difference between "the role grant is gated" and "deactivating is
-gated" (#1750). So each of the three components takes a **required** `control`,
-the way `EditorSheet` requires `name`: a required prop is what stopped form
-instrumentation drifting, and it does the same here.
+gated" (#1750). So every gated primitive takes a **required** `control` —
+`DeleteIconButton` as soon as it is handed a `gate` — the way `EditorSheet`
+requires `name`: a required prop is what stopped form instrumentation
+drifting, and it does the same here.
 
 The slug is
 

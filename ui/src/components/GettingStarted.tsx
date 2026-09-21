@@ -4,6 +4,7 @@ import * as React from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -58,7 +59,9 @@ interface Step {
 /** one step: a state marker, the copy, and the link that does it */
 function StepRow({ step, index }: { step: Step; index: number }) {
   const { t } = useTranslation();
-  const { denied, reason } = useGate(step.gate);
+  // use-gate-allow: picks a link or a button; the refused button is a
+  // `GatedButton`, which is what records the reach for it
+  const { denied } = useGate(step.gate);
   const label = t(`pages.gettingStarted.steps.${step.key}.title`);
   return (
     <li className="flex items-start gap-3">
@@ -87,20 +90,20 @@ function StepRow({ step, index }: { step: Step; index: number }) {
           {t(`pages.gettingStarted.steps.${step.key}.body`)}
         </p>
         <div className="mt-2">
-          {denied ? (
+          {denied && step.gate ? (
             // the house pattern for a control the caller may not use (#1183):
             // present, disabled, and saying which role it takes — rather than
-            // a link that spends the operator's attention on a 403
-            <Button
+            // a link that spends the operator's attention on a 403. the
+            // capability tells the steps apart in `refused_click`, so they
+            // share one slug
+            <GatedButton
+              gate={step.gate}
+              control="getting-started-step"
               size="sm"
               variant="outline"
-              disabled
-              title={reason}
-              style={{ pointerEvents: "auto" }}
-              className="cursor-not-allowed"
             >
               {t(`pages.gettingStarted.steps.${step.key}.action`)}
-            </Button>
+            </GatedButton>
           ) : (
             <Link
               to={step.to}

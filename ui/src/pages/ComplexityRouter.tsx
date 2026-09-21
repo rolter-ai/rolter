@@ -7,7 +7,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
-import { PageBody, Pill } from "@/components/screen";
+import { PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -19,7 +19,6 @@ import {
   type ComplexityTier,
   type RouteRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -65,9 +64,6 @@ export default function ComplexityRouter() {
   });
 
   const [editing, setEditing] = React.useState<RouteRow | null>(null);
-  // a policy lives on its route, so both entry points are `route:update`
-  const updateGate = useGate("route:update");
-
   // one request per route, so "this route has no policy" and "this route's
   // policy never arrived" are different answers and the screen has to say which
   // one it is holding. `?? []` collapsed them, and a delayed, 500'd or 403'd
@@ -248,21 +244,22 @@ export default function ComplexityRouter() {
             {t("pages.complexityRouter.noPolicyYet")}
           </div>
           <div className="flex flex-wrap gap-2.5">
+            {/* a policy lives on its route, so this entry point is the same
+                `route:update` the edit button on a configured card is */}
             {unconfigured.map(({ route }) => (
-              <button
+              <RowIconButton
                 key={route.id}
-                type="button"
-                title={updateGate.reason}
+                gate="route:update"
+                control="complexity-policy-new"
                 aria-label={t("pages.complexityRouter.addPolicyAria", {
                   model: route.model,
                 })}
-                disabled={updateGate.denied}
                 onClick={() => setEditing(route)}
-                className="flex items-center gap-2 rounded-[8px] border border-[color:var(--border-subtle)] px-3 py-2 font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--border-default)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="gap-2 rounded-[8px] px-3 py-2 font-mono text-xs text-[color:var(--text-secondary)] hover:border-[color:var(--border-default)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {route.model}
                 <Plus className="h-3 w-3" />
-              </button>
+              </RowIconButton>
             ))}
           </div>
         </>

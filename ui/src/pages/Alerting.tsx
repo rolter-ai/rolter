@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Loader2, Megaphone, Play, Trash2 } from "lucide-react";
+import { Gavel, History, Megaphone, Play } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
@@ -38,7 +39,6 @@ import {
   type AlertChannelRow,
   type AlertRuleRow,
 } from "@/lib/api";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -98,7 +98,6 @@ function AlertChannelsScreen() {
   };
   // the row controls take the same deployment-wide authority the add button
   // does — alerting has no tenancy scope to be an admin of (#1258)
-  const channelDeleteGate = useGate("alert_channel:delete");
 
   return (
     <PageBody>
@@ -178,25 +177,14 @@ function AlertChannelsScreen() {
               {/* the label names the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
                   cannot tell apart (#1214) */}
-              <button
-                type="button"
-                title={
-                  channelDeleteGate.reason ??
-                  t("pages.alerting.channels.deleteAria", { name: c.name })
-                }
-                aria-label={t("pages.alerting.channels.deleteAria", { name: c.name })}
-                disabled={
-                  channelDeleteGate.denied || (remove.isPending && remove.variables === c.id)
-                }
+              <DeleteIconButton
+                gate="alert_channel:delete"
+                control="alert-channel-delete"
+                className="ml-auto"
+                label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                pending={remove.isPending && remove.variables === c.id}
                 onClick={() => startDelete(c)}
-                className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {remove.isPending && remove.variables === c.id ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-              </button>
+              />
             </div>
           </div>
         ))}
@@ -390,7 +378,6 @@ function AlertRulesScreen() {
     remove.reset();
     setDeleteTarget(rule);
   };
-  const ruleDeleteGate = useGate("alert_rule:delete");
 
   return (
     <PageBody>
@@ -506,24 +493,14 @@ function AlertRulesScreen() {
                   <Play className="h-3.5 w-3.5" />
                   {t("pages.alerting.rules.evaluateNow")}
                 </GatedButton>
-                <button
-                  type="button"
-                  title={
-                    ruleDeleteGate.reason ?? t("pages.alerting.rules.deleteAria", { name: r.name })
-                  }
-                  aria-label={t("pages.alerting.rules.deleteAria", { name: r.name })}
-                  disabled={
-                    ruleDeleteGate.denied || (remove.isPending && remove.variables === r.id)
-                  }
+                <DeleteIconButton
+                  gate="alert_rule:delete"
+                  control="alert-rule-delete"
+                  className="ml-auto"
+                  label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                  pending={remove.isPending && remove.variables === r.id}
                   onClick={() => startDelete(r)}
-                  className="ml-auto flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {remove.isPending && remove.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                />
               </div>
             </div>
           );

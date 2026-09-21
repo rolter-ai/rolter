@@ -1,11 +1,12 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Route, Tag, Trash2 } from "lucide-react";
+import { Route, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -27,7 +28,6 @@ import {
   type RouteTargetRow,
 } from "@/lib/api";
 import { StrategyHint } from "@/components/StrategyHint";
-import { useGate } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { strategyOptions, strategyTone } from "@/lib/strategies";
@@ -50,7 +50,6 @@ export default function RoutingRules() {
   const toast = useToast();
   const scope = useScope();
   // deleting a route is the same admin capability adding one is (#1258)
-  const deleteGate = useGate("route:delete");
 
   const routes = useQuery({
     queryKey: ["routes", scope.projectId],
@@ -240,20 +239,13 @@ export default function RoutingRules() {
                 >
                   <Tag className="h-3.5 w-3.5" />
                 </Button>
-                <button
-                  type="button"
-                  title={deleteGate.reason ?? t("pages.routing.deleteRoute", { model: r.model })}
-                  aria-label={t("pages.routing.deleteRoute", { model: r.model })}
-                  disabled={deleteGate.denied || (remove.isPending && remove.variables === r.id)}
+                <DeleteIconButton
+                  gate="route:delete"
+                  control="route-delete"
+                  label={t("pages.routing.deleteRoute", { model: r.model })}
+                  pending={remove.isPending && remove.variables === r.id}
                   onClick={() => startDelete(r)}
-                  className="flex h-[30px] items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  {remove.isPending && remove.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                />
               </div>
             </div>
           );
