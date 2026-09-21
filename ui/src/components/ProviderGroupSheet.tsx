@@ -141,7 +141,7 @@ function MemberEditor({
             aria-label={t("providerGroupSheet.members.upstreamModel")}
             value={m.upstream_model}
             onChange={(e) => update(i, { upstream_model: e.target.value })}
-            placeholder="passthrough"
+            placeholder={t("providerGroupSheet.members.upstreamModelPlaceholder")}
             className="font-mono"
           />
           {/* the grid's column captions above are not `<label>`s, so each cell

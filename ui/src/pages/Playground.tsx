@@ -720,14 +720,10 @@ function pca2(vectors: number[][]): { x: number; y: number }[] {
 function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const { t } = useTranslation();
   const [model, setModel] = React.useState(FAKE);
-  const [texts, setTexts] = React.useState<string[]>([
-    "reset my password",
-    "update the invoice",
-    "read the api docs",
-    "two-factor auth setup",
-    "monthly billing statement",
-    "getting started guide",
-  ]);
+  // sample input, seeded in the operator's language: one text per line
+  const [texts, setTexts] = React.useState<string[]>(() =>
+    t("pages.playground.samples.embeddings").split("\n"),
+  );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -740,7 +736,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const run = async () => {
     const rows = texts.filter((t) => t.trim());
     if (rows.length < 2) {
-      setError("enter at least two texts to project");
+      setError(t("pages.playground.embedNeedTwo"));
       return;
     }
     setError(null);
@@ -831,9 +827,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
 function ImageMode({ models }: { models: ModelOption[] }) {
   const { t } = useTranslation();
   const [model, setModel] = React.useState(FAKE);
-  const [prompt, setPrompt] = React.useState(
-    "A cross-stitch folk pattern of a fox, deep red thread on black linen",
-  );
+  const [prompt, setPrompt] = React.useState(() => t("pages.playground.samples.imagePrompt"));
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
@@ -929,9 +923,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
   const { t } = useTranslation();
   const [tab, setTab] = React.useState("tts");
   const [model, setModel] = React.useState(FAKE);
-  const [text, setText] = React.useState(
-    "Привет! This is a synthesized voice sample from the Rolter playground.",
-  );
+  const [text, setText] = React.useState(() => t("pages.playground.samples.speech"));
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
@@ -1091,13 +1083,13 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
       wsRef.current = ws;
       ws.onopen = () => {
         setLive(true);
-        append("● connected");
+        append(`● ${t("pages.playground.realtimeLog.connected")}`);
       };
       ws.onmessage = (ev) => append("← " + String(ev.data).slice(0, 200));
-      ws.onerror = () => append("✕ socket error — realtime needs a realtime-capable upstream");
+      ws.onerror = () => append(`✕ ${t("pages.playground.realtimeLog.socketError")}`);
       ws.onclose = () => {
         setLive(false);
-        append("○ closed");
+        append(`○ ${t("pages.playground.realtimeLog.closed")}`);
       };
     } catch (e) {
       append("✕ " + (e as Error).message);

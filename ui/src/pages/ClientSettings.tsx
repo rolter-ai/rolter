@@ -283,7 +283,7 @@ function ClientSettingsScreen() {
               <Input
                 className="flex-1 font-mono text-xs"
                 aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
-                placeholder="value"
+                placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
                 value={row.value}
                 onChange={(e) =>
                   set({

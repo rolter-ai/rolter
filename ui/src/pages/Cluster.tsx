@@ -174,7 +174,7 @@ function ClusterScreen() {
               {forget.isPending && forget.variables === row.id && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Forget
+              {t("pages.cluster.forget")}
             </GatedButton>
           </div>
         );
@@ -209,8 +209,8 @@ function ClusterScreen() {
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">
-          {rows.length} nodes · {live} live
-          {lagging > 0 && ` · ${lagging} still applying the newest config`}
+          {t("pages.cluster.summary", { count: rows.length, live })}
+          {lagging > 0 && ` · ${t("pages.cluster.lagging", { count: lagging })}`}
         </span>
       </div>
 

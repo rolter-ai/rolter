@@ -258,7 +258,7 @@ export default function Users() {
                     <span className="truncate font-mono text-sm">{user.email}</span>
                     {user.is_superadmin && (
                       <span className="flex-none rounded-[3px] border border-[color:var(--red-folk)] px-1 text-[9px] uppercase tracking-[0.06em] text-[color:var(--red-folk-text)]">
-                        super
+                        {t("pages.users.superBadge")}
                       </span>
                     )}
                   </div>

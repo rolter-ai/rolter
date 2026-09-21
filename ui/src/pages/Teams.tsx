@@ -193,7 +193,11 @@ export default function Teams() {
         onSave={() => create.mutate()}
       >
         <Field label={t("pages.teams.teamName")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="platform" />
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("pages.teams.teamNamePlaceholder")}
+          />
         </Field>
       </EditorSheet>
     </PageBody>

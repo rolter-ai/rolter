@@ -666,7 +666,8 @@
         "firstTarget": "Первая цель",
         "noTarget": "нет (добавить позже)",
         "weight": "Вес"
-      }
+      },
+      "disabledBadge": "отключён"
     },
     "pricing": {
       "unconvertible": "Цена в {{code}}, для которого не настроен курс — расходы по этой модели не попадают в итоги и бюджеты в {{base}}.",
@@ -762,7 +763,18 @@
         "stt": "Речь → текст"
       },
       "voiceOption": "голос: {{voice}}",
-      "sampleLabel": "изображение {{n}}"
+      "sampleLabel": "изображение {{n}}",
+      "embedNeedTwo": "введите хотя бы два текста для проекции",
+      "samples": {
+        "embeddings": "сбросить пароль\nобновить счёт\nпрочитать документацию по api\nнастройка двухфакторной аутентификации\nежемесячная выписка по оплате\nруководство по началу работы",
+        "imagePrompt": "Народный узор крестиком: лиса, тёмно-красная нить на чёрном льне",
+        "speech": "Hello! Это образец синтезированного голоса из песочницы Rolter."
+      },
+      "realtimeLog": {
+        "connected": "подключено",
+        "closed": "закрыто",
+        "socketError": "ошибка сокета — для realtime нужен апстрим с поддержкой realtime"
+      }
     },
     "promptRepo": {
       "renameTitle": "Переименовать шаблон промпта",
@@ -1043,6 +1055,11 @@
         "deleteTitle": "Удалить виртуальный ключ {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> немедленно перестанет проходить аутентификацию, и каждый клиент, который его отправляет, получит отказ. Действие необратимо.",
         "deleteConfirm": "Удалить ключ"
+      },
+      "cacheModes": {
+        "inherit": "наследовать",
+        "off": "выкл",
+        "on": "вкл"
       }
     },
     "acceptInvite": {
@@ -1493,7 +1510,16 @@
         "lastSeen": "Последний отклик"
       },
       "drain": "Вывести",
-      "returnToService": "Вернуть в обслуживание"
+      "returnToService": "Вернуть в обслуживание",
+      "forget": "Забыть",
+      "summary_one": "{{count}} узел · {{live}} в сети",
+      "summary_few": "{{count}} узла · {{live}} в сети",
+      "summary_many": "{{count}} узлов · {{live}} в сети",
+      "summary_other": "{{count}} узла · {{live}} в сети",
+      "lagging_one": "{{count}} ещё применяет новую конфигурацию",
+      "lagging_few": "{{count}} ещё применяют новую конфигурацию",
+      "lagging_many": "{{count}} ещё применяют новую конфигурацию",
+      "lagging_other": "{{count}} ещё применяют новую конфигурацию"
     },
     "costAttribution": {
       "confirm": {
@@ -1995,7 +2021,10 @@
         "action": "Действие",
         "target": "Объект",
         "detail": "Детали"
-      }
+      },
+      "unknownTarget": "неизвестно",
+      "hideDetails": "скрыть",
+      "showDetails": "показать"
     },
     "complexityRouter": {
       "emptyTitle": "Нет маршрутов, которым можно задать политику",
@@ -2161,7 +2190,8 @@
       "requests_few": "{{count}} запроса",
       "requests_many": "{{count}} запросов",
       "requests_other": "{{count}} запроса",
-      "pageShort": "стр. {{page}}"
+      "pageShort": "стр. {{page}}",
+      "requestFallback": "запрос"
     },
     "mcpLogs": {
       "emptyTitle": "Вызовов MCP-инструментов пока нет",
@@ -2225,7 +2255,8 @@
       "budget": "Бюджет",
       "admin": "администратор",
       "addSubtitle": "Объединяет пользователей, общий бюджет и доступ.",
-      "teamName": "Название команды"
+      "teamName": "Название команды",
+      "teamNamePlaceholder": "платформа"
     },
     "userProvisioning": {
       "mappings": {
@@ -2337,7 +2368,8 @@
       "noTeams": "в организации нет команд",
       "projectId": "ID проекта",
       "projectIdHint": "uuid проекта в этой организации (из области видимости на экранах «Провайдеры» / «Ключи»)",
-      "role": "Роль"
+      "role": "Роль",
+      "superBadge": "супер"
     },
     "config": {
       "allSections": {
@@ -2495,7 +2527,8 @@
         "tooManyForwarded": "Допускается не более 64 пробрасываемых заголовков.",
         "tooManyInjected": "Допускается не более 64 добавляемых заголовков.",
         "badRequestIdHeader": "Заголовок ID запроса имеет недопустимое имя."
-      }
+      },
+      "injectedValuePlaceholder": "значение"
     },
     "security": {
       "dashboardAuth": "Защитить панель паролем",
@@ -2740,7 +2773,8 @@
       "providerKeyHintEdit": "пустое значение сохраняет текущий ключ провайдера; хранится зашифрованно и не показывается",
       "providerKeyEnv": "Переменная окружения с ключом провайдера (необязательно)",
       "providerKeyEnvHint": "читать ключ провайдера из этой переменной окружения",
-      "egressProxy": "Egress-прокси (необязательно)"
+      "egressProxy": "Egress-прокси (необязательно)",
+      "apiKeyUnchanged": "без изменений"
     },
     "title": {
       "add": "Добавить провайдера",
@@ -3370,7 +3404,8 @@
       "upstreamModel": "Имя модели на стороне провайдера",
       "weight": "Вес",
       "relativeWeight": "Относительный вес",
-      "remove": "Удалить участника"
+      "remove": "Удалить участника",
+      "upstreamModelPlaceholder": "как запрошено"
     }
   },
   "paramsEditor": {
@@ -3425,5 +3460,9 @@
       "other_many": "Прочие ({{value}})",
       "other_other": "Прочие ({{value}})"
     }
+  },
+  "guardrailPanel": {
+    "enforced": "применяется",
+    "paused": "приостановлено"
   }
 }

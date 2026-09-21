@@ -331,7 +331,7 @@ export default function Models() {
               border="var(--border-default)"
             >
               <Lock className="h-3 w-3" />
-              config
+              {t("pages.models.readOnlyPill")}
             </Pill>
             {t("pages.models.configLegend")}
           </span>

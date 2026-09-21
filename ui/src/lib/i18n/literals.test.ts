@@ -717,3 +717,178 @@ describe("findLiterals reads a code-to-copy map", () => {
     expect(texts(source)).toEqual([]);
   });
 });
+
+// every test here names the shape #1745 found reaching the screen past the gate,
+// and pairs it with the notation beside it that must stay quiet
+describe("findLiterals reads copy the text-node scan cannot see", () => {
+  test("catches a bare lowercase word handed to a copy prop", () => {
+    const source = [
+      '<Button aria-label="close" />',
+      '<Input placeholder="unchanged" />',
+      "<Th title={'details'} />",
+    ].join("\n");
+    expect(texts(source)).toEqual(["close", "unchanged", "details"]);
+  });
+
+  test("leaves a copy prop whose value is a code, a path or an example identifier", () => {
+    const source = [
+      '<Input placeholder="gpt-4o-mini" />',
+      '<Input placeholder="OPENAI_API_KEY" />',
+      '<Input placeholder="https://api.example.com/v1" />',
+      '<Input placeholder="openai.primary" />',
+      '<Axis xLabel="PC1" yLabel="PC2" />',
+      '<Stat unit="%" />',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("catches a lowercase word rendered as a child, alone or as a branch", () => {
+    const source = [
+      "<span>disabled</span>",
+      '<button>{open ? "hide" : "show"}</button>',
+      '<Badge>{enabled ? "enforced" : "paused"}</Badge>',
+      '<Td>{row.target || "unknown"}</Td>',
+    ].join("\n");
+    expect(texts(source)).toEqual(["disabled", "hide", "show", "enforced", "paused", "unknown"]);
+  });
+
+  test("leaves a lowercase word that is compared, passed or keyed rather than rendered", () => {
+    const source = [
+      '<Badge tone={kind === "chat" ? "info" : "neutral"}>{name}</Badge>',
+      '<p>{format.date(at, { dateStyle: "medium", timeStyle: "short" })}</p>',
+      '<p>{fmt(n, "compact")}</p>',
+      '<p>{rows.filter((r) => r.state !== "idle").length}</p>',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("catches the copy props the dashboard's own components declare", () => {
+    const source = [
+      '<PageLead eyebrow="Inputs" />',
+      '<Donut centerLabel="Total" centerSub="requests" />',
+      '<Chip removeLabel="Remove model" />',
+      '<Segmented ariaLabel="Lock mode" />',
+      '<Flag unavailableReason="Needs a restart" />',
+      '<div aria-description="Sorted by cost" aria-valuetext="half" />',
+    ].join("\n");
+    expect(texts(source)).toEqual([
+      "Inputs",
+      "Total",
+      "requests",
+      "Remove model",
+      "Lock mode",
+      "Needs a restart",
+      "Sorted by cost",
+      "half",
+    ]);
+  });
+
+  test("catches a word glued on with +, whichever side it sits on", () => {
+    const source = ['<Th aria-label={name + " settings"} />', '<p>{"Owned by " + owner}</p>'].join(
+      "\n",
+    );
+    expect(texts(source)).toEqual(["settings", "Owned by"]);
+  });
+
+  test("leaves a class list glued together with +", () => {
+    expect(texts('<div className={"px-2 " + tone} title={base + "/" + id} />')).toEqual([]);
+  });
+
+  test("catches a unit written beside a value in a template", () => {
+    expect(texts("<Stat label={`${n} tokens`} />")).toEqual(["{…} tokens"]);
+  });
+
+  test("catches a message set from a handler", () => {
+    const source = [
+      'if (rows.length < 2) { setError("enter at least two texts to project"); return; }',
+      'setFormError(ok ? null : "Name is taken");',
+      "setError(`${field}: must be a number`);",
+    ].join("\n");
+    expect(texts(source)).toEqual([
+      "enter at least two texts to project",
+      "Name is taken",
+      "{…}: must be a number",
+    ]);
+  });
+
+  test("leaves a setter whose value is a state code, or a message that is translated", () => {
+    const source = [
+      'setStatus("ready");',
+      'setTestState("idle");',
+      'setError(t("pages.playground.needTwoTexts"));',
+      "setError(null);",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("catches a table indexed where copy goes, word by word", () => {
+    const source = [
+      'const MODE_HINT = { allow: "listed only", deny: "all but listed", manual: "custom" };',
+      "<p>{MODE_HINT[mode]}</p>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["listed only", "all but listed", "custom"]);
+  });
+
+  test("leaves a table indexed into a prop that is not copy, and a hook result", () => {
+    const source = [
+      'const ARROWS = { up: "M4 10l4-4 4 4", flat: "M3 8h10" };',
+      "<path d={ARROWS[trend]} />",
+      'const save = useMutation({ onSuccess: () => toast.push({ tone: "success" }) });',
+      "<p>{save.error}</p>",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("reads the prose around an expression that holds a comparison", () => {
+    // the `>` in `lagging > 0` hid this whole sentence from `TEXT_MIXED`
+    const source = [
+      "<span>",
+      "  {rows.length} nodes · {live} live",
+      "  {lagging > 0 && ` · ${lagging} still applying the newest config`}",
+      "</span>",
+    ].join("\n");
+    expect(texts(source)).toEqual([
+      "{…} nodes · {…} live {…}",
+      "· {…} still applying the newest config",
+    ]);
+  });
+
+  test("reads a label that follows a conditional spinner", () => {
+    const source = [
+      "<Button>",
+      "  {pending && (",
+      '    <Loader2 className="h-4 w-4 animate-spin" />',
+      "  )}",
+      "  Forget",
+      "</Button>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["{…} Forget"]);
+  });
+
+  test("leaves the code after an element closes", () => {
+    const source = [
+      "const NAV = [",
+      '  { key: "overview", icon: <Gauge />, children: [{ key: "dashboard", icon: <Home /> }] },',
+      "];",
+      "function A() {",
+      '  if (x) return <p className="a" />;',
+      "  if (y) { return null; }",
+      "  return <div />;",
+      "}",
+      'Button.displayName = "Button";',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+
+  test("keeps its place past a t() call whose arguments hold parentheses", () => {
+    // the call used to be blanked only as far as the first `)`, which left the
+    // brackets after it unbalanced and ended the expression around it early
+    const source = [
+      "<p>",
+      '  {open && t("k", { count: counts.get(id) ?? 0, what: label(row) })}',
+      "</p>",
+      '<p>{pending ? t("common.saving") : t("common.save")}</p>',
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});

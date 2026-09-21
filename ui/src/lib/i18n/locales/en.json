@@ -644,7 +644,8 @@
         "firstTarget": "First target",
         "noTarget": "none (attach later)",
         "weight": "Weight"
-      }
+      },
+      "disabledBadge": "disabled"
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",
@@ -734,7 +735,18 @@
         "stt": "Speech → Text"
       },
       "voiceOption": "voice: {{voice}}",
-      "sampleLabel": "sample {{n}}"
+      "sampleLabel": "sample {{n}}",
+      "embedNeedTwo": "enter at least two texts to project",
+      "samples": {
+        "embeddings": "reset my password\nupdate the invoice\nread the api docs\ntwo-factor auth setup\nmonthly billing statement\ngetting started guide",
+        "imagePrompt": "A cross-stitch folk pattern of a fox, deep red thread on black linen",
+        "speech": "Привет! This is a synthesized voice sample from the Rolter playground."
+      },
+      "realtimeLog": {
+        "connected": "connected",
+        "closed": "closed",
+        "socketError": "socket error — realtime needs a realtime-capable upstream"
+      }
     },
     "promptRepo": {
       "renameTitle": "Rename prompt template",
@@ -1007,6 +1019,11 @@
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
         "deleteConfirm": "Delete key"
+      },
+      "cacheModes": {
+        "inherit": "inherit",
+        "off": "off",
+        "on": "on"
       }
     },
     "acceptInvite": {
@@ -1427,7 +1444,12 @@
         "lastSeen": "Last seen"
       },
       "drain": "Drain",
-      "returnToService": "Return to service"
+      "returnToService": "Return to service",
+      "forget": "Forget",
+      "summary_one": "{{count}} node · {{live}} live",
+      "summary_other": "{{count}} nodes · {{live}} live",
+      "lagging_one": "{{count}} still applying the newest config",
+      "lagging_other": "{{count}} still applying the newest config"
     },
     "costAttribution": {
       "confirm": {
@@ -1899,7 +1921,10 @@
         "action": "Action",
         "target": "Target",
         "detail": "Detail"
-      }
+      },
+      "unknownTarget": "unknown",
+      "hideDetails": "hide",
+      "showDetails": "show"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -2051,7 +2076,8 @@
       "paused": "Paused",
       "requests_one": "{{count}} request",
       "requests_other": "{{count}} requests",
-      "pageShort": "p{{page}}"
+      "pageShort": "p{{page}}",
+      "requestFallback": "request"
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2113,7 +2139,8 @@
       "budget": "Budget",
       "admin": "admin",
       "addSubtitle": "Group users, share budgets and access.",
-      "teamName": "Team name"
+      "teamName": "Team name",
+      "teamNamePlaceholder": "platform"
     },
     "userProvisioning": {
       "mappings": {
@@ -2223,7 +2250,8 @@
       "noTeams": "no teams in org",
       "projectId": "Project id",
       "projectIdHint": "uuid of a project in this org (from the Providers/Keys scope)",
-      "role": "Role"
+      "role": "Role",
+      "superBadge": "super"
     },
     "config": {
       "allSections": {
@@ -2369,7 +2397,8 @@
         "tooManyForwarded": "At most 64 forwarded headers are allowed.",
         "tooManyInjected": "At most 64 injected headers are allowed.",
         "badRequestIdHeader": "Request ID header is not a valid header name."
-      }
+      },
+      "injectedValuePlaceholder": "value"
     },
     "security": {
       "dashboardAuth": "Password protect the dashboard",
@@ -2608,7 +2637,8 @@
       "providerKeyHintEdit": "blank leaves the stored provider key unchanged; sealed at rest, never displayed",
       "providerKeyEnv": "Provider key env var (optional)",
       "providerKeyEnvHint": "read the provider key from this env var instead",
-      "egressProxy": "Egress proxy (optional)"
+      "egressProxy": "Egress proxy (optional)",
+      "apiKeyUnchanged": "unchanged"
     },
     "title": {
       "add": "Add provider",
@@ -3220,7 +3250,8 @@
       "upstreamModel": "Upstream model",
       "weight": "Weight",
       "relativeWeight": "Relative weight",
-      "remove": "Remove member"
+      "remove": "Remove member",
+      "upstreamModelPlaceholder": "passthrough"
     }
   },
   "paramsEditor": {
@@ -3273,5 +3304,9 @@
       "other_one": "Other ({{value}})",
       "other_other": "Other ({{value}})"
     }
+  },
+  "guardrailPanel": {
+    "enforced": "enforced",
+    "paused": "paused"
   }
 }

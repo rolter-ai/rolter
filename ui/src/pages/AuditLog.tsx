@@ -219,11 +219,13 @@ export default function AuditLog() {
               expanded === row.id
                 ? "pages.auditLog.hideDetailsAria"
                 : "pages.auditLog.showDetailsAria",
-              { action: row.action, target: row.target_type || "unknown" },
+              { action: row.action, target: row.target_type || t("pages.auditLog.unknownTarget") },
             )}
             onClick={() => setExpanded(expanded === row.id ? null : row.id)}
           >
-            {expanded === row.id ? "hide" : "show"}
+            {expanded === row.id
+              ? t("pages.auditLog.hideDetails")
+              : t("pages.auditLog.showDetails")}
           </button>
         ) : (
           "—"

@@ -108,7 +108,42 @@ const USER_FACING_PROPS = [
   // moved a dropdown's whole vocabulary — label, description, group — out of
   // JSX text and into properties, so the keys are where that copy is read
   "group",
+  // the names the dashboard's own components declare for copy and that the
+  // list above did not reach (#1745): PageLead and SettingsPanel's kicker, the
+  // charts' axis titles and units, the donut's centre, a chip's remove button,
+  // a Segmented group's name, a screen's empty slot and a flag's refusal
+  "eyebrow",
+  "xLabel",
+  "yLabel",
+  "unit",
+  "xUnit",
+  "yUnit",
+  "centerLabel",
+  "centerSub",
+  "removeLabel",
+  "ariaLabel",
+  "empty",
+  "experimentalNote",
+  "unavailableReason",
+  // the rest of the ARIA attributes a screen reader speaks, and the html
+  // elements' own captions
+  "aria-description",
+  "aria-roledescription",
+  "aria-valuetext",
+  "aria-placeholder",
+  "heading",
+  "caption",
+  "legend",
 ];
+
+/**
+ * A state setter whose value is rendered as a message: `setError("enter at
+ * least two texts")` in a submit handler (#1745). The value never touches JSX
+ * or a prop, so nothing above sees it, and a validation line is exactly the copy
+ * an operator reads. `setStatus` is left out: its values are state codes
+ */
+const COPY_SETTER =
+  /\bset(?:[A-Z]\w*?)?(?:Error|Message|Notice|Hint|Warning|Note|Detail|Text|Label|Title|Summary|Feedback)\(/g;
 
 const DIALOG = /window\.(?:confirm|alert|prompt)\(\s*(["'`])([^"'`]{2,})\1/g;
 // `\s*=\s*` rather than a bare `=`: the literal that motivated this rule was a
@@ -292,6 +327,8 @@ function codeMapLabels(inner: string, base: number): Candidate[] | null {
 
 /** a bare identifier rendered where copy goes: `{cta}` as children, `title={title}` */
 const RENDERED_IDENT = /^\s*([A-Za-z_$][\w$]*)\s*$/;
+/** one entry of a table rendered where copy goes: `{HINTS[mode]}`, `title={COPY.save}` */
+const RENDERED_ENTRY = /^\s*([A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\s*$/;
 /** a local binding whose value might be copy held for later */
 const BINDING = /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*/g;
 
@@ -300,6 +337,46 @@ interface Candidate {
   /** offset into the scanned text */
   index: number;
   text: string;
+  /** read in a position that renders it as it stands — see `isNotCopy` */
+  strict?: boolean;
+}
+
+/**
+ * A single lowercase word. Outside a rendered position it is far more often a
+ * code (`chat`, `inherit`, `idle`) than a label, which is why `isNotCopy` lets
+ * it go; in one, the dashboard's lowercase style makes it copy — `aria-label=
+ * "close"`, `<span>optional</span>`, `{on ? "enabled" : "disabled"}` (#1745)
+ */
+const LOWERCASE_WORD = /^[a-z]{3,}[.…:!?]?$/;
+
+/**
+ * Is the literal spanning `[start, end)` of `expr` a value the expression can
+ * evaluate to, rather than an operand? `open ? "enabled" : "disabled"`, `name
+ * ?? "unnamed"` and `ready && "live"` are results; `kind === "chat"`,
+ * `cn("block")`, `variant="ghost"` and `"a".length` are code
+ */
+function isResult(expr: string, start: number, end: number): boolean {
+  const before = expr.slice(0, start).trimEnd();
+  const after = expr.slice(end).trimStart();
+  if (before && !/(?:\?\?|\|\||&&|[?:+])$/.test(before)) return false;
+  // `{ dateStyle: "medium" }`, `scope_type?: "org"`: a property's value or a
+  // type, not a branch. a copy key is read by name through `OBJECT_KEY`, which
+  // starts past the colon, so this never hides one
+  if (PROPERTY_COLON.test(before)) return false;
+  return !/^(?:[=!]=|\.|\[|\?(?!\?)|in\b)/.test(after);
+}
+
+/** the colon of an object property or a type member, as opposed to a ternary's */
+const PROPERTY_COLON = /(?:^|[{,;])\s*(["']?)[A-Za-z_$][\w$-]*\1\??\s*:$/;
+
+/**
+ * A fragment glued to something else with `+`: `name + " settings"`. The space
+ * at its edge is what makes it a piece of a sentence rather than a code, and it
+ * is also what hid it — `READS_AS_COPY` wants the literal to start on a letter
+ */
+function isFragment(expr: string, start: number, end: number, text: string): boolean {
+  if (!/^\s|\s$/.test(text) || !/[A-Za-z]{2}/.test(text)) return false;
+  return /\+$/.test(expr.slice(0, start).trimEnd()) || /^\+/.test(expr.slice(end).trimStart());
 }
 
 /** the index just past the `'…'` / `"…"` literal opening at `i` */
@@ -370,8 +447,13 @@ function skipExpression(s: string, i: number, stops: string): number {
  * paths with no sentence in them, so the text is judged with the placeholders
  * taken out — the placeholder itself carries no lowercase letter to trip the
  * usual thresholds on.
+ *
+ * `strict` says the expression is rendered as it stands — a copy prop, a
+ * child, a message setter — so a single lowercase word that the expression can
+ * evaluate to counts as copy too (#1745). A fragment glued on with `+` counts
+ * wherever it is read.
  */
-function stringsIn(expr: string, base: number): Candidate[] {
+function stringsIn(expr: string, base: number, strict = false): Candidate[] {
   const out: Candidate[] = [];
   let j = 0;
   while (j < expr.length) {
@@ -379,14 +461,26 @@ function stringsIn(expr: string, base: number): Candidate[] {
     if (ch === '"' || ch === "'") {
       const end = skipString(expr, j);
       const text = expr.slice(j + 1, end - 1);
-      if (READS_AS_COPY.test(text) && !text.includes("\n")) out.push({ index: base + j, text });
+      if (text.includes("\n")) {
+        // not a single-line literal; leave it
+      } else if (isFragment(expr, j, end, text)) {
+        out.push({ index: base + j, text, strict: true });
+      } else if (READS_AS_COPY.test(text)) {
+        out.push({ index: base + j, text });
+      } else if (strict && LOWERCASE_WORD.test(text) && isResult(expr, j, end)) {
+        out.push({ index: base + j, text, strict: true });
+      }
       j = end;
     } else if (ch === "`") {
       const { end, text, holes } = readTemplate(expr, j);
       const prose = normalize(text.split(PLACEHOLDER).join(" "));
       if (TEMPLATE_READS_AS_COPY.test(prose) && !isNotCopy(prose))
         out.push({ index: base + j, text });
-      for (const [from, to] of holes) out.push(...stringsIn(expr.slice(from, to), base + from));
+      // `${n} tokens`: one word beside a value, which is a unit and a plural
+      else if (strict && holes.length && LOWERCASE_WORD.test(prose) && isResult(expr, j, end))
+        out.push({ index: base + j, text, strict: true });
+      for (const [from, to] of holes)
+        out.push(...stringsIn(expr.slice(from, to), base + from, strict));
       j = end;
     } else {
       j++;
@@ -399,12 +493,16 @@ function stringsIn(expr: string, base: number): Candidate[] {
  * Strings that look like prose to a regex but are not copy. Kept narrow — a
  * false negative here is a string that silently stays untranslated, so the bar
  * for adding one is that it could never be shown to a person as a sentence.
+ *
+ * `strict` is set where the string is rendered as it stands (`LOWERCASE_WORD`):
+ * there a bare lowercase word is a label, not a wire value.
  */
-function isNotCopy(text: string): boolean {
+function isNotCopy(text: string, strict = false): boolean {
   const t = text.trim();
   if (t.length < 3) return true;
   // no lowercase letter at all: an acronym, a code, a unit (USD, RPM, TPM, ID)
   if (!/[a-z]/.test(t)) return true;
+  if (strict && LOWERCASE_WORD.test(t)) return false;
   // an identifier or a wire value rather than a sentence: no spaces and it
   // looks like code (dots, slashes, underscores, camelCase runs of digits)
   if (!t.includes(" ") && /^[a-z0-9._/-]+$/.test(t)) return true;
@@ -553,11 +651,22 @@ function normalize(text: string): string {
  * are written one dense statement per component, so "the rest of this line" is
  * routinely the rest of the component. Multi-line calls are blanked too.
  */
-const T_CALL = /\bt\(\s*["'`][^"'`]*["'`][^)]*\)/g;
+const T_CALL = /\bt\(\s*["'`]/g;
 
-/** blank a match in place, keeping its length so the offset map stays aligned */
-function blank(match: string): string {
-  return " ".repeat(match.length);
+/**
+ * Blank every `t(…)` call through its own closing paren. The call used to be
+ * read as far as the first `)`, so `t("k", { count: m.get(id) ?? 0 })` left `??
+ * 0, })` behind with its brackets unbalanced, and the expression walker that
+ * reads children lost track of where the expression holding it ended (#1745).
+ */
+function blankTCalls(text: string): string {
+  let out = text;
+  for (const m of text.matchAll(T_CALL)) {
+    const open = m.index + m[0].indexOf("(");
+    const close = skipExpression(text, open + 1, "");
+    out = out.slice(0, m.index) + " ".repeat(close + 1 - m.index) + out.slice(close + 1);
+  }
+  return out;
 }
 
 /**
@@ -836,7 +945,43 @@ function blankTags(masked: string, tags: Map<number, number>): string {
 }
 
 /**
- * Every `{…}` sitting in children position, as `[start, end)` into `masked`.
+ * The tag ends that open onto children: the ones after which some element is
+ * still open. The rest close the outermost element of an expression — `icon:
+ * <Gauge />, children: [` in a nav table, `</div> ); }` at the end of a
+ * component — and what follows them is code.
+ *
+ * A closing tag pops back to the element it names, so a tag this scan misread
+ * cannot leave the rest of the file looking like children.
+ */
+function childPositions(masked: string, tags: Map<number, number>): Set<number> {
+  const inside = new Set<number>();
+  const open: string[] = [];
+  for (const [start, end] of [...tags].sort((a, b) => a[0] - b[0])) {
+    const name = /^<\/?([\w.$-]*)/.exec(masked.slice(start, end))?.[1] ?? "";
+    if (masked[start + 1] === "/") {
+      const at = open.lastIndexOf(name);
+      if (at !== -1) open.length = at;
+    } else if (masked[end - 1] !== "/") {
+      open.push(name);
+    }
+    if (open.length) inside.add(end);
+  }
+  return inside;
+}
+
+/** one run of children after a tag: its expressions, and its prose if any */
+interface ChildRun {
+  /** the tag end the run follows */
+  start: number;
+  /** the sentence, `{…}` for each expression, or `null` when there is none */
+  text: string | null;
+  /** every `{…}` in the run, as `[start, end)` inside the braces */
+  exprs: [number, number][];
+}
+
+/**
+ * Every run of children after a tag: text and `{…}` expressions up to the next
+ * tag.
  *
  * `TEXT_EXPR` reads the shape `>{…}<`: one expression alone between two tags.
  * An element that renders a spinner beside its label writes two in a row —
@@ -846,19 +991,49 @@ function blankTags(masked: string, tags: Map<number, number>): string {
  * from each tag end instead reads the whole run, and the braces carry the
  * nested elements with them — their tags are blanked before the strings inside
  * are read, since a prop is not children.
+ *
+ * The text between the expressions is read on the same walk. `TEXT_MIXED`
+ * cannot take an expression holding a `>`, so `{rows.length} nodes · {live}
+ * live {lagging > 0 && …}` hid its whole sentence from the gate (#1745).
  */
-function childExpressions(masked: string, tagEnds: Set<number>): [number, number][] {
-  const out: [number, number][] = [];
-  for (const end of tagEnds) {
+function childRuns(masked: string, tags: Map<number, number>, inside: Set<number>): ChildRun[] {
+  const out: ChildRun[] = [];
+  for (const end of tags.values()) {
+    const run: ChildRun = { start: end, text: null, exprs: [] };
+    // after the outermost element closes the text is code again: read only
+    // the expressions written flush against the tag, as before (#1594)
+    const children = inside.has(end);
+    const parts: string[] = [];
+    let prose = false;
     let i = end + 1;
+    let reached = false;
     while (i < masked.length) {
-      while (i < masked.length && WHITESPACE.test(masked[i])) i++;
-      if (masked[i] !== "{") break;
+      if (masked[i] === "<") {
+        reached = true;
+        break;
+      }
+      if (masked[i] !== "{") {
+        const from = i;
+        while (i < masked.length && masked[i] !== "{" && masked[i] !== "<") i++;
+        const text = masked.slice(from, i);
+        if (!children && text.trim()) break;
+        // a `}`, `>` or `;` in the run, or a `(` that opens onto the next tag,
+        // is code — the run left the children it started in
+        if (/[}>;]/.test(text) || /\(\s*$/.test(text)) break;
+        if (/[A-Za-z]/.test(text)) prose = true;
+        parts.push(text);
+        continue;
+      }
       const close = skipExpression(masked, i + 1, "");
       if (masked[close] !== "}") break;
-      out.push([i + 1, close]);
+      run.exprs.push([i + 1, close]);
+      parts.push(JSX_SPACE.test(masked.slice(i, close + 1)) ? " " : PLACEHOLDER);
       i = close + 1;
     }
+    // prose only counts when the run reached the next tag; one that ran into
+    // code has no sentence in it
+    if (prose && run.exprs.length && reached) run.text = parts.join("");
+    out.push(run);
   }
   return out;
 }
@@ -882,29 +1057,42 @@ export function findLiterals(source: string, file: string): Literal[] {
   const out: Literal[] = [];
   const seen = new Set<string>();
   const masked = maskSource(source);
-  const scanned = masked.text.replace(T_CALL, blank);
+  const scanned = blankTCalls(masked.text);
   const tags = jsxTags(scanned);
-  const tagEnds = new Set(tags.values());
+  // the tag ends that open onto children; text after any other one is code
+  const inside = childPositions(scanned, tags);
 
-  const push = (index: number, raw: string, kind: Literal["kind"]) => {
+  const push = (index: number, raw: string, kind: Literal["kind"], strict = false) => {
     const text = normalize(raw);
-    if (isNotCopy(text)) return;
+    if (isNotCopy(text, strict)) return;
     const line = lineOf(source, masked.map[index] ?? 0);
     const key = `${line}:${text}`;
     if (seen.has(key)) return;
     seen.add(key);
     out.push({ file, line, text, kind });
   };
+  /** every candidate in an expression that renders as it stands */
+  const pushAll = (cs: Candidate[], kind: Literal["kind"]) => {
+    for (const c of cs) push(c.index, c.text, kind, c.strict);
+  };
 
   // identifiers rendered bare where copy goes, with the kind they render as.
   // their bindings are read once every position is known (#1537)
   const rendered = new Map<string, Literal["kind"]>();
+  // tables with an entry rendered where copy goes, read value by value
+  const tables = new Map<string, Literal["kind"]>();
+  /** records a rendered identifier, or a table indexed where copy goes */
+  const noteRendered = (expr: string, kind: Literal["kind"]) => {
+    const ident = RENDERED_IDENT.exec(expr);
+    if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? kind);
+    const entry = RENDERED_ENTRY.exec(expr);
+    if (entry) tables.set(entry[1], tables.get(entry[1]) ?? kind);
+  };
   /** the start of capture group `n`'s text inside match `m` */
   const groupAt = (m: RegExpMatchArray, n: number) => (m.index ?? 0) + m[0].lastIndexOf(m[n]);
   const readExpr = (m: RegExpMatchArray, n: number, kind: Literal["kind"]) => {
-    const ident = RENDERED_IDENT.exec(m[n]);
-    if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? kind);
-    for (const c of stringsIn(m[n], groupAt(m, n))) push(c.index, c.text, kind);
+    noteRendered(m[n], kind);
+    pushAll(stringsIn(m[n], groupAt(m, n), true), kind);
   };
 
   for (const m of scanned.matchAll(DIALOG)) push(m.index, m[2], "dialog");
@@ -912,14 +1100,21 @@ export function findLiterals(source: string, file: string): Literal[] {
   for (const m of scanned.matchAll(THROWN_TEMPLATE)) {
     const at = m.index + m[0].length;
     const { end } = readTemplate(scanned, at);
-    for (const c of stringsIn(scanned.slice(at, end), at)) push(c.index, c.text, "error");
+    pushAll(stringsIn(scanned.slice(at, end), at), "error");
   }
-  for (const m of scanned.matchAll(PROP)) push(m.index, m[1], "prop");
+  // a message set from a handler (#1745)
+  for (const m of scanned.matchAll(COPY_SETTER)) {
+    const at = m.index + m[0].length;
+    pushAll(stringsIn(scanned.slice(at, skipExpression(scanned, at, ",")), at, true), "error");
+  }
+  for (const m of scanned.matchAll(PROP)) push(m.index, m[1], "prop", true);
   for (const m of scanned.matchAll(PROP_EXPR)) readExpr(m, 1, "prop");
+  // not strict: a bare word under a copy key is as often an option echoing its
+  // own wire value (`{ value: "json", label: "json" }`) as it is a label
   for (const m of scanned.matchAll(OBJECT_KEY)) {
     const at = m.index + m[0].length;
     const end = skipExpression(scanned, at, ",;");
-    for (const c of stringsIn(scanned.slice(at, end), at)) push(c.index, c.text, "prop");
+    pushAll(stringsIn(scanned.slice(at, end), at), "prop");
   }
   // a lookup table's labels, which no prop name can reach (#1599)
   for (const m of scanned.matchAll(FLAT_OBJECT)) {
@@ -927,41 +1122,51 @@ export function findLiterals(source: string, file: string): Literal[] {
       push(c.index, c.text, "prop");
   }
   for (const m of scanned.matchAll(TEXT)) {
-    if (!tagEnds.has(m.index)) continue;
-    push(m.index, m[1], "text");
+    if (!inside.has(m.index)) continue;
+    push(m.index, m[1], "text", true);
   }
   for (const m of scanned.matchAll(TEXT_EXPR)) readExpr(m, 1, "text");
   for (const m of scanned.matchAll(TEXT_MIXED)) {
-    if (!tagEnds.has(m.index)) continue;
+    if (!inside.has(m.index)) continue;
     const text = mixedText(m[1]);
     if (text !== null) push(m.index, text, "text");
     // the expressions beside the prose hold copy of their own (#1371)
     const base = groupAt(m, 1);
     for (const e of m[1].matchAll(EXPR_IN_TEXT)) {
-      const ident = RENDERED_IDENT.exec(e[0].slice(1, -1));
-      if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? "text");
-      for (const c of stringsIn(e[0], base + e.index)) push(c.index, c.text, "text");
+      noteRendered(e[0].slice(1, -1), "text");
+      pushAll(stringsIn(e[0], base + e.index, true), "text");
     }
   }
   const children = blankTags(scanned, tags);
-  for (const [from, to] of childExpressions(scanned, tagEnds)) {
-    const expr = children.slice(from, to);
-    const ident = RENDERED_IDENT.exec(expr);
-    if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? "text");
-    for (const c of stringsIn(expr, from)) push(c.index, c.text, "text");
+  for (const run of childRuns(scanned, tags, inside)) {
+    // prose beside an expression `TEXT_MIXED` could not read, because the
+    // expression carries a `>` of its own: `{n} nodes {late > 0 && …}` (#1745)
+    if (run.text !== null) push(run.start, run.text, "text");
+    for (const [from, to] of run.exprs) {
+      const expr = children.slice(from, to);
+      noteRendered(expr, "text");
+      pushAll(stringsIn(expr, from, true), "text");
+    }
   }
   // English parked in a local and rendered later: `const cta = add ? "Create" :
-  // "Save"` then `<Button>{cta}</Button>` (#1537). only a binding whose name
-  // is rendered is read, so a string that only ever reaches code stays out. a
-  // function is not a held value — its body is the rest of a component
-  if (rendered.size) {
+  // "Save"` then `<Button>{cta}</Button>` (#1537), or a table indexed where
+  // copy goes, `{HINTS[mode]}` (#1745). only a binding whose name is rendered
+  // is read, so a string that only ever reaches code stays out. a function is
+  // not a held value — its body is the rest of a component
+  if (rendered.size || tables.size) {
     for (const m of scanned.matchAll(BINDING)) {
-      const kind = rendered.get(m[1]);
-      if (!kind) continue;
       const at = m.index + m[0].length;
       const value = scanned.slice(at, skipExpression(scanned, at, ",;"));
-      if (value.includes("=>") || /^\s*(?:async\s+)?function\b/.test(value)) continue;
-      for (const c of stringsIn(value, at)) push(c.index, c.text, kind);
+      const kind = rendered.get(m[1]);
+      if (kind && !value.includes("=>") && !/^\s*(?:async\s+)?function\b/.test(value))
+        pushAll(stringsIn(value, at, true), kind);
+      const table = tables.get(m[1]);
+      // only an object literal is a table; `const remove = useMutation({…})`
+      // with `{remove.error}` rendered is a hook result, and its options are code
+      if (!table || !/^\s*\{/.test(value)) continue;
+      // every value of `{ allow: "…", deny: "…" }` is what the index renders
+      for (const e of value.matchAll(MAP_ENTRY))
+        push(at + (e.index ?? 0) + e[0].lastIndexOf(e[4]), e[4], table, true);
     }
   }
   out.sort((a, b) => a.line - b.line);

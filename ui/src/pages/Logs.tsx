@@ -538,7 +538,7 @@ export default function Logs() {
           <Sheet open onOpenChange={(next) => !next && setSelected(null)}>
             <SheetHeader
               title={t("analytics.details")}
-              subtitle={selected.request_id || "request"}
+              subtitle={selected.request_id || t("pages.logs.requestFallback")}
               onClose={() => setSelected(null)}
             />
             <SheetBody>{detail}</SheetBody>
@@ -550,7 +550,9 @@ export default function Logs() {
             className="w-[380px] flex-none overflow-y-auto border-l border-[color:var(--border-subtle)] bg-background focus-visible:outline-none"
           >
             <div className="flex items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3.5">
-              <span className="truncate font-mono text-sm">{selected.request_id || "request"}</span>
+              <span className="truncate font-mono text-sm">
+                {selected.request_id || t("pages.logs.requestFallback")}
+              </span>
               <button
                 type="button"
                 aria-label={t("pages.logs.closeDetails")}
