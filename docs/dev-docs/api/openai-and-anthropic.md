@@ -213,6 +213,14 @@ rotated away, the record becomes unavailable. Unknown, expired, deleted,
 cross-key, and unavailable records all return the same `404 response_not_found`
 error so route ownership is not leaked.
 
+Each lifecycle call is also re-authorized against the current configuration,
+exactly as a new request would be: the model the caller named, the route that
+served the response (visibility, route policy, provider list) and the provider
+that holds it. Access revoked since creation is refused with the usual `403`
+codes before anything is forwarded, and a response whose route has since been
+removed is refused with `403 route_not_allowed` (fail closed). See the
+[route authorization contract](../architecture/rbac-and-auth.md#the-route-authorization-contract-1485).
+
 Responses translated through Chat Completions or Anthropic Messages retain an
 ownership record but expose no lifecycle capabilities, because those upstream
 contracts do not retain an OpenAI Responses resource. Their lifecycle calls

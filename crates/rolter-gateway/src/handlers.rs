@@ -304,6 +304,12 @@ pub(crate) enum AccessDenial {
     RoutePolicy,
     /// The key's provider allow-list excludes every provider on the route.
     NoProvider,
+    /// The key's provider allow-list excludes the one provider a stored
+    /// response lives on, so a lifecycle call cannot be forwarded to it.
+    ProviderNotAllowed,
+    /// The route a stored response was created on is no longer configured.
+    /// A lifecycle call fails closed rather than skip the route checks (#1779).
+    RouteRemoved,
 }
 
 impl AccessDenial {
@@ -318,6 +324,14 @@ impl AccessDenial {
             Self::NoProvider => (
                 "no provider on this route is allowed for this key",
                 "provider_not_allowed",
+            ),
+            Self::ProviderNotAllowed => (
+                "the provider holding this response is not allowed for this key",
+                "provider_not_allowed",
+            ),
+            Self::RouteRemoved => (
+                "the route this response was created on is no longer configured",
+                "route_not_allowed",
             ),
         };
         crate::error::ApiError::new(StatusCode::FORBIDDEN, message)
@@ -503,6 +517,12 @@ async fn response_lifecycle(
     let Some(route) = state.response_registry.get(&tenant, &response_id) else {
         return response_not_found();
     };
+    // the registry proves the caller created this response, not that it may
+    // still reach the route it came from: access revoked since then must stop
+    // the retrieve, cancel, delete and input-items calls too (#1779)
+    if let Err(denial) = authorize_lifecycle(&snap, vk.as_ref(), &route) {
+        return denial.into_response();
+    }
     if !operation.supported(route.capabilities) {
         return crate::error::ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -560,6 +580,41 @@ async fn response_lifecycle(
         }
         Err(err) => upstream_error_response(&err.to_string()),
     }
+}
+
+/// Re-authorize a lifecycle call against the current snapshot, exactly as a
+/// fresh request for the same response would be authorized.
+///
+/// The requested model id must still pass [`authorize_model`], the route that
+/// served the response must still pass [`authorize_route`], and the key must
+/// still allow the one provider holding the response. The served route is
+/// resolved the way the request path resolves an address: a configured route
+/// name first, then `provider-slug/model` addressing. When neither resolves the
+/// route was removed after the response was created, and the call is refused:
+/// with the route gone there is nothing left to check visibility and policy
+/// against, and allowing it would let a deleted route keep serving calls for
+/// the registry's lifetime.
+fn authorize_lifecycle(
+    snap: &crate::state::Snapshot,
+    key: Option<&KeyMeta>,
+    route: &crate::response_registry::ResponseRoute,
+) -> Result<(), AccessDenial> {
+    authorize_model(key, &route.model)?;
+    let pinned = if snap.routes.contains_key(&route.route) {
+        None
+    } else {
+        snap.resolve_pinned(&route.route)
+    };
+    let entry = snap
+        .routes
+        .get(&route.route)
+        .or(pinned.as_ref())
+        .ok_or(AccessDenial::RouteRemoved)?;
+    authorize_route(key, entry)?;
+    if key.is_some_and(|key| !key.provider_allowed(&route.provider)) {
+        return Err(AccessDenial::ProviderNotAllowed);
+    }
+    Ok(())
 }
 
 fn lifecycle_response(
@@ -2254,6 +2309,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             },
                         )
                         .map(|template| {
+                            let template = template.with_route(entry.route.model.clone());
                             let registry = state.response_registry.clone();
                             Box::new(move |body: &[u8]| {
                                 registry.record_body(template, is_sse, body);
