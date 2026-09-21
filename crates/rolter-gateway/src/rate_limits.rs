@@ -15,16 +15,18 @@
 //!
 //! Counters live in Redis so limits are shared across gateway replicas. With no
 //! Redis url — or when Redis is unreachable — enforcement fails open so a
-//! counter-store outage never takes the data plane down.
+//! counter-store outage never takes the data plane down. A lost connection is
+//! re-established on its own once Redis is reachable again (see
+//! [`crate::redis_conn`]), so fail-open lasts as long as the outage and no
+//! longer.
 
 use std::sync::Arc;
 
+use crate::budgets::ScopeIds;
+use crate::redis_conn::ReconnectingRedis;
 use chrono::Utc;
 use redis::AsyncCommands;
 use rolter_core::{BudgetScope, RateLimitConfig};
-use tokio::sync::OnceCell;
-
-use crate::budgets::ScopeIds;
 
 /// window length in seconds; `rpm`/`tpm` are per this window
 const WINDOW_SECS: i64 = 60;
@@ -80,46 +82,22 @@ fn bucket_key(limit: &RateLimitConfig, kind: &str, bucket: i64) -> String {
 /// Enforces throughput caps against Redis. Cheap to clone (shared connection).
 #[derive(Clone)]
 pub struct RateLimiter {
-    inner: Option<Arc<Inner>>,
-}
-
-struct Inner {
-    client: redis::Client,
-    conn: OnceCell<redis::aio::MultiplexedConnection>,
+    redis: Option<ReconnectingRedis>,
 }
 
 impl RateLimiter {
     /// A disabled limiter: every check passes and nothing is recorded.
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self { redis: None }
     }
 
     /// Build a limiter against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match redis::Client::open(redis_url) {
-            Ok(client) => Self {
-                inner: Some(Arc::new(Inner {
-                    client,
-                    conn: OnceCell::new(),
-                })),
-            },
+        match ReconnectingRedis::new(redis_url, "rate limits") {
+            Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
                 tracing::warn!(error = %err, "invalid redis url; rate limiting disabled");
                 Self::disabled()
-            }
-        }
-    }
-
-    async fn connection(inner: &Inner) -> Option<redis::aio::MultiplexedConnection> {
-        match inner
-            .conn
-            .get_or_try_init(|| inner.client.get_multiplexed_async_connection())
-            .await
-        {
-            Ok(conn) => Some(conn.clone()),
-            Err(err) => {
-                tracing::warn!(error = %err, "redis unavailable; rate limits fail open");
-                None
             }
         }
     }
@@ -146,12 +124,12 @@ impl RateLimiter {
         limits: &[RateLimitConfig],
         scope: &ScopeIds,
     ) -> Option<RateLimitHit> {
-        let inner = self.inner.as_ref()?;
+        let redis = self.redis.as_ref()?;
         let applicable = scope.applicable_limits(limits);
         if applicable.is_empty() {
             return None;
         }
-        let mut conn = Self::connection(inner).await?;
+        let mut conn = redis.get().await?;
         let now = Utc::now().timestamp();
         let retry_after = (WINDOW_SECS - (now % WINDOW_SECS)) as u64;
         let bucket = now / WINDOW_SECS;
@@ -238,14 +216,14 @@ impl RateLimiter {
         if tokens == 0 {
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
+        let Some(redis) = self.redis.as_ref() else {
             return;
         };
         let applicable = scope.applicable_limits(limits);
         if applicable.is_empty() {
             return;
         }
-        let Some(mut conn) = Self::connection(inner).await else {
+        let Some(mut conn) = redis.get().await else {
             return;
         };
         let bucket = Utc::now().timestamp() / WINDOW_SECS;
@@ -347,5 +325,55 @@ mod tests {
         let limits = vec![limit(BudgetScope::Org, "org-1", Some(1), Some(1))];
         assert!(limiter.check(&limits, &scope).await.is_none());
         limiter.record_tokens(&limits, &scope, 100).await; // no panic
+    }
+
+    /// #1483: after Redis closes the limiter's connection, the same limiter
+    /// must reject against the request count that survived the drop and keep
+    /// recording tokens, rather than fail open until the gateway restarts.
+    #[tokio::test]
+    async fn an_existing_limiter_recovers_after_redis_drops_its_connection() {
+        use crate::redis_conn::testing::{self, db};
+
+        let Some(url) = testing::url(db::RATE_LIMITS) else {
+            return;
+        };
+        let scope = ScopeIds {
+            org: testing::unique("reconnect-org"),
+            ..Default::default()
+        };
+        let limits = vec![limit(
+            BudgetScope::Org,
+            &scope.org,
+            Some(1),
+            Some(1_000_000),
+        )];
+        let limiter = RateLimiter::new(&url);
+        assert!(limiter.check(&limits, &scope).await.is_none());
+        assert!(limiter.check(&limits, &scope).await.is_some());
+
+        let killed = testing::kill_clients_on_db(db::RATE_LIMITS).await;
+        assert!(killed >= 1, "the limiter's connection was closed");
+
+        let hit = limiter
+            .check(&limits, &scope)
+            .await
+            .expect("a healthy redis must restore the existing limiter");
+        assert_eq!(hit.kind, "rpm");
+
+        limiter.record_tokens(&limits, &scope, 500).await;
+        let bucket = Utc::now().timestamp() / WINDOW_SECS;
+        let keys = [
+            bucket_key(&limits[0], "tok", bucket),
+            bucket_key(&limits[0], "tok", bucket - 1),
+        ];
+        let mut conn = redis::Client::open(url.as_str())
+            .unwrap()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        // two buckets, in case the minute turned between recording and reading
+        let tokens: Vec<Option<u64>> = conn.mget(&keys).await.unwrap();
+        assert_eq!(tokens.into_iter().flatten().sum::<u64>(), 500);
+        let _: () = conn.del(&keys).await.unwrap();
     }
 }

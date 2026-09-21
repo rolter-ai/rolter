@@ -48,6 +48,7 @@ mod prompt_templates;
 mod queue;
 mod rate_limits;
 mod realtime;
+mod redis_conn;
 mod response_registry;
 mod semantic;
 mod state;

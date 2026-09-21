@@ -7,7 +7,7 @@ description: "Configure USD spend caps and RPM/TPM throughput limits at org, tea
 Rolter gives you two complementary levers for controlling how much your gateway spends and how fast it moves traffic: **spend budgets** block requests once a cumulative USD ceiling is reached, and **rate limits** reject requests that exceed per-minute throughput thresholds. Both systems operate across the same scopes — the four-level tenancy hierarchy (org → team → project → key) plus the two cost-attribution dimensions a key rolls up to (business unit, customer) — and apply a most-restrictive-wins policy when multiple rules match a single request.
 
 <Warning>
-  Budgets and rate limits both require Redis (`REDIS_URL`). Rolter uses Redis for distributed counters so limits remain accurate across multiple gateway instances. Without Redis, both budgets and rate limits **fail open** — they are not enforced and all requests pass through.
+  Budgets and rate limits both require Redis (`ROLTER_REDIS_URL`). Rolter uses Redis for distributed counters so limits remain accurate across multiple gateway instances. Without Redis, both budgets and rate limits **fail open** — they are not enforced and all requests pass through.
 </Warning>
 
 ## Step 1 — Define model prices
@@ -278,6 +278,16 @@ Like budgets, rate limits follow **most-restrictive-wins** across the scope chai
 Rolter maintains sliding-window counters in Redis — one counter per (scope, id, window bucket) combination. Each counter is updated atomically on every request, so limits remain accurate even when you run multiple gateway instances behind a load balancer. The `Retry-After` response header on a 429 tells the client how many seconds to wait before the trailing window slides enough to admit the next request.
 
 Spend and tokens are recorded from what the **provider billed**, not from what the caller received. If an output guardrail or a `post_response` plugin blocks an answer the provider already generated, the caller gets a `403`, but the tokens and cost still count toward every budget and `tpm` limit in scope. Usage is read before any policy runs, so a plugin that rewrites the `usage` object cannot lower the bill. A response-cache hit costs nothing, blocked or not. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
+
+### When Redis restarts or drops the connection
+
+While Redis is unreachable, budgets and rate limits **fail open**: requests pass, and spend and token counts are not recorded. The response cache also misses on every lookup. A Redis outage never takes the gateway down.
+
+When Redis is reachable again, each gateway reconnects by itself. You don't need to restart it or push a config change. Counters that Redis kept through the outage are enforced again from the next request. That covers a restart with persistence, a failover, or a connection that was only dropped (`CLIENT KILL`, or an idle timeout on a proxy in between).
+
+- **Reconnects are paced.** After a failed attempt, each gateway waits before trying again: 100 ms at first, doubling up to 5 s. In the meantime requests fail open at once, so there is no per-request reconnect storm and no added latency beyond one connection attempt (at most 1 s).
+- **Spend can go unrecorded while a connection drops.** A spend or token update that was in flight when the connection dropped is not retried, because retrying could count it twice. At most about one request's worth per gateway goes unrecorded at that moment. Admission checks are retried on the new connection, so the first request after a drop is still checked against the limits.
+- **The logs show the fail-open window.** It starts at `redis connection lost` or `redis unavailable; failing open` and ends at `redis connection re-established; enforcement resumed`. The `consumer` field names the budget enforcer, the rate limiter or the response cache.
 
 ## Complete example
 
