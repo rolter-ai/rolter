@@ -431,6 +431,7 @@ struct ControlHistogramSet {
     crud_duration: opentelemetry::metrics::Histogram<u64>,
     pool_acquire: opentelemetry::metrics::Histogram<u64>,
     login_outcome: opentelemetry::metrics::Counter<u64>,
+    ingest_failures: opentelemetry::metrics::Counter<u64>,
 }
 
 impl ControlHistograms {
@@ -513,6 +514,31 @@ impl ControlHistograms {
         let _ = outcome;
     }
 
+    /// Record one telemetry write the control plane could not persist.
+    ///
+    /// The ingest endpoints (`/api/v1/ui-events`, `/api/v1/mcp-logs`) answer
+    /// callers that deliberately swallow every failure, so without this the
+    /// loss of a whole stream is silent at both ends (#1747). A counter so it
+    /// can be alerted on as a rate. `stream` names the endpoint (`ui_events`,
+    /// `mcp_logs`) and `reason` is a closed set — `insert` for a store that
+    /// rejected or never received the write, `unconfigured` for a control
+    /// plane with no column store at all. Neither label ever carries the
+    /// store's own error text, which is unbounded.
+    pub fn record_ingest_failure(&self, stream: &'static str, reason: &'static str) {
+        #[cfg(feature = "otlp")]
+        if let Some(inner) = &self.inner {
+            inner.ingest_failures.add(
+                1,
+                &[
+                    opentelemetry::KeyValue::new("stream", stream),
+                    opentelemetry::KeyValue::new("reason", reason),
+                ],
+            );
+            return;
+        }
+        let _ = (stream, reason);
+    }
+
     /// Whether anything is actually being recorded.
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -521,6 +547,59 @@ impl ControlHistograms {
         #[cfg(not(feature = "otlp"))]
         let active = false;
         active
+    }
+}
+
+#[cfg(feature = "otlp")]
+impl ControlHistograms {
+    /// Build every control-plane instrument on `meter`. Split out of
+    /// [`install_control_metrics_with_pool`] so a test can hand it an
+    /// in-memory meter and read back what was recorded.
+    fn from_meter(meter: &opentelemetry::metrics::Meter) -> Self {
+        ControlHistograms {
+            inner: Some(std::sync::Arc::new(ControlHistogramSet {
+                snapshot_duration: meter
+                    .u64_histogram("rolter_snapshot_build_ms")
+                    .with_description("time to generate one config snapshot, in milliseconds")
+                    .with_unit("ms")
+                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
+                    .build(),
+                snapshot_bytes: meter
+                    .u64_histogram("rolter_snapshot_payload_bytes")
+                    .with_description("serialized size of one config snapshot, in bytes")
+                    .with_unit("By")
+                    .with_boundaries(SNAPSHOT_BYTES_BUCKETS.to_vec())
+                    .build(),
+                crud_duration: meter
+                    .u64_histogram("rolter_control_request_ms")
+                    .with_description("control-plane API request latency, in milliseconds")
+                    .with_unit("ms")
+                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
+                    .build(),
+                pool_acquire: meter
+                    .u64_histogram("rolter_db_pool_acquire_ms")
+                    .with_description(
+                        "time to acquire a postgres connection from the pool, in milliseconds",
+                    )
+                    .with_unit("ms")
+                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
+                    .build(),
+                login_outcome: meter
+                    .u64_counter("rolter_control_login_attempts")
+                    .with_description(
+                        "resolved control-plane login attempts, by outcome \
+                         (success, invalid, throttled, locked)",
+                    )
+                    .build(),
+                ingest_failures: meter
+                    .u64_counter("rolter_control_ingest_failures")
+                    .with_description(
+                        "telemetry writes the control plane could not persist, by stream \
+                         (ui_events, mcp_logs) and reason (insert, unconfigured)",
+                    )
+                    .build(),
+            })),
+        }
     }
 }
 
@@ -554,6 +633,80 @@ mod status_class_tests {
         // than opening a new time series
         assert_eq!(status_class(0), "other");
         assert_eq!(status_class(999), "other");
+    }
+}
+
+/// The ingest-failure counter is what makes a silently lost telemetry stream
+/// alertable (#1747), so it is read back through a real meter rather than
+/// trusted to exist.
+#[cfg(all(test, feature = "otlp"))]
+mod ingest_failure_counter_tests {
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    use super::ControlHistograms;
+
+    /// Every `(stream, reason)` data point of `rolter_control_ingest_failures`.
+    fn points(exporter: &InMemoryMetricExporter) -> Vec<(String, String, u64)> {
+        let mut out = Vec::new();
+        for resource in exporter.get_finished_metrics().unwrap() {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() != "rolter_control_ingest_failures" {
+                        continue;
+                    }
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("the ingest-failure metric must be a u64 counter");
+                    };
+                    for point in sum.data_points() {
+                        let label = |key: &str| {
+                            point
+                                .attributes()
+                                .find(|kv| kv.key.as_str() == key)
+                                .map(|kv| kv.value.to_string())
+                                .unwrap_or_default()
+                        };
+                        out.push((label("stream"), label("reason"), point.value()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn each_failed_write_adds_one_under_its_stream_and_reason() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        let metrics = ControlHistograms::from_meter(&provider.meter("test"));
+        assert!(metrics.is_active());
+
+        metrics.record_ingest_failure("ui_events", "insert");
+        metrics.record_ingest_failure("ui_events", "insert");
+        metrics.record_ingest_failure("mcp_logs", "unconfigured");
+        provider.force_flush().unwrap();
+
+        let mut seen = points(&exporter);
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("mcp_logs".to_string(), "unconfigured".to_string(), 1),
+                ("ui_events".to_string(), "insert".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_inert_recorder_accepts_the_call_and_records_nothing() {
+        // every deployment without OTLP holds this one; the ingest path calls
+        // it unconditionally, so it must be a no-op rather than a panic
+        let metrics = ControlHistograms::default();
+        assert!(!metrics.is_active());
+        metrics.record_ingest_failure("ui_events", "insert");
     }
 }
 
@@ -638,43 +791,7 @@ pub fn install_control_metrics_with_pool(pool: Option<PoolSampler>) -> Option<Me
             }
         }
 
-        let control = ControlHistograms {
-            inner: Some(std::sync::Arc::new(ControlHistogramSet {
-                snapshot_duration: meter
-                    .u64_histogram("rolter_snapshot_build_ms")
-                    .with_description("time to generate one config snapshot, in milliseconds")
-                    .with_unit("ms")
-                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
-                    .build(),
-                snapshot_bytes: meter
-                    .u64_histogram("rolter_snapshot_payload_bytes")
-                    .with_description("serialized size of one config snapshot, in bytes")
-                    .with_unit("By")
-                    .with_boundaries(SNAPSHOT_BYTES_BUCKETS.to_vec())
-                    .build(),
-                crud_duration: meter
-                    .u64_histogram("rolter_control_request_ms")
-                    .with_description("control-plane API request latency, in milliseconds")
-                    .with_unit("ms")
-                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
-                    .build(),
-                pool_acquire: meter
-                    .u64_histogram("rolter_db_pool_acquire_ms")
-                    .with_description(
-                        "time to acquire a postgres connection from the pool, in milliseconds",
-                    )
-                    .with_unit("ms")
-                    .with_boundaries(CONTROL_LATENCY_BUCKETS_MS.to_vec())
-                    .build(),
-                login_outcome: meter
-                    .u64_counter("rolter_control_login_attempts")
-                    .with_description(
-                        "resolved control-plane login attempts, by outcome \
-                         (success, invalid, throttled, locked)",
-                    )
-                    .build(),
-            })),
-        };
+        let control = ControlHistograms::from_meter(&meter);
 
         Some(MetricsGuard {
             provider: Some(provider),

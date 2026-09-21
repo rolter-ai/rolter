@@ -133,6 +133,15 @@ batch accumulates, and when the tab is hidden. If the endpoint answers `401`,
 older control plane or a proxy that drops the route costs one request rather
 than one per flush.
 
+If the control plane cannot store a batch — ClickHouse is down, or the
+`ui_events` table is missing — the endpoint answers `500` with a generic message
+and the batch is dropped; the dashboard keeps sending, so capture resumes by
+itself once the store is back. The store's own error never reaches the browser.
+It goes to the control-plane log instead, as a `telemetry ingest failed` warning
+at most once a minute per stream (with a count of the failures it stands for),
+and every failure adds one to the `rolter_control_ingest_failures` metric, so a
+lost stream can be alerted on rather than discovered.
+
 ## Turning it off
 
 Two independent switches:

@@ -50,6 +50,8 @@ mod feature_flags;
 mod guardrails;
 mod health;
 #[cfg(feature = "postgres")]
+mod ingest_failure;
+#[cfg(feature = "postgres")]
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;

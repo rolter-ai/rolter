@@ -65,6 +65,9 @@ p256 = { version = "0.14", features = ["ecdsa", "pkcs8", "pem", "getrandom"] }
 # the postgres tests build their isolated schema through the store's guard, so
 # a schema is reclaimed when the test finishes (#1364)
 rolter-store = { workspace = true, features = ["test-support"] }
+# a capturing layer, so the ingest-failure warn is asserted to be rate-limited
+# rather than assumed from reading the gate (#1747)
+tracing-subscriber.workspace = true
 
 [features]
 default = []

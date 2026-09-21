@@ -450,6 +450,12 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
         .await
         .unwrap();
     assert_eq!(response.status(), 500);
+    // the store's own error goes to the control-plane log, not the browser: no
+    // insert url, no address, no clickhouse wording (#1747)
+    let body = response.text().await.unwrap();
+    for leak in [closed.to_string().as_str(), "http", "clickhouse", "INSERT"] {
+        assert!(!body.contains(leak), "the 500 body leaks {leak:?}: {body}");
+    }
 
     // nothing is buffered anywhere: the control plane holds no queue of its
     // own, so when ClickHouse comes back the event is not there

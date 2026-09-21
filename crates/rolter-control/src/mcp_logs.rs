@@ -18,6 +18,7 @@ use crate::analytics::{
     query_failed, window_params, WindowQuery, WHERE_WINDOW,
 };
 use crate::crud::{ApiError, ApiResult};
+use crate::ingest_failure::{self, Stream};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -196,13 +197,15 @@ async fn ingest_event(
         "error": safe_error(&event.status, event.error.as_deref()),
     });
     let ch = client_or_503(&state).map_err(|_| {
-        ApiError::Core(rolter_core::Error::Store(
-            "MCP log ingestion requires CLICKHOUSE_URL".to_string(),
-        ))
+        ingest_failure::unconfigured(
+            &state.metrics,
+            Stream::McpLogs,
+            "MCP log ingestion requires CLICKHOUSE_URL",
+        )
     })?;
     ch.insert_mcp_tool_call(&row)
         .await
-        .map_err(|err| ApiError::Core(rolter_core::Error::Store(err.to_string())))?;
+        .map_err(|err| ingest_failure::insert_failed(&state.metrics, Stream::McpLogs, &err))?;
     Ok(StatusCode::ACCEPTED)
 }
 
