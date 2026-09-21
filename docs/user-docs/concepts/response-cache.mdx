@@ -67,6 +67,19 @@ Every other shape **skips the semantic lookup** entirely, and no embedding call 
   Upgrading from a release without these rules retires every semantic entry the older gateway stored. Those entries were written without the compatibility rules above, so Rolter no longer reads them, and they expire on their TTL. Exact entries are unaffected.
 </Note>
 
+## Policies on cached responses
+
+A cached response goes through exactly the same post-response policy as a live one: [output guardrails](/security/guardrails), `post_response` [plugins](/configuration/plugins), then the [PII sanitizer](/security/pii-sanitizer)'s response leg. That holds for the first response on a cached route and for every exact and semantic hit.
+
+The cache stores the provider's response _before_ any of those run. So:
+
+- a guardrail or plugin that masks or rewrites a completion does so on every delivery, and the stored entry keeps the original;
+- a rule or plugin added by a hot reload applies to entries cached before it existed, and a blocking one refuses them;
+- a fail-closed plugin that cannot be reached refuses a cache hit just as it refuses a live response;
+- a PII restore uses the restoration token of the request being answered, so a cached entry never carries one caller's values to another.
+
+Turning the cache on never weakens a configured policy. It only saves the upstream call.
+
 ## Choosing a threshold
 
 Similarity is a statement about wording, not about the correct answer. In domains where a small change in wording changes the answer (numbers, names, dates, negations), keep the threshold high or use the exact cache only. The semantic layer is bounded by `max_candidates`, so each lookup costs one embedding call and a scan of at most that many recent entries.

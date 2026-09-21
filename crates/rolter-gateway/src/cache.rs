@@ -91,6 +91,16 @@ impl ResponseCache {
         self.redis.is_some()
     }
 
+    /// Every raw value held by an in-memory cache, so a test can assert what was
+    /// (and was not) persisted.
+    #[cfg(test)]
+    pub(crate) fn stored_blobs(&self) -> Vec<Vec<u8>> {
+        self.memory
+            .as_ref()
+            .map(|memory| memory.lock().values.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Derive the Redis key for a request. `per_key_scope` is the virtual-key id
     /// mixed in when the route isolates entries per key (empty otherwise), so
     /// callers of a shared route collide and callers of an isolated route don't.
