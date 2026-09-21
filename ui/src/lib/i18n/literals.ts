@@ -1308,17 +1308,13 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
       pushAll(stringsIn(expr, from, true), "text");
     }
   }
-  // English parked in a local and rendered later: `const cta = add ? "Create" :
-  // "Save"` then `<Button>{cta}</Button>` (#1537), or a table indexed where
-  // copy goes, `{HINTS[mode]}` (#1745). only a binding whose name is rendered
-  // is read, so a string that only ever reaches code stays out. a function is
-  // not a held value — its body is the rest of a component
   // state an operator reads: `const [log, setLog] = useState(…)` with `{log}` or
   // `{log.map(…)}` rendered. every value handed to its setter is copy, and so
   // is every value handed to a local function that calls the setter —
   // `append("connected")` in a realtime log (#1765)
   const shown = (name: string) =>
-    rendered.has(name) || childTexts.some((e) => new RegExp(`\\b${name}\\.map\\(`).test(e));
+    rendered.has(name) ||
+    childTexts.some((e) => new RegExp(`\\b${escapeRegExp(name)}\\.map\\(`).test(e));
   const sinks = new Set<string>();
   for (const m of scanned.matchAll(STATE)) if (shown(m[1])) sinks.add(m[2]);
   const declared = new Set<string>();
@@ -1332,7 +1328,7 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
       if (value.includes("=>") && setters.some((f) => value.includes(`${f}(`))) sinks.add(m[1]);
     }
     for (const name of sinks) {
-      const call = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, "\\$")}\\(`, "g");
+      const call = new RegExp(`(?<![\\w$.])${escapeRegExp(name)}\\(`, "g");
       for (const m of scanned.matchAll(call)) {
         const at = m.index + m[0].length;
         const arg = scanned.slice(at, skipExpression(scanned, at, ","));
@@ -1390,6 +1386,11 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
   foreign(tables, uses.tables);
   foreign(calls, uses.calls);
   return { literals: out, imports, uses };
+}
+
+/** `text` matched literally inside a `RegExp`, every special character escaped */
+function escapeRegExp(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
 }
 
 /** the end of a `function name(…) { … }` whose parameter list opens at `open` */

@@ -1002,6 +1002,15 @@ describe("findLiterals reads a line handed to state an operator reads", () => {
     expect(texts(source)).toEqual(["● live", "○ idle"]);
   });
 
+  test("reads a setter whose name carries a $, which is a regex special", () => {
+    const source = [
+      "const [log$, setLog$] = React.useState<string[]>([]);",
+      "<ul>{log$.map((l) => <li key={l}>{l}</li>)}</ul>",
+      'setLog$("closed");',
+    ].join("\n");
+    expect(texts(source)).toEqual(["closed"]);
+  });
+
   test("leaves translated lines, raw data and state that is never shown", () => {
     const source = [
       ...log,
