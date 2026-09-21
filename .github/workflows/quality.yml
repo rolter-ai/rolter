@@ -89,9 +89,23 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # and a real Redis, since budget counters and the response cache live
+      # nowhere else: the withheld-usage suite asserts spend lands there even
+      # when a post-call policy refuses delivery (#1478). tests self-skip when
+      # ROLTER_TEST_REDIS_URL is unset and isolate by unique org and namespace
+      redis:
+        image: redis:8-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       ROLTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rolter_test
       ROLTER_TEST_CLICKHOUSE_URL: http://localhost:8123
+      ROLTER_TEST_REDIS_URL: redis://localhost:6379/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

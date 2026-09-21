@@ -22,6 +22,7 @@
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)
 - [Client disconnects](architecture/client-disconnects.md)
+- [Billed but withheld](architecture/billed-but-withheld.md)
 - [Performance](architecture/performance.md)
 
 # Decisions
