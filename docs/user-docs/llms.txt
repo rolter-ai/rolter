@@ -47,6 +47,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Virtual Keys](/concepts/virtual-keys): Understand how virtual keys authenticate clients, restrict model access, and support expiry and revocation — all without storing plaintext secrets.
 - [Load Balancing](/concepts/load-balancing): Explore Rolter's load balancing strategies, understand when to use each one, and see how to configure them in your route definitions.
 - [Cache-Aware Routing](/concepts/cache-aware-routing): Learn how Rolter's cache-aware strategy maximizes KV cache reuse across vLLM replicas, reducing time-to-first-token on prefix-heavy workloads.
+- [Response Cache](/concepts/response-cache): Serve repeated and similar requests from Redis without an upstream call, and which request shapes the semantic cache will and will not answer.
 - [Adaptive Routing](/concepts/adaptive-routing): How Rolter's adaptive strategy scores targets from live latency, cost and load, and how to tune the blend without accidentally turning it into a random balancer.
 - [Prompt templates](/concepts/prompt-templates): Author versioned prompt decorators, preview variables, and publish them to organization, project, route, or virtual-key scopes.
 - [Skills repository](/concepts/skills-repository): Share immutable agent skills across an organization with role and team access policies, inline content or artifact references, and safe rollback.

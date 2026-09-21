@@ -65,7 +65,7 @@ stale_secs = 10
 Optional caching of full responses to cut cost/latency for repeated requests:
 
 - **exact**: hash of the normalized request → cached response (Redis), short TTL, opt-in per route/key.
-- **semantic**: after an exact miss, embed the normalized prompt through a configured provider and compare cosine similarity against a bounded recent-entry window in Redis. The route controls the threshold and candidate cap. Embedding, Redis, and decode failures fail open to normal routing.
+- **semantic**: after an exact miss, embed the normalized conversation text through a configured provider and compare cosine similarity against a bounded recent-entry window in Redis. The route controls the threshold and candidate cap. Embedding, Redis, and decode failures fail open to normal routing. Only compatible requests are ever compared — see [Semantic compatibility](#semantic-compatibility).
 
 Streaming responses are cached on completion and replayed as a synthetic stream. Cache status is surfaced via response headers (e.g. `x-rolter-cache: hit|miss`).
 
@@ -82,3 +82,31 @@ model = "text-embedding-3-small"
 threshold = 0.92
 max_candidates = 256
 ```
+
+### Semantic compatibility
+
+A semantic hit replays a reply produced for a _different_ request, so similar wording is not enough on its own: two requests can read alike and still expect incompatible replies (#1476). `crates/rolter-gateway/src/semantic.rs` splits every request into two parts before any similarity is computed:
+
+- the **text** that is embedded: the `user` and `assistant` turns (with an OpenAI `name`), or the `prompt` of a legacy completion;
+- a **partition**: a sha-256 over the canonical, key-sorted form of _every other field_ of the post-injection body, including `stream`, `stream_options`, `tools`, `tool_choice`, `response_format`, sampling and length parameters, the model, and the dialect. OpenAI `system`/`developer` messages (with their position) and the Anthropic top-level `system` are partition fields too, so instructions are matched exactly rather than by similarity. `"Answer in German"` and `"Answer in Japanese"` embed almost identically, so this is the only safe way to compare them.
+
+The partition is part of the Redis index key, so the candidate scan never sees an entry from another partition. It is an allowlist of what may vary, not a list of what must match. Only the conversation text, `user` and `metadata` are left out (attribution that does not change the reply), and `stream: false` is folded into an absent `stream`. A field the gateway does not know splits the cache, which costs hit rate but never correctness. As a last check before replay, a hit whose stored content type disagrees with the caller's `stream` flag is treated as a miss.
+
+Requests whose meaning the text would not capture **bypass semantic lookup** before the embedding call, and so cost no embedding spend. They still use the exact cache.
+
+| Shape                                                                                                   | Semantic lookup |
+| ------------------------------------------------------------------------------------------------------- | --------------- |
+| `/v1/chat/completions` with text-only `system`/`developer`/`user`/`assistant` turns                     | yes             |
+| `/v1/messages` with text-only `user`/`assistant` turns and a text `system`                              | yes             |
+| `/v1/completions` with a single string `prompt`                                                         | yes             |
+| any non-text content part (images, audio, files, documents)                                             | bypassed        |
+| tool traffic inside the conversation (`tool_calls`, `tool` turns, `tool_use`/`tool_result` blocks)      | bypassed        |
+| a batch or token-id `prompt`, or a turn carrying any key other than `role`, `content` and `name`        | bypassed        |
+| `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*`, `/v1/rerank` (the output must match the input exactly) | bypassed        |
+| `/v1/responses` (not response-cached at all)                                                            | bypassed        |
+
+Offering tools in the request (`tools`, `tool_choice`) is supported. The schema is a partition field, so a reply is only replayed to a request that offered exactly the same tools.
+
+The index key carries a layout version (`<namespace>:semantic:v2`). Entries written before #1476 had no partition and live under the old `<namespace>:semantic` key, so after an upgrade they are never read again and expire on their TTL. Bump `SEMANTIC_LAYOUT_VERSION` whenever the partition rules change.
+
+The HTTP regression suite is `crates/rolter-gateway/src/semantic/http_tests.rs`. It serves the gateway in-process against a stub upstream whose embeddings are identical for every input, with the in-memory cache backend (`ResponseCache::in_memory`, test builds only), so it needs neither Redis nor a paid model. Because similarity alone would match any two requests there, each miss it asserts is the partition or the bypass at work, and each hit shows the partition does not over-split.

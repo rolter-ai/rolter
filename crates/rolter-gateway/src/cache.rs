@@ -38,6 +38,10 @@ struct SemanticEntry {
 #[derive(Clone)]
 pub struct ResponseCache {
     inner: Option<Arc<Inner>>,
+    /// in-process stand-in for Redis so HTTP-level cache tests run where no
+    /// Redis exists, CI included
+    #[cfg(test)]
+    memory: Option<Arc<parking_lot::Mutex<memory::Store>>>,
 }
 
 struct Inner {
@@ -48,7 +52,20 @@ struct Inner {
 impl ResponseCache {
     /// A disabled cache: every lookup misses and stores are dropped.
     pub fn disabled() -> Self {
-        Self { inner: None }
+        Self {
+            inner: None,
+            #[cfg(test)]
+            memory: None,
+        }
+    }
+
+    /// A cache held in process memory, for tests. Entries never expire.
+    #[cfg(test)]
+    pub(crate) fn in_memory() -> Self {
+        Self {
+            inner: None,
+            memory: Some(Arc::default()),
+        }
     }
 
     /// Build a cache against `redis_url`. An invalid url disables it.
@@ -59,6 +76,8 @@ impl ResponseCache {
                     client,
                     conn: OnceCell::new(),
                 })),
+                #[cfg(test)]
+                memory: None,
             },
             Err(err) => {
                 tracing::warn!(error = %err, "invalid redis url; response cache disabled");
@@ -69,6 +88,10 @@ impl ResponseCache {
 
     /// Whether this cache can store/serve anything (has a Redis client).
     pub fn is_enabled(&self) -> bool {
+        #[cfg(test)]
+        if self.memory.is_some() {
+            return true;
+        }
         self.inner.is_some()
     }
 
@@ -90,19 +113,33 @@ impl ResponseCache {
         out
     }
 
-    /// Stable list key for the bounded semantic candidate window of one route
-    /// and optional virtual-key scope.
+    /// Stable list key for the bounded semantic candidate window of one route,
+    /// optional virtual-key scope and compatibility partition.
+    ///
+    /// `partition` is the digest of every request field that must match exactly
+    /// before two requests may share a reply (see `crate::semantic`), so a
+    /// similarity scan never sees a candidate from another partition. The
+    /// layout version sits in the namespace, which is what retires entries
+    /// written under older rules (#1476).
     pub fn semantic_index_key(
         namespace: &str,
         path: &str,
         route: &str,
         per_key_scope: &str,
+        partition: &str,
     ) -> String {
+        let mut identity = Vec::with_capacity(route.len() + 1 + partition.len());
+        identity.extend_from_slice(route.as_bytes());
+        identity.push(0x1f);
+        identity.extend_from_slice(partition.as_bytes());
         Self::make_key(
-            &format!("{namespace}:semantic"),
+            &format!(
+                "{namespace}:semantic:{}",
+                crate::semantic::SEMANTIC_LAYOUT_VERSION
+            ),
             path,
             per_key_scope,
-            route.as_bytes(),
+            &identity,
         )
     }
 
@@ -123,6 +160,11 @@ impl ResponseCache {
     /// Look up a cached response for `key`. Returns `None` on a miss, when
     /// disabled, when Redis is down, or when the stored blob fails to decode.
     pub async fn get(&self, key: &str) -> Option<CachedResponse> {
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            let raw = memory.lock().values.get(key).cloned()?;
+            return serde_json::from_slice(&raw).ok();
+        }
         let inner = self.inner.as_ref()?;
         let mut conn = Self::connection(inner).await?;
         let raw: Option<Vec<u8>> = conn.get(key).await.unwrap_or(None);
@@ -142,18 +184,23 @@ impl ResponseCache {
         if ttl_secs == 0 {
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
-            return;
-        };
-        let Some(mut conn) = Self::connection(inner).await else {
-            return;
-        };
         let blob = match serde_json::to_vec(resp) {
             Ok(blob) => blob,
             Err(err) => {
                 tracing::warn!(error = %err, "failed to encode response for cache");
                 return;
             }
+        };
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            memory.lock().values.insert(key.to_string(), blob);
+            return;
+        }
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let Some(mut conn) = Self::connection(inner).await else {
+            return;
         };
         let res: redis::RedisResult<()> = conn.set_ex(key, blob, ttl_secs).await;
         if let Err(err) = res {
@@ -173,6 +220,23 @@ impl ResponseCache {
         if embedding.is_empty() || max_candidates == 0 {
             return None;
         }
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            let memory = memory.lock();
+            let blobs = memory
+                .lists
+                .get(index_key)
+                .into_iter()
+                .flatten()
+                .take(max_candidates)
+                .map(|id| {
+                    memory
+                        .values
+                        .get(&format!("{index_key}:entry:{id}"))
+                        .cloned()
+                });
+            return nearest(blobs, embedding, threshold);
+        }
         let inner = self.inner.as_ref()?;
         let mut conn = Self::connection(inner).await?;
         let ids: Vec<String> = conn
@@ -191,17 +255,7 @@ impl ResponseCache {
             .query_async(&mut conn)
             .await
             .unwrap_or_default();
-        blobs
-            .into_iter()
-            .flatten()
-            .filter_map(|blob| serde_json::from_slice::<SemanticEntry>(&blob).ok())
-            .filter_map(|entry| {
-                cosine_similarity(embedding, &entry.embedding)
-                    .filter(|score| *score >= threshold)
-                    .map(|score| (score, entry.response))
-            })
-            .max_by(|(a, _), (b, _)| a.total_cmp(b))
-            .map(|(_, response)| response)
+        nearest(blobs, embedding, threshold)
     }
 
     /// Add or refresh one semantic candidate and trim the route's index to a
@@ -218,12 +272,6 @@ impl ResponseCache {
         if embedding.is_empty() || ttl_secs == 0 || max_candidates == 0 {
             return;
         }
-        let Some(inner) = self.inner.as_ref() else {
-            return;
-        };
-        let Some(mut conn) = Self::connection(inner).await else {
-            return;
-        };
         let Ok(blob) = serde_json::to_vec(&SemanticEntry {
             embedding,
             response: response.clone(),
@@ -231,6 +279,22 @@ impl ResponseCache {
             return;
         };
         let entry_key = format!("{index_key}:entry:{entry_id}");
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            let mut memory = memory.lock();
+            memory.values.insert(entry_key, blob);
+            let list = memory.lists.entry(index_key.to_string()).or_default();
+            list.retain(|id| id != entry_id);
+            list.insert(0, entry_id.to_string());
+            list.truncate(max_candidates);
+            return;
+        }
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let Some(mut conn) = Self::connection(inner).await else {
+            return;
+        };
         let result: redis::RedisResult<()> = redis::pipe()
             .atomic()
             .cmd("SETEX")
@@ -261,6 +325,39 @@ impl ResponseCache {
         if let Err(error) = result {
             tracing::warn!(%error, "failed to store semantic cache entry");
         }
+    }
+}
+
+/// The stored response whose embedding is most similar to `embedding`, if any
+/// clears `threshold`. Missing and undecodable blobs are skipped.
+fn nearest(
+    blobs: impl IntoIterator<Item = Option<Vec<u8>>>,
+    embedding: &[f32],
+    threshold: f32,
+) -> Option<CachedResponse> {
+    blobs
+        .into_iter()
+        .flatten()
+        .filter_map(|blob| serde_json::from_slice::<SemanticEntry>(&blob).ok())
+        .filter_map(|entry| {
+            cosine_similarity(embedding, &entry.embedding)
+                .filter(|score| *score >= threshold)
+                .map(|score| (score, entry.response))
+        })
+        .max_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, response)| response)
+}
+
+#[cfg(test)]
+mod memory {
+    use std::collections::HashMap;
+
+    /// The two Redis shapes the cache uses: plain values and the semantic
+    /// candidate lists (newest first).
+    #[derive(Default)]
+    pub(super) struct Store {
+        pub(super) values: HashMap<String, Vec<u8>>,
+        pub(super) lists: HashMap<String, Vec<String>>,
     }
 }
 

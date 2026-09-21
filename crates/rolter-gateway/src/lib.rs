@@ -49,6 +49,7 @@ mod queue;
 mod rate_limits;
 mod realtime;
 mod response_registry;
+mod semantic;
 mod state;
 mod status_page;
 mod trace;

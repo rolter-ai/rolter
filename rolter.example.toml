@@ -473,6 +473,10 @@ disabled = false # revoke without deleting
 # model = "text-embedding-3-small"
 # threshold = 0.92                   # cosine similarity required for a hit
 # max_candidates = 256               # bounded recent-entry scan per route/key
+# semantic hits only ever replay a reply to a request that matches it exactly
+# on everything but the user/assistant wording: stream mode, system prompt,
+# tools, response_format and sampling params. multimodal and tool-call
+# conversations skip the semantic lookup (exact caching still applies)
 
 # Post-response usage accounting: adding a request's cost to its budget counters
 # and its tokens to its rate-limit windows. Both write to Redis, so both run off

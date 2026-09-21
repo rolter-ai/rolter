@@ -1,0 +1,72 @@
+---
+title: "Response Cache: Exact and Semantic Reuse"
+sidebarTitle: "Response Cache"
+description: "Serve repeated and similar requests from Redis without an upstream call, and which request shapes the semantic cache will and will not answer."
+---
+
+Rolter can answer a request from a stored response instead of calling the upstream model. A cached answer costs no tokens and returns in milliseconds. Every response carries `x-rolter-cache: HIT` or `MISS` so a client can tell which one it got.
+
+There are two layers, both opt-in per route and both stored in Redis, so every gateway replica shares them:
+
+- **Exact**: a request that is byte-for-byte identical to an earlier one (after Rolter applies its route parameters) gets the earlier response. Works for JSON and for streamed responses, which are buffered once and replayed as a stream.
+- **Semantic**: after an exact miss, Rolter embeds the conversation and looks for a recent response to a _similar_ request on the same route. A reply is reused when the cosine similarity reaches the route's `threshold`.
+
+Without Redis, or when Redis or the embedding provider is unreachable, every request is a miss and is served normally.
+
+## Configuration
+
+```toml
+[cache]
+enabled = true            # global switch; a route must also opt in
+
+[[routes]]
+model = "chat"
+# ...targets...
+
+[routes.cache]
+enabled = true
+ttl_secs = 600            # optional; defaults to [cache].default_ttl_secs
+per_key = false           # true keeps each virtual key's entries private
+
+[routes.cache.semantic]
+provider = "openai"                 # a configured provider that serves /v1/embeddings
+model = "text-embedding-3-small"
+threshold = 0.92                    # cosine similarity required for a hit
+max_candidates = 256                # recent entries compared per request
+```
+
+## What the semantic cache will answer
+
+A semantic hit returns a reply that was produced for a _different_ request, so Rolter only compares requests that agree on everything except the wording of the conversation. Only the `user` and `assistant` turns are embedded and compared by similarity. Every other field of the request must match **exactly** before a stored reply is even considered:
+
+- **Response mode**: a streamed (`stream: true`) request is only answered from a streamed reply, and a JSON request only from a JSON reply. `stream_options` must match too.
+- **Instructions**: OpenAI `system` and `developer` messages, and the Anthropic top-level `system`. `"Answer in German"` and `"Answer in Japanese"` never share a reply.
+- **Tools and output format**: `tools`, `tool_choice` and `response_format`, including the full JSON schema.
+- **Generation parameters**: `temperature`, `top_p`, `max_tokens`, `n`, `stop`, `seed` and any other field in the request, including ones Rolter does not recognise.
+- **The model and the API dialect**: an OpenAI request never gets an Anthropic reply, or the reverse.
+
+Only `user` and `metadata` are ignored, since they identify the caller and do not change the answer. Use `per_key = true` to keep entries private to a virtual key.
+
+### Supported request shapes
+
+| Endpoint               | Semantic lookup when…                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| `/v1/chat/completions` | every message is `system`, `developer`, `user` or `assistant`, with text-only content |
+| `/v1/messages`         | every message is `user` or `assistant` with text-only content, and `system` is text   |
+| `/v1/completions`      | `prompt` is a single string                                                           |
+
+Every other shape **skips the semantic lookup** entirely, and no embedding call is made for it. Instead of guessing, Rolter sends the request upstream. The exact cache still applies to these requests:
+
+- images, audio, files, documents or any other non-text content;
+- a conversation that already contains tool calls or tool results (`tool_calls`, `tool` messages, `tool_use` / `tool_result` blocks). Offering tools is fine; replaying a tool exchange is not;
+- a batch or token-id `prompt`;
+- `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*` and `/v1/rerank`, where the output has to match the exact input;
+- `/v1/responses`, which is not response-cached.
+
+<Note>
+  Upgrading from a release without these rules retires every semantic entry the older gateway stored. Those entries were written without the compatibility rules above, so Rolter no longer reads them, and they expire on their TTL. Exact entries are unaffected.
+</Note>
+
+## Choosing a threshold
+
+Similarity is a statement about wording, not about the correct answer. In domains where a small change in wording changes the answer (numbers, names, dates, negations), keep the threshold high or use the exact cache only. The semantic layer is bounded by `max_candidates`, so each lookup costs one embedding call and a scan of at most that many recent entries.
