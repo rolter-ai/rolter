@@ -214,13 +214,15 @@ dogfood:
     # one credential for every local service that has a human login (#956)
     set -a; . "$d/creds.env"; set +a
 
-    export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:5432/rolter"
+    export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$kek"
     echo "[dogfood] seeding org + admin user (no providers: add those yourself)"
     cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
       --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
 
-    [ -d ui/node_modules ] || ( cd ui && bun install )
+    # a worktree's post-start hook can leave a partial node_modules behind, so
+    # test for the build tool itself rather than the directory
+    [ -x ui/node_modules/.bin/vite ] || ( cd ui && bun install --frozen-lockfile )
     [ -d ui/dist ] || ( cd ui && bun run build )
 
     # portless gives stable .localhost names. an https page cannot post traces
@@ -238,6 +240,7 @@ dogfood:
     export ROLTER_REDIS_URL=redis://127.0.0.1:6379 CLICKHOUSE_URL=http://127.0.0.1:8123
 
     ( bun "$d/fleet.ts" 2>&1 | sed 's/^/[fleet]   /' ) &
+    ( bun "$d/fleet-extras.ts" 2>&1 | sed 's/^/[extras]  /' ) &
     ( OTEL_SERVICE_NAME=rolter-control ROLTER_UI_DIR=ui/dist \
         ROLTER_UI_OTEL_ENDPOINT=https://otel.localhost/v1/traces \
         ROLTER_UI_OTEL_SERVICE_NAME=rolter-ui \
@@ -268,6 +271,10 @@ dogfood:
 # prove the dashboard UX capture works end to end before relying on it
 dogfood-ux:
     ./integration/dogfood/ux-capture.sh
+
+# watch dashboard struggles and gateway traffic (WATCH_EVERY=<secs> refreshes)
+dogfood-watch minutes="30":
+    ./integration/dogfood/watch.sh {{minutes}}
 
 # print every url, login and fleet endpoint for the dogfooding stack
 dogfood-sheet:
@@ -304,7 +311,7 @@ dogfood-seed:
     #!/usr/bin/env bash
     set -euo pipefail
     set -a; . integration/dogfood/keys.env; set +a
-    export ROLTER_DATABASE_URL=postgres://rolter:rolter@127.0.0.1:5432/rolter
+    export ROLTER_DATABASE_URL=postgres://rolter:rolter@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter
     export ROLTER_KEK="$(cat integration/dogfood/.kek)"
     cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
       --import integration/dogfood/dogfood.toml
@@ -327,11 +334,27 @@ dev-creds:
         || echo "[dev-creds] postgres unchanged (already correct, or not reachable)"
     fi
 
-    export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:5432/rolter"
+    export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$(cat "$d/.kek" 2>/dev/null || true)"
     echo "[dev-creds] rolter admin -> $DEV_EMAIL"
     cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
       --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
+
+    # rolter-seed creates the admin but never touches an existing one, so a
+    # changed DEV_PASSWORD would leave the old one in force. set it through the
+    # operator API when the control plane is up and the stack enforces RBAC
+    if [ -f "$d/.tokens.env" ] && curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:4001/ 2>/dev/null; then
+      set -a; . "$d/.tokens.env"; set +a
+      uid=$(docker exec -e PGPASSWORD="$DEV_PG_PASSWORD" rolter-postgres-1 psql -U "$DEV_PG_USER" -d rolter -tAc \
+        "select id from users where email = '$DEV_EMAIL'" 2>/dev/null || true)
+      if [ -n "$uid" ]; then
+        python3 -c 'import json,os;print(json.dumps({"password":os.environ["DEV_PASSWORD"]}))' \
+          | curl -fsS -o /dev/null -X PUT "http://127.0.0.1:4001/api/v1/users/$uid" \
+              -H "authorization: Bearer $ROLTER_ADMIN_TOKEN" -H 'content-type: application/json' --data-binary @- \
+          && echo "[dev-creds] rolter admin password set" \
+          || echo "[dev-creds] could not set the rolter admin password through the API"
+      fi
+    fi
 
     ./"$d"/provision-signoz.sh || true
     ./"$d"/sheet.sh

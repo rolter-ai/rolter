@@ -54,7 +54,7 @@ rule
 bold "Backing services"
 rule
 printf '  %-12s %-42s %-14s %s\n' "SERVICE" "URL" "USER" "PASSWORD"
-printf '  %-12s %-42s %-14s %s\n' "postgres" "postgres://127.0.0.1:5432/rolter" "$DEV_PG_USER" "$DEV_PG_PASSWORD"
+printf '  %-12s %-42s %-14s %s\n' "postgres" "postgres://127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter" "$DEV_PG_USER" "$DEV_PG_PASSWORD"
 printf '  %-12s %-42s %-14s %s\n' "redis" "redis://127.0.0.1:6379" "-" "(no auth)"
 printf '  %-12s %-42s %-14s %s\n' "clickhouse" "http://127.0.0.1:8123 (db: default)" "$DEV_CLICKHOUSE_USER" "(no password)"
 printf '  %-12s %-42s %-14s %s\n' "otlp" "127.0.0.1:4317 grpc · 4318 http" "-" "(no auth)"
@@ -130,4 +130,23 @@ dim "  kind: :18001 = openai · :18002 = openai_compatible (see #925) ·"
 dim "        :18003-18013 = openai_compatible · :18014-18015 = tei"
 dim "  the three marked targets exist so the health, breaker and latency"
 dim "  screens have something other than green to show"
+echo
+rule
+bold "Anthropic-shaped provider · kind = anthropic"
+rule
+printf '  %-28s %-42s %s\n' "ENDPOINT" "MODEL_NAME" "API_KEY (x-api-key)"
+printf '  %-28s %-42s %s\n' "http://127.0.0.1:18016" "claude-sonnet-4-5, claude-haiku-4-5," "sk-ant-dogfood-5e19c0a7d2"
+printf '  %-28s %-42s %s\n' "" "claude-opus-4-1" ""
+dim "  /v1/models and /v1/messages, streaming and not"
+echo
+
+rule
+bold "MCP servers · streamable_http · add under MCP"
+rule
+printf '  %-28s %-26s %-10s %s\n' "URL" "NAME" "AUTH" "CREDENTIAL"
+printf '  %-28s %-26s %-10s %s\n' "http://127.0.0.1:18101/mcp" "mcp-files" "none" "-"
+printf '  %-28s %-26s %-10s %s\n' "http://127.0.0.1:18102/mcp" "mcp-tickets" "header" "x-api-key: mcp-tickets-dogfood-4c2e81"
+printf '  %-28s %-26s %-10s %s\n' "http://127.0.0.1:18103/mcp" "mcp-weather" "bearer" "mcp-weather-dogfood-a91f37"
+dim "  tools: list_files, read_file · search_tickets, create_ticket · get_forecast"
+dim "  mcp-weather answers in ~650ms and fails 20% of tool calls with a 500"
 echo

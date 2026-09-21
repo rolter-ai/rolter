@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: rolter
       POSTGRES_DB: rolter
     ports:
-      - "5432:5432"
+      # host side overridable: another project's postgres on 5432 is common
+      # on a dev machine, and the dogfood stack must not fight it
+      - "${ROLTER_PG_HOST_PORT:-5432}:5432"
     volumes:
       # no initdb.d mount: `sqlx::migrate!` owns this schema. postgres would
       # run the migration files itself on first init, outside sqlx's runner,
