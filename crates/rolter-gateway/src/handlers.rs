@@ -1679,8 +1679,12 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         cache_key.as_ref(),
         entry.route.cache.as_ref().and_then(|c| c.semantic.as_ref()),
     ) {
-        if let Some(text) = semantic_cache_text(&forward_body) {
-            if let Some(embedding) = semantic_embedding(&state, &snap, semantic, &text).await {
+        // only shapes whose whole meaning is in their text are looked up, and
+        // only against candidates that agree on every other field (#1476)
+        if let Some(request) = crate::semantic::classify(path, &forward_body) {
+            if let Some(embedding) =
+                semantic_embedding(&state, &snap, semantic, &request.text).await
+            {
                 let scope_seg = if entry.route.cache_per_key() {
                     vk_id.as_str()
                 } else {
@@ -1691,6 +1695,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     path,
                     &entry.route.model,
                     scope_seg,
+                    &request.partition,
                 );
                 if let Some(hit) = state
                     .response_cache
@@ -1701,6 +1706,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         semantic.max_candidates,
                     )
                     .await
+                    .filter(|hit| crate::semantic::replay_matches_mode(stream, &hit.content_type))
                 {
                     state
                         .metrics
@@ -3597,24 +3603,6 @@ fn payload_capture_enabled(
             || config.virtual_key_ids.iter().any(|id| id == virtual_key_id))
 }
 
-fn semantic_cache_text(body: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(body).ok()?;
-    let mut result = String::with_capacity(body.len().min(1024));
-    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
-        for message in messages {
-            if let Some(role) = message.get("role").and_then(Value::as_str) {
-                append_normalized(role, &mut result);
-            }
-            append_semantic_text(message.get("content"), &mut result);
-        }
-    } else {
-        append_semantic_text(value.get("input"), &mut result);
-        append_semantic_text(value.get("prompt"), &mut result);
-    }
-
-    (!result.is_empty()).then_some(result)
-}
-
 fn parse_vllm_token_ids(headers: &HeaderMap) -> Option<Vec<u32>> {
     headers
         .get("x-rolter-vllm-token-ids")?
@@ -3624,29 +3612,6 @@ fn parse_vllm_token_ids(headers: &HeaderMap) -> Option<Vec<u32>> {
         .map(|value| value.trim().parse().ok())
         .collect::<Option<Vec<_>>>()
         .filter(|ids| !ids.is_empty())
-}
-
-fn append_semantic_text(value: Option<&Value>, out: &mut String) {
-    match value {
-        Some(Value::String(text)) => append_normalized(text, out),
-        Some(Value::Array(items)) => {
-            for item in items {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
-                    append_normalized(text, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn append_normalized(text: &str, out: &mut String) {
-    for word in text.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(word);
-    }
 }
 
 async fn semantic_embedding(
@@ -3908,35 +3873,6 @@ mod tests {
             StatusCode::BAD_GATEWAY
         );
         assert!(translation_request_error("upstream error: role_capability: x").is_none());
-    }
-
-    #[test]
-    fn semantic_text_normalizes_chat_content_only() {
-        let body = br#"{
-            "model":"gpt-4o","temperature":0.7,
-            "messages":[
-                {"role":"system","content":"You are helpful."},
-                {"role":"user","content":[{"type":"text","text":"hello   world"}]}
-            ]
-        }"#;
-        assert_eq!(
-            semantic_cache_text(body).as_deref(),
-            Some("system You are helpful. user hello world")
-        );
-    }
-
-    #[test]
-    fn semantic_text_normalizes_responses_input_and_prompt() {
-        let body = br#"{
-            "input":[{"type":"input_text","text":"  first\nvalue "}],
-            "prompt":" second\tvalue "
-        }"#;
-        assert_eq!(
-            semantic_cache_text(body).as_deref(),
-            Some("first value second value")
-        );
-        assert_eq!(semantic_cache_text(br#"{"input":[]}"#), None);
-        assert_eq!(semantic_cache_text(b"not json"), None);
     }
 
     fn config_with_keys() -> GatewayConfig {
