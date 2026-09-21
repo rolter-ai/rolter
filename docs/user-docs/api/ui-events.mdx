@@ -144,9 +144,13 @@ lost stream can be alerted on rather than discovered.
 
 ## Turning it off
 
-Two independent switches:
+Two things stop capture, and only one of them is meant to:
 
-- **No `clickhouse_url`** — the stream is inert; there is nowhere to write.
+- **No `clickhouse_url`** — there is nowhere to write, so every batch is
+  answered `500` and dropped. It is not a quiet off switch: the control plane
+  logs a rate-limited warning and counts each one in
+  `rolter_control_ingest_failures` (`reason=unconfigured`). Use the switch
+  below to turn capture off on purpose.
 - **The Dashboard Usage Events switch** on **Observability → Logs Settings** — a
   deployment-level opt-out, also settable as `ui_events` through
   [`PUT /api/v1/logging-settings`](/observability/log-settings#api). The
