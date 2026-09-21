@@ -248,4 +248,4 @@ curl http://localhost:4000/v1/chat/completions \
   -d '{"model":"llama","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-> Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and variant routing / per-model param defaults (JSON-only) do not apply.
+> Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and variant routing / per-model param defaults (JSON-only) do not apply. Authorization does apply in full: the upload passes the same model, visibility, route-policy and provider gates as a JSON request ([route authorization contract](../architecture/rbac-and-auth.md#the-route-authorization-contract-1485)).

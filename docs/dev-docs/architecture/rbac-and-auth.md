@@ -9,9 +9,59 @@ Clients call `/v1/*` with a **virtual key** (`Authorization: Bearer <key>` or `x
 - looks the key up in the current snapshot
 - checks the key is neither disabled nor past its `expires_at`
 - checks the key's model allow-list (empty = all)
+- once the model resolves to a route, applies the route authorization contract below
 - (roadmap) enforces budgets and RPM/TPM limits for the key's scope chain
 
 Keys are stored as hashes; the presented key is compared in constant time (`rolter_auth::verify_key`).
+
+### The route authorization contract (#1485)
+
+Access to a route must not depend on how the request body is encoded. Every
+data-plane endpoint that addresses a model therefore authorizes through the
+same two functions in `crates/rolter-gateway/src/handlers.rs`, and no endpoint
+re-implements a check inline:
+
+| Gate              | Runs                                                                    | Refuses with                          |
+| ----------------- | ----------------------------------------------------------------------- | ------------------------------------- |
+| `authorize_model` | on the requested model id, before budgets, plugins and rate limits      | `403 model_not_allowed`               |
+| `authorize_route` | on the resolved route (named or `provider-slug/model`), before upstream | `403` with the code of the first gate |
+
+`authorize_route` checks, in order:
+
+1. **visibility** — `advanced.visibility.allowed_team_ids` / `allowed_key_ids`
+   (`model_visible_to`); refused as `model_not_allowed`. It runs first so a
+   hidden route never reveals whether the other gates would also have refused.
+   A request with no key at all is refused by any non-empty visibility list.
+2. **route policy** — the access-profile policy of the key's creator
+   (`KeyMeta::route_permitted`, #791); refused as `route_not_allowed`.
+3. **provider allow-list** — at least one target on the route (classic pool or
+   any variant) is a provider the key may use (`key_allows_route`); refused as
+   `provider_not_allowed`.
+
+The per-target provider filter in `pick_untried` still runs during balancing;
+the route gate only guarantees that at least one target is reachable, so the
+caller gets an explicit `403` rather than a failed target selection.
+
+The callers are the JSON pipeline (`proxy`: chat, completions, responses,
+messages, embeddings, rerank, image generation, audio speech), the multipart
+pipeline (`proxy_multipart`: audio transcriptions and translations) and the
+Realtime upgrade (`realtime::realtime`), which refuses before the WebSocket
+handshake completes and before an upstream socket is dialled. The complexity
+tier selector and `GET /v1/models` use the same `authorize_route`, so a tier
+never upgrades a request onto a route its key could not address directly, and
+the listing only shows routes the key could call. Before #1485 the multipart
+path checked only the model allow-list and the Realtime upgrade skipped
+visibility, so a hidden or policy-denied route was reachable through an audio
+upload or a socket. The HTTP regressions for every gate on every pipeline live
+in `crates/rolter-gateway/tests/integration.rs` (`audio_uploads_*`,
+`realtime_upgrade_enforces_route_visibility`).
+
+`visibility.allowed_user_ids` and `visibility.minimum_role` are not enforced on
+the data plane: a virtual key carries no user identity or role. They remain
+control-plane concerns.
+
+A new endpoint that resolves a route must call both gates. Budgets, rate limits
+and metering for Realtime sessions are tracked separately in #1396.
 
 ### Empty key sets
 

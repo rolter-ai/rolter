@@ -4190,3 +4190,298 @@ async fn a_dead_group_member_fails_over_to_a_sibling() {
         "the sibling never saw the request"
     );
 }
+
+// ---------------------------------------------------------------------------
+// route authorization must not depend on the request's content type (#1485):
+// the JSON pipeline, the multipart audio uploads and the Realtime upgrade all
+// apply the same model, visibility, route-policy and provider gates, and a
+// refused request never reaches the upstream
+// ---------------------------------------------------------------------------
+
+/// An upstream that answers every path with a transcription body and counts
+/// how many requests actually reached it.
+async fn counting_audio_upstream() -> (SocketAddr, Arc<AtomicU32>) {
+    let hits = Arc::new(AtomicU32::new(0));
+    let counter = hits.clone();
+    let addr = serve(Router::new().route(
+        "/{*path}",
+        any(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Json(json!({
+                    "text": "private result",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}]
+                }))
+            }
+        }),
+    ))
+    .await;
+    (addr, hits)
+}
+
+/// A database-backed key with the scope identity visibility rules match on.
+fn scoped_key(
+    config: &GatewayConfig,
+    plaintext: &str,
+    id: &str,
+    team_id: &str,
+    policy: Option<rolter_core::ModelPolicy>,
+    providers: Vec<String>,
+) -> VirtualKeyRecord {
+    VirtualKeyRecord {
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
+        id: id.to_string(),
+        org_id: "org-1".to_string(),
+        team_id: team_id.to_string(),
+        project_id: "project-1".to_string(),
+        user_id: String::new(),
+        models: Vec::new(),
+        providers,
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+        access_policy: policy,
+    }
+}
+
+fn audio_form(model: &str) -> String {
+    format!(
+        "--AUDIT\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n\
+         --AUDIT\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+         Content-Type: audio/wav\r\n\r\nRIFF\r\n--AUDIT--\r\n"
+    )
+}
+
+/// Status and error code of the chat, transcription and translation calls for
+/// one key against one model, in that order.
+async fn statuses_for(gw: SocketAddr, key: &str, model: &str) -> Vec<(u16, String)> {
+    let client = reqwest::Client::new();
+    let mut out = Vec::new();
+    let chat = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .bearer_auth(key)
+        .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    out.push(chat);
+    for path in ["transcriptions", "translations"] {
+        let audio = client
+            .post(format!("http://{gw}/v1/audio/{path}"))
+            .bearer_auth(key)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "multipart/form-data; boundary=AUDIT",
+            )
+            .body(audio_form(model))
+            .send()
+            .await
+            .unwrap();
+        out.push(audio);
+    }
+    let mut result = Vec::new();
+    for resp in out {
+        let status = resp.status().as_u16();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        let code = body["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        result.push((status, code));
+    }
+    result
+}
+
+fn all(status: u16, code: &str) -> Vec<(u16, String)> {
+    vec![(status, code.to_string()); 3]
+}
+
+#[tokio::test]
+async fn audio_uploads_enforce_key_visibility_like_chat() {
+    let (upstream, hits) = counting_audio_upstream().await;
+    let mut config = config_for("private-audio", vec![("mock", upstream)]);
+    config.routes[0].advanced.visibility.allowed_key_ids = vec!["key-allowed".to_string()];
+    let denied = scoped_key(&config, "sk-denied", "key-denied", "team-1", None, vec![]);
+    let allowed = scoped_key(&config, "sk-allowed", "key-allowed", "team-1", None, vec![]);
+    config.db_virtual_keys.extend([denied, allowed]);
+    let gw = serve_gateway(&config).await;
+
+    assert_eq!(
+        statuses_for(gw, "sk-denied", "private-audio").await,
+        all(403, "model_not_allowed")
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a refused call reached upstream"
+    );
+
+    // the allowed control: the same route answers the key it names
+    let allowed = statuses_for(gw, "sk-allowed", "private-audio").await;
+    assert!(
+        allowed.iter().all(|(status, _)| *status == 200),
+        "{allowed:?}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn audio_uploads_enforce_team_visibility_like_chat() {
+    let (upstream, hits) = counting_audio_upstream().await;
+    let mut config = config_for("team-audio", vec![("mock", upstream)]);
+    config.routes[0].advanced.visibility.allowed_team_ids = vec!["team-a".to_string()];
+    let outsider = scoped_key(&config, "sk-team-b", "key-b", "team-b", None, vec![]);
+    let member = scoped_key(&config, "sk-team-a", "key-a", "team-a", None, vec![]);
+    config.db_virtual_keys.extend([outsider, member]);
+    let gw = serve_gateway(&config).await;
+
+    assert_eq!(
+        statuses_for(gw, "sk-team-b", "team-audio").await,
+        all(403, "model_not_allowed")
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a refused call reached upstream"
+    );
+
+    let member = statuses_for(gw, "sk-team-a", "team-audio").await;
+    assert!(
+        member.iter().all(|(status, _)| *status == 200),
+        "{member:?}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn audio_uploads_enforce_route_access_policy_like_chat() {
+    let (upstream, hits) = counting_audio_upstream().await;
+    let mut config = config_for("policy-audio", vec![("mock", upstream)]);
+    let deny_route = rolter_core::ModelPolicy {
+        denied_routes: vec!["policy-audio".to_string()],
+        ..Default::default()
+    };
+    let other_route_only = rolter_core::ModelPolicy {
+        allowed_routes: vec!["some-other-route".to_string()],
+        ..Default::default()
+    };
+    let permits_route = rolter_core::ModelPolicy {
+        allowed_routes: vec!["policy-audio".to_string()],
+        ..Default::default()
+    };
+    config.db_virtual_keys.extend([
+        scoped_key(&config, "sk-deny", "k1", "team-1", Some(deny_route), vec![]),
+        scoped_key(
+            &config,
+            "sk-other",
+            "k2",
+            "team-1",
+            Some(other_route_only),
+            vec![],
+        ),
+        scoped_key(
+            &config,
+            "sk-permit",
+            "k3",
+            "team-1",
+            Some(permits_route),
+            vec![],
+        ),
+    ]);
+    let gw = serve_gateway(&config).await;
+
+    for key in ["sk-deny", "sk-other"] {
+        assert_eq!(
+            statuses_for(gw, key, "policy-audio").await,
+            all(403, "route_not_allowed"),
+            "{key}"
+        );
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a refused call reached upstream"
+    );
+
+    let permitted = statuses_for(gw, "sk-permit", "policy-audio").await;
+    assert!(
+        permitted.iter().all(|(status, _)| *status == 200),
+        "{permitted:?}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn audio_uploads_keep_model_and_provider_gates() {
+    let (upstream, hits) = counting_audio_upstream().await;
+    let mut config = config_for("gated-audio", vec![("mock", upstream)]);
+    let mut model_scoped = scoped_key(&config, "sk-model", "k1", "team-1", None, vec![]);
+    model_scoped.models = vec!["another-model".to_string()];
+    let provider_scoped = scoped_key(
+        &config,
+        "sk-provider",
+        "k2",
+        "team-1",
+        None,
+        vec!["not-this-provider".to_string()],
+    );
+    config
+        .db_virtual_keys
+        .extend([model_scoped, provider_scoped]);
+    let gw = serve_gateway(&config).await;
+
+    assert_eq!(
+        statuses_for(gw, "sk-model", "gated-audio").await,
+        all(403, "model_not_allowed")
+    );
+    // the provider allow-list now answers the upload with the same explicit
+    // refusal the chat path gives, instead of failing at target selection
+    assert_eq!(
+        statuses_for(gw, "sk-provider", "gated-audio").await,
+        all(403, "provider_not_allowed")
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a refused call reached upstream"
+    );
+}
+
+#[tokio::test]
+async fn realtime_upgrade_enforces_route_visibility() {
+    let (upstream_addr, mut captured_rx) = serve_realtime_echo().await;
+    let mut config = config_for("private-realtime", vec![("up", upstream_addr)]);
+    config.routes[0].advanced.visibility.allowed_key_ids = vec!["key-allowed".to_string()];
+    let denied = scoped_key(&config, "sk-denied", "key-denied", "team-1", None, vec![]);
+    let allowed = scoped_key(&config, "sk-allowed", "key-allowed", "team-1", None, vec![]);
+    config.db_virtual_keys.extend([denied, allowed]);
+    let gw = serve_gateway(&config).await;
+
+    let refused = tokio_tungstenite::connect_async(realtime_client_request(
+        gw,
+        "private-realtime",
+        Some("Bearer sk-denied"),
+        None,
+    ))
+    .await
+    .unwrap_err();
+    assert_eq!(websocket_handshake_status(refused), 403);
+    assert!(
+        captured_rx.try_recv().is_err(),
+        "a refused upgrade dialled upstream"
+    );
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(realtime_client_request(
+        gw,
+        "private-realtime",
+        Some("Bearer sk-allowed"),
+        None,
+    ))
+    .await
+    .unwrap();
+    assert!(captured_rx.recv().await.is_some());
+    socket.close(None).await.unwrap();
+}

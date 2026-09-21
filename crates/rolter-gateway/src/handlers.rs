@@ -163,9 +163,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .routes
         .iter()
         .filter(|(_, entry)| {
-            vk.as_ref().is_none_or(|key| {
-                key_allows_route(key, entry) && model_visible_to(Some(key), entry)
-            })
+            // the listing only narrows for an authenticated caller; the
+            // request path is what refuses an anonymous one
+            vk.as_ref()
+                .is_none_or(|key| authorize_route(Some(key), entry).is_ok())
         })
         .map(|(model, _)| model.clone())
         .chain(builtin)
@@ -286,6 +287,89 @@ pub(crate) fn key_allows_route(key: &KeyMeta, entry: &crate::state::RouteEntry) 
                     .flat_map(|variant| variant.targets.iter()),
             )
             .any(|target| key.provider_allowed(&target.provider))
+}
+
+/// Why the data plane refused a caller the model or route it addressed.
+///
+/// Every variant maps to one OpenAI-style `403`, so the reason a caller is
+/// denied is the same whichever endpoint and body encoding they came through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessDenial {
+    /// The key's own model allow-list or its owner's access profile does not
+    /// permit the requested model id.
+    ModelNotAllowed,
+    /// The route's visibility restricts it to other teams or keys.
+    NotVisible,
+    /// The owner's access profile denies the whole named route (#791).
+    RoutePolicy,
+    /// The key's provider allow-list excludes every provider on the route.
+    NoProvider,
+}
+
+impl AccessDenial {
+    pub(crate) fn into_response(self) -> Response {
+        let (message, code) = match self {
+            Self::ModelNotAllowed => ("model not allowed for this key", "model_not_allowed"),
+            Self::NotVisible => ("model is not visible to this key", "model_not_allowed"),
+            Self::RoutePolicy => (
+                "route is not allowed for this key's access profile",
+                "route_not_allowed",
+            ),
+            Self::NoProvider => (
+                "no provider on this route is allowed for this key",
+                "provider_not_allowed",
+            ),
+        };
+        crate::error::ApiError::new(StatusCode::FORBIDDEN, message)
+            .with_code(code)
+            .with_param("model")
+            .into_response()
+    }
+}
+
+/// The model gate every data-plane endpoint applies to the id the caller
+/// named, before any budget, plugin, rate limit or route resolution runs.
+///
+/// Paired with [`authorize_route`]: this one sees only the requested string,
+/// that one sees the route it resolved to. A request is authorized only once
+/// both have passed.
+pub(crate) fn authorize_model(key: Option<&KeyMeta>, model: &str) -> Result<(), AccessDenial> {
+    match key {
+        Some(key) if !key.model_permitted(model) => Err(AccessDenial::ModelNotAllowed),
+        _ => Ok(()),
+    }
+}
+
+/// The route gate every data-plane endpoint applies once the addressed model
+/// has resolved to a route, before anything is sent upstream.
+///
+/// This is the single authorization contract for a resolved route, shared by
+/// the JSON pipeline, the multipart audio uploads and the Realtime upgrade so
+/// that access never depends on the request's content type (#1485). The checks
+/// run in a fixed order so the caller is told which gate refused them: route
+/// visibility, then the owner's route policy, then the key's provider
+/// allow-list. The per-target provider filter applied during balancing still
+/// runs afterwards; this gate only guarantees that at least one target is
+/// reachable at all.
+pub(crate) fn authorize_route(
+    key: Option<&KeyMeta>,
+    entry: &crate::state::RouteEntry,
+) -> Result<(), AccessDenial> {
+    if !model_visible_to(key, entry) {
+        return Err(AccessDenial::NotVisible);
+    }
+    if let Some(key) = key {
+        // checked before the composite gate so the caller is told which of the
+        // two denied them: the route policy their owner holds, or the key's
+        // own provider allow-list (#791)
+        if !key.route_permitted(&entry.route.model) {
+            return Err(AccessDenial::RoutePolicy);
+        }
+        if !key_allows_route(key, entry) {
+            return Err(AccessDenial::NoProvider);
+        }
+    }
+    Ok(())
 }
 
 /// Enforce the part of model visibility that is available on the gateway
@@ -979,16 +1063,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             Err(resp) => return resp,
         }
     };
-    if let Some(vk) = &vk {
-        if !vk.model_permitted(&model) {
-            return crate::error::ApiError::new(
-                StatusCode::FORBIDDEN,
-                "model not allowed for this key",
-            )
-            .with_code("model_not_allowed")
-            .with_param("model")
-            .into_response();
-        }
+    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
+        return denial.into_response();
     }
 
     let scope = request_scope(vk.as_ref());
@@ -1118,10 +1194,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     {
         let selected = snap.routes.get(&tier_route).filter(|candidate| {
             (!candidate.route.targets.is_empty() || candidate.route.has_variants())
-                && vk
-                    .as_ref()
-                    .is_none_or(|key| key_allows_route(key, candidate))
-                && model_visible_to(vk.as_ref(), candidate)
+                && authorize_route(vk.as_ref(), candidate).is_ok()
         });
         let fallback = selected.is_none();
         if let Some(candidate) = selected {
@@ -1134,37 +1207,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
-    if !model_visible_to(vk.as_ref(), entry) {
-        return crate::error::ApiError::new(
-            StatusCode::FORBIDDEN,
-            "model is not visible to this key",
-        )
-        .with_code("model_not_allowed")
-        .with_param("model")
-        .into_response();
-    }
-    if let Some(key) = &vk {
-        // checked before the composite gate so the caller is told which of the
-        // two denied them: the route policy their owner holds, or the key's
-        // own provider allow-list (#791)
-        if !key.route_permitted(&entry.route.model) {
-            return crate::error::ApiError::new(
-                StatusCode::FORBIDDEN,
-                "route is not allowed for this key's access profile",
-            )
-            .with_code("route_not_allowed")
-            .with_param("model")
-            .into_response();
-        }
-        if !key_allows_route(key, entry) {
-            return crate::error::ApiError::new(
-                StatusCode::FORBIDDEN,
-                "no provider on this route is allowed for this key",
-            )
-            .with_code("provider_not_allowed")
-            .with_param("model")
-            .into_response();
-        }
+    if let Err(denial) = authorize_route(vk.as_ref(), entry) {
+        return denial.into_response();
     }
     // the route survived every access check: record what was chosen and close
     // the stage, so what follows is not nested under route selection
@@ -2391,8 +2435,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 /// `multipart/form-data`, so the JSON pipeline can't parse it: instead the
 /// `model` is read from the form fields and the raw body is forwarded verbatim
 /// (content-type + boundary preserved) via [`Forwarder::forward_raw`]. Auth,
-/// budgets, rate limits, routing, retries, cooldowns and the circuit breaker
-/// match the classic single-pool path; variant routing and per-model param
+/// the model and route authorization gates ([`authorize_model`],
+/// [`authorize_route`]), budgets, rate limits, routing, retries, cooldowns and
+/// the circuit breaker match the classic single-pool path; variant routing and per-model param
 /// injection do not apply (they're JSON-only), and the route target's upstream
 /// model name is not rewritten into the multipart body.
 async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
@@ -2432,16 +2477,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
-    if let Some(vk) = &vk {
-        if !vk.model_permitted(&model) {
-            return crate::error::ApiError::new(
-                StatusCode::FORBIDDEN,
-                "model not allowed for this key",
-            )
-            .with_code("model_not_allowed")
-            .with_param("model")
-            .into_response();
-        }
+    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
+        return denial.into_response();
     }
 
     let scope = request_scope(vk.as_ref());
@@ -2494,6 +2531,11 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     };
     if entry.route.targets.is_empty() {
         return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
+    }
+    // the same route gate as the JSON pipeline: an upload must not reach a
+    // route the caller could not address with a chat request (#1485)
+    if let Err(denial) = authorize_route(vk.as_ref(), entry) {
+        return denial.into_response();
     }
 
     let request_id = headers
@@ -5066,5 +5108,73 @@ mod tests {
             }),
             entry
         ));
+    }
+
+    #[test]
+    fn route_gate_reports_the_first_gate_that_refused() {
+        let mut config = config_with_keys();
+        config.routes[0]
+            .advanced
+            .visibility
+            .allowed_key_ids
+            .push("allowed-key".to_string());
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        let deny_route = rolter_core::ModelPolicy {
+            denied_routes: vec!["gpt-4o".to_string()],
+            ..Default::default()
+        };
+
+        // visibility is checked first, so a hidden route never reveals whether
+        // the caller's policy or provider list would also have refused it
+        let hidden = KeyMeta {
+            id: "other-key".to_string(),
+            access_policy: Some(deny_route.clone()),
+            providers: vec!["missing".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            authorize_route(Some(&hidden), entry),
+            Err(AccessDenial::NotVisible)
+        );
+        assert_eq!(authorize_route(None, entry), Err(AccessDenial::NotVisible));
+
+        let policy_denied = KeyMeta {
+            id: "allowed-key".to_string(),
+            access_policy: Some(deny_route),
+            providers: vec!["missing".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            authorize_route(Some(&policy_denied), entry),
+            Err(AccessDenial::RoutePolicy)
+        );
+
+        let provider_denied = KeyMeta {
+            id: "allowed-key".to_string(),
+            providers: vec!["missing".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            authorize_route(Some(&provider_denied), entry),
+            Err(AccessDenial::NoProvider)
+        );
+
+        let allowed = KeyMeta {
+            id: "allowed-key".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(authorize_route(Some(&allowed), entry), Ok(()));
+        assert_eq!(
+            authorize_model(
+                Some(&KeyMeta {
+                    models: vec!["x".to_string()],
+                    ..Default::default()
+                }),
+                "gpt-4o"
+            ),
+            Err(AccessDenial::ModelNotAllowed)
+        );
+        assert_eq!(authorize_model(None, "gpt-4o"), Ok(()));
     }
 }
