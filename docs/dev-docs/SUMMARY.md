@@ -24,6 +24,7 @@
 - [Client disconnects](architecture/client-disconnects.md)
 - [Billed but withheld](architecture/billed-but-withheld.md)
 - [Redis connections](architecture/redis-connections.md)
+- [Rate limiting](architecture/rate-limiting.md)
 - [Performance](architecture/performance.md)
 
 # Decisions
