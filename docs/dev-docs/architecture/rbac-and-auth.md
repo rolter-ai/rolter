@@ -60,6 +60,39 @@ in `crates/rolter-gateway/tests/integration.rs` (`audio_uploads_*`,
 the data plane: a virtual key carries no user identity or role. They remain
 control-plane concerns.
 
+The Responses lifecycle calls (`GET`/`DELETE /v1/responses/{id}`, `POST
+/v1/responses/{id}/cancel`, `GET /v1/responses/{id}/input_items`) address a
+stored response rather than a model, so they carry no route to resolve. The
+registry entry records both the model the caller named and the route that
+served it (`ResponseRoute::route`: the configured route name, the tier route a
+complexity policy moved the request onto, or the `provider-slug/model` address
+itself). `authorize_lifecycle` re-runs the contract against the **current**
+snapshot on every call (#1779):
+
+1. `authorize_model` on the recorded model id
+2. the recorded route is resolved as the request path would resolve it (named
+   route first, then `provider-slug/model` addressing), and `authorize_route`
+   runs on it
+3. the key must still allow the one provider holding the response; refused as
+   `provider_not_allowed`, since the call can only go to that provider
+
+It runs after the tenant-scoped registry lookup, so another key still gets the
+uniform `404 response_not_found` and learns nothing; only the response's owner
+can see these `403`s. Without it, access revoked after creation (visibility,
+route policy, a narrowed key) would keep working for the registry TTL, which is
+24 hours by default.
+
+**A removed route fails closed.** When the recorded route no longer resolves,
+the call is refused with `403 route_not_allowed` ("no longer configured"). With
+the route gone there is nothing left to evaluate visibility and route policy
+against. Allowing the call would let a deleted route keep serving
+provider-credentialed calls until the entry expires, and deleting a route is
+often exactly how an operator withdraws access. The cost is that a response
+created on a route that was then renamed or removed can no longer be managed
+through the gateway; recreating the route restores access. HTTP regressions:
+`response_lifecycle_rechecks_route_authorization_after_revocation` and
+`response_lifecycle_reauthorizes_pinned_addresses`.
+
 A new endpoint that resolves a route must call both gates. Budgets, rate limits
 and metering for Realtime sessions are tracked separately in #1396.
 

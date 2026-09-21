@@ -4635,3 +4635,198 @@ async fn realtime_upgrade_enforces_route_visibility() {
     assert!(captured_rx.recv().await.is_some());
     socket.close(None).await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// a stored response is reachable only while its creator may still reach the
+// route it was created on (#1779): the registry proves ownership, the route
+// gates decide access, and a revoked or removed route stops every lifecycle
+// call before it is forwarded
+// ---------------------------------------------------------------------------
+
+/// A native OpenAI upstream for the Responses lifecycle that counts every
+/// lifecycle call (creation is not counted) it receives.
+async fn counting_lifecycle_upstream() -> (SocketAddr, Arc<AtomicU32>) {
+    let hits = Arc::new(AtomicU32::new(0));
+    let create = || async { Json(json!({"id": "resp_life", "object": "response"})) };
+    let counted = |hits: Arc<AtomicU32>| {
+        move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"id": "resp_life", "object": "response", "data": []}))
+            }
+        }
+    };
+    let addr = serve(
+        Router::new()
+            .route("/v1/responses", post(create))
+            .route(
+                "/v1/responses/{id}",
+                get(counted(hits.clone())).delete(counted(hits.clone())),
+            )
+            .route("/v1/responses/{id}/cancel", post(counted(hits.clone())))
+            .route("/v1/responses/{id}/input_items", get(counted(hits.clone()))),
+    )
+    .await;
+    (addr, hits)
+}
+
+/// One route on one native provider, plus the key that creates the response.
+fn lifecycle_config(upstream: SocketAddr, route: &str) -> GatewayConfig {
+    let mut config = config_for(route, vec![("native", upstream)]);
+    config.providers[0].kind = ProviderKind::Openai;
+    let owner = scoped_key(&config, "sk-owner", "key-owner", "team-1", None, vec![]);
+    config.db_virtual_keys.push(owner);
+    config
+}
+
+/// Status and error code of retrieve, input items, cancel and delete, in order.
+async fn lifecycle_statuses(gw: SocketAddr, id: &str) -> Vec<(u16, String)> {
+    let client = reqwest::Client::new();
+    let base = format!("http://{gw}/v1/responses/{id}");
+    let mut out = Vec::new();
+    for request in [
+        client.get(base.clone()),
+        client.get(format!("{base}/input_items")),
+        client.post(format!("{base}/cancel")),
+        client.delete(base.clone()),
+    ] {
+        let resp = request.bearer_auth("sk-owner").send().await.unwrap();
+        let status = resp.status().as_u16();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        let code = body["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        out.push((status, code));
+    }
+    out
+}
+
+async fn create_response(gw: SocketAddr, model: &str) -> String {
+    let created: Value = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/responses"))
+        .bearer_auth("sk-owner")
+        .json(&json!({"model": model, "input": "hello"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    created["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn response_lifecycle_rechecks_route_authorization_after_revocation() {
+    let (upstream, hits) = counting_lifecycle_upstream().await;
+    let base = lifecycle_config(upstream, "life-model");
+    let state = rolter_gateway::AppState::with_logging(&base, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let id = create_response(gw, "life-model").await;
+
+    let mut hidden = base.clone();
+    hidden.routes[0].advanced.visibility.allowed_key_ids = vec!["someone-else".to_string()];
+
+    let mut policy_denied = base.clone();
+    policy_denied.db_virtual_keys[0].access_policy = Some(rolter_core::ModelPolicy {
+        denied_routes: vec!["life-model".to_string()],
+        ..Default::default()
+    });
+
+    let mut model_narrowed = base.clone();
+    model_narrowed.db_virtual_keys[0].models = vec!["another-model".to_string()];
+
+    // the route still has a provider the key may use, just not the one the
+    // response lives on
+    let mut provider_narrowed = base.clone();
+    provider_narrowed.providers.push(ProviderConfig {
+        name: "other".to_string(),
+        kind: ProviderKind::Openai,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    provider_narrowed.routes[0].targets.push(Target {
+        provider: "other".to_string(),
+        model: None,
+        weight: 1,
+    });
+    provider_narrowed.db_virtual_keys[0].providers = vec!["other".to_string()];
+
+    // the route is gone: fail closed rather than skip the route checks
+    let mut removed = lifecycle_config(upstream, "a-different-route");
+    removed.db_virtual_keys = base.db_virtual_keys.clone();
+
+    let cases = [
+        ("visibility", hidden, "model_not_allowed"),
+        ("route policy", policy_denied, "route_not_allowed"),
+        ("key model list", model_narrowed, "model_not_allowed"),
+        (
+            "key provider list",
+            provider_narrowed,
+            "provider_not_allowed",
+        ),
+        ("route removed", removed, "route_not_allowed"),
+    ];
+    for (version, (name, config, code)) in cases.into_iter().enumerate() {
+        state.reload(&config, version as u64 + 1);
+        assert_eq!(
+            lifecycle_statuses(gw, &id).await,
+            vec![(403, code.to_string()); 4],
+            "{name}"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "{name}: reached upstream");
+    }
+
+    // the allowed control: restoring access restores every operation, and the
+    // response was not dropped from the registry by the refusals
+    state.reload(&base, 100);
+    let allowed = lifecycle_statuses(gw, &id).await;
+    assert!(
+        allowed.iter().all(|(status, _)| *status == 200),
+        "{allowed:?}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn response_lifecycle_reauthorizes_pinned_addresses() {
+    let (upstream, hits) = counting_lifecycle_upstream().await;
+    let config = lifecycle_config(upstream, "life-model");
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    // `provider-slug/model` has no configured route; the lifecycle call must
+    // resolve the same address again rather than treat it as removed
+    let id = create_response(gw, "native/gpt-upstream").await;
+    let retrieved = reqwest::Client::new()
+        .get(format!("http://{gw}/v1/responses/{id}"))
+        .bearer_auth("sk-owner")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retrieved.status(), 200);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    let mut narrowed = config.clone();
+    narrowed.db_virtual_keys[0].providers = vec!["someone-else".to_string()];
+    state.reload(&narrowed, 1);
+    assert_eq!(
+        lifecycle_statuses(gw, &id).await,
+        vec![(403, "provider_not_allowed".to_string()); 4]
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a refused call reached upstream"
+    );
+}

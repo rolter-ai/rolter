@@ -174,6 +174,8 @@ Access to a model never depends on which endpoint or body format a client uses. 
 
 A refused request is never forwarded to a provider and never opens an upstream Realtime socket.
 
+The same checks apply again when a key retrieves, cancels, deletes or lists the input items of a stored response (`/v1/responses/{id}`), using the model and route the response was created on. Revoking a key's access to a route therefore also cuts off the responses it already created there, and if the route itself has been deleted those calls are refused with `403` code `route_not_allowed`. Recreating the route restores access. Only the key that created a response can reach it at all; any other key gets `404`.
+
 <Note>
   A key's own model list and its creator's policy are both applied, and neither widens the other. A key that names `gpt-4o` still cannot reach it if its creator's profile denies it — and a profile that allows `gpt-4o` does not add it to a key scoped to something else.
 

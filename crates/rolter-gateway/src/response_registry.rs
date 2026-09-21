@@ -33,7 +33,13 @@ impl LifecycleCapabilities {
 pub struct ResponseRoute {
     pub provider: String,
     pub target: String,
+    /// the model id the caller named when creating the response
     pub model: String,
+    /// the route that actually served it: a configured route name, or the
+    /// `provider-slug/model` address itself for a pinned request. differs from
+    /// `model` when a complexity tier moved the request onto another route, and
+    /// is what a lifecycle call re-authorizes against (#1779)
+    pub route: String,
     pub provider_native_id: String,
     pub provider_key_fingerprint: Option<String>,
     pub capabilities: LifecycleCapabilities,
@@ -47,10 +53,20 @@ pub struct RouteTemplate {
     pub provider: String,
     pub target: String,
     pub model: String,
+    pub route: String,
     pub provider_key_fingerprint: Option<String>,
     pub capabilities: LifecycleCapabilities,
     created_at: Instant,
     expires_at: Instant,
+}
+
+impl RouteTemplate {
+    /// Record the route that served the response, for lifecycle calls to
+    /// re-authorize against.
+    pub fn with_route(mut self, route: String) -> Self {
+        self.route = route;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -100,6 +116,9 @@ impl ResponseRegistry {
             tenant,
             provider,
             target,
+            // the served route defaults to the named model; the request path
+            // overrides it with `with_route` once it knows which route served
+            route: model.clone(),
             model,
             provider_key_fingerprint,
             capabilities,
@@ -164,6 +183,7 @@ impl ResponseRegistry {
                 provider: template.provider,
                 target: template.target,
                 model: template.model,
+                route: template.route,
                 provider_native_id,
                 provider_key_fingerprint: template.provider_key_fingerprint,
                 capabilities: template.capabilities,
@@ -258,6 +278,22 @@ mod tests {
         assert!(registry.get("a", "resp_json").is_some());
         assert!(registry.get("a", "resp_sse").is_some());
         assert!(registry.get("b", "resp_json").is_none());
+    }
+
+    #[test]
+    fn records_the_route_that_served_the_response() {
+        let registry = registry(60, 10);
+        registry.record_body(template(&registry, "a"), false, br#"{"id":"resp_named"}"#);
+        registry.record_body(
+            template(&registry, "a").with_route("tier-route".to_string()),
+            false,
+            br#"{"id":"resp_tier"}"#,
+        );
+        // without an override the served route is the model the caller named
+        assert_eq!(registry.get("a", "resp_named").unwrap().route, "gpt-4o");
+        let tier = registry.get("a", "resp_tier").unwrap();
+        assert_eq!(tier.route, "tier-route");
+        assert_eq!(tier.model, "gpt-4o");
     }
 
     #[test]
