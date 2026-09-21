@@ -144,6 +144,9 @@ pub struct Metrics {
     pub guardrail_output_redactions_total: AtomicU64,
     /// streamed requests refused because the route has post-call rules
     pub guardrail_stream_rejections_total: AtomicU64,
+    /// streamed requests refused because a fail-closed `post_response` plugin
+    /// applies to them and cannot inspect a stream (#1776)
+    pub plugin_stream_rejections_total: AtomicU64,
     /// decorator messages injected by prompt templates at admission
     pub prompt_template_decorations_total: AtomicU64,
     /// requests rejected for invalid prompt-template variables
@@ -500,6 +503,12 @@ impl Metrics {
                 name: "rolter_guardrail_stream_rejections_total",
                 help: "streamed requests refused because the route has post-call rules",
                 value: self.guardrail_stream_rejections_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_plugin_stream_rejections_total",
+                help: "streamed requests refused because a fail-closed post_response plugin applies",
+                value: self.plugin_stream_rejections_total.load(Relaxed),
             },
             Scalar {
                 kind: "counter",

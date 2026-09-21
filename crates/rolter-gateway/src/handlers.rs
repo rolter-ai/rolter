@@ -1580,12 +1580,40 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let trace_id = crate::trace::request_trace_id(&headers);
 
     // post_response plugins: same buffering constraint as output guardrails
-    // above, so they follow the identical streamed-response opt-out (#509)
+    // above, since a plugin judges a whole body and a stream never is one (#509)
     let post_response_plugin_list = snap.plugins.for_stage(
         rolter_core::PluginStage::PostResponse,
         &scope.org,
         (!scope.project.is_empty()).then_some(scope.project.as_str()),
     );
+    // a fail-closed plugin means "never deliver what I have not approved", and a
+    // stream cannot be shown to it, so the stream is refused the way
+    // `streaming_post_call` refuses one for the built-in rules. a fail-open
+    // plugin has already chosen delivery without its verdict, which is all a
+    // stream would get, so it keeps streaming (#1776)
+    if stream {
+        if let Some(plugin) = post_response_plugin_list
+            .iter()
+            .find(|plugin| plugin.failure_mode == rolter_core::FailureMode::FailClosed)
+        {
+            state
+                .metrics
+                .plugin_stream_rejections_total
+                .fetch_add(1, Relaxed);
+            return crate::error::ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "the fail-closed post_response plugin '{}' must approve every response, \
+                     which cannot be done for a streamed response; retry without \
+                     \"stream\": true",
+                    plugin.slug
+                ),
+            )
+            .with_code("plugin_streaming_unsupported")
+            .with_param("stream")
+            .into_response();
+        }
+    }
     let post_response_plugins = (!stream && !post_response_plugin_list.is_empty()).then(|| {
         crate::plugin_dispatch::PostResponsePlugins {
             plugins: post_response_plugin_list,

@@ -247,6 +247,18 @@ Consequences that fall out of that choice:
 
 A response-leg failure never fails the request even under `fail_closed`: the upstream call already happened and was already billed, so refusing to deliver would spend the caller's money and return nothing. The counter records it.
 
+## Streamed responses and post-response controls (#1776)
+
+Output guardrails, `post_response` plugins and the PII sanitizer's response leg all judge a whole response body, and a stream reaches the caller before any whole body exists. A setting that the client flips with `"stream": true` must not switch off a control the operator configured, so each of the three refuses the stream up front with a `400` and `param: "stream"`, before the cache lookup or the upstream call. Each has an explicit way to waive the refusal.
+
+| Control                | Refused with                      | Counter                                    | Waived by                                        |
+| ---------------------- | --------------------------------- | ------------------------------------------ | ------------------------------------------------ |
+| output guardrails      | `guardrail_streaming_unsupported` | `rolter_guardrail_stream_rejections_total` | `guardrails.streaming_post_call = "passthrough"` |
+| `post_response` plugin | `plugin_streaming_unsupported`    | `rolter_plugin_stream_rejections_total`    | the plugin's `failure_mode = "fail_open"`        |
+| PII response leg       | `pii_streaming_unsupported`       | `rolter_pii_stream_rejections_total`       | `pii_sanitizer.streaming = "passthrough"`        |
+
+A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, beside `post_response_plugin_list`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
+
 ## Failed-login throttling (#1079)
 
 `POST /api/v1/auth/login` is unauthenticated and runs one argon2id verification

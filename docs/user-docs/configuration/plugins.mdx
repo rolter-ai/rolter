@@ -35,7 +35,14 @@ At each stage the gateway sends the request or response body under inspection to
 - `block` — reject the request with an OpenAI-compatible error, ending the chain
 - `annotate` — forward unchanged, annotations are recorded but not applied
 
-`post_response` only inspects non-streaming responses; a streamed response is delivered without running the `post_response` chain, since masking it would require buffering the whole stream (the same constraint the built-in output guardrails have).
+### Streamed responses
+
+A `post_response` plugin judges a whole response body, and a streamed response is never a whole body until it has already reached the caller. What happens to a streamed request (`"stream": true`) depends on the failure mode of the `post_response` plugins that apply to it:
+
+- **Any applicable plugin is fail closed:** the request is refused before it reaches the model, with HTTP `400` and code `plugin_streaming_unsupported` (`param: "stream"`). The message names the plugin. A fail-closed plugin has to approve every response, so a stream it cannot see is never delivered. The same request without `"stream": true` runs the chain as usual.
+- **Every applicable plugin is fail open:** the stream is delivered without running the `post_response` chain. Fail open already means the response is delivered when the plugin cannot give a verdict, which is the only thing a stream allows.
+
+To keep streaming available under a `post_response` plugin, set that plugin to fail open. Refusals are counted in `rolter_plugin_stream_rejections_total`. Output guardrails (`guardrails.streaming_post_call`) and the PII sanitizer (`pii_sanitizer.streaming`) make the same choice for their own response checks.
 
 ## Failure policy
 
