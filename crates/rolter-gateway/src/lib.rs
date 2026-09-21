@@ -23,6 +23,8 @@ mod admin_proxy;
 pub mod breaker;
 mod budgets;
 mod cache;
+#[cfg(test)]
+mod cache_policy_tests;
 mod cache_telemetry;
 mod cancel;
 #[doc(hidden)]

@@ -55,6 +55,10 @@ A response is restored only when the request carries `x-rolter-pii-restore: true
 
 Restoration only ever reverses placeholders the _request_ leg introduced. Content the provider generated is never restored: reversing that would hand back the very data the response leg exists to remove.
 
+### With the response cache
+
+The [response cache](/concepts/response-cache) stores what the provider returned, placeholders and all. It never stores a restored response. The response leg runs on every delivery, cache hits included, with the restoration token of the request being answered. Two callers whose requests sanitize to the same body share one cache entry, and each gets back only their own values.
+
 ### Streaming
 
 Sanitizing or restoring a response needs the complete body — a placeholder can straddle any number of SSE frames, and reversing one per chunk would mean a network round trip per token.

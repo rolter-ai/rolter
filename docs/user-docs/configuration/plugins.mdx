@@ -37,6 +37,8 @@ At each stage the gateway sends the request or response body under inspection to
 
 `post_response` only inspects non-streaming responses; a streamed response is delivered without running the `post_response` chain, since masking it would require buffering the whole stream (the same constraint the built-in output guardrails have).
 
+The [response cache](/concepts/response-cache) does not change which responses the chain sees. Every non-streaming delivery runs it, including the first response on a cached route and every exact or semantic cache hit. The cache stores the provider's response _before_ the chain runs. A `transform` is applied again on each delivery rather than saved, and a plugin added or changed by a hot reload applies to entries that were cached before it existed.
+
 ## Failure policy
 
 - **Fail open** favors availability: an unreachable, timed-out, or erroring plugin is treated as `allow`.

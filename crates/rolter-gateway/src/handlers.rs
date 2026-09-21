@@ -1669,8 +1669,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     sample_rate: snap.logging.sample_rate,
                     started,
                 },
-                output_guard.as_ref(),
-            );
+                DeliveryPolicy {
+                    output: output_guard.as_ref(),
+                    plugins: post_response_plugins.as_ref(),
+                    pii: pii_leg.as_ref(),
+                },
+            )
+            .await;
         }
         state.metrics.cache_misses_total.fetch_add(1, Relaxed);
     }
@@ -1730,8 +1735,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             sample_rate: snap.logging.sample_rate,
                             started,
                         },
-                        output_guard.as_ref(),
-                    );
+                        DeliveryPolicy {
+                            output: output_guard.as_ref(),
+                            plugins: post_response_plugins.as_ref(),
+                            pii: pii_leg.as_ref(),
+                        },
+                    )
+                    .await;
                 }
                 state
                     .metrics
@@ -2265,42 +2275,39 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             } else {
                                 state.metrics.cache_too_large_total.fetch_add(1, Relaxed);
                             }
-                            // masked on the way out, not on the way in: the
-                            // entry stored above is what the upstream said, so
-                            // later rule changes still reach it (see
-                            // `cached_response`)
-                            let bytes = match output_guard.as_ref() {
-                                Some(guard) => match guard.apply(&bytes) {
-                                    crate::guardrails::OutputDecision::Unchanged => bytes,
-                                    crate::guardrails::OutputDecision::Masked(masked) => masked,
-                                    crate::guardrails::OutputDecision::Blocked(rule) => {
-                                        return withheld_response(
-                                            guardrail_output_blocked(&rule),
-                                            guardrail_withheld_reason(&rule),
-                                            billed,
-                                            is_sse,
-                                            started,
-                                            state.log.clone(),
-                                            price,
-                                            log,
-                                            recorder,
-                                            token_recorder,
-                                            inflight_guard,
-                                            genai_span.clone(),
-                                        );
-                                    }
-                                },
-                                None => bytes,
+                            // the whole post-response policy runs on the way
+                            // out, never on the way in: the entry stored above
+                            // is what the upstream said, so a restore is never
+                            // persisted, and every later delivery of it runs
+                            // its own request's policy (see `cached_response`,
+                            // #848, #1477)
+                            let policy = DeliveryPolicy {
+                                output: output_guard.as_ref(),
+                                plugins: post_response_plugins.as_ref(),
+                                pii: pii_leg.as_ref(),
                             };
-                            // the sanitizer's response leg, after the output
-                            // guardrails and after the cache store: what is
-                            // cached is what the upstream said, so a restore is
-                            // never persisted and a later delivery of the same
-                            // entry is re-evaluated against its own request's
-                            // policy and ticket (#848)
-                            let bytes = match pii_leg.as_ref().filter(|_| status < 400) {
-                                Some(leg) => pii_response_leg_apply(leg, bytes).await,
-                                None => bytes,
+                            let status_code =
+                                StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+                            let bytes = match policy.apply(status_code, bytes).await {
+                                Delivery::Send(bytes) => bytes,
+                                // the upstream call happened and is billed on
+                                // a refusal as on a delivery (#1478)
+                                Delivery::Refuse { response, reason } => {
+                                    return withheld_response(
+                                        response,
+                                        reason,
+                                        billed,
+                                        is_sse,
+                                        started,
+                                        state.log.clone(),
+                                        price,
+                                        log,
+                                        recorder,
+                                        token_recorder,
+                                        inflight_guard,
+                                        genai_span.clone(),
+                                    )
+                                }
                             };
                             return buffered_response(
                                 bytes,
@@ -3308,64 +3315,29 @@ async fn stream_response(
                 // plugins and sanitizer below can rewrite or withhold the body
                 // (#1478)
                 let billed = crate::logging::parse_usage(false, &bytes);
-                let bytes = match output.filter(|_| status.is_success()) {
-                    Some(guard) => match guard.apply(&bytes) {
-                        crate::guardrails::OutputDecision::Unchanged => bytes,
-                        crate::guardrails::OutputDecision::Masked(masked) => masked,
-                        crate::guardrails::OutputDecision::Blocked(rule) => {
-                            return withheld_response(
-                                guardrail_output_blocked(&rule),
-                                guardrail_withheld_reason(&rule),
-                                billed,
-                                false,
-                                started,
-                                sink,
-                                price,
-                                log,
-                                recorder,
-                                token_recorder,
-                                inflight_guard,
-                                genai_span,
-                            );
-                        }
-                    },
-                    None => bytes,
+                let policy = DeliveryPolicy {
+                    output,
+                    plugins: post_response_plugins.as_ref(),
+                    pii,
                 };
-                let bytes = match post_response_plugins.filter(|_| status.is_success()) {
-                    Some(ctx) => match crate::plugin_dispatch::apply_post_response(&ctx, &bytes)
-                        .await
-                    {
-                        crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => {
-                            Bytes::from(bytes)
-                        }
-                        crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
-                            let reason =
-                                reason.unwrap_or_else(|| "response withheld by plugin".to_string());
-                            return withheld_response(
-                                crate::error::ApiError::new(StatusCode::FORBIDDEN, reason.clone())
-                                    .with_code("plugin_blocked")
-                                    .into_response(),
-                                format!("plugin_blocked: {reason}"),
-                                billed,
-                                false,
-                                started,
-                                sink,
-                                price,
-                                log,
-                                recorder,
-                                token_recorder,
-                                inflight_guard,
-                                genai_span,
-                            );
-                        }
-                    },
-                    None => bytes,
-                };
-                // last, so the sanitizer sees the body the caller would have
-                // received and a restore is never handed to a plugin
-                let bytes = match pii.filter(|_| status.is_success()) {
-                    Some(leg) => pii_response_leg_apply(leg, bytes).await,
-                    None => bytes,
+                let bytes = match policy.apply(status, bytes).await {
+                    Delivery::Send(bytes) => bytes,
+                    Delivery::Refuse { response, reason } => {
+                        return withheld_response(
+                            response,
+                            reason,
+                            billed,
+                            false,
+                            started,
+                            sink,
+                            price,
+                            log,
+                            recorder,
+                            token_recorder,
+                            inflight_guard,
+                            genai_span,
+                        )
+                    }
                 };
                 buffered_response(
                     bytes,
@@ -3750,28 +3722,25 @@ async fn semantic_embedding(
 /// cost/tokens (a hit spends nothing upstream, so it is not billed and records
 /// no upstream target).
 ///
-/// Output guardrails run here too. The cache stores what the upstream returned,
-/// and masking happens on every delivery instead of once at store time — so a
-/// rule added after an entry was cached still applies to it, and an entry shared
-/// by two routes is masked per the route serving it.
-fn cached_response(
+/// The full post-response policy runs here too, exactly as on a live
+/// response: output guardrails, `post_response` plugins, then the PII
+/// sanitizer's response leg (#1477). The cache stores what the upstream
+/// returned and the policy runs on every delivery instead of once at store
+/// time, so a rule or plugin added after an entry was cached still applies to
+/// it, an entry shared by two routes is judged by the route serving it, and a
+/// PII restore uses the ticket of the request being answered — never one
+/// persisted from the request that filled the entry.
+async fn cached_response(
     hit: CachedResponse,
     sink: &crate::logging::LogSink,
     ctx: CacheHitLog,
-    output: Option<&crate::guardrails::OutputGuard<'_>>,
+    policy: DeliveryPolicy<'_, '_>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
-    let mut body = Bytes::from(hit.body);
-    let mut withheld = None;
-    if status.is_success() {
-        if let Some(guard) = output {
-            match guard.apply(&body) {
-                crate::guardrails::OutputDecision::Unchanged => {}
-                crate::guardrails::OutputDecision::Masked(masked) => body = masked,
-                crate::guardrails::OutputDecision::Blocked(rule) => withheld = Some(rule),
-            }
-        }
-    }
+    let (body, withheld) = match policy.apply(status, Bytes::from(hit.body)).await {
+        Delivery::Send(body) => (body, None),
+        Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
+    };
     let latency_ms = ctx.started.elapsed().as_millis() as u32;
     let log = RequestLog {
         ts: crate::logging::started_at(ctx.started),
@@ -3793,15 +3762,14 @@ fn cached_response(
     };
     // a withheld hit still gets its row, so a refusal is visible, but with zero
     // tokens and cost: nothing was generated upstream for this request (#1478)
-    if let Some(rule) = withheld {
-        let refusal = guardrail_output_blocked(&rule);
+    if let Some((refusal, reason)) = withheld {
         sink.metrics()
             .withheld_responses_total
             .fetch_add(1, Relaxed);
         sink.log(RequestLog {
             status: refusal.status().as_u16(),
             withheld: 1,
-            error: guardrail_withheld_reason(&rule),
+            error: reason,
             ..log
         });
         return refusal;
@@ -3818,6 +3786,78 @@ fn cached_response(
             "failed to build response",
         )
     })
+}
+
+/// The post-response policy one request is delivered under: built-in output
+/// guardrails, the `post_response` plugin chain, and the PII sanitizer's
+/// response leg. Each is `None` when it does not apply to this request, which
+/// includes every streamed request (they cannot be applied to a stream, and
+/// the request path has already refused or opted the stream out).
+///
+/// It is the single place a fully buffered body is finalised, shared by the
+/// live non-cached path, the cacheable miss path and both kinds of cache hit,
+/// so enabling the response cache can never change which policy a caller's
+/// completion passes through (#1477).
+#[derive(Clone, Copy)]
+struct DeliveryPolicy<'p, 'a> {
+    output: Option<&'p crate::guardrails::OutputGuard<'a>>,
+    plugins: Option<&'p crate::plugin_dispatch::PostResponsePlugins<'a>>,
+    pii: Option<&'p PiiResponseLeg<'a>>,
+}
+
+impl DeliveryPolicy<'_, '_> {
+    /// Finalise a buffered body with `status`. Only a successful body is
+    /// examined; an error body passes through untouched.
+    async fn apply(&self, status: StatusCode, bytes: Bytes) -> Delivery {
+        if !status.is_success() {
+            return Delivery::Send(bytes);
+        }
+        let bytes = match self.output {
+            Some(guard) => match guard.apply(&bytes) {
+                crate::guardrails::OutputDecision::Unchanged => bytes,
+                crate::guardrails::OutputDecision::Masked(masked) => masked,
+                crate::guardrails::OutputDecision::Blocked(rule) => {
+                    return Delivery::Refuse {
+                        response: guardrail_output_blocked(&rule),
+                        reason: guardrail_withheld_reason(&rule),
+                    }
+                }
+            },
+            None => bytes,
+        };
+        let bytes = match self.plugins {
+            Some(ctx) => match crate::plugin_dispatch::apply_post_response(ctx, &bytes).await {
+                crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => Bytes::from(bytes),
+                crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
+                    let reason =
+                        reason.unwrap_or_else(|| "response withheld by plugin".to_string());
+                    return Delivery::Refuse {
+                        response: crate::error::ApiError::new(
+                            StatusCode::FORBIDDEN,
+                            reason.clone(),
+                        )
+                        .with_code("plugin_blocked")
+                        .into_response(),
+                        reason: format!("plugin_blocked: {reason}"),
+                    };
+                }
+            },
+            None => bytes,
+        };
+        // last, so the sanitizer sees the body the caller would have received
+        // and a restore is never handed to a plugin
+        Delivery::Send(match self.pii {
+            Some(leg) => pii_response_leg_apply(leg, bytes).await,
+            None => bytes,
+        })
+    }
+}
+
+/// The outcome of [`DeliveryPolicy::apply`]: the finalised body, or the reply
+/// to send instead of it plus the reason recorded on the withheld log row.
+enum Delivery {
+    Send(Bytes),
+    Refuse { response: Response, reason: String },
 }
 
 /// The reply when a post-call rule refuses to deliver a completion.
