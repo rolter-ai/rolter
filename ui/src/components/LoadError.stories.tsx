@@ -163,3 +163,39 @@ export const EveryKind: Story = {
     }
   },
 };
+
+/**
+ * Nested inside a lighter panel rather than on the page (#1725).
+ *
+ * The alert used to paint a translucent `--red-tint`, so the surface behind it
+ * showed through: on `--surface-base` the monospace detail line cleared AA, and
+ * inside a `--surface-subtle` band — where the Playground put it (#944) — the
+ * same line fell to 4.36:1 and axe failed it. The alert now paints its own
+ * opaque background, so the panel it sits in no longer decides its contrast.
+ * axe runs over this story like every other, and it is the one that fails if
+ * the background turns translucent again.
+ */
+export const OnSubtleSurface: Story = {
+  args: { error: new ApiError("this project has no routes, add one first", 422), onRetry: fn() },
+  render: (args) => (
+    <div className="flex flex-col gap-3">
+      {(["--surface-elevated", "--surface-subtle"] as const).map((surface) => (
+        <div
+          key={surface}
+          data-surface={surface}
+          className="rounded-lg p-4"
+          style={{ background: `var(${surface})` }}
+        >
+          <LoadError {...args} />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvas }) => {
+    const alerts = await canvas.findAllByRole("alert");
+    await expect(alerts).toHaveLength(2);
+    for (const alert of alerts) {
+      await expect(alert).toHaveTextContent(/this project has no routes/);
+    }
+  },
+};

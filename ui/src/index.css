@@ -77,6 +77,14 @@
     --red-folk-text: #ff5a3c;
     --red-tint: rgba(255, 64, 23, 0.12);
     --red-tint-strong: rgba(255, 64, 23, 0.18);
+    /* --red-tint composited onto --surface-base, so it is opaque (#1725). the
+       translucent tint takes on whatever it is laid over, and the text on it
+       loses contrast as that gets lighter: --text-subtle is 5.55:1 on the tint
+       over --surface-base and 4.36:1 on it over --surface-subtle. an alert that
+       can land inside a panel paints this one instead, and its text then reads
+       the --surface-base numbers wherever it sits: --text-subtle 5.55:1,
+       --muted-foreground 6.59:1, --status-danger-text 6.21:1 */
+    --red-tint-opaque: color-mix(in srgb, var(--red-500) 12%, var(--surface-base));
 
     /* status — the fill hues: dots, bars, tints, borders */
     --status-success: #16a34a;
