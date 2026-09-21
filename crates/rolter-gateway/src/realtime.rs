@@ -24,7 +24,9 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message as UpstreamMessage},
 };
 
-use crate::handlers::{authenticate, key_pool_key, pick_untried, variant_key};
+use crate::handlers::{
+    authenticate, authorize_model, authorize_route, key_pool_key, pick_untried, variant_key,
+};
 use crate::state::{AppState, Snapshot};
 
 /// Process-local admission counter for persistent sessions.
@@ -75,10 +77,8 @@ pub async fn realtime(
         Ok(key) => key,
         Err(response) => return response,
     };
-    if let Some(key) = &virtual_key {
-        if !key.model_permitted(&query.model) {
-            return api_error(StatusCode::FORBIDDEN, "model not allowed for this key");
-        }
+    if let Err(denial) = authorize_model(virtual_key.as_ref(), &query.model) {
+        return denial.into_response();
     }
 
     let entry = match snap.routes.get(&query.model) {
@@ -88,13 +88,10 @@ pub async fn realtime(
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
     }
-    if let Some(key) = &virtual_key {
-        if !super::handlers::key_allows_route(key, entry) {
-            return api_error(
-                StatusCode::FORBIDDEN,
-                "no provider on this route is allowed for this key",
-            );
-        }
+    // the same route gate as the HTTP pipelines, so a route hidden from this
+    // key cannot be reached by upgrading to a socket instead (#1485)
+    if let Err(denial) = authorize_route(virtual_key.as_ref(), entry) {
+        return denial.into_response();
     }
     let Some(session_guard) = state
         .realtime_sessions

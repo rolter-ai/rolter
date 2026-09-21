@@ -161,6 +161,19 @@ A profile can also carry a **model and route policy** — allow and deny lists f
 
 It is reported on `GET /api/v1/rbac/effective` as `model_policy`, and the gateway enforces it. Because a policy belongs to a person while a request carries a key, rolter resolves the policy of each virtual key's **creator** and attaches it to that key. A denied model returns `403` with code `model_not_allowed`; a denied route returns `403` with code `route_not_allowed`.
 
+### The same checks on every endpoint
+
+Access to a model never depends on which endpoint or body format a client uses. Chat and text completions, the Responses and Messages APIs, embeddings, rerank, image generation, text-to-speech, audio transcriptions and translations (`multipart/form-data` uploads), and Realtime WebSocket sessions all apply the same checks, in this order, before anything is sent to a provider:
+
+| Check                                                   | Refused with                           |
+| ------------------------------------------------------- | -------------------------------------- |
+| The key's own model list and its creator's model policy | `403` with code `model_not_allowed`    |
+| The route's visibility (allowed teams or keys)          | `403` with code `model_not_allowed`    |
+| The key creator's route policy                          | `403` with code `route_not_allowed`    |
+| The key's provider list leaves no provider on the route | `403` with code `provider_not_allowed` |
+
+A refused request is never forwarded to a provider and never opens an upstream Realtime socket.
+
 <Note>
   A key's own model list and its creator's policy are both applied, and neither widens the other. A key that names `gpt-4o` still cannot reach it if its creator's profile denies it — and a profile that allows `gpt-4o` does not add it to a key scoped to something else.
 

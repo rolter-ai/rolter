@@ -149,6 +149,12 @@ sections of a model's sheet, and saving the sheet writes them back to the route.
 | `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                |
 | `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                     |
 
+The gateway enforces `allowed_team_ids` and `allowed_key_ids` on every endpoint
+that names a model, including audio uploads and Realtime sessions; a key outside
+the lists gets `403` with code `model_not_allowed`. `allowed_user_ids` and
+`minimum_role` apply in the dashboard, since a virtual key carries no user. See
+[the same checks on every endpoint](/security/rbac#the-same-checks-on-every-endpoint).
+
 The control plane validates the whole block before storing it and refuses the
 save with the offending field named, so an out-of-range limit or a malformed
 header name never reaches the gateway. The dashboard reports that refusal on
