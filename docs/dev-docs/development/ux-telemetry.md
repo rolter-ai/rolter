@@ -246,22 +246,40 @@ terminal and stops sending for the life of the tab, and treats everything else
 as transient — dropping the batch it was holding and trying again on the next
 flush.
 
-| What went wrong                                              | Server answers | Client does                    | Cost                                                                    | Who notices  |
-| ------------------------------------------------------------ | -------------- | ------------------------------ | ----------------------------------------------------------------------- | ------------ |
-| ClickHouse is down or unreachable                            | `500`          | drops the batch, keeps sending | the events queued during the outage, and nothing after it               | nobody       |
-| `ui_events` table missing (a data volume older than the DDL) | `500`          | drops the batch, keeps sending | **every event, for the whole run** — the condition never clears itself  | nobody       |
-| one malformed event in a batch                               | `400`          | drops the batch, keeps sending | every event that shared that flush, not just the bad one                | nobody       |
-| batch over 100 events                                        | `400`          | drops the batch, keeps sending | that flush; only reachable if the client's cap drifts from the server's | nobody       |
-| session lapsed, or no session                                | `401`          | **disables itself**            | everything from that moment until the tab is reloaded                   | nobody       |
-| control plane older than #805, or a proxy dropping the route | `404`          | **disables itself**            | everything, from the first flush onward                                 | nobody       |
-| a proxy rewriting the method                                 | `405`          | **disables itself**            | everything, from the first flush onward                                 | nobody       |
-| `CLICKHOUSE_URL` unset on the control plane                  | `500`          | drops the batch, keeps sending | everything, and one request per flush forever                           | nobody       |
-| `logging.ui_events = false`                                  | `202`          | nothing — this is success      | everything                                                              | the operator |
+| What went wrong                                              | Server answers | Client does                    | Cost                                                                    | Who notices                        |
+| ------------------------------------------------------------ | -------------- | ------------------------------ | ----------------------------------------------------------------------- | ---------------------------------- |
+| ClickHouse is down or unreachable                            | `500`          | drops the batch, keeps sending | the events queued during the outage, and nothing after it               | the operator: a warn and a counter |
+| `ui_events` table missing (a data volume older than the DDL) | `500`          | drops the batch, keeps sending | **every event, for the whole run** — the condition never clears itself  | the operator: a warn and a counter |
+| one malformed event in a batch                               | `400`          | drops the batch, keeps sending | every event that shared that flush, not just the bad one                | nobody                             |
+| batch over 100 events                                        | `400`          | drops the batch, keeps sending | that flush; only reachable if the client's cap drifts from the server's | nobody                             |
+| session lapsed, or no session                                | `401`          | **disables itself**            | everything from that moment until the tab is reloaded                   | nobody                             |
+| control plane older than #805, or a proxy dropping the route | `404`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
+| a proxy rewriting the method                                 | `405`          | **disables itself**            | everything, from the first flush onward                                 | nobody                             |
+| `CLICKHOUSE_URL` unset on the control plane                  | `500`          | drops the batch, keeps sending | everything, and one request per flush forever                           | the operator: a warn and a counter |
+| `logging.ui_events = false`                                  | `202`          | nothing — this is success      | everything                                                              | the operator                       |
 
-"Nobody" is literal in every row: the dashboard shows nothing, and the control
-plane logs nothing either — a failed insert returns an `ApiError` and is never
-traced. That is the right call for the _client_ and a poor one for the server,
-which is why it is filed separately.
+"Nobody" is literal where it appears: the dashboard shows nothing, and the
+control plane does not log a rejected _request_. A store that cannot take the
+write is different, because it is a deployment fault rather than a client bug,
+and since #1747 the server reports it even though the client stays quiet:
+
+- `rolter_control_ingest_failures` adds one per lost batch, labelled `stream`
+  (`ui_events`, or `mcp_logs` for the MCP ingest endpoint, which shares the
+  path) and `reason` (`insert` for a refused or unreachable store,
+  `unconfigured` for a missing `CLICKHOUSE_URL`) — alert on any sustained rate;
+- a `telemetry ingest failed` warning names the store's own error, at most once
+  a minute per stream, with a `suppressed` count of the failures since the
+  previous one. Once a minute rather than once a batch because this is a
+  per-flush path from every open tab, and a warn per batch would bury the log
+  it is meant to be found in;
+- the `500` body says only that the event store did not accept the write. It no
+  longer quotes ClickHouse's error or the insert URL, which are internal
+  topology on a client-facing response; any credentials in the URL are masked
+  in the log too.
+
+The status stays `500` on purpose: `ux.ts` reads it as transient, so capture
+resumes by itself once the store is back. The logic lives in
+[`crates/rolter-control/src/ingest_failure.rs`](../../../crates/rolter-control/src/ingest_failure.rs).
 
 The last row is the only deliberate one, and it is only reachable from a
 bootstrap TOML: `logging.ui_events` is not projected out of the Postgres store,

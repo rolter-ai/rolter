@@ -288,7 +288,11 @@ misread as good news.
    ```
 
    Nothing at all means `clickhouse_url` is unset, `logging.ui_events = false`,
-   or nobody has used the dashboard in an hour.
+   the store is refusing the writes, or nobody has used the dashboard in an
+   hour. A refused write is the one to rule out first: it shows up as
+   `rolter_control_ingest_failures` rising, and as a
+   `telemetry ingest failed` warning in the control-plane log at most once a
+   minute, naming the store's own error.
 
 2. **Is a screen missing on purpose?** `screen_view`, `navigate`, `back_out` and
    `empty_state` are wired centrally and cover every screen.

@@ -1197,6 +1197,7 @@ mod tests {
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
         ("health.rs", include_str!("health.rs")),
+        ("ingest_failure.rs", include_str!("ingest_failure.rs")),
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
         ("lib.rs", include_str!("lib.rs")),

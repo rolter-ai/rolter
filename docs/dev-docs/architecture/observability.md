@@ -288,6 +288,21 @@ throttle working; a rising `invalid` with no `locked` means the run is spread
 thin enough to stay inside the per-account budget, and the per-address budget is
 the one to tighten.
 
+And one for the telemetry the control plane ingests but cannot store (#1747):
+
+| Metric                           | Meaning                                         | Attributes                                                                |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------- |
+| `rolter_control_ingest_failures` | UX-event or MCP-log writes that were not stored | `stream` (`ui_events` / `mcp_logs`), `reason` (`insert` / `unconfigured`) |
+
+Both callers swallow the failure by design — the dashboard drops the batch and
+keeps flushing — so without this a missing `ui_events` table loses the whole UX
+stream with no signal at either end. `insert` is a store that refused or could
+not be reached; `unconfigured` is a control plane with no `CLICKHOUSE_URL`. The
+store's error text is deliberately not a label (it is unbounded); it is in the
+matching `telemetry ingest failed` warning, which `crates/rolter-control/src/ingest_failure.rs`
+rate-limits to one per minute per stream and which carries a `suppressed` count
+of the failures it stands for. Any sustained non-zero rate is worth an alert.
+
 And the connection pool, as observable gauges (#1052):
 
 | Metric                       | Meaning                              |

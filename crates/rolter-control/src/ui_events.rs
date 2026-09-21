@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use crate::analytics::client_or_503;
 use crate::auth::CurrentUser;
 use crate::crud::{ApiError, ApiResult};
+use crate::ingest_failure::{self, Stream};
 use crate::ControlState;
 
 /// The `action` enum in `008_ui_events.sql`, widened by
@@ -270,13 +271,15 @@ async fn ingest(
     let rows: Vec<Value> = batch.events.iter().map(|e| row(e, &user_id, now)).collect();
 
     let ch = client_or_503(&state).map_err(|_| {
-        ApiError::Core(rolter_core::Error::Store(
-            "UX event ingestion requires CLICKHOUSE_URL".to_string(),
-        ))
+        ingest_failure::unconfigured(
+            &state.metrics,
+            Stream::UiEvents,
+            "UX event ingestion requires CLICKHOUSE_URL",
+        )
     })?;
     ch.insert_ui_events(&rows)
         .await
-        .map_err(|err| ApiError::Core(rolter_core::Error::Store(err.to_string())))?;
+        .map_err(|err| ingest_failure::insert_failed(&state.metrics, Stream::UiEvents, &err))?;
     Ok(StatusCode::ACCEPTED)
 }
 
