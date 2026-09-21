@@ -132,8 +132,12 @@ The gateway's environment, for the same reason.
 {{- define "rolter.gatewayEnv" -}}
 - name: RUST_LOG
   value: {{ .Values.env.rustLog | quote }}
+{{- /* the gateway reads ROLTER_REDIS_URL, like the control plane; the
+       unprefixed name this block used to set is read by nothing, which left
+       every chart-deployed gateway without Redis, so rate limits and budgets
+       fell back to per-replica counters (#1771) */}}
 {{- if .Values.env.redisUrl }}
-- name: REDIS_URL
+- name: ROLTER_REDIS_URL
   value: {{ .Values.env.redisUrl | quote }}
 {{- end }}
 {{- /* the gateway writes the usage rows the dashboard reads, so both

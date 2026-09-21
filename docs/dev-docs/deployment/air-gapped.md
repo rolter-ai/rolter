@@ -12,7 +12,7 @@ rolter makes outbound network calls **only** to endpoints you configure:
 
 - **Upstream providers** — the `base_url` of each configured provider.
 - **Postgres / Redis / ClickHouse** — only when their URLs are set
-  (`DATABASE_URL` / `ROLTER_DATABASE_URL`, `REDIS_URL`, `clickhouse_url`).
+  (`ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, `CLICKHOUSE_URL` or `[logging].clickhouse_url`).
 - **Control-plane snapshot** — only when the gateway is started with
   `--snapshot-url` (and Redis pub/sub only with `--redis-url`).
 - **OTLP traces** — only when an `OTEL_EXPORTER_OTLP_ENDPOINT` /

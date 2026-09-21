@@ -15,7 +15,7 @@ how to verify the deployment offline.
 Rolter makes outbound network calls **only** to endpoints you configure:
 
 - **Upstream providers** — the `base_url` of each configured provider.
-- **Postgres / Redis / ClickHouse** — only when their URLs are set (`DATABASE_URL` / `ROLTER_DATABASE_URL`, `REDIS_URL`, `clickhouse_url`).
+- **Postgres / Redis / ClickHouse** — only when their URLs are set (`ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, `CLICKHOUSE_URL` or `[logging].clickhouse_url`).
 - **Control-plane snapshot** — only when the gateway runs with `--snapshot-url` (Redis pub/sub only with `--redis-url`).
 - **OTLP traces** — only when an `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. With no `OTEL_*` env, no exporter is built and there is zero tracing egress.
 

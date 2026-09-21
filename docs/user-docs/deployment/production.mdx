@@ -69,7 +69,7 @@ Work through these steps before sending production traffic to your gateway:
     Never write API keys or passwords inline in `rolter.toml` or into container images. Instead:
 
     - Reference provider keys with `api_key_env` in your config — Rolter reads the key from the named environment variable at runtime.
-    - Supply `DATABASE_URL`, `REDIS_URL`, and `CLICKHOUSE_URL` as environment variables or inject them from a secrets manager (AWS Secrets Manager, HashiCorp Vault, Kubernetes Secrets, etc.).
+    - Supply `ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, and `CLICKHOUSE_URL` as environment variables or inject them from a secrets manager (AWS Secrets Manager, HashiCorp Vault, Kubernetes Secrets, etc.).
 
     ```toml
     [[providers]]
@@ -175,15 +175,15 @@ Rolter is invisible to your upstream providers. Outbound requests carry no gatew
 
 Here is a consolidated view of every secret and credential the stack requires:
 
-| Variable            | Used by                     | Notes                                                                                                                  |
-| ------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `ROLTER_KEK`        | gateway, control            | 32-byte hex; AES-256-GCM KEK. Rotate with `rolter kek rotate` — see [Backup & restore](/deployment/backup-and-restore) |
-| `ROLTER_KEK_OLD`    | `rolter kek rotate` only    | the KEK being rotated away from; never set on a running process                                                        |
-| `DATABASE_URL`      | control                     | Postgres connection string, e.g. `postgres://user:pass@host:5432/rolter`                                               |
-| `REDIS_URL`         | gateway, control            | e.g. `redis://host:6379`                                                                                               |
-| `CLICKHOUSE_URL`    | gateway, control            | e.g. `http://host:8123`                                                                                                |
-| `OPENAI_API_KEY`    | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML                                                                      |
-| `ANTHROPIC_API_KEY` | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML                                                                      |
+| Variable              | Used by                     | Notes                                                                                                                  |
+| --------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `ROLTER_KEK`          | gateway, control            | 32-byte hex; AES-256-GCM KEK. Rotate with `rolter kek rotate` — see [Backup & restore](/deployment/backup-and-restore) |
+| `ROLTER_KEK_OLD`      | `rolter kek rotate` only    | the KEK being rotated away from; never set on a running process                                                        |
+| `ROLTER_DATABASE_URL` | control                     | Postgres connection string, e.g. `postgres://user:pass@host:5432/rolter`                                               |
+| `ROLTER_REDIS_URL`    | gateway, control            | e.g. `redis://host:6379`                                                                                               |
+| `CLICKHOUSE_URL`      | gateway, control            | e.g. `http://host:8123`                                                                                                |
+| `OPENAI_API_KEY`      | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML                                                                      |
+| `ANTHROPIC_API_KEY`   | gateway (via `api_key_env`) | Referenced by provider config, not stored in TOML                                                                      |
 
 <Info>
   You can reference any arbitrarily named environment variable in `api_key_env`. If you manage provider keys in a secrets manager that injects them under custom names (e.g. `PROD_OPENAI_KEY`), set `api_key_env = "PROD_OPENAI_KEY"` in your provider config — Rolter will read from that variable at startup.

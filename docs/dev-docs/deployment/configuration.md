@@ -412,8 +412,15 @@ keys are rejected.
 - `ROLTER_CONTROL_HOST`, `ROLTER_CONTROL_PORT`, `ROLTER_UI_DIR` — control plane
 - `ROLTER_KEK` — AES-256-GCM KEK for provider-secret encryption
 - `ROLTER_PUBLIC_URL` — the control plane's externally reachable base URL (default `http://localhost:4001`). The OIDC redirect URI is derived from it, so single sign-on needs it set correctly behind a proxy; see [Single sign-on](../architecture/sso.md). Read once at startup, so a change needs a restart
-- `DATABASE_URL`, `REDIS_URL`, `CLICKHOUSE_URL` — datastores
+- `ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, `CLICKHOUSE_URL` — datastores (ClickHouse alone is read unprefixed)
 - `RUST_LOG` — tracing filter (e.g. `info`, `rolter_gateway=debug`)
 - provider key vars referenced by `api_key_env` (e.g. `OPENAI_API_KEY`)
 
 CLI flags override env, which override file values.
+
+Every rolter setting is read under its `ROLTER_` prefix; an unprefixed name is
+read by nothing, and an unread variable is not an error. The docs, the Helm
+chart and `.env.example` once named the Redis and Postgres URLs without the
+prefix, which shipped chart-deployed gateways with no Redis (#1771). `crates/rolter/tests/env_var_names.rs` now fails when an
+operator-facing file names a multi-part `ROLTER_<NAME>` setting as bare
+`<NAME>`; a shell variable such as `$ADMIN_TOKEN` in a curl example is exempt.
