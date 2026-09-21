@@ -321,9 +321,9 @@ export default function Keys() {
               disabled={setCache.isPending || updateGate.denied}
               onChange={(picked) => setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })}
               options={[
-                { value: "inherit", label: "inherit" },
-                { value: "off", label: "off" },
-                { value: "on", label: "on" },
+                { value: "inherit", label: t("pages.virtualKeys.cacheModes.inherit") },
+                { value: "off", label: t("pages.virtualKeys.cacheModes.off") },
+                { value: "on", label: t("pages.virtualKeys.cacheModes.on") },
               ]}
             />
             <GatedSwitch

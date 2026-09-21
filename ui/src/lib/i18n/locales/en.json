@@ -1019,6 +1019,11 @@
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
         "deleteConfirm": "Delete key"
+      },
+      "cacheModes": {
+        "inherit": "inherit",
+        "off": "off",
+        "on": "on"
       }
     },
     "acceptInvite": {
