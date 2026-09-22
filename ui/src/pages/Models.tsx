@@ -23,14 +23,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   deleteModel,
   fetchModelPrices,
@@ -477,7 +471,10 @@ export default function Models() {
                   control="model-delete"
                   label={t("pages.models.deleteAria", { model: r.name })}
                   pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
-                  onClick={() => setDeleteTarget(r.entry)}
+                  onClick={() => {
+                    removeModel.reset();
+                    setDeleteTarget(r.entry);
+                  }}
                 />
               )}
             </div>
@@ -538,51 +535,44 @@ export default function Models() {
         onDone={invalidate}
       />
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.models.deleteTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.models.deleteBody"
-              values={{ model: deleteTarget?.model }}
-              components={[<span key="model" className="font-mono" />]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        {removeModel.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removeModel.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removeModel.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              const what = deleteTarget.model;
-              removeModel.mutate(what, {
-                onSuccess: () => {
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-                },
-                onError: (error) => {
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what }),
-                    detail: errorDetail(error),
-                  });
-                },
+      <ConfirmDialog
+        name="model-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            removeModel.reset();
+            setDeleteTarget(null);
+          }
+        }}
+        title={t("pages.models.deleteTitle")}
+        description={
+          <Trans
+            i18nKey="pages.models.deleteBody"
+            values={{ model: deleteTarget?.model }}
+            components={[<span key="model" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("common.delete")}
+        pending={removeModel.isPending}
+        error={removeModel.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const what = deleteTarget.model;
+          removeModel.mutate(what, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) => {
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorDetail(error),
               });
-            }}
-          >
-            {t("common.delete")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+            },
+          });
+        }}
+      />
     </PageBody>
   );
 }
