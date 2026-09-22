@@ -1,3 +1,9 @@
+## 2026-09-22 - Unlisted mdBook Developer Documentation Pages
+
+**Learning:** When adding new developer documentation `.md` files under `docs/dev-docs/`, authors sometimes forget to add them to `docs/dev-docs/SUMMARY.md`. Without an entry in `SUMMARY.md`, mdBook will not render the pages in its navigation sidebar, making them effectively hidden to readers.
+
+**Action:** Maintain an automated workspace drift guard test `every_dev_doc_is_listed_in_summary` in `crates/rolter/tests/env_var_names.rs` that scans `docs/dev-docs/` for `.md` files and asserts that `SUMMARY.md` lists every relative path.
+
 ## 2026-09-23 - Binary CLI environment variables drifting from reference docs
 
 **Learning:** CLI environment variables declared via `clap` `env = "..."` attributes in `crates/rolter-control` and `crates/rolter-gateway` can quietly drift from `docs/user-docs/configuration/environment-variables.mdx`.

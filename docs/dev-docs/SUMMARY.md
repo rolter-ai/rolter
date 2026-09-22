@@ -26,6 +26,7 @@
 - [Redis connections](architecture/redis-connections.md)
 - [Rate limiting](architecture/rate-limiting.md)
 - [Performance](architecture/performance.md)
+- [Provider prompt caching](architecture/prompt-caching.md)
 
 # Decisions
 
@@ -96,3 +97,4 @@
 - [Hugging Face TEI](deployment/tei.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)
 - [Backup, restore and KEK rotation](deployment/backup-and-restore.md)
+- [Multi-region deployment](deployment/multi-region.md)

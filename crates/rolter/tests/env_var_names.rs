@@ -249,3 +249,37 @@ fn a_bare_setting_name_is_reported_and_its_lookalikes_are_not() {
         assert!(bare_mentions(line, &bare).is_empty(), "{line}");
     }
 }
+
+#[test]
+fn every_dev_doc_is_listed_in_summary() {
+    let root = workspace_root();
+    let dev_docs_dir = root.join("docs/dev-docs");
+    let summary_path = dev_docs_dir.join("SUMMARY.md");
+    let summary_text =
+        std::fs::read_to_string(&summary_path).expect("docs/dev-docs/SUMMARY.md is readable");
+
+    let mut doc_files = Vec::new();
+    files_under(&dev_docs_dir, &["md"], &mut doc_files);
+
+    let mut missing = Vec::new();
+    for path in doc_files {
+        if path == summary_path {
+            continue;
+        }
+        let rel_path = path
+            .strip_prefix(&dev_docs_dir)
+            .expect("path is under docs/dev-docs")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if !summary_text.contains(&rel_path) {
+            missing.push(rel_path);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "the following developer documentation files exist under docs/dev-docs/ but are not listed in SUMMARY.md:\n  {}\nAn unlisted page is invisible in the mdBook navigation.",
+        missing.join("\n  ")
+    );
+}
