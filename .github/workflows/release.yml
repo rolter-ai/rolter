@@ -271,7 +271,7 @@ jobs:
       # only the arm64 leg needs emulation; installing it on amd64 is pure cost
       - name: set up qemu (arm64 emulation)
         if: matrix.arch == 'arm64'
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm64
 
@@ -387,7 +387,7 @@ jobs:
 
       - name: set up qemu (arm64 emulation)
         if: matrix.arch == 'arm64'
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm64
 
