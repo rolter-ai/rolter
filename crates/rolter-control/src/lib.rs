@@ -1906,14 +1906,15 @@ async fn build_snapshot(
     let version = match state.store.current_version().await {
         Ok(v) => v,
         Err(err) => {
+            tracing::error!(%err, "failed to get current config version for snapshot");
             return BuiltSnapshot::error(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": {"message": err.to_string()}})),
+                    Json(json!({"error": {"message": "failed to get current config version"}})),
                 )
                     .into_response(),
                 0,
-            )
+            );
         }
     };
     if query.version.is_some_and(|requested| requested >= version) {
@@ -1998,14 +1999,15 @@ async fn build_snapshot(
             let body = match body {
                 Ok(body) => body,
                 Err(err) => {
+                    tracing::error!(%err, "failed to serialize config snapshot");
                     return BuiltSnapshot::error(
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": {"message": err.to_string()}})),
+                            Json(json!({"error": {"message": "failed to serialize config snapshot"}})),
                         )
                             .into_response(),
                         version,
-                    )
+                    );
                 }
             };
             let bytes = body.len() as u64;
@@ -2021,14 +2023,17 @@ async fn build_snapshot(
                 bytes,
             }
         }
-        Err(err) => BuiltSnapshot::error(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": {"message": err.to_string()}})),
+        Err(err) => {
+            tracing::error!(%err, "failed to load config snapshot");
+            BuiltSnapshot::error(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": {"message": "failed to load config snapshot"}})),
+                )
+                    .into_response(),
+                version,
             )
-                .into_response(),
-            version,
-        ),
+        }
     }
 }
 
@@ -2843,6 +2848,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body["problems"].as_array().unwrap().len(), 0, "{body}");
+    }
+
+    struct FailingConfigStore;
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for FailingConfigStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            Err(rolter_core::Error::Store(
+                "postgres connection pool exhausted secret_db_details".into(),
+            ))
+        }
+        async fn save(&self, _config: GatewayConfig) -> rolter_core::Result<()> {
+            Ok(())
+        }
+        async fn current_version(&self) -> rolter_core::Result<i64> {
+            Err(rolter_core::Error::Store(
+                "version query failed secret_db_details".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_redacts_internal_store_errors() {
+        let mut state = state_with_token(None);
+        state.store = Arc::new(FailingConfigStore);
+
+        let addr = serve(build_app_with_internal(state)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 500);
+        let body: Value = response.json().await.unwrap();
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(
+            !message.contains("secret_db_details"),
+            "internal store error details leaked: {message}"
+        );
+        assert_eq!(message, "failed to get current config version");
     }
 
     /// The common case must not grow a field: `problems` is on the wire of
