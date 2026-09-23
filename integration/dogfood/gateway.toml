@@ -10,7 +10,8 @@
 # dashboard is wanted instead).
 
 [server]
-bind = "0.0.0.0:4000"
+host = "0.0.0.0"
+port = 4000
 
 # The gateway writes request logs here; the dashboard's analytics screens read
 # the same table through the control plane's CLICKHOUSE_URL. Without this the
