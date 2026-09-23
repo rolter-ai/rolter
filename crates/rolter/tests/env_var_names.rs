@@ -183,7 +183,11 @@ fn binary_cli_env_vars() -> BTreeSet<String> {
     let root = workspace_root();
     let mut sources = Vec::new();
     for crate_name in ["rolter-control", "rolter-gateway"] {
-        files_under(&root.join("crates").join(crate_name).join("src"), &["rs"], &mut sources);
+        files_under(
+            &root.join("crates").join(crate_name).join("src"),
+            &["rs"],
+            &mut sources,
+        );
     }
     let mut vars = BTreeSet::new();
     for path in sources {
@@ -194,7 +198,9 @@ fn binary_cli_env_vars() -> BTreeSet<String> {
                 .chars()
                 .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
                 .collect();
-            if text[start + var.len()..].starts_with('"') && (var.starts_with("ROLTER_") || var == "CLICKHOUSE_URL") {
+            if text[start + var.len()..].starts_with('"')
+                && (var.starts_with("ROLTER_") || var == "CLICKHOUSE_URL")
+            {
                 vars.insert(var);
             }
         }
