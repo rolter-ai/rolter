@@ -9,3 +9,9 @@
 **Vulnerability:** Use of `.unwrap()` in manual hex encoding loop in `crates/rolter-gateway/src/cache.rs`.
 **Learning:** While mathematically safe in this specific context (digits 0-15 mapped to hex), explicit `.unwrap()` calls in tight loops are poor practice and trigger linter/security concerns. The codebase provides a dedicated utility `rolter_auth::hex::encode` for this purpose.
 **Prevention:** Prefer established, tested utility functions over manual loops, especially when they eliminate the need for `.unwrap()`, making the code safer and more maintainable.
+
+## 2026-09-18 - [Redact Internal Store Errors in Snapshot 500 Responses]
+
+**Vulnerability:** HTTP 500 error responses from `/internal/snapshot` in `rolter-control` echoed internal store/database error details (`err.to_string()`) directly into the JSON error body, potentially exposing internal database connection details or query errors to clients.
+**Learning:** Store errors (such as Postgres connection or query failures) must be logged internally via `tracing::error!` while returning a generic message (e.g., `"failed to load config snapshot"`) in the JSON response body to prevent internal information disclosure.
+**Prevention:** Always log detailed error descriptions internally with `tracing` and return sanitized, generic error messages in API HTTP response bodies.
