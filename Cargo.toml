@@ -64,9 +64,9 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 
 # opentelemetry otlp trace export (rolter-core `otlp` feature)
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = [
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", features = [
   "grpc-tonic",
   "http-proto",
   "reqwest-client",
@@ -74,9 +74,9 @@ opentelemetry-otlp = { version = "0.32", features = [
   # already computes, alongside the Prometheus endpoint
   "metrics",
 ] }
-tracing-opentelemetry = "0.33"
+tracing-opentelemetry = "0.34"
 # otlp log export: bridges `tracing` events onto the OTel Logs API (#809)
-opentelemetry-appender-tracing = "0.32"
+opentelemetry-appender-tracing = "0.33"
 
 # http client for upstream forwarding
 reqwest = { version = "0.12", default-features = false, features = [

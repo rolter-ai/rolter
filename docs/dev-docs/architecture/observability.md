@@ -497,7 +497,7 @@ gateway hot path is where it would bite hardest.
 What the export path does cost is one `Vec<ScalarMetric>` allocation per
 instrument per cycle and a linear scan of it, so the work is quadratic in the
 number of scalars. At the current eight scalars, once a minute, that is
-immaterial. It is left as-is deliberately: the OTel Rust 0.32 API offers only
+immaterial. It is left as-is deliberately: the OTel Rust 0.33 API offers only
 per-instrument `with_callback`, so collecting once per cycle for all instruments
 is not expressible, and matching by name rather than by index keeps the callbacks
 independent of the order `scalars()` happens to return.
