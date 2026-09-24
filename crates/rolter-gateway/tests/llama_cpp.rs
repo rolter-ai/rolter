@@ -42,6 +42,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }

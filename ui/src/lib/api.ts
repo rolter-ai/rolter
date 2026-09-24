@@ -2062,6 +2062,14 @@ export function logout(): Promise<void> {
  */
 export interface MeMembership extends MembershipRow {
   source: string;
+  /**
+   * The org and team the membership sits under. A project membership names
+   * neither on its own row; the scope switcher needs both to land a project
+   * member on their own project (#1846). Absent from a control plane older
+   * than that.
+   */
+  scope_org_id?: string | null;
+  scope_team_id?: string | null;
 }
 
 /** `{user, memberships}` — crates/rolter-control/src/auth.rs `MeResponse` */

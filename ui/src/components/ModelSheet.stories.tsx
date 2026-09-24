@@ -402,6 +402,75 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
 };
 
 /**
+ * A route is visible to the whole organization until an admin narrows it to
+ * the project it lives in (#1844). The pin travels as
+ * `visibility.project_only`, and the gateway then refuses keys minted in the
+ * organization's other projects.
+ */
+export const PinsARouteToItsProject: Story = {
+  render: () => <Stage mode="edit" route={ADVANCED_ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Access & permissions" }));
+    const visibility = within(dialog.getByRole("radiogroup", { name: "Visibility" }));
+    await expect(visibility.getByRole("radio", { name: "Whole organization" })).toBeChecked();
+    await userEvent.click(visibility.getByRole("radio", { name: "This project" }));
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: { visibility: Record<string, unknown> };
+    };
+    await expect(body.advanced.visibility).toEqual({
+      minimum_role: "member",
+      allowed_team_ids: [],
+      allowed_key_ids: [],
+      allowed_user_ids: [],
+      project_only: true,
+    });
+  },
+};
+
+/**
+ * A pinned route reopens pinned, and opening it back up to the organization
+ * drops the flag rather than writing `false` over it.
+ */
+export const OpensAPinnedRouteToTheOrganization: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{
+        ...ADVANCED_ROUTE,
+        advanced: {
+          ...ADVANCED_ROUTE.advanced,
+          visibility: {
+            minimum_role: "member",
+            allowed_team_ids: [],
+            allowed_key_ids: [],
+            allowed_user_ids: [],
+            project_only: true,
+          },
+        },
+      }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Access & permissions" }));
+    const visibility = within(dialog.getByRole("radiogroup", { name: "Visibility" }));
+    await expect(visibility.getByRole("radio", { name: "This project" })).toBeChecked();
+    await userEvent.click(visibility.getByRole("radio", { name: "Whole organization" }));
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: { visibility: Record<string, unknown> };
+    };
+    await expect(body.advanced.visibility).not.toHaveProperty("project_only");
+  },
+};
+
+/**
  * The control plane refuses a limit of its own accord — `validate_advanced`
  * caps every one at ten million. The sheet says which half of the save failed
  * instead of printing the message on its own.

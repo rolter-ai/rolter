@@ -54,7 +54,7 @@ Carol  →  viewer  at  team: platform
 ```
 
 <Note>
-  The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it checks that the incoming virtual key exists, is active, and is allowed to access the requested model. The one place the two meet is an access profile's [model and route policy](#model-and-route-policy), which does reach the gateway.
+  The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it checks that the incoming virtual key exists, is active, and is allowed to access the requested model, and that the model belongs to the key's own organization. The one place the two meet is an access profile's [model and route policy](#model-and-route-policy), which does reach the gateway.
 </Note>
 
 ## Who sees which request logs
@@ -66,6 +66,44 @@ The request log, the usage and spend rollups and provider health are not only ga
 - A project admin can let the project's **viewers** read the bodies too: **Viewers can read captured payloads** in the project's settings (the gear next to the project in the scope switcher), or [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). It is off by default.
 - Provider health follows provider access: an org-level role in the provider's org.
 - The admin token and superadmins see everything; so does every caller in [open mode](#open-mode-running-with-no-admin-token). A caller with no valid credentials gets `401`.
+
+## Organizations are isolated
+
+A virtual key reaches only its own organization's routes, providers and provider groups, however the request names the model: a route name, `provider-slug/model`, or `group-slug/model`. `GET /v1/models` lists only those. Another organization's model is refused with `403` code `model_not_allowed`, the same answer as a model the key may not use, so the refusal does not confirm that it exists.
+
+The same boundary holds when you configure things: a route target or a provider-group member must be a provider of the route's own organization, and an id from another organization is answered with `404`, as if it did not exist. Route names, provider names and slugs, and provider group slugs are unique across the whole deployment for now; a name another organization already uses is refused with `409 Conflict`, without naming that organization.
+
+Within an organization, a route is visible to every key by default. An admin can narrow it to the project it lives in — **This project** under a model's **Access & permissions** — or to listed teams and keys. See [per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings).
+
+Keys and routes declared in the gateway's own config file belong to the deployment rather than to an organization: those routes are available to every key, and those keys reach every route.
+
+## What each person can list
+
+Lists answer with what you can reach instead of refusing outright. A project member who holds no role at the team or org still sees their own team and project in the scope switcher, and the dashboard opens on their project; a team admin sees and manages the people, memberships and invitations of their own team.
+
+| List                                     | A role at the level above          | A role only further down                                   |
+| ---------------------------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| Organizations                            | Superadmins see every organization | The organizations you hold any role inside                 |
+| Teams of an organization                 | Every team                         | The teams you hold a role in, or inside                    |
+| Projects of a team or organization       | Every project                      | The projects you hold a role in, or read through your team |
+| Users and memberships of an organization | Everyone                           | The people in the teams and projects you can read          |
+| Invitations of an organization           | Every invitation                   | The invitations into the teams and projects you administer |
+
+Someone with no role anywhere in an organization gets `403` for its lists, and nobody learns the name of an organization they do not belong to. Invitations need the admin role, the other lists viewer.
+
+## When someone leaves
+
+Deactivating a person — from the Users screen, `PUT /api/v1/users/{id}`, or your identity provider through SCIM — signs them out everywhere and stops the virtual keys they minted for themselves at the gateway on the next config refresh. Removing their last role that reaches a key's project does the same for that key. Reactivating them, or giving the role back, brings the same keys back.
+
+Deleting the account disables those keys for good: they stay listed on the project, disabled, and an admin has to re-enable one deliberately.
+
+Keys an admin minted for a project — the ones applications use — have no owner and are never affected by who created them, so offboarding a person cannot take an application down. The audit entry for a deactivation, reactivation or deletion records how many personal keys it affected.
+
+## Account events in the audit log
+
+Sign-ins, failed sign-ins, lockouts, second-factor changes, break-glass resets and account edits belong to a person rather than an organization. An organization's audit log (**Governance → Audit Logs**, or `GET /api/v1/orgs/{org_id}/audit-log`) shows them for the organization's own people — anyone holding a role in it, its teams or its projects — and never for anyone else's. Filter on the `auth.*` actions to find them. Deleting an account is recorded in the audit log of every organization the account belonged to.
+
+Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered are recorded, but not yet shown in any organization's audit log.
 
 ## Ask the server what a role can do
 
@@ -175,12 +213,13 @@ It is reported on `GET /api/v1/rbac/effective` as `model_policy`, and the gatewa
 
 Access to a model never depends on which endpoint or body format a client uses. Chat and text completions, the Responses and Messages APIs, embeddings, rerank, image generation, text-to-speech, audio transcriptions and translations (`multipart/form-data` uploads), and Realtime WebSocket sessions all apply the same checks, in this order, before anything is sent to a provider:
 
-| Check                                                   | Refused with                           |
-| ------------------------------------------------------- | -------------------------------------- |
-| The key's own model list and its creator's model policy | `403` with code `model_not_allowed`    |
-| The route's visibility (allowed teams or keys)          | `403` with code `model_not_allowed`    |
-| The key creator's route policy                          | `403` with code `route_not_allowed`    |
-| The key's provider list leaves no provider on the route | `403` with code `provider_not_allowed` |
+| Check                                                        | Refused with                           |
+| ------------------------------------------------------------ | -------------------------------------- |
+| The key's own model list and its creator's model policy      | `403` with code `model_not_allowed`    |
+| The route belongs to the key's organization                  | `403` with code `model_not_allowed`    |
+| The route's visibility (this project, allowed teams or keys) | `403` with code `model_not_allowed`    |
+| The key creator's route policy                               | `403` with code `route_not_allowed`    |
+| The key's provider list leaves no provider on the route      | `403` with code `provider_not_allowed` |
 
 A refused request is never forwarded to a provider and never opens an upstream Realtime socket.
 

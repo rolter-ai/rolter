@@ -1694,6 +1694,17 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     }
     // the dashboard never reads these; the gateway takes them from the snapshot
     config.mcp_oauth_sessions.clear();
+    // which org owns a row is the gateway's business (#1844); this document is
+    // served without a credential, so it must not enumerate tenants
+    for provider in &mut config.providers {
+        provider.tenancy = None;
+    }
+    for route in &mut config.routes {
+        route.tenancy = None;
+    }
+    for group in &mut config.provider_groups {
+        group.tenancy = None;
+    }
     config.logging.clickhouse_url = config.logging.clickhouse_url.as_deref().map(strip_userinfo);
 }
 

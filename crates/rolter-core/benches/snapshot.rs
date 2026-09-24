@@ -45,6 +45,7 @@ fn config(routes: usize, providers: usize) -> GatewayConfig {
             advanced: Default::default(),
             cache: None,
             variants: Default::default(),
+            tenancy: None,
         })
         .collect();
     GatewayConfig {

@@ -16,7 +16,7 @@ The response lists every model name this gateway accepts in a `model` field, in 
 | `openai-edge/gpt-4o` | the provider's name | a **provider-pinned address**: this provider, this upstream model, no cross-provider fan-out                                                                                                                          |
 | `edge-fleet/gpt-4o`  | the group's name    | a **provider-group address**, balanced across the group's members                                                                                                                                                     |
 
-When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all of them.
+When virtual keys are configured, the list is filtered to the models that the authenticated key's `models` allow-list permits. A key configured with `models = []` (empty) can see all of them. A key created in the dashboard or through the API only ever sees its own organization's routes, providers and provider groups, and a route an admin narrowed to one project is listed only for that project's keys.
 
 ### How the provider-pinned list is built
 

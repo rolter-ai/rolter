@@ -534,9 +534,15 @@ impl Snapshot {
                 weight: 1,
             };
             let strategy = rolter_core::BalancingStrategy::default();
+            // the address inherits the provider's org, so the route gate refuses
+            // it to another org's key exactly as it would a named route (#1844)
+            let tenancy = self
+                .providers
+                .get(provider_name)
+                .and_then(|provider| provider.tenancy.clone());
             // a single target has nothing to balance between, so a per-request
             // balancer is fine here
-            return Some(self.synthetic_route(model, strategy, vec![target], None));
+            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy));
         }
         if let Some(group) = self.groups_by_slug.get(slug) {
             // one target per member; each rewrites to its own upstream model
@@ -560,6 +566,7 @@ impl Snapshot {
                 group.strategy,
                 targets,
                 self.group_balancers.get(slug).cloned(),
+                group.tenancy.clone(),
             ));
         }
         None
@@ -578,6 +585,7 @@ impl Snapshot {
         strategy: rolter_core::BalancingStrategy,
         targets: Vec<Target>,
         balancer: Option<Arc<dyn LoadBalancer>>,
+        tenancy: Option<rolter_core::Tenancy>,
     ) -> RouteEntry {
         let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
@@ -597,6 +605,7 @@ impl Snapshot {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy,
         };
         RouteEntry {
             route,
@@ -1251,6 +1260,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1323,6 +1333,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         });
         // a group whose slug collides with a provider slug is dropped
         config.provider_groups.push(ProviderGroupConfig {
@@ -1334,6 +1345,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         // an empty group never routes
         config.provider_groups.push(ProviderGroupConfig {
@@ -1341,6 +1353,7 @@ mod tests {
             slug: Some("empty-group".to_string()),
             strategy: Default::default(),
             members: Vec::new(),
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1389,6 +1402,7 @@ mod tests {
             slug: Some("vllm-a100".to_string()),
             strategy,
             members,
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1467,6 +1481,7 @@ mod tests {
                         weight: 1,
                     })
                     .collect(),
+                tenancy: None,
             });
         }
         let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());

@@ -58,6 +58,7 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
         advanced: Default::default(),
         cache: None,
         variants: vec![],
+        tenancy: None,
     });
     config
 }

@@ -836,6 +836,10 @@ pub struct ProviderConfig {
     /// to exercise the dialect. See ADR-0029.
     #[serde(default)]
     pub allow_custom_api_base: bool,
+    /// the org the provider belongs to in the store; absent for a provider
+    /// from the gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1112,6 +1116,10 @@ pub struct ProviderGroupConfig {
     /// resolves (there is nothing to route to)
     #[serde(default)]
     pub members: Vec<GroupMember>,
+    /// the org the group belongs to in the store; absent for a group from the
+    /// gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 /// One member of a [`ProviderGroupConfig`]: a provider plus optional upstream
@@ -1217,6 +1225,33 @@ pub struct ModelLimits {
     pub output_tokens: Option<u32>,
 }
 
+/// The org, and for a route the project, a row belongs to in the store.
+///
+/// Absent on rows from a gateway-only config file: those belong to the
+/// deployment and every key may use them. A row that carries one is served
+/// only to keys of the same org (#1844), which is what keeps one tenant's
+/// provider credentials out of another tenant's requests.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Tenancy {
+    pub org_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+impl Tenancy {
+    /// Whether a key of `key_org` may use a row owned by `tenancy`.
+    ///
+    /// A row with no tenancy belongs to the deployment. A key with no org was
+    /// defined in the gateway's own config file, so it is the operator's and
+    /// may use any row. Otherwise the orgs must match.
+    pub fn admits(tenancy: Option<&Tenancy>, key_org: &str) -> bool {
+        match tenancy {
+            None => true,
+            Some(owner) => key_org.is_empty() || owner.org_id == key_org,
+        }
+    }
+}
+
 /// Catalog visibility restrictions attached to a route. Gateway key/team
 /// identity is sufficient for key and team checks; user restrictions are
 /// retained for control-plane authorization.
@@ -1230,6 +1265,11 @@ pub struct ModelVisibility {
     pub allowed_key_ids: Vec<String>,
     #[serde(default)]
     pub allowed_user_ids: Vec<String>,
+    /// Serve the route only to keys minted in its own project, rather than to
+    /// every key of its org (the default). Keys from the gateway's own config
+    /// carry no org and are not narrowed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub project_only: bool,
 }
 
 fn default_weight() -> u32 {
@@ -1268,6 +1308,10 @@ pub struct ModelRoute {
     /// when both the global `[cache]` switch and this route opt-in are enabled.
     #[serde(default)]
     pub cache: Option<RouteCache>,
+    /// the org and project the route belongs to in the store; absent for a
+    /// route from the gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 impl ModelRoute {
@@ -3882,6 +3926,7 @@ mod tests {
             advanced: Default::default(),
             cache: None,
             variants: vec![],
+            tenancy: None,
         }
     }
 

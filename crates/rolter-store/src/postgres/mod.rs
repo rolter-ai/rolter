@@ -14,7 +14,7 @@ use rolter_core::{
     McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
     PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
     PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, UnpricedPolicy,
+    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
     VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
@@ -172,6 +172,7 @@ pub mod test_database;
 
 #[derive(FromRow)]
 struct ProviderRow {
+    org_id: Uuid,
     name: String,
     slug: String,
     kind: String,
@@ -260,6 +261,10 @@ impl ProviderRow {
             _ => None,
         };
         Ok(ProviderConfig {
+            tenancy: Some(Tenancy {
+                org_id: row.org_id.to_string(),
+                project_id: None,
+            }),
             name: row.name,
             slug: Some(row.slug),
             kind,
@@ -288,6 +293,8 @@ impl ProviderRow {
 #[derive(FromRow)]
 struct RouteRow {
     id: Uuid,
+    project_id: Uuid,
+    org_id: Uuid,
     model: String,
     strategy: String,
     params: serde_json::Value,
@@ -298,6 +305,7 @@ struct RouteRow {
 #[derive(FromRow)]
 struct TargetRow {
     route_id: Uuid,
+    provider_org_id: Uuid,
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
@@ -306,6 +314,7 @@ struct TargetRow {
 #[derive(FromRow)]
 struct ProviderGroupRow {
     id: Uuid,
+    org_id: Uuid,
     name: String,
     slug: String,
     strategy: String,
@@ -314,6 +323,7 @@ struct ProviderGroupRow {
 #[derive(FromRow)]
 struct ProviderGroupMemberRow {
     group_id: Uuid,
+    provider_org_id: Uuid,
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
@@ -464,8 +474,8 @@ impl PostgresConfigStore {
 
     async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
-            "select p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy, p.egress_proxies,
-                    pk.ciphertext, pk.nonce
+            "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
+                    p.egress_proxies, pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id
              order by p.name",
@@ -689,15 +699,20 @@ impl PostgresConfigStore {
 
     async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
         let route_rows: Vec<RouteRow> = sqlx::query_as(
-            "select id, model, strategy, params, param_policy, advanced
-             from routes where enabled order by model",
+            "select r.id, r.project_id, t.org_id, r.model, r.strategy, r.params, r.param_policy,
+                    r.advanced
+             from routes r
+             join projects p on p.id = r.project_id
+             join teams t on t.id = p.team_id
+             where r.enabled order by r.model",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
-            "select rt.route_id, p.name as provider_name, rt.upstream_model, rt.weight
+            "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
+                    rt.upstream_model, rt.weight
              from route_targets rt
              join providers p on p.id = rt.provider_id",
         )
@@ -712,6 +727,17 @@ impl PostgresConfigStore {
                 let targets = target_rows
                     .iter()
                     .filter(|t| t.route_id == r.id)
+                    // a target on another org's provider would spend that
+                    // org's credential; the write path refuses one now, and a
+                    // row written before it did is dropped here (#1844)
+                    .filter(|t| {
+                        let same_org = t.provider_org_id == r.org_id;
+                        if !same_org {
+                            tracing::warn!(route = %r.model, provider = %t.provider_name,
+                                "dropping a route target on another org's provider");
+                        }
+                        same_org
+                    })
                     .map(|t| Target {
                         provider: t.provider_name.clone(),
                         model: t.upstream_model.clone(),
@@ -735,6 +761,10 @@ impl PostgresConfigStore {
                     // response-cache opt-in is config-only for now; a db-backed
                     // cache policy lands with its own store follow-up
                     cache: None,
+                    tenancy: Some(Tenancy {
+                        org_id: r.org_id.to_string(),
+                        project_id: Some(r.project_id.to_string()),
+                    }),
                 })
             })
             .collect()
@@ -744,14 +774,16 @@ impl PostgresConfigStore {
     /// (ADR-0017 addendum, ADR-0022). A member with a null `upstream_model`
     /// forwards the requested model as-is.
     async fn load_provider_groups(&self) -> Result<Vec<ProviderGroupConfig>> {
-        let group_rows: Vec<ProviderGroupRow> =
-            sqlx::query_as("select id, name, slug, strategy from provider_groups order by name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(store_err)?;
+        let group_rows: Vec<ProviderGroupRow> = sqlx::query_as(
+            "select id, org_id, name, slug, strategy from provider_groups order by name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
 
         let member_rows: Vec<ProviderGroupMemberRow> = sqlx::query_as(
-            "select m.group_id, p.name as provider_name, m.upstream_model, m.weight
+            "select m.group_id, p.org_id as provider_org_id, p.name as provider_name,
+                    m.upstream_model, m.weight
              from provider_group_members m
              join providers p on p.id = m.provider_id
              order by m.position",
@@ -768,6 +800,15 @@ impl PostgresConfigStore {
                 let members = member_rows
                     .iter()
                     .filter(|m| m.group_id == g.id)
+                    // same rule as a route target: never another org's provider
+                    .filter(|m| {
+                        let same_org = m.provider_org_id == g.org_id;
+                        if !same_org {
+                            tracing::warn!(group = %g.slug, provider = %m.provider_name,
+                                "dropping a group member on another org's provider");
+                        }
+                        same_org
+                    })
                     .map(|m| GroupMember {
                         provider: m.provider_name.clone(),
                         model: m.upstream_model.clone(),
@@ -779,6 +820,10 @@ impl PostgresConfigStore {
                     slug: Some(g.slug),
                     strategy,
                     members,
+                    tenancy: Some(Tenancy {
+                        org_id: g.org_id.to_string(),
+                        project_id: None,
+                    }),
                 })
             })
             .collect()
@@ -787,6 +832,17 @@ impl PostgresConfigStore {
     /// Load database-defined virtual keys with their resolved scope chain
     /// (project → team → org). Only the one-way `key_hash` is exposed; the
     /// gateway matches presented keys against it by peppered digest.
+    ///
+    /// A personal key (one with a creator) is served only while that person
+    /// still belongs to the key's project: their account is active, and a
+    /// membership or an access-profile role — assigned to them or to a team
+    /// they belong to — still reaches the project, or they are a superadmin.
+    /// Offboarding therefore stops their keys at the next snapshot, and
+    /// reinstating them brings the same keys back, because nothing about the
+    /// key itself changed (#1841). A shared key (no creator) belongs to the
+    /// project and is never affected by who minted it. Deleting the account
+    /// disables its keys outright (migration 0075), since the foreign key would
+    /// otherwise turn them into shared ones.
     async fn load_virtual_keys(&self) -> Result<Vec<VirtualKeyRecord>> {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
             "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
@@ -795,6 +851,26 @@ impl PostgresConfigStore {
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
              join teams t on t.id = p.team_id \
+             left join users u on u.id = vk.created_by \
+             where vk.created_by is null \
+                or (u.deactivated_at is null and ( \
+                    u.is_superadmin \
+                    or exists (select 1 from memberships m \
+                                where m.user_id = vk.created_by \
+                                  and (m.org_id = t.org_id or m.team_id = p.team_id \
+                                       or m.project_id = vk.project_id)) \
+                    or exists (select 1 from access_profile_assignments a \
+                                 join access_profile_roles apr on apr.profile_id = a.profile_id \
+                                where (a.user_id = vk.created_by or a.team_id in ( \
+                                           select m.team_id from memberships m \
+                                            where m.user_id = vk.created_by \
+                                              and m.team_id is not null \
+                                           union \
+                                           select mp.team_id from memberships m \
+                                             join projects mp on mp.id = m.project_id \
+                                            where m.user_id = vk.created_by)) \
+                                  and (apr.org_id = t.org_id or apr.team_id = p.team_id \
+                                       or apr.project_id = vk.project_id)))) \
              order by vk.created_at",
         )
         .fetch_all(&self.pool)
@@ -1698,6 +1774,168 @@ mod tests {
         );
     }
 
+    /// A personal key follows its creator (#1841). The snapshot decides that
+    /// from `users` and `access_profile_roles`, so a write to either has to
+    /// bump the version or no gateway refetches; and deleting the account
+    /// disables the key instead of letting the foreign key orphan it into a
+    /// shared one.
+    #[tokio::test]
+    async fn a_personal_keys_creator_decides_whether_the_snapshot_serves_it() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore::new(pool.clone());
+        let (user_id, project_id) = tenancy_with_owned_key(&pool, "hash-leaver").await;
+        async fn served(store: &PostgresConfigStore) -> Option<VirtualKeyRecord> {
+            store
+                .load_virtual_keys()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|k| k.key_hash == "hash-leaver")
+        }
+        let bumped = |from: i64, what: &'static str| {
+            let pool = pool.clone();
+            async move {
+                assert!(
+                    current_version(&pool).await.unwrap() > from,
+                    "{what} left config_version at {from}"
+                );
+            }
+        };
+        assert!(served(&store).await.is_some());
+
+        let v = current_version(&pool).await.unwrap();
+        sqlx::query("update users set deactivated_at = now() where id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        bumped(v, "deactivating the creator").await;
+        assert!(
+            served(&store).await.is_none(),
+            "a deactivated creator's key is served"
+        );
+
+        let v = current_version(&pool).await.unwrap();
+        sqlx::query("update users set deactivated_at = null where id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        bumped(v, "reactivating the creator").await;
+        assert!(
+            served(&store).await.is_some(),
+            "reactivation does not bring the key back"
+        );
+
+        // only a profile role reaches the project: assigned to a team the
+        // creator belongs to through another project, scoped at this one
+        let team_id: Uuid = sqlx::query_scalar("select team_id from projects where id = $1")
+            .bind(project_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let org_id: Uuid = sqlx::query_scalar("select id from orgs limit 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let other_project: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'other') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("delete from memberships where user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into memberships (user_id, project_id, role) values ($1, $2, 'viewer')",
+        )
+        .bind(user_id)
+        .bind(other_project)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            served(&store).await.is_none(),
+            "a creator with no reach keeps their key"
+        );
+        let role_id: Uuid = sqlx::query_scalar(
+            "insert into custom_roles (org_id, slug, name) values ($1, 'dev', 'Dev') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let profile_id: Uuid = sqlx::query_scalar(
+            "insert into access_profiles (org_id, slug, name) values ($1, 'devs', 'devs') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into access_profile_assignments (profile_id, team_id) values ($1, $2)")
+            .bind(profile_id)
+            .bind(team_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let v = current_version(&pool).await.unwrap();
+        sqlx::query(
+            "insert into access_profile_roles (profile_id, role_id, project_id) values ($1, $2, $3)",
+        )
+        .bind(profile_id)
+        .bind(role_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        bumped(v, "composing a role into a profile").await;
+        assert!(
+            served(&store).await.is_some(),
+            "a team-assigned profile role at the project does not reach it"
+        );
+        let v = current_version(&pool).await.unwrap();
+        sqlx::query("delete from access_profile_roles where profile_id = $1")
+            .bind(profile_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        bumped(v, "removing a role from a profile").await;
+        assert!(served(&store).await.is_none());
+
+        // deleting the account: the key stays a row, disabled, not shared
+        sqlx::query(
+            "insert into memberships (user_id, project_id, role) values ($1, $2, 'member')",
+        )
+        .bind(user_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!served(&store).await.unwrap().disabled);
+        sqlx::query("delete from users where id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let orphan = served(&store)
+            .await
+            .expect("the key row outlives its creator");
+        assert!(
+            orphan.disabled,
+            "a deleted creator's key is served as a shared key"
+        );
+        assert!(orphan.user_id.is_empty());
+    }
+
     /// #1643: a provider group created through the dashboard was reachable in
     /// `/internal/snapshot` yet 404'd at the gateway until someone restarted it.
     /// The data plane indexes `config.provider_groups` for `group-slug/model`
@@ -1879,6 +2117,15 @@ mod tests {
                 .fetch_one(pool)
                 .await
                 .unwrap();
+        // a personal key is served only while its creator belongs to the
+        // project (#1841). An org role reaches it without placing the creator
+        // in any team, which the team-assigned profile tests rely on
+        sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+            .bind(user_id)
+            .bind(org_id)
+            .execute(pool)
+            .await
+            .unwrap();
         sqlx::query(
             "insert into virtual_keys (project_id, key_hash, key_prefix, name, created_by)
              values ($1, $2, 'sk-test', 'test key', $3)",

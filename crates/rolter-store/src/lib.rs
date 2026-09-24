@@ -239,6 +239,7 @@ mod tests {
             advanced: Default::default(),
             cache: None,
             variants: Default::default(),
+            tenancy: None,
         }
     }
 
@@ -292,6 +293,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         }
     }
 

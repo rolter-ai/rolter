@@ -111,7 +111,7 @@ interface ModelDraft {
   headers: DraftHeader[];
   rbac: {
     minRole: string;
-    visibility: "public" | "restricted";
+    visibility: "public" | "project" | "restricted";
     teams: string[];
     vkeys: string[];
     users: string[];
@@ -295,7 +295,9 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
   draft.rbac.visibility =
     draft.rbac.teams.length + draft.rbac.vkeys.length + draft.rbac.users.length > 0
       ? "restricted"
-      : "public";
+      : visibility.project_only === true
+        ? "project"
+        : "public";
 }
 
 /**
@@ -374,13 +376,23 @@ function advancedToApi(
   out.locked_headers = lockedHeaders;
 
   // the allow-lists are ids, and the control plane parses each one as a uuid;
-  // a public model carries none of them
+  // a model open to the whole organization or its project carries none of them.
+  // `project_only` is sent only when set, so a save that never touched
+  // visibility leaves the blob as it was — and a restricted route the API also
+  // pinned to its project keeps the pin instead of quietly widening
   const restricted = draft.rbac.visibility === "restricted";
+  const was = obj(stored.visibility);
+  const wasListed = ["allowed_team_ids", "allowed_key_ids", "allowed_user_ids"].some(
+    (key) => Array.isArray(was[key]) && (was[key] as unknown[]).length > 0,
+  );
+  const projectOnly =
+    draft.rbac.visibility === "project" || (restricted && wasListed && was.project_only === true);
   out.visibility = {
     minimum_role: draft.rbac.minRole,
     allowed_team_ids: restricted ? draft.rbac.teams : [],
     allowed_key_ids: restricted ? draft.rbac.vkeys : [],
     allowed_user_ids: restricted ? draft.rbac.users : [],
+    ...(projectOnly ? { project_only: true } : {}),
   };
   return out;
 }
@@ -1542,6 +1554,7 @@ export function ModelSheet({
               value={draft.rbac.visibility}
               options={[
                 { value: "public", label: t("modelSheet.rbac.public") },
+                { value: "project", label: t("modelSheet.rbac.project") },
                 { value: "restricted", label: t("modelSheet.rbac.restricted") },
               ]}
               disabled={readonly}

@@ -228,6 +228,16 @@ fn provider_kind_column(kind: ProviderKind) -> &'static str {
     }
 }
 
+/// The import stops rather than write a name another org already holds: the
+/// gateway keeps route, provider and group names in one namespace across every
+/// org, so a second row would make the snapshot refuse for the whole fleet
+/// (#1845). The message does not say whose it is.
+fn taken_elsewhere(kind: &str, name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{kind} '{name}' is already in use elsewhere in this deployment; rename it in the file"
+    )
+}
+
 /// The stored strategy value for a parsed [`BalancingStrategy`]. Routes and
 /// provider groups share the column vocabulary, so they share this.
 fn strategy_column(strategy: BalancingStrategy) -> &'static str {
@@ -449,6 +459,13 @@ async fn import_config(
             }
             None => {
                 let slug = p.slug.clone().unwrap_or_else(|| slugify(&p.name));
+                // another org already holds the name; writing it would make the
+                // snapshot refuse for the whole fleet (#1845)
+                if providers.name_in_use(&p.name).await?
+                    || providers.slug_in_use(&slug, None).await?
+                {
+                    return Err(taken_elsewhere("provider", &p.name));
+                }
                 let created = providers
                     .create(
                         org_id,
@@ -491,6 +508,9 @@ async fn import_config(
                 updated
             }
             None => {
+                if routes.model_in_use(&r.model).await? {
+                    return Err(taken_elsewhere("route", &r.model));
+                }
                 let created = routes.create(project_id, &r.model, strategy).await?;
                 tracing::info!(model = %r.model, "created route");
                 created
@@ -603,6 +623,9 @@ async fn import_provider_groups(
                 updated
             }
             None => {
+                if groups.slug_in_use(&slug, None).await? {
+                    return Err(taken_elsewhere("provider group", &g.name));
+                }
                 let created = groups.create(org_id, &g.name, &slug, strategy).await?;
                 tracing::info!(group = %g.name, "created provider group");
                 created

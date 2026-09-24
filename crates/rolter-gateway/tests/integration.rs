@@ -96,6 +96,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }
@@ -514,6 +515,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     let gw = serve_gateway(&config).await;
 
@@ -546,6 +548,93 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         .find(|m| m["id"] == "vllm-spb/qwen3")
         .unwrap();
     assert_eq!(slug_entry["owned_by"], "vLLM SPB");
+}
+
+/// A key sees its own org's routes and provider addresses plus the deployment's
+/// own (config-file) ones, and never another org's: those would spend that
+/// org's provider credential (#1844).
+#[tokio::test]
+async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
+    let owned = |org: &str| {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        })
+    };
+    let route = |model: &str, provider: &str, tenancy| ModelRoute {
+        model: model.to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: provider.to_string(),
+            model: Some("m".to_string()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+        tenancy,
+    };
+    let mut config = GatewayConfig::default();
+    for (name, tenancy) in [
+        ("ours", owned("org-1")),
+        ("theirs", owned("org-2")),
+        ("shared", None),
+    ] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            slug: Some(name.to_string()),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: "http://127.0.0.1:1".to_string(),
+            tenancy,
+            ..Default::default()
+        });
+    }
+    config
+        .routes
+        .push(route("our-route", "ours", owned("org-1")));
+    config
+        .routes
+        .push(route("their-route", "theirs", owned("org-2")));
+    config.routes.push(route("shared-route", "shared", None));
+    let key = scoped_key(&config, "sk-org-1", "key-1", "team-1", None, Vec::new());
+    config.db_virtual_keys.push(key);
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let models: Value = client
+        .get(format!("http://{gw}/v1/models"))
+        .bearer_auth("sk-org-1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    for id in ["our-route", "ours/m", "shared-route", "shared/m"] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+    for id in ["their-route", "theirs/m"] {
+        assert!(!ids.contains(&id), "{id} listed to another org: {ids:?}");
+    }
+
+    for model in ["their-route", "theirs/m"] {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth("sk-org-1")
+            .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403, "{model} answered another org's key");
+    }
 }
 
 /// A provider serves five models; one configured route names one of them. The
@@ -590,6 +679,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     // the catalogue rides the health sweep's existing probe, so probing is what
     // turns the wider listing on
@@ -1598,6 +1688,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
             advanced: Default::default(),
             cache: None,
             variants: Default::default(),
+            tenancy: None,
         });
     }
     let gw = serve_gateway(&config).await;
@@ -2300,6 +2391,7 @@ async fn variant_routing_fails_over_to_next_variant() {
             mk_variant("control", "down", 100),
             mk_variant("canary", "up", 1),
         ],
+        tenancy: None,
     });
     let gw = serve_gateway(&config).await;
 
@@ -4199,6 +4291,7 @@ async fn group_over_counting_upstreams(
             slug: Some("fleet".to_string()),
             strategy,
             members,
+            tenancy: None,
         });
     (serve_gateway(&config).await, counters)
 }
@@ -4312,6 +4405,7 @@ async fn a_dead_group_member_fails_over_to_a_sibling() {
                     weight,
                 })
                 .collect(),
+            tenancy: None,
         });
     let gw = serve_gateway(&config).await;
 

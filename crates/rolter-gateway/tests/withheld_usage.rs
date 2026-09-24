@@ -161,6 +161,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr, org: &str) -> GatewayCon
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
         access_policy: None,
