@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -9,6 +9,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Input } from "@/components/ui/input";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -293,14 +294,10 @@ function ClientSettingsScreen() {
                   })
                 }
               />
-              <button
-                type="button"
-                aria-label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
-                className="flex h-8 w-8 flex-none items-center justify-center rounded-md text-[color:var(--text-subtle)] transition-colors hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              <DeleteIconButton
+                label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
                 onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+              />
             </div>
           ))}
         </div>
