@@ -194,3 +194,21 @@ just dogfood-personas        # or ./integration/dogfood/personas.sh
 It is idempotent and prints the roster: one account per persona, each holding
 exactly the role and scope its script assumes, all sharing the dogfood password
 from `creds.env`.
+
+The scripts also run unattended. `integration/dogfood/journeys/` holds one
+TypeScript file per persona that walks its steps against this stack. Dashboard
+steps run in headless Chromium, signed in through the real login form. The rest
+call the API as the persona or with the keys the script mints, and each script
+cleans up what it made:
+
+```bash
+just dogfood-journeys              # every script; `just dogfood-journeys lead app` for some
+just dogfood-screens               # every persona account against every dashboard screen
+```
+
+Results, one screenshot per step and a summary table land in
+`integration/dogfood/.journeys/`. The runner uses the dashboard's own
+`playwright-core` (`cd ui && bun install` first), and `CHROMIUM_PATH` points it
+at a system Chromium when Playwright's is not installed. The CLI steps (`kek
+verify`, `mfa reset`, `config export`) need `cargo build -p rolter --features
+postgres` and are skipped without it.
