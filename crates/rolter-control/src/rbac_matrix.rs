@@ -29,10 +29,10 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::access_control::{merge_policies, MergedPolicy};
-use crate::crud::{pool, ApiResult};
+use crate::crud::{pool, ApiError, ApiResult};
 use crate::rbac::{
-    authorize, best_role, custom_base_role, grant_applies, resolve_role, role_rank, Principal,
-    ScopeChain, ROLES,
+    best_role, custom_base_role, grant_applies, reaches_org, resolve_role, role_rank, Principal,
+    ScopeChain, ScopeFilter, ROLES,
 };
 use crate::ControlState;
 
@@ -861,17 +861,19 @@ async fn get_matrix(
     Query(query): Query<MatrixQuery>,
 ) -> ApiResult<Json<MatrixView>> {
     // the org-defined half is per-tenant, so it takes a membership in that
-    // tenant; without `org_id` the answer is the built-in table alone, exactly
-    // as before
+    // tenant — at the org or anywhere inside it: a profile can compose a custom
+    // role at a team or project, and the dashboard asks for this table as soon
+    // as a project member has an org in scope, to explain its disabled
+    // controls (#1846). without `org_id` the answer is the built-in table
+    // alone, exactly as before
     let custom_roles = match query.org_id {
         Some(org_id) => {
-            authorize(
-                &state,
-                &principal,
-                ScopeChain::org(org_id),
-                cap!("custom_role", Read),
-            )
-            .await?;
+            let filter = ScopeFilter::load(&state, &principal, cap!("custom_role", Read)).await?;
+            if !filter.allows(ScopeChain::org(org_id))
+                && !reaches_org(&filter.reach(pool(&state)).await?, org_id)
+            {
+                return Err(ApiError::Forbidden);
+            }
             custom_role_views(&state, org_id).await?
         }
         None => Vec::new(),
@@ -891,7 +893,7 @@ async fn get_matrix(
 
 #[derive(Debug, Deserialize)]
 struct MatrixQuery {
-    /// include this org's custom roles; requires a membership there
+    /// include this org's custom roles; requires a role at the org or inside it
     org_id: Option<Uuid>,
 }
 

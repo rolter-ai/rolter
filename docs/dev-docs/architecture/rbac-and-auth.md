@@ -311,7 +311,11 @@ for every list here except invitations, which take admin:
 | `GET /api/v1/orgs/{org_id}/invitations`           | every invitation      | the invitations into the teams and projects they administer    |
 
 A caller with no role anywhere inside the org still gets `403`, and a plain
-signed-in account learns no org it does not belong to. Revoking an invitation
+signed-in account learns no org it does not belong to. `GET /api/v1/rbac/matrix?org_id=`
+follows the same rule for the org's custom roles: the dashboard reads the table
+to say which role a disabled control needs, so a project member who could not
+read it saw every refusal explained as "your role does not permit this" and an
+empty Roles & Permissions screen. Revoking an invitation
 is authorized at the invitation's own scope (its project, else its team, else
 the org), so a team admin can revoke an invitation they could send.
 `GET /api/v1/auth/me` returns each membership with `scope_org_id` and

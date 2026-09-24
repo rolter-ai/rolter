@@ -238,7 +238,7 @@ Policy changes propagate to the gateway the same way provider and route changes 
   Deleting a custom role that a profile still references returns `409` rather than quietly emptying that profile — detach it first. Deleting a *profile* does remove its assignments, since they mean nothing without it. Every change to a role, profile, assignment or policy is written to the audit log with its before and after, because all of them change what real people can do.
 </Warning>
 
-`GET /api/v1/rbac/matrix?org_id=` returns your org's custom roles alongside the built-in ones, so the dashboard's matrix always reflects the current rule set.
+`GET /api/v1/rbac/matrix?org_id=` returns your org's custom roles alongside the built-in ones, to anyone holding a role in that organization, so the dashboard's matrix always reflects the current rule set.
 
 ## Open mode: running with no admin token
 

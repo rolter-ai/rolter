@@ -601,10 +601,21 @@ async fn members_below_the_org_list_what_they_reach() {
     assert_eq!(me["memberships"][0]["scope_org_id"], acme.to_string());
     assert_eq!(me["memberships"][0]["scope_team_id"], core.to_string());
     assert_eq!(me["memberships"][0]["project_id"], app_project.to_string());
+    // and the org's rule table, which the dashboard reads to say why a control
+    // is disabled: the custom roles are the org's, a project role is enough
+    let (status, matrix) = get(format!("/api/v1/rbac/matrix?org_id={acme}"), pm.clone()).await;
+    assert_eq!(status, 200, "{matrix}");
+    assert!(matrix["custom_roles"].is_array(), "{matrix}");
 
     // another tenant's member never sees that acme exists
     let (_, orgs) = get("/api/v1/orgs".into(), ops.clone()).await;
     assert_eq!(ids(&orgs), vec![globex.to_string()]);
+    assert_eq!(
+        get(format!("/api/v1/rbac/matrix?org_id={acme}"), ops.clone())
+            .await
+            .0,
+        403
+    );
 
     // a team admin: every project of their team, and their team's people
     let (_, projects) = get(
