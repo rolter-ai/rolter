@@ -79,11 +79,20 @@ The `[server]` section controls how the gateway process binds and exposes its bu
   A deployment-wide secret mixed into virtual-key digests. Keeping a pepper means a leaked digest is useless without it. Omit this field and set the `ROLTER_KEY_PEPPER` environment variable instead — that keeps the secret out of your config file entirely.
 </ParamField>
 
+<ParamField path="max_body_bytes" default="33554432" type="usize">
+  Maximum accepted request body size in bytes (defaults to 32 MiB). Raises Axum's default 2 MiB limit so large prompts, base64 images, or audio uploads are not rejected. An oversized body gets an OpenAI-style HTTP 413 error.
+</ParamField>
+
+<ParamField path="require_auth" type="boolean">
+  Enforces virtual-key authentication when the effective key set is empty. When `true`, requests are always denied if no keys exist; when `false`, keyless access is allowed; when omitted, managed gateways fail closed while static local configurations stay keyless for development.
+</ParamField>
+
 ```toml
 [server]
 host = "0.0.0.0"
 port = 4000
 metrics_path = "/metrics"
+max_body_bytes = 33554432
 ```
 
 ---
