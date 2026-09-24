@@ -1,0 +1,85 @@
+---
+title: "Connecting One Model, Several, or a Whole Fleet"
+sidebarTitle: "Connecting models"
+description: "Pick the shape that matches your models — one provider, failover across two, several vendors behind named routes, or a load-balanced self-hosted fleet — and set it up from the dashboard or as a config file."
+---
+
+Rolter connects models in two moves: a **provider** says how to reach an upstream (its kind, base URL and credential), and a **route** maps the public model name your clients send to one or more provider targets plus a strategy for choosing between them. Everything below is those two moves, repeated in different shapes. See [Providers & Routes](/concepts/providers-and-routes) for the full reference.
+
+## Which shape are you?
+
+| You have                               | Balancing                                            | Start at                            |
+| -------------------------------------- | ---------------------------------------------------- | ----------------------------------- |
+| one hosted provider, one or two models | none — one target per route                          | [One provider](#one-provider)       |
+| the same model from two providers      | failover — retries move traffic off a failing target | [Failover](#failover)               |
+| several vendors                        | none or failover, per route                          | [Several vendors](#several-vendors) |
+| a self-hosted fleet of replicas        | load-balanced — a strategy per route                 | [A fleet](#a-fleet)                 |
+| any of these, and you want it in git   | —                                                    | [As code](#as-code)                 |
+
+<Tip>
+  Before any provider exists, the built-in `fake-llm` model answers in the Playground and through the API. Use it to prove the path from client to log first; then every step below changes only where the answer comes from.
+</Tip>
+
+## One provider
+
+<Steps>
+  <Step title="Add the provider">
+    **Models → Model Providers → + Add provider**: pick the kind (OpenAI, Anthropic, Gemini, Mistral, OpenRouter, a self-hosted vLLM, Ollama or llama.cpp, and many more), the base URL, and the API key. The key is sealed with the deployment's key-encryption key and never shown again.
+  </Step>
+  <Step title="Test the connection">
+    **Test connection** asks the upstream for its model list and says so if it gets anything else. Fix a wrong key or URL here, not after a client fails.
+  </Step>
+  <Step title="Add a route">
+    **Models → Routing Rules**: the public name clients will send (say `gpt-4o`) and the provider model it lands on. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
+  </Step>
+  <Step title="Try it">
+    Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost. Pick the model you just routed in the Playground's model selector rather than trusting its default ([#1853](https://github.com/rolter-ai/rolter/issues/1853)).
+  </Step>
+</Steps>
+
+## Failover
+
+Give a route two targets that serve the same model — two regions of one vendor, or two vendors. A transient failure on one (a 5xx, a timeout) is retried on the other before the client sees it, a target that keeps failing is put in cooldown, and a circuit breaker stops sending it traffic until it recovers.
+
+- Retries, backoff and timeouts: **Settings → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
+- Breaker state per target: **Models → Circuit Breaker**, and [Circuit breakers](/reliability/circuit-breakers).
+- Probe targets before a request fails: [Health checks](/reliability/health-checks).
+
+## Several vendors
+
+One provider per vendor, one route per public model name. Clients ask for `gpt-4o` or `claude-sonnet-4` and never learn which vendor answered — the OpenAI and Anthropic dialects are both served, and requests are translated between them when a route crosses over.
+
+On each route you can pin **parameter defaults** (a default `temperature`, a capped `max_tokens`) and a **parameter policy** deciding which of them callers may override. Deployment-wide fallbacks for anything a caller omits live under **Models → Model Settings**. See [Model settings](/configuration/model-settings).
+
+## A fleet
+
+For many replicas of self-hosted engines (vLLM, SGLang, TGI):
+
+- **Provider groups** name a set of providers once, and `group/model` addresses the whole set — **Models → Provider Groups**.
+- **Pick a strategy per route**, matched to the workload:
+
+| workload                                   | strategy                                                      |
+| ------------------------------------------ | ------------------------------------------------------------- |
+| identical replicas, nothing special        | `round_robin`                                                 |
+| a canary or an uneven fleet                | `weighted`                                                    |
+| latency matters most                       | `fastest`, `predicted_latency`                                |
+| multi-turn chat or long shared prefixes    | `cache_aware` (keeps KV caches warm)                          |
+| spread load with little coordination       | `power_of_two`                                                |
+| let observed latency, cost and load decide | `adaptive` (turn it on under **Adaptive Routing → Settings**) |
+
+See [Load balancing](/concepts/load-balancing), [Cache-aware routing](/concepts/cache-aware-routing) and [Adaptive routing](/concepts/adaptive-routing).
+
+<Note>
+  `cache_aware` currently sends every request on a route to a single replica, whatever the load ([#1851](https://github.com/rolter-ai/rolter/issues/1851)). Until that is fixed, use `round_robin` or `power_of_two` for a pool that has to absorb concurrent traffic.
+</Note>
+
+## As code
+
+Keep providers, provider groups, routes, prices and prompt templates in a `rolter.toml` and apply it as the **desired state**:
+
+```bash
+rolter-seed --import rolter.toml        # create or update rows to match the file
+rolter config export --output rolter.toml   # read the live state back out
+```
+
+Credentials never live in the file — a provider names the environment variable its key is read from. Keys, budgets, SSO and deployment policy are not part of the file; manage those in the dashboard or through the API. See [Config file](/configuration/config-file) and [Config export](/configuration/config-export).

@@ -52,6 +52,15 @@
             ]
           },
           {
+            "group": "Guides",
+            "pages": [
+              "guides/admin-first-hour",
+              "guides/connecting-models",
+              "guides/engineer-first-day",
+              "guides/tracking-spend"
+            ]
+          },
+          {
             "group": "Core Concepts",
             "pages": [
               "concepts/providers-and-routes",

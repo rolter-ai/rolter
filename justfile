@@ -280,6 +280,20 @@ dogfood-watch minutes="30":
 dogfood-sheet:
     ./integration/dogfood/sheet.sh
 
+# create one account per user-journey persona (docs/dev-docs/product/)
+dogfood-personas:
+    ./integration/dogfood/personas.sh
+
+# walk every user-journey script headless against the dogfood stack; name
+# scripts to run only those (`just dogfood-journeys lead app`). results and
+# screenshots land in integration/dogfood/.journeys/
+dogfood-journeys *scripts:
+    bun integration/dogfood/journeys/run.ts {{scripts}}
+
+# every persona account against every dashboard screen, as a matrix
+dogfood-screens:
+    bun integration/dogfood/journeys/survey.ts
+
 # mint a gateway virtual key and remember it for the sheet
 dogfood-key:
     #!/usr/bin/env bash
