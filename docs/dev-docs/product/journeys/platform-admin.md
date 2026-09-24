@@ -54,12 +54,12 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-a — no identity provider: invitations and passwords
 
-| #     | step                                       | where                                                                        | expect                                                               | status          |
-| ----- | ------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------- |
-| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations` | a one-time link, valid for days, naming the role and scope it grants | works           |
-| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                     | the invitee receives it                                              | partial — #1828 |
-| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                         | an account with exactly the invited role; the link is dead once used | works           |
-| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)          | members without a factor are made to enrol at their next sign-in     | works           |
+| #     | step                                       | where                                                                        | expect                                                                                     | status          |
+| ----- | ------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------- |
+| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations` | a one-time link, valid for days, naming the role and scope it grants                       | verified        |
+| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                     | the invitee receives it                                                                    | partial — #1828 |
+| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                         | an account with exactly the invited role; the link is dead once used                       | verified        |
+| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)          | members without a factor are refused a session until they enrol (the confirmation says so) | partial — #1852 |
 
 ### A1-b — an OIDC identity provider (Okta, Entra ID, Google, Keycloak)
 
@@ -83,18 +83,18 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 | #     | step                                   | where                                            | expect                                                                | status      |
 | ----- | -------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------- | ----------- |
-| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | works       |
-| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | works       |
+| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | verified    |
+| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | verified    |
 | A1d.3 | map IdP groups to teams and roles      | **Group mappings** on the same screen            | group membership in the IdP becomes a role in rolter on the next sync | works       |
-| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | works       |
+| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | verified    |
 | A1d.5 | their personal keys stop working too   | the gateway                                      | a key the leaver minted is refused                                    | bug — #1841 |
 
 ### A1-e — custom roles and access profiles (optional)
 
-| #     | step                                                        | where                                | expect                                                           | status |
-| ----- | ----------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------- | ------ |
-| A1e.1 | define a role that widens a built-in one by specific grants | **Governance → Roles & Permissions** | e.g. "viewer, plus create routes in project X"                   | works  |
-| A1e.2 | hand it to people, with an optional model/route policy      | **Governance → Access Profiles**     | the grant shows in `GET /api/v1/rbac/effective` for those people | works  |
+| #     | step                                                        | where                                | expect                                                           | status   |
+| ----- | ----------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------- | -------- |
+| A1e.1 | define a role that widens a built-in one by specific grants | **Governance → Roles & Permissions** | e.g. "viewer, plus create routes in project X"                   | verified |
+| A1e.2 | hand it to people, with an optional model/route policy      | **Governance → Access Profiles**     | the grant shows in `GET /api/v1/rbac/effective` for those people | verified |
 
 ## A2 — lay out the tenancy
 
@@ -102,7 +102,7 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 | ---- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- | -------- |
 | A2.1 | create teams and projects that match how money and access flow | the scope switcher's **+** · `POST /api/v1/orgs/{org}/teams`, `/teams/{id}/projects` | the chain appears in every screen's scope                                     | verified |
 | A2.2 | decide who reads prompts, per project                          | the gear beside the project → **Viewers can read captured payloads**                 | off by default: members and admins read bodies, viewers see rows only (#1820) | verified |
-| A2.3 | create business units and customers for attribution            | **Governance → Business Units**, **Customers**                                       | slugs spend can be recorded against                                           | works    |
+| A2.3 | create business units and customers for attribution            | **Governance → Business Units**, **Customers**                                       | slugs spend can be recorded against                                           | verified |
 
 ## A3 — connect models
 
@@ -119,12 +119,12 @@ many places, and does traffic need spreading?**
 
 ### A3-a — one provider, one route
 
-| #    | step                                      | where                                                                               | expect                                                                                      | status          |
-| ---- | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------- |
-| A3.1 | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers` | the key is sealed with the KEK and never shown again                                        | verified (seed) |
-| A3.2 | check it before anything depends on it    | the provider's **Test connection**                                                  | a model list from the upstream, or the reason there is none                                 | works           |
-| A3.3 | add a route: public name → provider/model | **Models → Routing Rules** · `POST /api/v1/projects/{id}/routes`                    | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed) |
-| A3.4 | try it                                    | **Playground**, the new model                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | works           |
+| #    | step                                      | where                                                                               | expect                                                                                      | status                                                 |
+| ---- | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| A3.1 | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers` | the key is sealed with the KEK and never shown again                                        | verified                                               |
+| A3.2 | check it before anything depends on it    | the provider's **Test connection**                                                  | a model list from the upstream, or the reason there is none                                 | verified                                               |
+| A3.3 | add a route: public name → provider/model | **Models → Routing Rules** · `POST /api/v1/projects/{id}/routes`                    | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)                                        |
+| A3.4 | try it                                    | **Playground**, the new model                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | bug — #1853; #1847 for a superadmin with no membership |
 
 ### A3-b — the same model from two providers, with failover
 
@@ -144,15 +144,15 @@ many places, and does traffic need spreading?**
 
 ### A3-d — a self-hosted fleet, load-balanced
 
-| #     | step                                   | where                                                     | expect                                                                                                                                                                                            | status                                                            |
-| ----- | -------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| A3.11 | describe the fleet as a file           | `rolter.toml`: providers, provider groups, routes, prices | —                                                                                                                                                                                                 | works                                                             |
-| A3.12 | apply it as desired state              | `rolter-seed --import rolter.toml`                        | rows created or updated to match the file; the gateway picks them up within its poll interval                                                                                                     | verified (4 s)                                                    |
-| A3.13 | notice what the import did not apply   | the import's output                                       | sections it does not import (`[adaptive_routing]`, `[retry]`, budgets, keys) named                                                                                                                | gap — #1818                                                       |
-| A3.14 | choose a strategy per route            | the route's **strategy**                                  | round robin for identical replicas, `cache_aware` for prefix-heavy chat, `fastest`/`predicted_latency` for latency, `weighted` for a canary, `adaptive` to let live latency, cost and load decide | verified (all 11 dogfood routes answer; strategies split visibly) |
-| A3.15 | address a whole group                  | `vllm-a100/meta-llama/Llama-3.1-8B-Instruct`              | the group's members share the traffic                                                                                                                                                             | verified                                                          |
-| A3.16 | turn adaptive routing on               | **Adaptive Routing → Settings** (superadmin)              | `deepseek-r1` engages once it has samples                                                                                                                                                         | works; dogfood never engages — #1817                              |
-| A3.17 | take the live state back out as a file | `rolter config export --output rolter.toml`               | an importable file with no credential in it                                                                                                                                                       | works                                                             |
+| #     | step                                   | where                                                     | expect                                                                                                                                                                                            | status                                                                            |
+| ----- | -------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| A3.11 | describe the fleet as a file           | `rolter.toml`: providers, provider groups, routes, prices | —                                                                                                                                                                                                 | works                                                                             |
+| A3.12 | apply it as desired state              | `rolter-seed --import rolter.toml`                        | rows created or updated to match the file; the gateway picks them up within its poll interval                                                                                                     | verified (4 s)                                                                    |
+| A3.13 | notice what the import did not apply   | the import's output                                       | sections it does not import (`[adaptive_routing]`, `[retry]`, budgets, keys) named                                                                                                                | gap — #1818                                                                       |
+| A3.14 | choose a strategy per route            | the route's **strategy**                                  | round robin for identical replicas, `cache_aware` for prefix-heavy chat, `fastest`/`predicted_latency` for latency, `weighted` for a canary, `adaptive` to let live latency, cost and load decide | verified, except `cache_aware`: it sends every request to one replica — bug #1851 |
+| A3.15 | address a whole group                  | `vllm-a100/meta-llama/Llama-3.1-8B-Instruct`              | the group's members share the traffic                                                                                                                                                             | verified                                                                          |
+| A3.16 | turn adaptive routing on               | **Adaptive Routing → Settings** (superadmin)              | `deepseek-r1` engages once it has samples                                                                                                                                                         | works; dogfood never engages — #1817                                              |
+| A3.17 | take the live state back out as a file | `rolter config export --output rolter.toml`               | an importable file with no credential in it                                                                                                                                                       | verified                                                                          |
 
 ### A3-e — a hosted API behind a proxy or a local re-implementation
 
@@ -175,8 +175,8 @@ many places, and does traffic need spreading?**
 | ---- | ------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
 | A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`   | `cost_usd` on every row; nothing counts as free by accident    | works                       |
 | A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)         | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
-| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)     | the next request past the cap gets HTTP 402; counters in Redis | works                       |
-| A5.4 | cap throughput                                          | **Add rate limit**                                                   | HTTP 429 with `Retry-After`                                    | works                       |
+| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)     | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
+| A5.4 | cap throughput                                          | **Add rate limit**                                                   | HTTP 429 with `Retry-After`                                    | verified                    |
 | A5.5 | hear about it before the cap                            | —                                                                    | a warning at a threshold                                       | gap — #337                  |
 | A5.6 | alert on spend velocity                                 | **Alerting → Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
 

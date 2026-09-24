@@ -15,6 +15,11 @@ This is the guide to send engineers. It assumes an administrator has made you a 
   </Step>
   <Step title="Mint your own key">
     **Settings → My Virtual Keys → Generate virtual key**: name it after where it will live, pick the project, optionally narrow it to the models the job needs, and set an expiry. The key is shown **once** — copy it into your secret store. You can rotate or delete it from the same screen at any time. See [Virtual keys](/concepts/virtual-keys).
+
+    <Note>
+      If your only role is on a project, the scope switcher currently stops at the organization and **Generate virtual key** stays disabled. This is tracked in [#1846](https://github.com/rolter-ai/rolter/issues/1846). The API mints the same key meanwhile: `POST /api/v1/me/projects/{project_id}/virtual-keys` with your dashboard session. Ask your administrator for the project id.
+    </Note>
+
   </Step>
   <Step title="Make your first call">
     Rolter speaks both dialects, so the SDK you already use works with only the base URL changed:

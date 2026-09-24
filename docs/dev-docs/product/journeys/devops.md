@@ -36,7 +36,7 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 | D2.1 | liveness and readiness                                | `/healthz`, `/readyz` on both planes                                   | liveness never depends on the database; readiness does                            | verified                                      |
 | D2.2 | every node on the current config                      | **Cluster Config**                                                     | each gateway live and converged; a lagging one is distinguishable from a dead one | verified                                      |
 | D2.3 | the fleet's own picture                               | **Circuit Breaker**, **Adaptive Routing → Dashboard**, provider health | breaker states, per-target latency, adaptive engagement                           | works; dogfood adaptive never engages — #1817 |
-| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                             | request rate, latency, errors, queue depth; traces in the team's backend          | verified (SigNoz)                             |
+| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                             | request rate, latency, errors, queue depth; traces in the team's backend          | partial — #1855 (no per-provider queue depth) |
 
 ## D3 — tune capacity
 
@@ -44,24 +44,24 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 | ---- | ---------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | D3.1 | size the per-provider queue                    | **Settings → Performance Tuning** | `workers` requests in flight per provider; `capacity` waiting; `error`/`block` backpressure | bug — #1815 (one in flight whatever `workers` says) |
 | D3.2 | retries and timeouts                           | the same screen                   | a retry budget that absorbs a flaky target without multiplying load                         | works                                               |
-| D3.3 | switch subsystems on and off without a restart | **Settings → Feature Flags**      | the change reaches every replica on the next config poll                                    | works                                               |
+| D3.3 | switch subsystems on and off without a restart | **Settings → Feature Flags**      | the change reaches every replica on the next config poll                                    | bug — #1856                                         |
 
 ## D4 — handle an incident
 
-| #    | step                               | where                                                           | expect                                                                                   | status      |
-| ---- | ---------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------- |
-| D4.1 | a provider goes down               | stop a fleet target                                             | its breaker opens, its routes fail over, health shows the outage and the recovery (MTTR) | works       |
-| D4.2 | clients time out                   | **LLM Logs**, status 499                                        | which target the clients were waiting on                                                 | bug — #1816 |
-| D4.3 | be paged                           | **Alerting → Channels / Rules**: `error_rate`, `p95_latency_ms` | a webhook when the error rate or p95 crosses the line                                    | works       |
-| D4.4 | take a node out before touching it | **Cluster Config → Drain**                                      | the node reports not-ready, finishes in-flight work, receives nothing new                | works       |
+| #    | step                               | where                                                           | expect                                                                                   | status                                            |
+| ---- | ---------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| D4.1 | a provider goes down               | stop a fleet target                                             | its breaker opens, its routes fail over, health shows the outage and the recovery (MTTR) | works                                             |
+| D4.2 | clients time out                   | **LLM Logs**, status 499                                        | which target the clients were waiting on                                                 | bug — #1816                                       |
+| D4.3 | be paged                           | **Alerting → Channels / Rules**: `error_rate`, `p95_latency_ms` | a webhook when the error rate or p95 crosses the line                                    | verified (created; firing not exercised)          |
+| D4.4 | take a node out before touching it | **Cluster Config → Drain**                                      | the node reports not-ready, finishes in-flight work, receives nothing new                | verified (refuses to drain the only live gateway) |
 
 ## D5 — back up and restore
 
-| #    | step                                        | where                                                        | expect                                                       | status |
-| ---- | ------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ | ------ |
-| D5.1 | back up the control-plane database          | [backup and restore](../../deployment/backup-and-restore.md) | a dump plus the KEK, stored apart                            | works  |
-| D5.2 | restore it and prove the secrets still open | `rolter kek verify`                                          | every sealed column opens                                    | works  |
-| D5.3 | keep the configuration as a file too        | `rolter config export`                                       | providers, groups, routes, prices, templates; no credentials | works  |
+| #    | step                                        | where                                                        | expect                                                       | status   |
+| ---- | ------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ | -------- |
+| D5.1 | back up the control-plane database          | [backup and restore](../../deployment/backup-and-restore.md) | a dump plus the KEK, stored apart                            | works    |
+| D5.2 | restore it and prove the secrets still open | `rolter kek verify`                                          | every sealed column opens                                    | verified |
+| D5.3 | keep the configuration as a file too        | `rolter config export`                                       | providers, groups, routes, prices, templates; no credentials | verified |
 
 ## D6 — automate
 

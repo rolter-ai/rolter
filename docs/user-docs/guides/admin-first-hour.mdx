@@ -45,6 +45,10 @@ This guide takes a deployment from nothing to "our people and our applications c
 
     Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).
 
+    <Note>
+      The account `rolter-seed` creates is a superadmin with no membership, and the Playground refuses it a session key for now ([#1847](https://github.com/rolter-ai/rolter/issues/1847)). Until then, mint a key under **Governance → Virtual Keys** (step 4) and try the model from `curl`.
+    </Note>
+
   </Step>
   <Step title="Lay out teams and projects">
     Most screens work on one **organization → team → project** chain, chosen in the scope switcher at the bottom of the rail; its **+** creates a team or a project. Put the boundaries where access and money should split — a project per product or workstream is a good default. See [Dashboard](/concepts/dashboard).
@@ -65,7 +69,7 @@ This guide takes a deployment from nothing to "our people and our applications c
 
   </Step>
   <Step title="Watch the traffic">
-    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Everything anyone did in the dashboard is under **Governance → Audit Logs**. See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
+    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Every change anyone made is under **Governance → Audit Logs**. Sign-ins and second-factor changes are recorded too, but that screen doesn't show them yet ([#1854](https://github.com/rolter-ai/rolter/issues/1854)). See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
 
   </Step>
 </Steps>

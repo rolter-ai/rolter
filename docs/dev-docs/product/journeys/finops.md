@@ -24,22 +24,22 @@ screen and one filter.
 | F1.1 | sign in                                   | login screen                                                                            | the org's Dashboard; every mutating control disabled with the role it needs | verified |
 | F1.2 | spend over time, by model                 | **Observability → Dashboard**                                                           | totals, a time series, per-model cost and latency — the org's traffic only  | verified |
 | F1.3 | read a request without reading its prompt | **LLM Logs** → a row                                                                    | tokens, cost, status; the bodies say they are hidden for the viewer role    | verified |
-| F1.4 | spend by business unit and customer       | **Governance → Business Units**, **Customers** · `GET /api/v1/analytics/by-attribution` | one row per unit or customer                                                | works    |
+| F1.4 | spend by business unit and customer       | **Governance → Business Units**, **Customers** · `GET /api/v1/analytics/by-attribution` | one row per unit or customer                                                | verified |
 
 ## F2 — make the numbers trustworthy
 
-| #    | step                                                | where                                                    | expect                                                                         | status                                   |
-| ---- | --------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------- |
-| F2.1 | find traffic that counted as free                   | **Dashboard** unpriced share, **LLM Logs** unpriced flag | every model with no price row named; the dogfood fleet shows 12                | verified                                 |
-| F2.2 | price it                                            | **Models → Pricing Overrides**                           | refused for an org admin: the price catalog is deployment-wide, a superadmin's | works (by design); ask the platform team |
-| F2.3 | decide what unpriced traffic does to a budget       | the budget's unpriced policy                             | count it as zero, or refuse it                                                 | works                                    |
-| F2.4 | keep a standing view of "spend by unit, this month" | —                                                        | a saved filter preset                                                          | gap — #1825                              |
+| #    | step                                                | where                                                    | expect                                                                         | status                                      |
+| ---- | --------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------- |
+| F2.1 | find traffic that counted as free                   | **Dashboard** unpriced share, **LLM Logs** unpriced flag | every model with no price row named                                            | verified                                    |
+| F2.2 | price it                                            | **Models → Pricing Overrides**                           | refused for an org admin: the price catalog is deployment-wide, a superadmin's | verified (by design); ask the platform team |
+| F2.3 | decide what unpriced traffic does to a budget       | the budget's unpriced policy                             | count it as zero, or refuse it                                                 | works                                       |
+| F2.4 | keep a standing view of "spend by unit, this month" | —                                                        | a saved filter preset                                                          | gap — #1825                                 |
 
 ## F3 — set limits
 
 | #    | step                                             | where                                                                         | expect                                                                         | status      |
 | ---- | ------------------------------------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------- |
-| F3.1 | a monthly cap per business unit and per customer | **Budgets & Limits → Add budget** (admin at the org) · `POST /api/v1/budgets` | HTTP 402 for the unit's or customer's keys once the cap is reached             | works       |
+| F3.1 | a monthly cap per business unit and per customer | **Budgets & Limits → Add budget** (admin at the org) · `POST /api/v1/budgets` | HTTP 402 for the unit's or customer's keys once the cap is reached             | verified    |
 | F3.2 | a cap per person                                 | —                                                                             | an allowance per engineer across their keys                                    | gap — #1830 |
 | F3.3 | change a cap                                     | the budget row                                                                | delete and recreate: spend so far is kept, because counters are keyed by scope | partial     |
 

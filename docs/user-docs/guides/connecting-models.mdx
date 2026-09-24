@@ -33,7 +33,7 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
     **Models → Routing Rules**: the public name clients will send (say `gpt-4o`) and the provider model it lands on. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
   </Step>
   <Step title="Try it">
-    Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost.
+    Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost. Pick the model you just routed in the Playground's model selector rather than trusting its default ([#1853](https://github.com/rolter-ai/rolter/issues/1853)).
   </Step>
 </Steps>
 
@@ -68,6 +68,10 @@ For many replicas of self-hosted engines (vLLM, SGLang, TGI):
 | let observed latency, cost and load decide | `adaptive` (turn it on under **Adaptive Routing → Settings**) |
 
 See [Load balancing](/concepts/load-balancing), [Cache-aware routing](/concepts/cache-aware-routing) and [Adaptive routing](/concepts/adaptive-routing).
+
+<Note>
+  `cache_aware` currently sends every request on a route to a single replica, whatever the load ([#1851](https://github.com/rolter-ai/rolter/issues/1851)). Until that is fixed, use `round_robin` or `power_of_two` for a pool that has to absorb concurrent traffic.
+</Note>
 
 ## As code
 
