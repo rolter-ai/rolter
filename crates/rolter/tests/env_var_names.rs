@@ -228,6 +228,122 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     );
 }
 
+/// Recursively collect all string page targets in `docs.json`.
+fn extract_pages_from_json(val: &serde_json::Value, pages: &mut BTreeSet<String>) {
+    match val {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(arr)) = map.get("pages") {
+                for item in arr {
+                    if let Some(p) = item.as_str() {
+                        pages.insert(p.to_string());
+                    }
+                }
+            }
+            for v in map.values() {
+                extract_pages_from_json(v, pages);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                extract_pages_from_json(v, pages);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_user_doc_is_listed_in_docs_json() {
+    let root = workspace_root();
+    let user_docs_dir = root.join("docs/user-docs");
+    let docs_json_path = user_docs_dir.join("docs.json");
+    let docs_json_text =
+        std::fs::read_to_string(&docs_json_path).expect("docs/user-docs/docs.json is readable");
+    let docs_json_val: serde_json::Value =
+        serde_json::from_str(&docs_json_text).expect("docs.json parses as JSON");
+
+    let mut listed_pages = BTreeSet::new();
+    extract_pages_from_json(&docs_json_val, &mut listed_pages);
+
+    let mut doc_files = Vec::new();
+    files_under(&user_docs_dir, &["md", "mdx"], &mut doc_files);
+
+    let mut missing = Vec::new();
+    for path in doc_files {
+        if path.file_name().is_some_and(|n| n == "README.md") {
+            continue;
+        }
+        let rel_path = path
+            .strip_prefix(&user_docs_dir)
+            .expect("path is under docs/user-docs")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let page_key = if let Some(stripped) = rel_path.strip_suffix(".mdx") {
+            stripped
+        } else if let Some(stripped) = rel_path.strip_suffix(".md") {
+            stripped
+        } else {
+            &rel_path
+        };
+
+        if !listed_pages.contains(page_key) {
+            missing.push(rel_path);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "the following user documentation files exist under docs/user-docs/ but are not listed in docs.json:\n  {}\nAn unlisted page is invisible in the Mintlify navigation.",
+        missing.join("\n  ")
+    );
+}
+
+/// Find every field name declared in `ServerConfig` struct in `crates/rolter-core/src/config.rs`.
+fn server_config_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct ServerConfig {")
+        .expect("config.rs declares `pub struct ServerConfig {`");
+    let rest = &text[start..];
+    // the struct closes on the first unindented brace; a bare `}` would stop at
+    // one inside a doc comment and silently drop every field after it
+    let end = rest
+        .find("\n}")
+        .expect("ServerConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_server_config_fields_are_documented_in_config_file_reference() {
+    let fields = server_config_fields();
+    assert!(!fields.is_empty(), "no ServerConfig fields were found");
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        // a `<ParamField>` entry, not a passing mention in prose or an example
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these ServerConfig fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 #[test]
 fn a_bare_setting_name_is_reported_and_its_lookalikes_are_not() {
     let bare: BTreeSet<String> = ["REDIS_URL", "DATABASE_URL"].map(String::from).into();
