@@ -105,6 +105,51 @@ export const Unavailable: Story = {
   },
 };
 
+/**
+ * A flag switched on before its subsystem became unavailable (#1856).
+ *
+ * Every save carries every flag, and the server used to refuse any save with
+ * an unavailable flag on in it — so with the switch disabled as well, nothing
+ * on the screen could be saved again. Its switch now stays live while it is
+ * on, says why, and turning it off saves.
+ */
+export const TurnsOffAFlagThatBecameUnavailable: Story = {
+  render: () => {
+    const stored: FeatureFlagsDto = {
+      ...BASE,
+      cache_aware_routing: true,
+      unavailable: [
+        {
+          flag: "cache_aware_routing",
+          reason: "no provider publishes kv-cache events or lmcache metrics",
+        },
+      ],
+    };
+    // the server keeps what it saved: the screen refetches after a save
+    let current = stored;
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        current = { ...current, ...JSON.parse(String(init.body)) };
+      }
+      return json(current);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cacheAware = await canvas.findByRole("switch", { name: "Cache-Aware Routing" });
+    await expect(cacheAware).toHaveAttribute("aria-checked", "true");
+    await expect(cacheAware).toBeEnabled();
+    await expect(canvas.getByText(/cannot be turned back on/i)).toBeVisible();
+    await userEvent.click(cacheAware);
+    await expect(cacheAware).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expectToast(canvasElement, /feature flags updated/i);
+    // saved off, it is an ordinary unavailable flag again: no way back on
+    await waitFor(() => expect(cacheAware).toBeDisabled());
+  },
+};
+
 // interaction: flipping a switch and saving PUTs the full flag set and shows
 // the confirmation
 export const SavesChanges: Story = {

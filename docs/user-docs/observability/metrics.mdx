@@ -143,6 +143,40 @@ metrics_path = "/internal/metrics"
   metrics above need no such flag.
 </Note>
 
+### Provider queue
+
+These size `[provider_queue]` (**Settings → Performance Tuning**): `workers` requests per provider are sent upstream at a time, and up to `capacity` more wait for a worker. Each series carries a `provider` label, one per configured provider. The three per-provider series are Prometheus only for now; the OTLP exporter carries labelled counters but not yet labelled gauges.
+
+<AccordionGroup>
+  <Accordion title="rolter_provider_queue_depth">
+    **Type:** Gauge, per `provider` (Prometheus only)
+
+    Requests waiting for one of the provider's queue workers, sampled when you scrape. A depth that stays above zero means `workers` is the bottleneck for that provider — and latency climbs with it long before `rolter_provider_queue_rejections_total` moves. Reads `0` when queueing is off.
+
+  </Accordion>
+
+  <Accordion title="rolter_provider_inflight">
+    **Type:** Gauge, per `provider` (Prometheus only)
+
+    Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on. A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
+
+  </Accordion>
+
+  <Accordion title="rolter_provider_queue_wait_ms">
+    **Type:** Histogram, milliseconds, per `provider` (Prometheus only)
+
+    How long each request waited for a queue worker, from arriving at the queue to a worker taking it. The same buckets as the latency histograms (1ms → 10s), so `histogram_quantile(0.95, sum by (le, provider) (rate(rolter_provider_queue_wait_ms_bucket[5m])))` sits beside the request latency p95 and shows how much of it is queueing.
+
+  </Accordion>
+
+  <Accordion title="rolter_provider_queue_rejections_total / rolter_provider_queue_timeouts_total">
+    **Type:** Counter
+
+    Requests refused because a provider's queue was full (`backpressure = "error"` or `"drop"`), and requests that gave up waiting for room with `backpressure = "block"`. Both are the end state the gauges above give you warning of.
+
+  </Accordion>
+</AccordionGroup>
+
 ### Upstream engine metrics
 
 When metrics scraping is enabled, Rolter periodically pulls each provider's own Prometheus endpoint and re-exports what it finds through `/metrics`, labelled `{provider="..."}`. One scrape point then covers both Rolter and the engines behind it, and — because the label is the provider Rolter routes to — you can put engine saturation next to the routing decision that caused it.
@@ -313,6 +347,7 @@ the default.
 | Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                           | observable            |
 | Process and runtime | `process.*`, `tokio.runtime.*`                                                                            | observable, OTLP only |
 | Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total` | observable            |
+| Not exported yet    | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_provider_queue_wait_ms`                | Prometheus only       |
 | Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`                                                     | recorded per request  |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the

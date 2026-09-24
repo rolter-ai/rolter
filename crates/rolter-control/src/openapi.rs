@@ -494,6 +494,17 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "comma-separated customer ids; omit for every customer",
     ),
     QueryParam::new("status", "string", "all|error|success; defaults to all"),
+    QueryParam::new(
+        "request_id",
+        "string",
+        "exact request id — the `x-request-id` the gateway returned; with no \
+         `since`, searches every retained row rather than the last 7 days",
+    ),
+    QueryParam::new(
+        "trace_id",
+        "string",
+        "exact W3C trace id; with no `since`, searches every retained row",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -3092,6 +3103,9 @@ mod tests {
             .collect();
         assert!(names.contains("cursor"), "{names:?}");
         assert!(names.contains("limit"), "{names:?}");
+        // a request is found by the id its client was handed (#1849)
+        assert!(names.contains("request_id"), "{names:?}");
+        assert!(names.contains("trace_id"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

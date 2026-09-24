@@ -18,7 +18,7 @@ pub trait LoadBalancer: Send + Sync {
 - **random** — uniform random; good for simple homogeneous pools.
 - **power_of_two** — pick the less loaded of two random targets; needs a load snapshot.
 - **consistent_hash** — hash-ring keyed by `session_key` (falls back to prompt hash); pins a session/user to a target for KV reuse, survives target changes with minimal reshuffle (160 vnodes).
-- **cache_aware** — approximate prefix affinity; see [caching.md](caching.md).
+- **cache_aware** — approximate prefix affinity on the conversation text, with a load guard: a warm replica keeps its affinity until it runs more than 2 requests and 1.5× past the least-loaded one, then the request spreads (#1851); see [caching.md](caching.md#1-kv-cache-affinity-load-balancing).
 - **weighted** — smooth weighted round-robin honouring each target's `weight`.
 - **pipeline** — composable **filter → weighted-score → argmax** selection: eligibility filtering drops ineligible targets, then a stack of `Scorer`s (session affinity + static weight + in-flight load + prefix-cache affinity) is combined as a weighted sum and the argmax wins (ties broken randomly). Session affinity pins repeat requests from the same `x-session-id` to their last-served target (TTL-bounded) for warm-cache reuse. The extension point every future cost/latency/KV-cache scorer plugs into.
 - **precise_cache_aware** — consumes each target's vLLM ZMQ KV-event stream and scores the exact leading fraction of caller-supplied token blocks resident on that target. Missing token ids and stale, malformed, disconnected, or sequence-gapped streams stay neutral; least-load routing remains the fallback.

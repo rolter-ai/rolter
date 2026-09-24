@@ -194,6 +194,92 @@ async fn a_full_provider_queue_sheds_surplus_with_a_queue_full_envelope() {
     assert_eq!(counter(&metrics, "rolter_provider_queue_timeouts_total"), 0);
 }
 
+/// Read one `{provider="…"}` series out of the prometheus exposition body.
+fn per_provider(body: &str, name: &str, provider: &str) -> u64 {
+    let prefix = format!("{name}{{provider=\"{provider}\"}} ");
+    body.lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("{name} for {provider} missing from /metrics"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// A backlog is visible per provider while it builds — one request holding the
+/// single worker, one waiting behind it — and both gauges fall back to zero
+/// once it drains, with the two waits in the histogram (#1855). Until then an
+/// operator sizing `workers` saw nothing before the queue started rejecting.
+#[tokio::test]
+async fn the_queue_gauges_rise_with_a_backlog_and_return_to_zero() {
+    let (upstream, mut arrivals, release) = serve_holding_upstream().await;
+    let config = backpressure_config("chaos-gauges", upstream);
+    let app = rolter_gateway::build_router_from_config(&config);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gw = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let scrape = || {
+        let client = client.clone();
+        async move {
+            client
+                .get(format!("http://{gw}/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }
+    };
+
+    let send = || {
+        let client = client.clone();
+        tokio::spawn(async move { chat(&client, gw, "chaos-gauges").await })
+    };
+    let first = send();
+    arrivals.recv().await.unwrap();
+    let second = send();
+    // nothing announces the second request reaching the queue, so wait for the
+    // gauge itself rather than for a fixed interval
+    let mut metrics = scrape().await;
+    for _ in 0..500 {
+        if metrics.contains("rolter_provider_queue_depth{provider=\"hold\"} 1") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        metrics = scrape().await;
+    }
+    assert_eq!(
+        per_provider(&metrics, "rolter_provider_queue_depth", "hold"),
+        1,
+        "{metrics}"
+    );
+    assert_eq!(
+        per_provider(&metrics, "rolter_provider_inflight", "hold"),
+        1,
+        "{metrics}"
+    );
+
+    release.add_permits(1);
+    assert_eq!(first.await.unwrap().0, 200);
+    assert_eq!(second.await.unwrap().0, 200);
+    let metrics = scrape().await;
+    assert_eq!(
+        per_provider(&metrics, "rolter_provider_queue_depth", "hold"),
+        0
+    );
+    assert_eq!(
+        per_provider(&metrics, "rolter_provider_inflight", "hold"),
+        0
+    );
+    assert_eq!(
+        per_provider(&metrics, "rolter_provider_queue_wait_ms_count", "hold"),
+        2
+    );
+}
+
 #[cfg(unix)]
 mod drain {
     use super::*;

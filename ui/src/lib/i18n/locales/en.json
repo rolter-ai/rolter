@@ -2560,6 +2560,7 @@
       }
     },
     "featureFlags": {
+      "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
           "title": "Response Cache",

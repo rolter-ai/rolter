@@ -2890,22 +2890,56 @@ async fn unavailable_feature_flags_are_reported_and_cannot_be_enabled() {
         .iter()
         .all(|u| !u["reason"].as_str().unwrap_or_default().is_empty()));
 
-    // turning one on would persist a policy the gateway silently ignores
-    let rejected = client
-        .put(format!("{base}/api/v1/feature-flags"))
-        .bearer_auth("sekrit")
-        .json(&json!({
-            "response_cache": true,
-            "cache_aware_routing": false,
-            "circuit_breaker": true,
-            "active_health_checks": true,
-            "complexity_routing": true,
-            "guardrails": true
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(rejected.status(), 400);
+    let put = |flags: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .put(format!("{base}/api/v1/feature-flags"))
+                .bearer_auth("sekrit")
+                .json(&flags)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    // every flag is stored on by default, the unavailable two included, and
+    // every save carries every flag: one that leaves them on as they are goes
+    // through. the old guard refused it, so a deployment without redis could
+    // not save its feature flags at all (#1856)
+    let unchanged = put(json!({
+        "response_cache": true,
+        "cache_aware_routing": true,
+        "circuit_breaker": false,
+        "active_health_checks": true,
+        "complexity_routing": true,
+        "guardrails": true
+    }))
+    .await;
+    assert_eq!(unchanged, 200);
+    // turning an unavailable flag off is always allowed
+    let off = put(json!({
+        "response_cache": false,
+        "cache_aware_routing": true,
+        "circuit_breaker": true,
+        "active_health_checks": true,
+        "complexity_routing": true,
+        "guardrails": true
+    }))
+    .await;
+    assert_eq!(off, 200);
+    // turning it back on would persist a policy the gateway silently ignores
+    let rejected = put(json!({
+        "response_cache": true,
+        "cache_aware_routing": true,
+        "circuit_breaker": true,
+        "active_health_checks": true,
+        "complexity_routing": true,
+        "guardrails": true
+    }))
+    .await;
+    assert_eq!(rejected, 400);
 
     // the available flags stay editable
     let updated: Value = client

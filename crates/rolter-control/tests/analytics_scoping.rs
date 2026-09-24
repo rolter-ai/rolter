@@ -222,7 +222,7 @@ async fn seed_logs(
         for (label, project) in [("a", tenant.project_a), ("b", tenant.project_b)] {
             let request_id = format!("scoping-{tag}-{label}-{}", Uuid::new_v4().simple());
             logs.push(json!({
-                "ts": ts, "request_id": request_id,
+                "ts": ts, "request_id": request_id, "trace_id": format!("trace-{request_id}"),
                 "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
                 "project_id": project.to_string(),
                 "model": "fake-llm", "status": 200,
@@ -384,4 +384,72 @@ async fn each_role_reads_its_own_tenancy_and_bodies_only_where_it_may() {
         .await
         .unwrap();
     assert_eq!(anonymous_health.status(), 401);
+
+    // a request looked up by the id its client was handed (#1849)
+    let lookup = |token: String, query: String| {
+        let http = http.clone();
+        async move {
+            let response = http
+                .get(format!(
+                    "http://{addr}/api/v1/analytics/invocations?{query}"
+                ))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "lookup {query}");
+            let body: Value = response.json().await.unwrap();
+            body["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["request_id"].as_str().unwrap().to_string())
+                .collect::<Vec<String>>()
+        }
+    };
+    let id_of = |label: &str| {
+        ids.iter()
+            .find(|(seeded, _)| seeded == label)
+            .unwrap()
+            .1
+            .clone()
+    };
+    let (acme_a, umbrella_a) = (id_of("acme-a"), id_of("umbrella-a"));
+    let admin = ADMIN_TOKEN.to_string();
+    assert_eq!(
+        lookup(admin.clone(), format!("request_id={acme_a}")).await,
+        vec![acme_a.clone()]
+    );
+    assert_eq!(
+        lookup(admin.clone(), format!("trace_id=trace-{acme_a}")).await,
+        vec![acme_a.clone()]
+    );
+    // naming another tenant's request exactly still finds nothing
+    assert!(
+        lookup(project_member.clone(), format!("request_id={umbrella_a}"))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        lookup(project_member.clone(), format!("request_id={acme_a}")).await,
+        vec![acme_a.clone()]
+    );
+    // and an id older than the 7-day default window is found without `since`
+    let old = format!("scoping-old-{}", Uuid::new_v4().simple());
+    let long_ago = (chrono::Utc::now() - chrono::Duration::days(10))
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[json!({
+            "ts": long_ago, "request_id": old,
+            "org_id": acme.org.to_string(), "team_id": acme.team.to_string(),
+            "project_id": acme.project_a.to_string(),
+            "model": "fake-llm", "status": 200,
+        })],
+    )
+    .await;
+    assert_eq!(lookup(admin, format!("request_id={old}")).await, vec![old]);
 }

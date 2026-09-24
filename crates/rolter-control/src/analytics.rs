@@ -512,6 +512,11 @@ pub struct InvocationsQuery {
     pub(crate) customer: Option<String>,
     /// status class: all|error|success (defaults to all)
     pub(crate) status: Option<String>,
+    /// exact request id — the `x-request-id` the gateway returned to the
+    /// client — to look one request up by (#1849)
+    pub(crate) request_id: Option<String>,
+    /// exact trace id, the W3C trace a request's spans were recorded under
+    pub(crate) trace_id: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -591,6 +596,8 @@ fn invocations_sql(status_expr: &str) -> String {
                 or has(splitByChar(',', {{business_unit:String}}), business_unit_id)) \
            and ({{customer:String}} = '' \
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
+           and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
+           and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -634,11 +641,24 @@ async fn invocations(
     };
     let limit = clamp_limit(q.limit);
     let sql = invocations_sql(status_expr);
+    let request_id = q.request_id.clone().unwrap_or_default();
+    let trace_id = q.trace_id.clone().unwrap_or_default();
+    // a pasted id names one request wherever it sits in the retained log: the
+    // 7-day default window would answer an older one with an empty page, which
+    // reads as "no such request" (#1849)
+    let since = match q.since.clone().filter(|since| !since.is_empty()) {
+        None if !request_id.is_empty() || !trace_id.is_empty() => {
+            Some("1970-01-01T00:00:00Z".to_string())
+        }
+        since => since,
+    };
     let mut params = window_params(&WindowQuery {
-        since: q.since.clone(),
+        since,
         until: q.until.clone(),
         bucket: None,
     });
+    params.push(("param_request_id".to_string(), request_id));
+    params.push(("param_trace_id".to_string(), trace_id));
     params.push((
         "param_model".to_string(),
         q.model.clone().unwrap_or_default(),
@@ -774,6 +794,18 @@ mod tests {
         // and no attribution value is ever formatted into the text
         assert!(!sql.contains("business_unit_id = '"));
         assert!(!sql.contains("customer_id = '"));
+    }
+
+    /// A request is found by the id its client was handed (#1849), bound as a
+    /// parameter like every other filter and still inside `ROW_VISIBLE`, so an
+    /// id from another tenant finds nothing rather than that tenant's row.
+    #[test]
+    fn invocations_sql_looks_a_request_up_by_its_ids_as_params() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        assert!(sql.contains("({request_id:String} = '' or request_id = {request_id:String})"));
+        assert!(sql.contains("({trace_id:String} = '' or trace_id = {trace_id:String})"));
+        assert!(sql.contains(ROW_VISIBLE));
+        assert!(!sql.contains("request_id = '") && !sql.contains("trace_id = '"));
     }
 
     #[test]

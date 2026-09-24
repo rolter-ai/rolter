@@ -493,6 +493,25 @@ impl LoadBalancer for ConsistentHash {
 /// scored by the fraction of their leading bytes already present on each target;
 /// when the best match clears `threshold` the request is pinned there to reuse
 /// the upstream KV cache, otherwise it spreads to the least-warmed target.
+/// Balance margins for [`CacheAware`], after SGLang's cache-aware router:
+/// prefix affinity wins until the warm target is busier than the least-loaded
+/// one by **both** margins, and then the request spreads. The absolute margin
+/// lets a warm replica take a short queue for the sake of its cache; the
+/// relative one keeps a busy pool from reading a gap of a request or two as an
+/// imbalance. Without them the first replica to serve a shared system prompt
+/// took every request that followed, however deep its queue grew (#1851).
+const BALANCE_ABS_THRESHOLD: u64 = 2;
+const BALANCE_REL_THRESHOLD: f64 = 1.5;
+
+/// Whether `target` is busier than the least-loaded target by both balance
+/// margins. With no load known there is nothing to balance against.
+fn overloaded(target: usize, loads: &[u64]) -> bool {
+    let (Some(&load), Some(&min)) = (loads.get(target), loads.iter().min()) else {
+        return false;
+    };
+    load > min + BALANCE_ABS_THRESHOLD && load as f64 > min as f64 * BALANCE_REL_THRESHOLD
+}
+
 pub struct CacheAware {
     n: usize,
     threshold: f32,
@@ -542,7 +561,10 @@ impl LoadBalancer for CacheAware {
                         best = i;
                     }
                 }
-                if best_ratio >= self.threshold {
+                // affinity, unless the warm target is the one queueing
+                if best_ratio >= self.threshold
+                    && !(loads.len() == self.n && overloaded(best, loads))
+                {
                     return Some(best);
                 }
             }
@@ -675,6 +697,71 @@ mod tests {
         lb.observe(first, &ctx);
         let second = lb.pick(&ctx, &[]).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn cache_aware_spreads_when_the_warm_target_is_busy() {
+        let lb = CacheAware::new(3, 0.5);
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        lb.observe(0, &ctx);
+        // an idle pool keeps the affinity
+        assert_eq!(lb.pick(&ctx, &[0, 0, 0]), Some(0));
+        // a short queue on the warm replica is worth its cache
+        assert_eq!(lb.pick(&ctx, &[2, 0, 0]), Some(0));
+        // past both margins the request goes to the least-loaded replica
+        assert_eq!(lb.pick(&ctx, &[3, 1, 0]), Some(2));
+        // in a busy pool a gap of a couple of requests is not an imbalance
+        assert_eq!(lb.pick(&ctx, &[8, 6, 6]), Some(0));
+        // with no load known there is nothing to balance against
+        assert_eq!(lb.pick(&ctx, &[]), Some(0));
+    }
+
+    /// The load of #1851's dogfood run: concurrent requests with distinct
+    /// questions behind one shared system prompt used to land 24 / 0 / 0 on
+    /// three replicas. Each pick holds its slot, as a request in flight does.
+    #[test]
+    fn concurrent_prompts_sharing_a_system_prompt_spread() {
+        let lb = CacheAware::new(3, 0.5);
+        let system = "system: you are a careful assistant who answers in detail\n";
+        let prompts: Vec<String> = (0..24)
+            .map(|i| format!("{system}user: question {i}\n"))
+            .collect();
+        let mut loads = [0u64; 3];
+        for prompt in &prompts {
+            let ctx = RouteContext {
+                prompt: Some(prompt),
+                ..Default::default()
+            };
+            let target = lb.pick(&ctx, &loads).unwrap();
+            lb.observe(target, &ctx);
+            loads[target] += 1;
+        }
+        assert!(loads.iter().all(|&n| (6..=10).contains(&n)), "{loads:?}");
+    }
+
+    /// The other half: one conversation's turns, arriving one at a time, keep
+    /// the replica that holds their prefix.
+    #[test]
+    fn a_conversations_turns_stay_on_one_replica() {
+        let lb = CacheAware::new(3, 0.5);
+        let mut conversation = String::from("system: be brief\n");
+        let mut served = Vec::new();
+        for turn in 0..6 {
+            conversation.push_str(&format!(
+                "user: question {turn}\nassistant: answer {turn}\n"
+            ));
+            let ctx = RouteContext {
+                prompt: Some(&conversation),
+                ..Default::default()
+            };
+            let target = lb.pick(&ctx, &[0, 0, 0]).unwrap();
+            lb.observe(target, &ctx);
+            served.push(target);
+        }
+        assert!(served.windows(2).all(|w| w[0] == w[1]), "{served:?}");
     }
 
     #[test]

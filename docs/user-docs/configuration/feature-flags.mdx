@@ -47,6 +47,8 @@ A switch that does nothing is worse than no switch. Some subsystems need more th
 
 Availability is computed from deployment facts, not from the stored row, so a flag left enabled by an earlier deployment still reports as unavailable after the subsystem goes away.
 
+Only turning an unavailable flag **on** is refused. One that was already on when its subsystem went away — the providers that published KV-cache events were removed, say — does not block saving the other flags, and its switch stays live so you can turn it off. Once off, it cannot be turned back on until the subsystem is available again.
+
 ---
 
 ## API
