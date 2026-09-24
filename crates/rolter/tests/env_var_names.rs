@@ -304,37 +304,35 @@ fn server_config_fields() -> BTreeSet<String> {
     let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
     let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
 
-    let mut fields = BTreeSet::new();
-    if let Some(start) = text.find("pub struct ServerConfig {") {
-        let rest = &text[start..];
-        if let Some(end) = rest.find('}') {
-            let struct_body = &rest[..end];
-            for line in struct_body.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("pub ") {
-                    if let Some(col_pos) = trimmed.find(':') {
-                        let field_name = trimmed["pub ".len()..col_pos].trim().to_string();
-                        fields.insert(field_name);
-                    }
-                }
-            }
-        }
-    }
-    fields
+    let start = text
+        .find("pub struct ServerConfig {")
+        .expect("config.rs declares `pub struct ServerConfig {`");
+    let rest = &text[start..];
+    // the struct closes on the first unindented brace; a bare `}` would stop at
+    // one inside a doc comment and silently drop every field after it
+    let end = rest
+        .find("\n}")
+        .expect("ServerConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
 }
 
 #[test]
 fn all_server_config_fields_are_documented_in_config_file_reference() {
     let fields = server_config_fields();
-    assert!(!fields.is_empty(), "ServerConfig fields were found");
+    assert!(!fields.is_empty(), "no ServerConfig fields were found");
 
     let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
     let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
 
     let mut missing = Vec::new();
     for field in fields {
-        let param_tag = format!("path=\"{field}\"");
-        if !text.contains(&param_tag) && !text.contains(&format!("`{field}`")) {
+        // a `<ParamField>` entry, not a passing mention in prose or an example
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
             missing.push(field);
         }
     }
