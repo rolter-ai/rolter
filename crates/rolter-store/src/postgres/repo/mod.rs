@@ -420,6 +420,62 @@ impl ProjectRepo<'_> {
         }
         Ok(())
     }
+
+    /// The lowest built-in role that may read the captured request and response
+    /// bodies of this project's traffic: `member` unless an admin lowered it to
+    /// `viewer` (#1820).
+    pub async fn payload_min_role(&self, id: Uuid) -> Result<String> {
+        sqlx::query_scalar("select payload_min_role from projects where id = $1")
+            .bind(id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| Error::NotFound(format!("project {id}")))
+    }
+
+    /// Set [`Self::payload_min_role`]. The column's check constraint admits only
+    /// `member` and `viewer`, so an unknown role is refused by the database even
+    /// if a caller skipped its own validation.
+    pub async fn set_payload_min_role(&self, id: Uuid, role: &str) -> Result<()> {
+        let res = sqlx::query("update projects set payload_min_role = $2 where id = $1")
+            .bind(id)
+            .bind(role)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
+    /// The projects under any of these scopes whose admin let viewers read
+    /// captured bodies, in one query.
+    ///
+    /// Bounded by the scopes a caller holds a role in rather than listing every
+    /// such project in the deployment, so the answer grows with one user's
+    /// reach and not with the number of tenants (#1820).
+    pub async fn viewer_payload_projects(
+        &self,
+        org_ids: &[Uuid],
+        team_ids: &[Uuid],
+        project_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
+        if org_ids.is_empty() && team_ids.is_empty() && project_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar(
+            "select p.id from projects p join teams t on t.id = p.team_id
+             where p.payload_min_role = 'viewer'
+               and (t.org_id = any($1) or p.team_id = any($2) or p.id = any($3))",
+        )
+        .bind(org_ids)
+        .bind(team_ids)
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
 }
 
 impl BusinessUnitRepo<'_> {
@@ -1171,6 +1227,21 @@ impl ProviderRepo<'_> {
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
+    }
+
+    /// The names of every provider in any of `org_ids`: what the gateway writes
+    /// into `provider_health_events.provider`, which carries no org of its own,
+    /// so this is how a health rollup is narrowed to the orgs a caller may read
+    /// (#1820).
+    pub async fn names_in_orgs(&self, org_ids: &[Uuid]) -> Result<Vec<String>> {
+        if org_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar("select name from providers where org_id = any($1)")
+            .bind(org_ids)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)
     }
 
     #[allow(clippy::too_many_arguments)]

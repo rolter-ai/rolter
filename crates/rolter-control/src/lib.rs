@@ -23,6 +23,7 @@ mod adaptive_telemetry;
 #[cfg(feature = "postgres")]
 mod alerting;
 mod analytics;
+mod analytics_access;
 #[cfg(feature = "postgres")]
 mod auth;
 #[cfg(feature = "postgres")]
@@ -967,6 +968,9 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         .route("/api/v1/provider-kinds", get(get_provider_kinds))
         .route("/api/v1/currency", get(get_currency))
         .route("/api/v1/config/problems", get(get_config_problems))
+        // mounted in every build, but not open: each handler takes an
+        // `AnalyticsAccess`, which authenticates the caller and narrows every
+        // query to the tenancy they hold a role in (#1820)
         .merge(analytics::router())
         .merge(health::router())
         // the served schema and its Scalar reference. mounted unconditionally:
@@ -1163,8 +1167,21 @@ pub async fn test_app_with_clickhouse(
     pool: sqlx::PgPool,
     clickhouse_url: &str,
 ) -> anyhow::Result<Router> {
+    test_app_with_clickhouse_and_admin_token(pool, clickhouse_url, None).await
+}
+
+/// [`test_app_with_clickhouse`] with an admin token, so RBAC enforces and the
+/// analytics routes scope what they answer to the caller (#1820). Without a
+/// token the control plane runs open and every caller reads everything, which
+/// is exactly the configuration that cannot show a scoping bug.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_clickhouse_and_admin_token(
+    pool: sqlx::PgPool,
+    clickhouse_url: &str,
+    admin_token: Option<String>,
+) -> anyhow::Result<Router> {
     rolter_store::postgres::run_migrations(&pool).await?;
-    let mut state = test_state(pool, None, None);
+    let mut state = test_state(pool, admin_token, None);
     state.clickhouse = Some(analytics::ClickHouseClient::new(clickhouse_url));
     Ok(build_app_with(state, true))
 }

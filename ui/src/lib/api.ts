@@ -412,6 +412,11 @@ export interface InvocationRow {
   error: string;
   request_payload?: string;
   response_payload?: string;
+  /// 1 when bodies were captured for this request but the caller's role on its
+  /// project is below the payload floor, so the server blanked both. lets the
+  /// screen say "hidden for your role" instead of "payload logging is off",
+  /// which is what an empty body means otherwise (#1820)
+  payload_withheld?: number | string;
 }
 
 export interface InvocationsQuery extends AnalyticsWindow {
@@ -1087,6 +1092,26 @@ export function createProject(teamId: string, input: { name: string }): Promise<
 
 export function deleteProject(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/projects/${id}`);
+}
+
+/// who may read the request and response bodies payload capture stored for a
+/// project's traffic: members (the default) or viewers too. an admin always may
+export type PayloadMinRole = "member" | "viewer";
+
+/// a project's own settings (#1820)
+export interface ProjectSettings {
+  payload_min_role: PayloadMinRole;
+}
+
+export function fetchProjectSettings(id: string): Promise<ProjectSettings> {
+  return getJson<ProjectSettings>(`/api/v1/projects/${id}/settings`);
+}
+
+export function updateProjectSettings(
+  id: string,
+  input: ProjectSettings,
+): Promise<ProjectSettings> {
+  return sendJson<ProjectSettings>("PUT", `/api/v1/projects/${id}/settings`, input);
 }
 
 export interface ProviderRow {

@@ -63,7 +63,8 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   control is invisible to the struggle signal (#1759, see
   [UX telemetry](ux-telemetry.md#why-a-refused-click-takes-a-wrapper)). A
   control none of them fits gets a `gate` prop on the nearest primitive, the
-  way `DeleteIconButton` did.
+  way `DeleteIconButton` did, and `SwitchRow` did for the project-settings
+  switch (#1820).
   `ui/src/components/gated-controls.test.ts` fails on a `useGate()` outside the
   primitives unless the comment above it carries
   `// use-gate-allow: <reason>` — for a genuine non-control use, such as

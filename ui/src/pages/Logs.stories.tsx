@@ -459,6 +459,30 @@ export const AnAbsentPayloadSaysWhy: Story = {
   },
 };
 
+/**
+ * #1820: a body the caller's role may not read comes back blanked with
+ * `payload_withheld` set. That is the one absence the screen can name for
+ * certain, so it says so — and does not send the reader to the deployment's
+ * log settings, which cannot change a role.
+ */
+export const AWithheldPayloadSaysItIsTheRole: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([row({ request_id: "req-withheld", payload_withheld: 1 })])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
+    await expect(drawer.getAllByText(/hidden for your role/i)).toHaveLength(2);
+    await expect(drawer.queryByText(/retention window/i)).not.toBeInTheDocument();
+    await expect(drawer.queryByRole("link", { name: "Open log settings" })).not.toBeInTheDocument();
+  },
+};
+
 // a control plane with no clickhouse_url answers the analytics routes 503, and
 // one too old to have them answers 404. Both used to render an untranslated
 // grey paragraph of this screen's own (#1236)

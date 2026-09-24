@@ -33,7 +33,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::analytics::{bucket_fn, client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
+use crate::analytics::{
+    bucket_fn, client_or_503, run, window_params, with_access, WindowQuery, WHERE_WINDOW,
+};
+use crate::analytics_access::{AnalyticsAccess, PROVIDER_VISIBLE};
 
 /// How wide a rollup row is. Probe and status-page events name the provider
 /// itself as their `target_id`, passive events name the route's real target, so
@@ -59,6 +62,7 @@ struct UptimeQuery {
 /// Per provider/target uptime over the window: event counts, uptime %, and the
 /// error budget consumed against the SLA target.
 async fn uptime(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<UptimeQuery>,
 ) -> Response {
@@ -69,7 +73,12 @@ async fn uptime(
     // clamp the sla target into a sane open interval; it is a validated literal,
     // never a raw query string spliced into sql
     let sla = q.sla.unwrap_or(0.99).clamp(0.0001, 1.0);
-    run(ch.query(&uptime_sql(sla), &window_params(&q.window)).await)
+    run(ch
+        .query(
+            &uptime_sql(sla),
+            &with_access(window_params(&q.window), &access),
+        )
+        .await)
 }
 
 /// The uptime rollup. `sla` must already be clamped by the caller — it is
@@ -90,7 +99,7 @@ fn uptime_sql(sla: f64) -> String {
                 round((1 - countIf(outcome = 'ok') / count()) / (1 - {sla}), 6) as error_budget_burn, \
                 (1 - countIf(outcome = 'ok') / count()) > (1 - {sla}) as sla_breached, \
                 max(ts) as last_event \
-         from provider_health_events where {WHERE_WINDOW} \
+         from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
          group by provider, target_id, grain order by uptime asc format JSON"
     )
 }
@@ -103,12 +112,18 @@ fn uptime_sql(sla: f64) -> String {
 /// recovers it share the same `good_before`, so grouping on it pairs the failure
 /// onset (`min` bad `ts`) with its recovery (`min` `ok` `ts`). MTTR is the mean
 /// recovery gap across episodes; `incidents` counts them.
-async fn mttr(State(state): State<crate::ControlState>, Query(q): Query<WindowQuery>) -> Response {
+async fn mttr(
+    access: AnalyticsAccess,
+    State(state): State<crate::ControlState>,
+    Query(q): Query<WindowQuery>,
+) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    run(ch.query(&mttr_sql(), &window_params(&q)).await)
+    run(ch
+        .query(&mttr_sql(), &with_access(window_params(&q), &access))
+        .await)
 }
 
 /// The MTTR rollup. Episodes are detected per `(provider, target_id)`, so a
@@ -131,7 +146,7 @@ fn mttr_sql() -> String {
                             partition by provider, target_id order by ts \
                             rows between unbounded preceding and 1 preceding \
                         ) as good_before \
-                 from provider_health_events where {WHERE_WINDOW} \
+                 from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
              ) \
              group by provider, target_id, good_before \
              having bad_n > 0 and good_n > 0 and mttr_seconds > 0 \
@@ -143,6 +158,7 @@ fn mttr_sql() -> String {
 /// Bucketed failure timeline per provider/target: ok/error/timeout counts per
 /// time bucket for the dashboard's downtime strip.
 async fn timeline(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
 ) -> Response {
@@ -159,7 +175,10 @@ async fn timeline(
             .into_response();
     };
     run(ch
-        .query(&timeline_sql(bucket_expr), &window_params(&q))
+        .query(
+            &timeline_sql(bucket_expr),
+            &with_access(window_params(&q), &access),
+        )
         .await)
 }
 
@@ -174,7 +193,7 @@ fn timeline_sql(bucket_expr: &str) -> String {
                 countIf(outcome = 'ok') as ok, \
                 countIf(outcome = 'error') as errors, \
                 countIf(outcome = 'timeout') as timeouts \
-         from provider_health_events where {WHERE_WINDOW} \
+         from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
          group by bucket, provider, target_id, grain order by bucket format JSON"
     )
 }
@@ -182,6 +201,18 @@ fn timeline_sql(bucket_expr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_rollup_is_filtered_to_the_providers_the_caller_may_read() {
+        // a health row names a provider and carries no org, so the provider
+        // filter is the only thing between a rollup and every tenant (#1820)
+        for sql in [uptime_sql(0.99), mttr_sql(), timeline_sql("toStartOfHour")] {
+            assert!(
+                sql.contains(&format!("{WHERE_WINDOW} and {PROVIDER_VISIBLE}")),
+                "{sql}"
+            );
+        }
+    }
 
     #[test]
     fn sla_clamps_into_open_interval() {

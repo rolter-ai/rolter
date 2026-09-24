@@ -26,6 +26,14 @@
       "delete": "admin"
     },
     {
+      "resource": "project_settings",
+      "scope": "project",
+      "read": "viewer",
+      "create": null,
+      "update": "admin",
+      "delete": null
+    },
+    {
       "resource": "provider",
       "scope": "org",
       "read": "viewer",
@@ -48,6 +56,14 @@
       "create": "admin",
       "update": "admin",
       "delete": "admin"
+    },
+    {
+      "resource": "provider_health",
+      "scope": "org",
+      "read": "viewer",
+      "create": null,
+      "update": null,
+      "delete": null
     },
     {
       "resource": "label",
@@ -86,6 +102,22 @@
       "scope": "project",
       "read": null,
       "create": "member",
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "analytics",
+      "scope": "project",
+      "read": "viewer",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
+      "resource": "request_payload",
+      "scope": "project",
+      "read": "member",
+      "create": null,
       "update": null,
       "delete": null
     },

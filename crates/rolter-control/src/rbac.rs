@@ -190,7 +190,7 @@ pub(crate) fn role_rank(role: Role) -> u8 {
     }
 }
 
-fn parse_role(role: &str) -> Option<Role> {
+pub(crate) fn parse_role(role: &str) -> Option<Role> {
     match role {
         "admin" => Some(Role::Admin),
         "member" => Some(Role::Member),

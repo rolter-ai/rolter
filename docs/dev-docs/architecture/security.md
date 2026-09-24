@@ -190,6 +190,54 @@ This is why `ROLTER_CONTROL_HOST` defaults to `127.0.0.1` rather than
 `0.0.0.0`: containers and clusters set it explicitly, and by then they have a
 reason to have set a token too.
 
+## Who reads the request log (#1820)
+
+`/api/v1/analytics/*` (the request log, usage, spend and attribution rollups)
+and `/api/v1/health/*` (provider uptime, MTTR, the failure timeline) are merged
+onto the part of the router that also serves the probes and `/api/v1/config`,
+and until #1820 that made them open: neither resolved a principal, so a caller
+with no credentials read every tenant's request logs — captured prompt and
+completion bodies included — on a deployment whose CRUD API was enforcing RBAC.
+
+Every handler in both modules now takes an `AnalyticsAccess`
+(`crates/rolter-control/src/analytics_access.rs`). It authenticates the way the
+CRUD API does and turns what the caller holds into a filter each query binds as
+ClickHouse parameters — never spliced SQL:
+
+| caller                                                         | request-log rows                                           | captured bodies                                                                | provider health                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------- |
+| admin token, superadmin session, open mode                     | all, including rows logged with no org                     | all                                                                            | all                                                 |
+| a user with memberships or custom roles                        | rows whose org, team or project any of their roles reaches | where their role at the row's scope meets the `request_payload` floor (member) | providers of orgs where they hold an org-level role |
+| the same user, on a project set to `payload_min_role = viewer` | unchanged                                                  | also where they hold only viewer there                                         | unchanged                                           |
+| no credentials, or a bearer that is neither token nor session  | `401`                                                      | `401`                                                                          | `401`                                               |
+
+Two details carry the design:
+
+- **Rows are filtered and bodies are masked in the database.** Viewer is the
+  lowest role, so a row is visible when _any_ role reaches it. A body needs the
+  role resolved most-specific-first exactly as `rbac::resolve_role` does — an
+  org admin who is a viewer on one project reads that project's rows without
+  its bodies — and raised by custom roles as `rbac::custom_base_role` does. A
+  withheld body comes back empty with `payload_withheld = 1`, so the dashboard
+  says "hidden for your role" instead of "payload capture is off".
+- **The floors live in the capability matrix.** `analytics:read` (viewer),
+  `request_payload:read` (member) and `provider_health:read` (viewer) are rows in
+  `CAPABILITIES`, and the extractor reads its thresholds from them through
+  `cap!`, so `GET /api/v1/rbac/matrix` publishes the rule the filter applies.
+  The per-project exception is `project_settings:update` (admin), stored in
+  `projects.payload_min_role`; `GET /api/v1/rbac/effective` folds it in when the
+  scope it is asked about names a project.
+
+What keeps this from regressing is
+`every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller` in
+`crates/rolter-control/tests/control_integration.rs`: it walks the served
+`/openapi.json` with no credentials and a forged bearer and requires a `401`
+from every GET the document does not mark public. The routes that are open by
+design (`/api/v1/ping`, `/roles`, `/provider-kinds`, `/currency`, `/config`,
+`/config/problems`) are marked `.public()` in `openapi.rs` for that reason, and
+`crates/rolter-control/tests/analytics_scoping.rs` pins the row and body rules
+against a real ClickHouse.
+
 ## Control↔data-plane trust boundary
 
 `GET /internal/snapshot` returns provider `api_key`s **decrypted**. That is by

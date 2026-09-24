@@ -193,7 +193,8 @@
       "complexityPolicies": "complexity policies",
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
-      "playgroundKey": "the playground key"
+      "playgroundKey": "the playground key",
+      "projectSettings": "project settings"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2077,7 +2078,8 @@
       "requests_one": "{{count}} request",
       "requests_other": "{{count}} requests",
       "pageShort": "p{{page}}",
-      "requestFallback": "request"
+      "requestFallback": "request",
+      "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings."
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2732,6 +2734,13 @@
       "org": "Acme Inc",
       "team": "Platform",
       "project": "prod"
+    },
+    "projectSettings": "Project settings",
+    "settings": {
+      "title": "{{name}} settings",
+      "hint": "These apply to this project only.",
+      "viewersSeePayloads": "Viewers can read captured payloads",
+      "viewersSeePayloadsHint": "Off: request and response bodies in the request log are shown to this project's members and admins. On: its viewers see them too."
     }
   },
   "screens": {

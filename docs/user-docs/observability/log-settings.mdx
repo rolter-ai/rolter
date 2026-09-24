@@ -31,6 +31,10 @@ Redaction happening before the write is the important part: turning a field on l
 
 The dashboard states all of this at the point of decision: the switch that turns capture on carries a summary of exactly what will be stored — the truncation limit, the retention window, the fields redacted before the write, and which models are captured — computed from the values currently in the form, so an unsaved edit is reflected in it.
 
+### Who can read captured payloads
+
+A captured body is shown to the **members and admins** of the project the request belongs to — not to everyone who can see the request-log row. A viewer sees the row, its tokens, cost and status, with both bodies withheld. A project admin can let that project's viewers read the bodies too, from the project's settings (the gear next to the project in the scope switcher) or with [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). The deployment-wide switch above still decides whether anything is captured at all. See [who sees which request logs](/security/rbac#who-sees-which-request-logs).
+
 ### Why a payload panel is empty
 
 The **Request** and **Response** panels in the log detail drawer are empty whenever no body was stored, and a body can be missing for three different reasons:
@@ -39,7 +43,9 @@ The **Request** and **Response** panels in the log detail drawer are empty whene
 - capture was on, but the request's model or virtual key falls outside the allow-lists above;
 - the payload's retention window has already passed. Payloads are kept for `payload_retention_hours`, which is deliberately shorter than the log row's own retention, so an old row keeps its metadata long after its body is gone.
 
-The log row does not record which of the three applies, so the drawer names all three. A superadmin — the only role that can read this policy — sees the answer narrowed to the actual reason, because the screen reads the live setting for them. Every reader gets a link straight to this page's settings screen.
+A fourth reason is certain rather than guessed: the body was captured, but your role on the request's project is below the bar [above](#who-can-read-captured-payloads). The server withholds it and says so, and the drawer tells you it is your role rather than listing the other three.
+
+The log row does not record which of the first three applies, so the drawer names all three. A superadmin — the only role that can read this policy — sees the answer narrowed to the actual reason, because the screen reads the live setting for them. Every reader gets a link straight to this page's settings screen.
 
 ### Capture in the dogfooding profile
 

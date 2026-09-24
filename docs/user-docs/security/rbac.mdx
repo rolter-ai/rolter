@@ -16,11 +16,11 @@ Rolter ships with three built-in roles. Every role applies within the scope it i
   </Card>
 
   <Card title="member" icon="pencil">
-    Create and edit routes and virtual keys within their scope. Members cannot change org-level settings or manage other users' memberships.
+    Mint and rotate their own virtual keys, connect their own MCP sessions, and read the request logs of their scope with the captured request and response bodies. Routes, shared keys, providers and budgets stay an admin's, and members cannot manage other users' memberships.
   </Card>
 
   <Card title="viewer" icon="eye">
-    Read-only access to dashboards, request logs, and usage data. Assign this role to stakeholders who need visibility without the ability to make changes.
+    Read-only access to dashboards, request logs, and usage data — without the captured request and response bodies, unless a project admin allows it for that project. Assign this role to stakeholders who need visibility without the ability to make changes.
   </Card>
 </CardGroup>
 
@@ -56,6 +56,16 @@ Carol  →  viewer  at  team: platform
 <Note>
   The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it checks that the incoming virtual key exists, is active, and is allowed to access the requested model. The one place the two meet is an access profile's [model and route policy](#model-and-route-policy), which does reach the gateway.
 </Note>
+
+## Who sees which request logs
+
+The request log, the usage and spend rollups and provider health are not only gated — each answer is filtered to the caller:
+
+- A request-log row is visible to anyone holding a role at the row's org, team or project. A project viewer sees that project's rows, an org viewer the whole org's, and nobody sees another org's.
+- The request and response **bodies** that [payload capture](/observability/log-settings#payload-capture) stored are shown to **members and admins** of the row's project. A viewer gets the row with the bodies withheld, and the log says so.
+- A project admin can let the project's **viewers** read the bodies too: **Viewers can read captured payloads** in the project's settings (the gear next to the project in the scope switcher), or [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). It is off by default.
+- Provider health follows provider access: an org-level role in the provider's org.
+- The admin token and superadmins see everything; so does every caller in [open mode](#open-mode-running-with-no-admin-token). A caller with no valid credentials gets `401`.
 
 ## Ask the server what a role can do
 
