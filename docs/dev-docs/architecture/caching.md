@@ -8,16 +8,22 @@ The big win for self-hosted fleets: vLLM/SGLang reuse the attention KV cache for
 
 The `cache_aware` strategy keeps, per target, a byte **trie** of prompts it has served. For an incoming prompt it computes the fraction of leading bytes already present on each target and:
 
-- if the best match ≥ `threshold` (default `0.5`), pins the request to that target (cache hit)
-- otherwise spreads to the least-warmed target (or least loaded once load is wired)
+- if the best match ≥ `threshold` (default `0.5`), pins the request to that target (cache hit) — unless that target is overloaded (below)
+- otherwise spreads to the least-loaded target, or the least-warmed one when no load is known
+
+The "prompt" is the conversation, not the request body (#1851). `prompt_affinity::affinity_text` reads each turn's role and text in the order the model sees them — `messages` for chat, `system` plus `messages` for Anthropic, `instructions` plus `input` for Responses, `prompt` for completions — bounded to 32 KiB, and the raw body is only the fallback for a shape it cannot read. Before #1851 the trie was fed the raw JSON, and the envelope every request to a model opens with (`{"model":"…","messages":[{"role":…`) cleared the threshold by itself, so unrelated requests all pinned to whichever replica served first. The same text feeds every prompt reader: the pipeline's prefix scorer, `consistent_hash` without a session, and the latency predictor's token estimate.
+
+**The load guard.** Affinity alone is winner-take-all: the replica that served a shared system prompt first holds the longest match for every request that shares it. After SGLang's cache-aware router, `CacheAware::pick` keeps the affinity only while the warm target's in-flight count stays within **both** balance margins of the least-loaded target — more than `BALANCE_ABS_THRESHOLD` (2) requests ahead _and_ more than `BALANCE_REL_THRESHOLD` (1.5×) its load is an imbalance, and the request goes to the least-loaded target instead. The absolute margin lets a warm replica take a short queue for its cache; the relative one keeps a busy pool from treating a gap of a request or two as an imbalance. With no load known there is nothing to balance against, and affinity stands.
 
 This is **approximate** (no coupling to the engine). The per-target trie is capped at a node ceiling (default 1M nodes) with **LRU eviction**: inserting past the cap drops the least-recently-inserted prompt, pruning only the nodes that become unreferenced (shared prefixes survive). Each trie exposes an eviction counter for observability.
 
 ```mermaid
 flowchart TD
   R[incoming prompt] --> S{best prefix match >= threshold?}
-  S -- yes --> P[pin to best target<br/>cache hit]
-  S -- no --> L[least-warmed / least-loaded target]
+  S -- yes --> B{best target past both balance margins?}
+  B -- no --> P[pin to best target<br/>cache hit]
+  B -- yes --> L
+  S -- no --> L[least-loaded / least-warmed target]
   P --> O[observe: insert prompt into target trie]
   L --> O
 ```

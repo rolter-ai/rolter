@@ -46,6 +46,7 @@ mod multipart;
 mod openapi;
 mod pii_sanitizer;
 mod plugin_dispatch;
+mod prompt_affinity;
 mod prompt_templates;
 mod queue;
 mod rate_limits;

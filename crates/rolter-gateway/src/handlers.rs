@@ -1740,7 +1740,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-    let prompt = std::str::from_utf8(&body).ok();
+    // prefix affinity reads the conversation, not the JSON envelope every
+    // request to the model shares (#1851); a shape it cannot read keeps the
+    // raw body, as before
+    let affinity = crate::prompt_affinity::affinity_text(path, &parsed);
+    let prompt = affinity
+        .as_deref()
+        .or_else(|| std::str::from_utf8(&body).ok());
     let token_ids = parse_vllm_token_ids(&headers);
     let ctx = RouteContext {
         session_key,

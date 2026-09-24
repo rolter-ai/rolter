@@ -1,5 +1,7 @@
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::Arc;
+use std::time::Instant;
 
 use dashmap::DashMap;
 
@@ -64,6 +66,75 @@ impl Histogram {
         }
         // above the last boundary: lands in the implicit +Inf bucket, which is
         // reconstructed from `count` at render time
+    }
+}
+
+/// One provider's upstream load, for sizing `[provider_queue]` (#1855): the
+/// requests waiting for a queue worker, the requests awaiting their response
+/// headers, and how long each waited for its worker. Without them a queue was
+/// invisible until it started rejecting.
+pub(crate) struct ProviderLoad {
+    inflight: AtomicU64,
+    queued: AtomicU64,
+    wait: Histogram,
+}
+
+impl ProviderLoad {
+    fn new() -> Self {
+        Self {
+            inflight: AtomicU64::new(0),
+            queued: AtomicU64::new(0),
+            wait: Histogram::new(),
+        }
+    }
+}
+
+/// A request waiting for a provider queue worker. The worker ends the wait
+/// with [`QueuedGuard::picked`]; a job dropped before any worker took it —
+/// shed at admission, or its queue shut down — ends it on drop.
+pub(crate) struct QueuedGuard {
+    load: Arc<ProviderLoad>,
+    since: Instant,
+}
+
+impl QueuedGuard {
+    pub(crate) fn new(load: Arc<ProviderLoad>) -> Self {
+        load.queued.fetch_add(1, Relaxed);
+        Self {
+            load,
+            since: Instant::now(),
+        }
+    }
+
+    /// A worker took the job: record how long it waited, and count it in flight.
+    pub(crate) fn picked(self) -> InflightGuard {
+        let waited = u32::try_from(self.since.elapsed().as_millis()).unwrap_or(u32::MAX);
+        self.load.wait.observe(waited);
+        InflightGuard::new(self.load.clone())
+    }
+}
+
+impl Drop for QueuedGuard {
+    fn drop(&mut self) {
+        self.load.queued.fetch_sub(1, Relaxed);
+    }
+}
+
+/// A request awaiting its provider's response headers — on a queue worker, or
+/// forwarded directly when queueing is off. The body streams afterwards and is
+/// not counted, the same boundary at which a worker is released.
+pub(crate) struct InflightGuard(Arc<ProviderLoad>);
+
+impl InflightGuard {
+    pub(crate) fn new(load: Arc<ProviderLoad>) -> Self {
+        load.inflight.fetch_add(1, Relaxed);
+        Self(load)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.inflight.fetch_sub(1, Relaxed);
     }
 }
 
@@ -252,6 +323,10 @@ pub struct Metrics {
     /// complexity-policy selections keyed by (requested model, tier, selected
     /// route, outcome). Every label is configuration-bounded (16 tiers/route).
     by_complexity: DashMap<(String, String, String, String), AtomicU64>,
+    /// queue depth, in-flight count and queue wait per provider name. Names
+    /// come from the configured providers, so the label set is bounded by the
+    /// config
+    by_provider: DashMap<String, Arc<ProviderLoad>>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -842,6 +917,19 @@ impl Metrics {
         LATENCY_BUCKETS_MS.iter().map(|&b| f64::from(b)).collect()
     }
 
+    /// The load counters of `provider`, created on first use. The lookup of an
+    /// existing provider borrows the name, so the steady state allocates
+    /// nothing.
+    pub(crate) fn provider_load(&self, provider: &str) -> Arc<ProviderLoad> {
+        if let Some(load) = self.by_provider.get(provider) {
+            return load.clone();
+        }
+        self.by_provider
+            .entry(provider.to_string())
+            .or_insert_with(|| Arc::new(ProviderLoad::new()))
+            .clone()
+    }
+
     /// Render the counters in Prometheus text exposition format.
     pub fn render(&self) -> String {
         let mut out = String::new();
@@ -869,7 +957,47 @@ impl Metrics {
         self.render_target_counters(&mut out);
         self.render_variant_counters(&mut out);
         self.render_complexity_counters(&mut out);
+        self.render_provider_load(&mut out);
         out
+    }
+
+    /// Append the per-provider queue gauges and the queue-wait histogram
+    /// (#1855). Prometheus only: the OTLP exporter carries labelled counters,
+    /// not labelled gauges.
+    fn render_provider_load(&self, out: &mut String) {
+        for (name, help, pick) in [
+            (
+                "rolter_provider_inflight",
+                "upstream requests awaiting response headers, per provider",
+                (|load: &ProviderLoad| load.inflight.load(Relaxed)) as fn(&ProviderLoad) -> u64,
+            ),
+            (
+                "rolter_provider_queue_depth",
+                "requests waiting for a provider queue worker, per provider",
+                |load: &ProviderLoad| load.queued.load(Relaxed),
+            ),
+        ] {
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} gauge");
+            for entry in self.by_provider.iter() {
+                let provider = escape_label(entry.key());
+                let _ = writeln!(
+                    out,
+                    "{name}{{provider=\"{provider}\"}} {}",
+                    pick(entry.value())
+                );
+            }
+        }
+        let name = "rolter_provider_queue_wait_ms";
+        let _ = writeln!(
+            out,
+            "# HELP {name} time requests waited for a provider queue worker, in milliseconds"
+        );
+        let _ = writeln!(out, "# TYPE {name} histogram");
+        for entry in self.by_provider.iter() {
+            let provider = escape_label(entry.key());
+            write_histogram_series(out, name, "provider", &provider, &entry.value().wait);
+        }
     }
 
     /// Append one series per configured tier decision. These counters combine
@@ -960,28 +1088,39 @@ impl Metrics {
         let _ = writeln!(out, "# TYPE {name} histogram");
         for entry in self.by_model.iter() {
             let model = escape_label(entry.key());
-            let hist = pick(entry.value());
-            let mut cumulative = 0u64;
-            for (i, bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
-                cumulative += hist.buckets[i].load(Relaxed);
-                let _ = writeln!(
-                    out,
-                    "{name}_bucket{{model=\"{model}\",le=\"{bound}\"}} {cumulative}"
-                );
-            }
-            let count = hist.count.load(Relaxed);
-            let _ = writeln!(
-                out,
-                "{name}_bucket{{model=\"{model}\",le=\"+Inf\"}} {count}"
-            );
-            let _ = writeln!(
-                out,
-                "{name}_sum{{model=\"{model}\"}} {}",
-                hist.sum_ms.load(Relaxed)
-            );
-            let _ = writeln!(out, "{name}_count{{model=\"{model}\"}} {count}");
+            write_histogram_series(out, name, "model", &model, pick(entry.value()));
         }
     }
+}
+
+/// One labelled series of a histogram: cumulative `_bucket` lines, a `_sum`
+/// and a `_count`. `value` is already escaped.
+fn write_histogram_series(
+    out: &mut String,
+    name: &str,
+    label: &str,
+    value: &str,
+    hist: &Histogram,
+) {
+    let mut cumulative = 0u64;
+    for (i, bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+        cumulative += hist.buckets[i].load(Relaxed);
+        let _ = writeln!(
+            out,
+            "{name}_bucket{{{label}=\"{value}\",le=\"{bound}\"}} {cumulative}"
+        );
+    }
+    let count = hist.count.load(Relaxed);
+    let _ = writeln!(
+        out,
+        "{name}_bucket{{{label}=\"{value}\",le=\"+Inf\"}} {count}"
+    );
+    let _ = writeln!(
+        out,
+        "{name}_sum{{{label}=\"{value}\"}} {}",
+        hist.sum_ms.load(Relaxed)
+    );
+    let _ = writeln!(out, "{name}_count{{{label}=\"{value}\"}} {count}");
 }
 
 /// Append one Prometheus metric (HELP + TYPE + value line) to `out`.
@@ -1219,5 +1358,32 @@ mod tests {
         assert!(out.contains(
             "rolter_complexity_route_requests_total{model=\"router\",tier=\"complex\",route=\"router\",outcome=\"fallback\"} 1"
         ));
+    }
+
+    /// A job shed at admission, or stranded by a stopped queue, leaves the
+    /// depth without recording a wait; one a worker takes records its wait and
+    /// is in flight until its guard drops (#1855).
+    #[test]
+    fn provider_queue_guards_balance_their_gauges() {
+        let m = Metrics::default();
+        let queued = QueuedGuard::new(m.provider_load("vllm"));
+        assert!(m
+            .render()
+            .contains("rolter_provider_queue_depth{provider=\"vllm\"} 1"));
+        drop(queued);
+        let out = m.render();
+        assert!(out.contains("rolter_provider_queue_depth{provider=\"vllm\"} 0"));
+        assert!(out.contains("rolter_provider_queue_wait_ms_count{provider=\"vllm\"} 0"));
+
+        let inflight = QueuedGuard::new(m.provider_load("vllm")).picked();
+        let out = m.render();
+        assert!(out.contains("rolter_provider_queue_depth{provider=\"vllm\"} 0"));
+        assert!(out.contains("rolter_provider_inflight{provider=\"vllm\"} 1"));
+        assert!(out.contains("rolter_provider_queue_wait_ms_count{provider=\"vllm\"} 1"));
+        assert!(out.contains("# TYPE rolter_provider_queue_wait_ms histogram"));
+        drop(inflight);
+        assert!(m
+            .render()
+            .contains("rolter_provider_inflight{provider=\"vllm\"} 0"));
     }
 }
