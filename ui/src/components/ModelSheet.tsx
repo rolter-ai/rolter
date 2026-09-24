@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Lock, Plug, Plus, Trash2 } from "lucide-react";
+import { Check, Lock, Plug, Plus } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { describedBy, FieldError } from "@/components/ui/field-error";
 import { FieldLabel } from "@/components/ui/field-label";
 import { FormSection } from "@/components/ui/form-section";
@@ -1225,10 +1226,9 @@ export function ModelSheet({
                   />
                 )}
                 {p.custom && (
-                  <button
-                    type="button"
+                  <DeleteIconButton
+                    label={t("modelSheet.params.remove")}
                     title={t("common.remove")}
-                    aria-label={t("modelSheet.params.remove")}
                     disabled={readonly}
                     onClick={() =>
                       setDraft((d) => ({
@@ -1236,10 +1236,7 @@ export function ModelSheet({
                         params: d.params.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  />
                 )}
               </div>
             ))}
@@ -1476,10 +1473,9 @@ export function ModelSheet({
                       onToggle={() => setHeaderAt(i, { locked: !h.locked })}
                     />
                   )}
-                  <button
-                    type="button"
+                  <DeleteIconButton
+                    label={t("modelSheet.headers.remove")}
                     title={t("common.remove")}
-                    aria-label={t("modelSheet.headers.remove")}
                     disabled={readonly}
                     onClick={() =>
                       setDraft((d) => ({
@@ -1487,10 +1483,7 @@ export function ModelSheet({
                         headers: d.headers.filter((_, idx) => idx !== i),
                       }))
                     }
-                    className="flex flex-none rounded-md border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-subtle)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  />
                 </div>
               ))}
             </div>
