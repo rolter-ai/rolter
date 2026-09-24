@@ -233,9 +233,11 @@ export async function tenancy() {
 }
 
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** what the scope switcher (inside the account menu) resolved to, plus its message if any */
 export async function scopeOf(page: Page, email: string) {
-  const trigger = page.getByRole("button", { name: new RegExp(email.replace(/[.@]/g, (c) => "\\" + c)) }).first();
+  const trigger = page.getByRole("button", { name: new RegExp(escapeRegExp(email)) }).first();
   await trigger.click();
   await page.getByRole("combobox", { name: "Org", exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
   const read = async (name: string) => {

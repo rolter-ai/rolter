@@ -30,6 +30,9 @@ for (const s of scripts) {
   const path = `${OUT}/results-${s}.json`;
   if (existsSync(path)) rows.push(...JSON.parse(readFileSync(path, "utf8")));
 }
+// a note is free text: escape the backslash before the pipe, or a note ending in
+// `\` would escape the escape and split the table, and keep it on one line
+const cell = (text: string) => text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 const count = (xs: typeof rows) => xs.reduce((a: Record<string, number>, r) => ((a[r.status] = (a[r.status] ?? 0) + 1), a), {});
 const table = [
   "| persona | steps | pass | bug | partial | gap | fail | skip |",
@@ -42,7 +45,7 @@ const table = [
   "",
   "| step | status | note |",
   "| --- | --- | --- |",
-  ...rows.map((r) => `| ${r.persona}/${r.step} | ${r.status} | ${r.note.replace(/\|/g, "\\|")} |`),
+  ...rows.map((r) => `| ${r.persona}/${r.step} | ${r.status} | ${cell(r.note)} |`),
 ];
 writeFileSync(`${OUT}/summary.md`, table.join("\n") + "\n");
 writeFileSync(`${OUT}/results.json`, JSON.stringify(rows, null, 2));
