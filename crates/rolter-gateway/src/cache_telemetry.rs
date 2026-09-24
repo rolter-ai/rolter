@@ -120,19 +120,7 @@ impl CacheTelemetry {
                 let mut last_seq = None;
                 let mut desynced = false;
                 while let Ok(message) = socket.recv().await {
-                    if message.len() != 3 {
-                        telemetry
-                            .inner
-                            .metrics
-                            .kv_events_malformed_total
-                            .fetch_add(1, Relaxed);
-                        continue;
-                    }
-                    let Some(seq) = message.get(1).and_then(|frame| {
-                        (frame.len() == 8).then(|| {
-                            u64::from_be_bytes(frame.as_ref().try_into().expect("length checked"))
-                        })
-                    }) else {
+                    let Some((seq, payload)) = parse_kv_message(&message) else {
                         telemetry
                             .inner
                             .metrics
@@ -140,7 +128,6 @@ impl CacheTelemetry {
                             .fetch_add(1, Relaxed);
                         continue;
                     };
-                    let payload = message.get(2).expect("frame count checked");
                     if last_seq.is_some_and(|last| seq != last + 1) {
                         desynced = true;
                         *target.state.lock() = KvState::default();
@@ -402,6 +389,17 @@ fn payload_contains_clear(payload: &[u8]) -> bool {
         .any(|window| window == b"AllBlocksCleared")
 }
 
+fn parse_kv_message(message: &zeromq::ZmqMessage) -> Option<(u64, &[u8])> {
+    if message.len() != 3 {
+        return None;
+    }
+    let frame1 = message.get(1)?;
+    let bytes: [u8; 8] = frame1.as_ref().try_into().ok()?;
+    let seq = u64::from_be_bytes(bytes);
+    let payload = message.get(2)?;
+    Some((seq, payload.as_ref()))
+}
+
 fn apply_stored(target: &KvTarget, fields: &[Value]) -> Result<(), String> {
     let hashes = fields
         .get(1)
@@ -584,6 +582,35 @@ mod tests {
             &payload(vec![Value::Array(vec![Value::from("BlockRemoved")])])
         )
         .is_err());
+    }
+
+    #[test]
+    fn frame_parsing_handles_malformed_sequence_and_payload_frames_without_panic() {
+        // Message with invalid frame count (2 frames instead of 3)
+        let msg_two_frames = zeromq::ZmqMessage::try_from(vec![
+            bytes::Bytes::from(vec![1]),
+            bytes::Bytes::from(100u64.to_be_bytes().to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(parse_kv_message(&msg_two_frames), None);
+
+        // Message with invalid sequence frame length (4 bytes instead of 8 bytes)
+        let msg_bad_seq = zeromq::ZmqMessage::try_from(vec![
+            bytes::Bytes::from(vec![1]),
+            bytes::Bytes::from(vec![0u8; 4]),
+            bytes::Bytes::from(vec![2]),
+        ])
+        .unwrap();
+        assert_eq!(parse_kv_message(&msg_bad_seq), None);
+
+        // Valid message with 3 frames and 8-byte sequence
+        let msg_valid = zeromq::ZmqMessage::try_from(vec![
+            bytes::Bytes::from(vec![1]),
+            bytes::Bytes::from(42u64.to_be_bytes().to_vec()),
+            bytes::Bytes::from(vec![10, 20, 30]),
+        ])
+        .unwrap();
+        assert_eq!(parse_kv_message(&msg_valid), Some((42, &[10, 20, 30][..])));
     }
 
     #[test]

@@ -15,3 +15,8 @@
 **Vulnerability:** HTTP 500 error responses from `/internal/snapshot` in `rolter-control` echoed internal store/database error details (`err.to_string()`) directly into the JSON error body, potentially exposing internal database connection details or query errors to clients.
 **Learning:** Store errors (such as Postgres connection or query failures) must be logged internally via `tracing::error!` while returning a generic message (e.g., `"failed to load config snapshot"`) in the JSON response body to prevent internal information disclosure.
 **Prevention:** Always log detailed error descriptions internally with `tracing` and return sanitized, generic error messages in API HTTP response bodies.
+
+## 2026-09-22 - [Remove expect in ZMQ Cache Telemetry Parser]
+
+**Learning:** `expect()` or `unwrap()` calls on network message frames (like ZeroMQ telemetry messages) create potential panic points if network frames are malformed or truncated. Replacing them with `.try_into().ok()` and `message.get(...)` prevents gateway crashes.
+**Prevention:** Always convert slice conversions and index accesses on network messages to safe `Option`/`Result` matching instead of using `.expect()` or `.unwrap()`.
