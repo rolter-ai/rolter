@@ -54,6 +54,18 @@
 
 - [OpenAI & Anthropic surface](api/openai-and-anthropic.md)
 
+# Product
+
+- [User journeys](product/user-journeys.md)
+  - [Platform operator and org admin](product/journeys/platform-admin.md)
+  - [Team lead](product/journeys/team-lead.md)
+  - [Engineer](product/journeys/engineer.md)
+  - [Application / service account](product/journeys/app-service.md)
+  - [Finance / FinOps](product/journeys/finops.md)
+  - [SecOps](product/journeys/secops.md)
+  - [DevOps / SRE](product/journeys/devops.md)
+  - [Viewer](product/journeys/viewer.md)
+
 # Development
 
 - [Setup](development/setup.md)

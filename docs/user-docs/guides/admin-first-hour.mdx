@@ -1,0 +1,82 @@
+---
+title: "Your First Hour as a Rolter Administrator"
+sidebarTitle: "Admin: first hour"
+description: "From an empty host to a team calling models through Rolter: install the stack, secure it, connect a provider, route a model, hand out access, cap spend and see the traffic — in the order that works."
+---
+
+This guide takes a deployment from nothing to "our people and our applications call our models through Rolter, inside limits we chose, and we can see what they did." Each step links the page that covers it in depth; follow the links only when you need more than the step says.
+
+<Tip>
+  Just want to see it work first? `rolter easy-up` (or `docker run -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest`) starts everything with no database and no provider key, and the built-in `fake-llm` model answers straight away. See the [quickstart](/quickstart). Come back here when you are ready to run it for a team.
+</Tip>
+
+<Steps>
+  <Step title="Install the stack">
+    Docker Compose brings up the gateway, the control plane and dashboard, Postgres, Redis and ClickHouse together. Postgres is what makes the dashboard's create, edit and delete screens exist; Redis keeps budgets and rate limits accurate across gateway replicas; ClickHouse holds the request logs.
+
+    ```bash
+    docker compose -f docker/docker-compose.yml up -d
+    ```
+
+    See [Installation](/installation) and, for Kubernetes, [Production](/deployment/production).
+
+  </Step>
+  <Step title="Set the deployment secrets before anyone else can reach it">
+    Four values protect a real deployment: `ROLTER_ADMIN_TOKEN` (turns on role-based access control and protects the management API), `ROLTER_KEK` (seals provider keys at rest), and the key and session peppers. Without an admin token the control plane runs **open** — everyone who reaches it is an administrator — so in that state it refuses to listen on anything but loopback unless you explicitly allow it.
+
+    Generate them once and keep them where they outlive a restart; `rolter check` reports anything missing or unsafe. See [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
+
+  </Step>
+  <Step title="Create the first administrator and sign in">
+    ```bash
+    rolter-seed --admin-email you@example.com --admin-password '<a long password>'
+    ```
+
+    Open the dashboard (port 4001), sign in, then protect the account with a second factor under **Settings → My Virtual Keys → Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
+
+  </Step>
+  <Step title="Follow the Getting started card">
+    A fresh deployment opens on a **Getting started** card with the four steps between an empty control plane and a client calling Rolter, each ticked from the deployment itself:
+
+    1. **Make a call with no credentials** — the Playground answers with `fake-llm`.
+    2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
+    3. **Add a route** — **Models → Routing Rules**: the public model name your clients will send, and where it lands.
+    4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.
+
+    Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).
+
+  </Step>
+  <Step title="Lay out teams and projects">
+    Most screens work on one **organization → team → project** chain, chosen in the scope switcher at the bottom of the rail; its **+** creates a team or a project. Put the boundaries where access and money should split — a project per product or workstream is a good default. See [Dashboard](/concepts/dashboard).
+
+  </Step>
+  <Step title="Bring people in">
+    Pick the way your company signs in:
+
+    - **No identity provider:** **Governance → Users → Invite user** at a role and scope. You get a one-time link to send to the person; they choose their own password.
+    - **An OIDC identity provider** (Okta, Entra ID, Google, Keycloak): register it under **Governance → Single Sign-On**, map its groups to roles at scopes, and decide whether passwords stay on. See [Single Sign-On](/security/single-sign-on).
+    - **Automatic joiners and leavers:** add SCIM provisioning under **Governance → User Provisioning**. See [User Provisioning](/security/user-provisioning).
+
+    Make engineers **members** of their projects: members mint their own keys, and read their own project's request logs and captured bodies. **Viewers** read without changing anything, and see request logs without the captured bodies unless a project admin allows it. See [RBAC](/security/rbac).
+
+  </Step>
+  <Step title="Price your models and cap spend">
+    Give every model that costs money a price (**Models → Pricing Overrides**) so spend is never counted as zero by accident, then add budgets and rate limits under **Models → Budgets & Limits** at the org, team, project or key. A request past a budget gets HTTP 402; past a rate limit, HTTP 429. The whole topic is its own guide: [Tracking and capping spend](/guides/tracking-spend).
+
+  </Step>
+  <Step title="Watch the traffic">
+    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Everything anyone did in the dashboard is under **Governance → Audit Logs**. See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
+
+  </Step>
+</Steps>
+
+## What next
+
+<CardGroup cols={2}>
+  <Card title="Connecting models" icon="sitemap" href="/guides/connecting-models">
+    One provider, failover across two, several vendors, or a self-hosted fleet — and which balancing strategy fits.
+  </Card>
+  <Card title="An engineer's first day" icon="code" href="/guides/engineer-first-day">
+    What to send your engineers: their own key, their first call, and how to debug one that fails.
+  </Card>
+</CardGroup>

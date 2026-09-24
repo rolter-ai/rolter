@@ -41,6 +41,13 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Agent Setup](/agent-setup): Paste one of these prompts into Claude Code, Cursor or any coding agent and it will stand Rolter up, connect a provider key, or repoint your agent at the gateway.
 - [Dashboard](/concepts/dashboard): How to sign in to the control-plane dashboard, what the left rail holds, how the org/team/project scope works, and how navigation adapts to a phone or a tablet.
 
+### Guides
+
+- [Admin: first hour](/guides/admin-first-hour): From an empty host to a team calling models through Rolter: install the stack, secure it, connect a provider, route a model, hand out access, cap spend and see the traffic — in the order that works.
+- [Connecting models](/guides/connecting-models): Pick the shape that matches your models — one provider, failover across two, several vendors behind named routes, or a load-balanced self-hosted fleet — and set it up from the dashboard or as a config file.
+- [Engineer: first day](/guides/engineer-first-day): Sign in, mint your own virtual key, call models from the OpenAI or Anthropic SDK or a coding agent, and find out why a call failed — as a project member, without waiting on an admin.
+- [Tracking spend](/guides/tracking-spend): Make every request's cost trustworthy, see spend by model, team, business unit and customer, stop it at limits you choose, and give finance read access without exposing prompts.
+
 ### Core Concepts
 
 - [Providers & Routes](/concepts/providers-and-routes): Learn how providers define upstream AI services and how routes map public model names to those upstreams with strategies, param defaults, and variants.

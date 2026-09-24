@@ -1,0 +1,39 @@
+---
+title: "Tracking and Capping LLM Spend"
+sidebarTitle: "Tracking spend"
+description: "Make every request's cost trustworthy, see spend by model, team, business unit and customer, stop it at limits you choose, and give finance read access without exposing prompts."
+---
+
+Rolter records the cost of every request it serves, attributes it to the key, project, team, business unit and customer behind it, and can stop traffic at a budget. This guide sets that up in the order that makes the numbers trustworthy.
+
+<Note>
+  Budgets and rate limits keep their counters in Redis, so the limits hold across every gateway replica. Without Redis they fail open: requests pass and spend is not counted. Cost reporting itself comes from the request logs in ClickHouse.
+</Note>
+
+<Steps>
+  <Step title="Price every model that costs money">
+    A model with no price row is logged at a cost of **zero**, which is indistinguishable from free. Add prices under **Models → Pricing Overrides** (or `[[model_prices]]` in the config file), in any currency your rate table knows. See [Budgets & rate limits](/security/budgets-and-rate-limits).
+  </Step>
+  <Step title="Find what is still unpriced">
+    **Observability → Dashboard** shows how much of the window's traffic was unpriced, and **LLM Logs** flags each such row, so a partial total is never read as a final one. Price what shows up, or decide per budget whether unpriced traffic counts as zero or is refused.
+  </Step>
+  <Step title="Attribute spend to the people you bill">
+    Roll teams up into **business units** and name the **customers** you serve under **Governance → Business Units** and **Governance → Customers**, then point each virtual key at a unit and a customer. Every request the key serves is recorded against both, and the same screens roll the spend up. See [Cost attribution](/security/cost-attribution).
+  </Step>
+  <Step title="Set the limits">
+    **Models → Budgets & Limits** at the org, team, project, key, business unit or customer:
+
+    - a **budget** caps spend over a day, a month or for good; the next request past it gets HTTP 402, and nothing reaches the upstream;
+    - a **rate limit** caps requests and tokens per minute; past it, HTTP 429 with `Retry-After`.
+
+    The most restrictive limit on a request's chain wins. To change a budget, replace it: spend so far is counted per scope, so the new budget starts from what was already spent.
+
+  </Step>
+  <Step title="Get alerted on runaway spend">
+    **Alerting → Rules** with the `spend_velocity` metric sends a webhook when spend per hour crosses the line you set, alongside error-rate and latency rules.
+  </Step>
+</Steps>
+
+## Give finance access without the prompts
+
+Make your finance team **viewers** of the org. A viewer sees the Dashboard, every request-log row of the org — model, tokens, cost, status, attribution — and every budget and limit, and can change none of them. The captured request and response bodies are shown only to the members and admins of each project, unless a project admin chooses to open them to its viewers. See [RBAC](/security/rbac#who-sees-which-request-logs).

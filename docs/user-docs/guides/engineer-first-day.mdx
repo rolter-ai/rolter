@@ -1,0 +1,72 @@
+---
+title: "An Engineer's First Day with Rolter"
+sidebarTitle: "Engineer: first day"
+description: "Sign in, mint your own virtual key, call models from the OpenAI or Anthropic SDK or a coding agent, and find out why a call failed — as a project member, without waiting on an admin."
+---
+
+This is the guide to send engineers. It assumes an administrator has made you a **member** of a project; members mint their own keys and read their own project's request logs, including the request and response bodies when payload capture is on.
+
+<Steps>
+  <Step title="Sign in">
+    Open the dashboard your administrator gave you and sign in with your company's single sign-on or the invitation you received. The scope switcher at the bottom of the rail shows the org, team and project you are working in. Controls that need a role you do not hold are greyed out and say which role they need.
+  </Step>
+  <Step title="See what you can call">
+    **Models → Model Catalog** lists the models your project routes. Those public names are what you put in the `model` field.
+  </Step>
+  <Step title="Mint your own key">
+    **Settings → My Virtual Keys → Generate virtual key**: name it after where it will live, pick the project, optionally narrow it to the models the job needs, and set an expiry. The key is shown **once** — copy it into your secret store. You can rotate or delete it from the same screen at any time. See [Virtual keys](/concepts/virtual-keys).
+  </Step>
+  <Step title="Make your first call">
+    Rolter speaks both dialects, so the SDK you already use works with only the base URL changed:
+
+    <CodeGroup>
+      ```python OpenAI SDK
+      from openai import OpenAI
+
+      client = OpenAI(base_url="https://gateway.example.com/v1", api_key="<your key>")
+      reply = client.chat.completions.create(
+          model="gpt-4o",
+          messages=[{"role": "user", "content": "hello"}],
+      )
+      ```
+
+      ```python Anthropic SDK
+      from anthropic import Anthropic
+
+      client = Anthropic(base_url="https://gateway.example.com", api_key="<your key>")
+      reply = client.messages.create(
+          model="claude-sonnet-4",
+          max_tokens=256,
+          messages=[{"role": "user", "content": "hello"}],
+      )
+      ```
+
+      ```bash curl
+      curl https://gateway.example.com/v1/chat/completions \
+        -H "Authorization: Bearer <your key>" \
+        -H "Content-Type: application/json" \
+        -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]}'
+      ```
+    </CodeGroup>
+
+    No key at hand? The **Playground** mints a 30-minute key for your project on its own.
+
+  </Step>
+  <Step title="Point your coding agent at it">
+    Claude Code, Codex, Cursor and other agents can send their own traffic through the gateway, so it is routed, budgeted and logged like everything else. The [agent setup](/agent-setup) page has a prompt that does it for you.
+  </Step>
+</Steps>
+
+## When a call fails
+
+Walk it in this order — each step narrows where the problem is:
+
+1. **Read the error you got.** It is OpenAI- or Anthropic-shaped JSON and names the cause: an authentication error (the key), `model_not_found` (the model name, or a model your key may not reach), HTTP 402 (a budget), HTTP 429 (a rate limit or a full queue, with `Retry-After`), or a 5xx from the upstream.
+2. **Find the request.** Every response carries an `x-request-id`; search **Observability → LLM Logs** for it, or filter by your key and status = error. The row shows the target and provider that served it, the error text, retries, latency and cost — and the request and response bodies, when your deployment captures them.
+3. **Follow it into a trace.** Send a W3C `traceparent` and Rolter joins your distributed trace; look the row's trace id up in your tracing backend to see where the time went. See [Tracing](/observability/tracing).
+
+## Keep an eye on it
+
+- **Your usage:** **Settings → My Virtual Keys** shows requests and cost per key over the last week.
+- **Your account:** protect it with a second factor under **Settings → My Virtual Keys → Two-factor authentication**.
+- **Your MCP connections:** servers that need your consent are under **MCP Gateway → Auth Sessions**. See [MCP OAuth](/security/mcp-oauth).
