@@ -238,6 +238,28 @@ design (`/api/v1/ping`, `/roles`, `/provider-kinds`, `/currency`, `/config`,
 `crates/rolter-control/tests/analytics_scoping.rs` pins the row and body rules
 against a real ClickHouse.
 
+## One org never reaches another (#1844, #1845)
+
+A provider's credential belongs to the org that stored it, and until #1844 the
+gateway did not know that: the snapshot carried routes, providers and provider
+groups with no owner, so a key from any org could call another org's routes,
+or address its providers directly as `provider-slug/model` or through a group
+as `group-slug/model`, spending that org's credential. Two orgs that picked the
+same provider name also froze config propagation for everyone, because the
+snapshot refuses duplicate names.
+
+Every row loaded from the store now carries its org (and a route its project)
+as `tenancy`, and the route authorization contract refuses a key from another
+org before anything else is checked — on all three address forms and in
+`GET /v1/models`. On the write path a route target or group member must name a
+provider in the same org, and names the gateway indexes deployment-wide are
+unique across orgs, refused with a `409` that does not say which org holds the
+name. An admin can also narrow a route to its own project (`project_only`).
+The contract, the table of which keys admit which rows, and the write-time
+guards are in
+[RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
+per-org namespaces, which would let two orgs reuse a name, are #1857.
+
 ## Control↔data-plane trust boundary
 
 `GET /internal/snapshot` returns provider `api_key`s **decrypted**. That is by
@@ -350,6 +372,41 @@ and in-process otherwise. That fallback is documented rather than hidden: with N
 replicas and no redis, an attacker gets N times the allowance, and the control
 plane says so at startup.
 
+## Who reads account events (#1854)
+
+Sign-ins, failed sign-ins, lockouts, second-factor changes, break-glass resets
+and account edits belong to a person, and a person can belong to several orgs,
+so these rows are written to `audit_log` with no org. Until #1854 the only read
+path, `GET /api/v1/orgs/{org_id}/audit-log`, filtered on the org column, so none
+of them reached an API or a screen.
+
+The org read now joins on membership: a row with no org is returned to an org
+when its actor, or its target user, holds a role in the org, one of its teams
+or one of its projects. That puts an org member's failed sign-ins, a second
+factor being removed and a break-glass reset in front of the people who
+administer that org, in **Governance → Audit Logs**, where the `auth.*` actions
+are filterable. It never shows one org another org's people. `user.delete` is
+the exception to "written with no org": it is written once per org the account
+belonged to, because the account's memberships are deleted with it and the
+join would have nothing left to match.
+
+The alternative was to write each account event once per org the person
+belongs to. It was not taken because it fans one sign-in out into a row per
+org, and it would leave every row already written unreadable, while the join
+makes a deployment's existing history readable as soon as the control plane is
+upgraded. The cost is that visibility follows current membership: an org sees
+the account events of the people it has now, including events from before they
+joined, and stops seeing someone's once they hold no role in it. Deactivation
+keeps memberships, so a deactivated leaver stays visible; `user.delete`, which
+removes them, is written per org for that reason.
+
+Rows no org can claim are still not readable through the API: the account
+events of someone with no membership anywhere — above all a superadmin's own
+sign-ins — and attempts against an address nobody registered, which are
+recorded with no actor and otherwise reach only the logs and
+`rolter_control_login_attempts`. A deployment-wide read for the superadmin (and
+the security-auditor role of #1834) is #1858.
+
 ## Three credentials, one word (#943)
 
 Three unrelated secrets pass through rolter, and each is an "API key" to
@@ -391,7 +448,8 @@ not choose one.
 
 ## Threat model (high level)
 
-- **Tenant isolation**: virtual keys are scoped to a project; model allow-lists prevent access to unconfigured models; cache keys are namespaced to avoid cross-tenant cache poisoning.
+- **Tenant isolation**: virtual keys are scoped to a project and reach only their own org's routes, providers and provider groups (#1844); model allow-lists prevent access to unconfigured models; cache keys are namespaced to avoid cross-tenant cache poisoning.
+- **Offboarding**: deactivating a person, or removing their last role that reaches a project, takes the keys they minted for themselves off every gateway, and deleting the account disables them (#1841); keys an admin minted for an application are the project's and stay. See [RBAC & authentication](rbac-and-auth.md#personal-keys-follow-their-creator-1841).
 - **Abuse**: RPM/TPM rate limits and budgets bound spend and load (roadmap enforcement); failed control-plane sign-ins are throttled per account and per client address (see above).
 - **AuthZ**: control-plane mutations are RBAC-checked and recorded in `audit_log`.
 - **Supply chain**: `cargo deny`/advisory scanning in CI is a roadmap item.

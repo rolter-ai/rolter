@@ -15,6 +15,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
@@ -34,7 +35,9 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::access_control::caller_policy;
-use crate::rbac::{authorize, authorize_superadmin, policy_allows, Principal, ScopeChain};
+use crate::rbac::{
+    authorize, authorize_superadmin, policy_allows, reaches_org, Principal, ScopeChain, ScopeFilter,
+};
 use crate::rbac_matrix::{cap, superadmin_cap, Requirement};
 use crate::ControlState;
 
@@ -664,11 +667,60 @@ async fn authorize_virtual_key(
 
 // global read: any authenticated principal (the extractor enforces auth when
 // an admin token is configured, and is open otherwise)
+/// Every org for a superadmin; otherwise the orgs the caller holds a role
+/// anywhere inside: at the org, one of its teams or one of its projects. A
+/// plain signed-in account must not learn the names of tenants it does not
+/// belong to, and the dashboard defaults to the first org it is given (#1846).
 async fn list_orgs(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<ControlState>,
 ) -> ApiResult<Json<Vec<Org>>> {
-    Ok(Json(OrgRepo(pool(&state)).list().await?))
+    let orgs = OrgRepo(pool(&state)).list().await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("org", Read)).await?;
+    if filter.is_superadmin() {
+        return Ok(Json(orgs));
+    }
+    let reach = filter.reach(pool(&state)).await?;
+    Ok(Json(
+        orgs.into_iter()
+            .filter(|org| reaches_org(&reach, org.id))
+            .collect(),
+    ))
+}
+
+/// Each project's team within `org_id`, so a listing can build every row's
+/// scope chain without a query per row.
+async fn project_teams(state: &ControlState, org_id: Uuid) -> ApiResult<HashMap<Uuid, Uuid>> {
+    Ok(ProjectRepo(pool(state))
+        .list_for_org(org_id)
+        .await?
+        .into_iter()
+        .map(|project| (project.id, project.team_id))
+        .collect())
+}
+
+/// The chain of a row that lives at an org, a team or a project of `org_id`.
+fn row_chain(
+    org_id: Uuid,
+    team: Option<Uuid>,
+    project: Option<Uuid>,
+    teams_of: &HashMap<Uuid, Uuid>,
+) -> ScopeChain {
+    ScopeChain {
+        org: Some(org_id),
+        team: team.or_else(|| project.and_then(|project| teams_of.get(&project).copied())),
+        project,
+    }
+}
+
+/// Refuse a caller who holds no role anywhere inside `org_id`; a caller who
+/// holds one below the org gets the rows they may read, which can be none.
+async fn require_reach(state: &ControlState, filter: &ScopeFilter, org_id: Uuid) -> ApiResult<()> {
+    if reaches_org(&filter.reach(pool(state)).await?, org_id) {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1868,14 +1920,22 @@ async fn list_teams(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Team>>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("team", Read),
-    )
-    .await?;
-    Ok(Json(TeamRepo(pool(&state)).list(org_id).await?))
+    let teams = TeamRepo(pool(&state)).list(org_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("team", Read)).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(Json(teams));
+    }
+    // below the org: the teams the caller holds a role in, or holds one inside,
+    // so a project member can still navigate to their project (#1846)
+    let reach = filter.reach(pool(&state)).await?;
+    let visible: Vec<Team> = teams
+        .into_iter()
+        .filter(|team| reach.iter().any(|chain| chain.team == Some(team.id)))
+        .collect();
+    if visible.is_empty() {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(Json(visible))
 }
 
 #[derive(Deserialize)]
@@ -1942,8 +2002,25 @@ async fn list_projects(
     Path(team_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Project>>> {
     let chain = ScopeChain::from_team(pool(&state), team_id).await?;
-    authorize(&state, &principal, chain, cap!("project", Read)).await?;
-    Ok(Json(ProjectRepo(pool(&state)).list(team_id).await?))
+    let projects = ProjectRepo(pool(&state)).list(team_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("project", Read)).await?;
+    if filter.allows(chain) {
+        return Ok(Json(projects));
+    }
+    // below the team: the projects the caller holds a role in (#1846)
+    let visible: Vec<Project> = projects
+        .into_iter()
+        .filter(|project| {
+            filter.allows(ScopeChain {
+                project: Some(project.id),
+                ..chain
+            })
+        })
+        .collect();
+    if visible.is_empty() {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(Json(visible))
 }
 
 /// `GET /api/v1/orgs/{org_id}/projects` — every project in the org.
@@ -1962,14 +2039,28 @@ async fn list_org_projects(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<OrgProject>>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("project", Read),
-    )
-    .await?;
-    Ok(Json(ProjectRepo(pool(&state)).list_for_org(org_id).await?))
+    let projects = ProjectRepo(pool(&state)).list_for_org(org_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("project", Read)).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(Json(projects));
+    }
+    // below the org: the projects the caller reads through a team or project
+    // role (#1846)
+    let visible: Vec<OrgProject> = projects
+        .into_iter()
+        .filter(|project| {
+            filter.allows(row_chain(
+                org_id,
+                Some(project.team_id),
+                Some(project.id),
+                &HashMap::new(),
+            ))
+        })
+        .collect();
+    if visible.is_empty() {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(Json(visible))
 }
 
 #[derive(Deserialize)]
@@ -2681,6 +2772,13 @@ async fn create_provider(
     validate_kind(&body.kind)?;
     require_wellformed_api_base(&body.kind, &body.api_base)?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
+    let providers = ProviderRepo(pool(&state));
+    if providers.name_in_use(&body.name).await? {
+        return Err(taken_in_deployment("provider name", &body.name));
+    }
+    if providers.slug_in_use(&slug, None).await? {
+        return Err(taken_in_deployment("provider slug", &slug));
+    }
     // seal before touching the database so a missing KEK leaves no row behind
     let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
@@ -2774,6 +2872,14 @@ async fn update_provider(
     }
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
+    if let Some(slug) = slug_change.as_deref() {
+        if ProviderRepo(pool(&state))
+            .slug_in_use(slug, Some(id))
+            .await?
+        {
+            return Err(taken_in_deployment("provider slug", slug));
+        }
+    }
     // seal before writing anything so a missing KEK changes nothing
     let sealed = match body.api_key.as_deref().map(str::trim) {
         None => None,
@@ -2867,6 +2973,35 @@ fn default_member_weight() -> i32 {
     1
 }
 
+/// The 409 for a name the gateway holds in one namespace across every org.
+///
+/// It says only that the name is taken, never where: an org may not learn
+/// what another one calls its routes or providers from the refusal (#1845).
+fn taken_in_deployment(what: &str, name: &str) -> ApiError {
+    ApiError::Conflict(format!(
+        "{what} '{name}' is already in use in this deployment; choose another"
+    ))
+}
+
+/// Refuse any provider that is not in `org_id`.
+///
+/// A route target or group member on another org's provider would spend that
+/// org's credential (#1844). The refusal is the 404 an unknown id gets, so it
+/// does not confirm that the provider exists somewhere else.
+async fn require_providers_in_org(
+    state: &ControlState,
+    org_id: Uuid,
+    provider_ids: &[Uuid],
+) -> ApiResult<()> {
+    let repo = ProviderRepo(pool(state));
+    for &id in provider_ids {
+        if repo.get(id).await?.org_id != org_id {
+            return Err(ApiError::Core(Error::NotFound(format!("provider {id}"))));
+        }
+    }
+    Ok(())
+}
+
 fn to_member_tuples(members: &[GroupMemberInput]) -> Vec<(Uuid, Option<String>, i32)> {
     members
         .iter()
@@ -2955,6 +3090,11 @@ async fn create_provider_group(
     // a readonly config group with this slug shadows any DB row — refuse early
     require_group_not_config_owned(&state, &slug)?;
     let repo = ProviderGroupRepo(pool(&state));
+    if repo.slug_in_use(&slug, None).await? {
+        return Err(taken_in_deployment("provider group slug", &slug));
+    }
+    let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
+    require_providers_in_org(&state, org_id, &member_providers).await?;
     let group = repo
         .create(org_id, &body.name, &slug, &body.strategy)
         .await?;
@@ -3010,6 +3150,15 @@ async fn update_provider_group(
     }
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
+    if let Some(slug) = slug_change.as_deref() {
+        if repo.slug_in_use(slug, Some(id)).await? {
+            return Err(taken_in_deployment("provider group slug", slug));
+        }
+    }
+    if let Some(members) = &body.members {
+        let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
+        require_providers_in_org(&state, existing.org_id, &member_providers).await?;
+    }
     let group = repo
         .update(
             id,
@@ -3133,6 +3282,9 @@ async fn create_route(
         return Err(ApiError::Core(Error::Config(format!(
             "strategy must be one of {STRATEGIES:?}"
         ))));
+    }
+    if RouteRepo(pool(&state)).model_in_use(&body.model).await? {
+        return Err(taken_in_deployment("route name", &body.model));
     }
     let row = RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
@@ -3492,6 +3644,9 @@ async fn create_route_target(
     let org_id = authorize_route(&state, &principal, route_id, cap!("route", Update)).await?;
     if body.weight <= 0 {
         return Err(ApiError::Core(Error::Config("weight must be > 0".into())));
+    }
+    if let Some(org_id) = org_id {
+        require_providers_in_org(&state, org_id, &[body.provider_id]).await?;
     }
     let row = RouteTargetRepo(pool(&state))
         .create(
@@ -4279,14 +4434,28 @@ async fn list_users(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<User>>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("user", Read),
-    )
-    .await?;
-    Ok(Json(UserRepo(pool(&state)).list_in_org(org_id).await?))
+    let users = UserRepo(pool(&state)).list_in_org(org_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("user", Read)).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(Json(users));
+    }
+    // below the org: the people holding a role inside the teams and projects
+    // the caller reads, so a team admin sees their own team (#1850)
+    require_reach(&state, &filter, org_id).await?;
+    let teams_of = project_teams(&state, org_id).await?;
+    let visible: HashSet<Uuid> = MembershipRepo(pool(&state))
+        .list_in_org(org_id)
+        .await?
+        .into_iter()
+        .filter(|m| filter.allows(row_chain(org_id, m.team_id, m.project_id, &teams_of)))
+        .map(|m| m.user_id)
+        .collect();
+    Ok(Json(
+        users
+            .into_iter()
+            .filter(|user| visible.contains(&user.id))
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -4408,25 +4577,20 @@ async fn update_user(
         )
         .await?;
 
+    let mut detail = serde_json::json!({"email": user.email, "deactivated": body.deactivated});
     if let Some(deactivated) = body.deactivated {
         user = UserRepo(pool).set_deactivated(id, deactivated).await?;
         if deactivated {
             // cut existing access immediately, not just at token expiry
             SessionRepo(pool).delete_for_user(id).await?;
         }
+        // the gateways stop, or resume, serving the keys the account minted
+        // for itself (#1841), and the audit row says how many
+        detail["personal_keys"] = VirtualKeyRepo(pool).count_personal(id).await?.into();
     }
 
     // global account edit spans orgs, so it's logged unscoped
-    log_audit(
-        &state,
-        &principal,
-        None,
-        "user.update",
-        "user",
-        id,
-        serde_json::json!({"email": user.email, "deactivated": body.deactivated}),
-    )
-    .await;
+    log_audit(&state, &principal, None, "user.update", "user", id, detail).await;
     Ok(Json(user))
 }
 
@@ -4436,18 +4600,39 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("user", Delete))?;
-    // memberships and sessions cascade on the users fk (on delete cascade)
+    // memberships and sessions cascade on the users fk (on delete cascade), and
+    // a trigger disables the keys the account minted for itself rather than
+    // letting the fk orphan them into shared keys (#1841)
+    let personal_keys = VirtualKeyRepo(pool(&state)).count_personal(id).await?;
+    // read before the memberships go with the account: the deletion is written
+    // once per org it belonged to, since afterwards nothing ties an org-less
+    // row back to those orgs' audit logs (#1854)
+    let orgs: HashSet<Uuid> = MembershipRepo(pool(&state))
+        .ancestors_for_user(id)
+        .await?
+        .into_iter()
+        .filter_map(|(_membership, org, _team)| org)
+        .collect();
     UserRepo(pool(&state)).delete(id).await?;
-    log_audit(
-        &state,
-        &principal,
-        None,
-        "user.delete",
-        "user",
-        id,
-        serde_json::json!({}),
-    )
-    .await;
+    let detail = serde_json::json!({"personal_keys": personal_keys});
+    // an account that belonged to no org still gets its row, with none
+    let scopes: Vec<Option<Uuid>> = if orgs.is_empty() {
+        vec![None]
+    } else {
+        orgs.into_iter().map(Some).collect()
+    };
+    for org in scopes {
+        log_audit(
+            &state,
+            &principal,
+            org,
+            "user.delete",
+            "user",
+            id,
+            detail.clone(),
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4456,15 +4641,20 @@ async fn list_memberships(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Membership>>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("membership", Read),
-    )
-    .await?;
+    let memberships = MembershipRepo(pool(&state)).list_in_org(org_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("membership", Read)).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(Json(memberships));
+    }
+    // below the org: the memberships inside the teams and projects the caller
+    // reads, which is what a team admin needs to see and remove (#1850)
+    require_reach(&state, &filter, org_id).await?;
+    let teams_of = project_teams(&state, org_id).await?;
     Ok(Json(
-        MembershipRepo(pool(&state)).list_in_org(org_id).await?,
+        memberships
+            .into_iter()
+            .filter(|m| filter.allows(row_chain(org_id, m.team_id, m.project_id, &teams_of)))
+            .collect(),
     ))
 }
 

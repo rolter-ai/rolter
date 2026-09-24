@@ -104,6 +104,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }

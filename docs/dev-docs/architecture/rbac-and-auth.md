@@ -28,10 +28,14 @@ re-implements a check inline:
 
 `authorize_route` checks, in order:
 
-1. **visibility** — `advanced.visibility.allowed_team_ids` / `allowed_key_ids`
-   (`model_visible_to`); refused as `model_not_allowed`. It runs first so a
-   hidden route never reveals whether the other gates would also have refused.
-   A request with no key at all is refused by any non-empty visibility list.
+1. **tenancy and visibility** (`model_visible_to`); refused as
+   `model_not_allowed`. It runs first so a hidden route never reveals whether
+   the other gates would also have refused. In order: the route must belong to
+   the key's own org (see [One org never reaches another](#one-org-never-reaches-another-1844-1845));
+   `advanced.visibility.project_only` narrows it to keys minted in the route's
+   own project; and `advanced.visibility.allowed_team_ids` / `allowed_key_ids`
+   narrow it to the teams and keys they list. A request with no key at all is
+   refused by any non-empty visibility list.
 2. **route policy** — the access-profile policy of the key's creator
    (`KeyMeta::route_permitted`, #791); refused as `route_not_allowed`.
 3. **provider allow-list** — at least one target on the route (classic pool or
@@ -96,6 +100,51 @@ through the gateway; recreating the route restores access. HTTP regressions:
 A new endpoint that resolves a route must call both gates. Budgets, rate limits
 and metering for Realtime sessions are tracked separately in #1396.
 
+### One org never reaches another (#1844, #1845)
+
+Routes, providers and provider groups live in the store under an org, and a
+route under a project as well. The snapshot carries that as `tenancy`
+(`rolter_core::Tenancy`) on every `ModelRoute`, `ProviderConfig` and
+`ProviderGroupConfig` it loads from the store; rows from a gateway-only config
+file carry none. `Tenancy::admits` decides whether a key may use a row:
+
+| row                            | key minted in the store (has an org) | key from the gateway's config file (no org) |
+| ------------------------------ | ------------------------------------ | ------------------------------------------- |
+| no `tenancy` (config file)     | admitted                             | admitted                                    |
+| `tenancy` of the key's own org | admitted                             | admitted                                    |
+| `tenancy` of another org       | refused                              | admitted                                    |
+
+The check is the first thing `model_visible_to` does, so every way of
+addressing a model passes through it: a named route; `provider-slug/model`,
+whose synthetic route takes the provider's tenancy; and `group-slug/model`,
+whose synthetic route takes the group's. `GET /v1/models` lists providers,
+routes and groups through the same rule, so a key neither lists nor calls
+another org's rows. Before #1844 any key could address any org's provider by
+slug and spend that org's credential.
+
+`advanced.visibility.project_only` narrows a route further, to keys minted in
+the project the route lives in. It is off by default — a route is visible to
+its whole org — and an admin turns it on as **This project** under the model's
+**Access & permissions**. A key from the gateway's config file is not narrowed.
+
+The write path keeps the snapshot inside that rule:
+
+- A route target or a provider-group member must name a provider in the route's
+  (or group's) own org. Another org's provider id gets the `404` an unknown id
+  gets, so the refusal does not confirm that the provider exists. The snapshot
+  loader also drops, with a warning, any cross-org target or member written
+  before the guard existed, rather than serve it.
+- Route names, provider names and slugs, and provider-group slugs share one
+  namespace across the whole deployment, because the gateway indexes them that
+  way and `Config::validate` refuses a snapshot holding a duplicate — which
+  would stop config propagation for every org at once. Creating one that another
+  org already holds is a `409` ("… is already in use in this deployment; choose
+  another") that never says which org holds it, and `rolter-seed --import`
+  refuses the same collisions. Per-org namespaces are #1857.
+
+The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
+along with the credentials.
+
 ### Empty key sets
 
 An empty effective key set does **not** mean "auth disabled" on a managed
@@ -127,6 +176,33 @@ equally to the admin (`/api/v1/projects/{id}/virtual-keys`) and self-service
 
 Rotation replaces a secret without renewing the decision: the fresh key inherits
 the old one's `expires_at`, and its `purpose`.
+
+### Personal keys follow their creator (#1841)
+
+A key minted through the self-service routes (`/api/v1/me/...`) records its
+creator in `virtual_keys.created_by`; a key an admin mints for a project
+(`/api/v1/projects/{id}/virtual-keys`) records none. `load_virtual_keys` serves
+a personal key only while its creator:
+
+- is active (`users.deactivated_at` is null), and
+- still holds a role that reaches the key's project — a membership at the
+  project, its team or its org, or an access-profile role there, assigned to
+  them or to a team they belong to — or is a superadmin.
+
+Deactivating a leaver, through SCIM or `PUT /api/v1/users/{id}`, or removing
+their last such role therefore takes their keys off every gateway at the next
+snapshot. Reactivating them brings the same keys back, since nothing about the
+keys changed. A shared key is the project's and never depends on who minted it,
+so offboarding cannot take an application down.
+
+Migration `0075` makes this propagate. The snapshot now reads `users` and
+`access_profile_roles`, so both carry a `bump_config_version()` trigger (on
+`users`, only for `deactivated_at` and `is_superadmin`). Deleting the account
+disables its personal keys in the same statement, through a `before delete`
+trigger: `created_by` is `on delete set null`, which would otherwise turn them
+into shared keys, served without the access-profile policy that followed their
+owner. The audit row for a deactivation, reactivation or deletion records
+`personal_keys`, the number of keys it suspended, restored or disabled.
 
 ### The playground key is scoped by the server
 
@@ -214,6 +290,59 @@ Listing the pricing catalog (`GET /api/v1/model-prices`) and the effective model
 
 Every cell in the table is now backed by the guard.
 
+### Listings answer with what the caller reaches (#1846, #1850)
+
+A list endpoint guarded at its parent scope used to refuse the whole list to
+anyone without a role at that parent, so a team or project member could not
+find their own team or project, and a team admin could not see the people in
+their team. The list endpoints now answer with the rows the caller may read.
+`ScopeFilter` (`rbac.rs`) loads the caller's memberships and access-profile
+grants once and decides each row by the rule `authorize` applies. "A role"
+below means one that meets the endpoint's own floor in `CAPABILITIES` — viewer
+for every list here except invitations, which take admin:
+
+| endpoint                                          | a role at the parent  | a role only below it                                           |
+| ------------------------------------------------- | --------------------- | -------------------------------------------------------------- |
+| `GET /api/v1/orgs`                                | superadmin: every org | the orgs they hold a role anywhere inside                      |
+| `GET /api/v1/orgs/{org_id}/teams`                 | every team            | the teams they hold a role in or inside                        |
+| `GET /api/v1/teams/{team_id}/projects`            | every project         | the projects they hold a role in                               |
+| `GET /api/v1/orgs/{org_id}/projects`              | every project         | the projects they read through a team or project role          |
+| `GET /api/v1/orgs/{org_id}/users`, `/memberships` | everyone              | the people and memberships in the teams and projects they read |
+| `GET /api/v1/orgs/{org_id}/invitations`           | every invitation      | the invitations into the teams and projects they administer    |
+
+A caller with no role anywhere inside the org still gets `403`, and a plain
+signed-in account learns no org it does not belong to. `GET /api/v1/rbac/matrix?org_id=`
+follows the same rule for the org's custom roles: the dashboard reads the table
+to say which role a disabled control needs, so a project member who could not
+read it saw every refusal explained as "your role does not permit this" and an
+empty Roles & Permissions screen. Revoking an invitation
+is authorized at the invitation's own scope (its project, else its team, else
+the org), so a team admin can revoke an invitation they could send.
+`GET /api/v1/auth/me` returns each membership with `scope_org_id` and
+`scope_team_id` filled in, and the dashboard's scope switcher uses them to land
+a project member on their own project instead of the first team of the first
+org.
+
+A handler that starts from the session (`CurrentUser`) and then authorizes
+builds its principal with `Principal::for_user`, which turns `is_superadmin`
+into `Principal::Superadmin`. Before #1847 the self-service key routes built a
+plain user principal, so a superadmin with no membership — the operator seeded
+on a fresh deployment — could not mint a personal key or open the Playground.
+
+### Account events in an org's audit log (#1854)
+
+Account events — sign-ins and failed sign-ins, second-factor changes,
+break-glass resets, account edits and deletions — belong to a person rather
+than an org, so they are written with no org. `GET /api/v1/orgs/{org_id}/audit-log`
+returns them for the org's own people: a row with no org is included when its
+actor, or its target user, holds a role in the org, its teams or its projects.
+`user.delete` is written once per org the account belonged to, because its
+memberships are deleted with it and nothing would tie an org-less row back to
+those orgs afterwards. Rows no org can claim — a superadmin's own sign-ins,
+attempts against an unregistered address — are not readable through the API
+yet; the deployment-wide read is #1858. See
+[security: who reads account events](security.md#who-reads-account-events-1854).
+
 ### Custom roles and access profiles
 
 The three built-in roles are a floor, not the whole rule set. An org may define **custom roles**: a base role plus a set of explicit `(resource, action)` grants drawn from the same `CAPABILITIES` table the guard reads. A grant can only _widen_ — a custom role never takes away what its base role already allows, so the built-in roles keep behaving exactly as before and nothing has to be migrated.
@@ -241,7 +370,7 @@ The shape, the merge rule and the allow/deny matching all live in `rolter_core::
 
 Enforcement keys on the virtual key's `created_by`. A key with no owner — admin-created and config-defined keys — carries no policy, because there is no person whose profiles could apply; restricting those is still the key's own model list.
 
-Because the gateway now reads them, four of these tables **do** carry a `bump_config_version()` trigger: `access_profile_policies`, `access_profile_assignments`, `access_profiles` and `memberships` (a profile assigned to a team reaches every member, so a membership change alters someone's effective policy with no profile row changing). `custom_roles` and `custom_role_grants` still do not and still must not: they decide control-plane authorization, which is evaluated per request against the live database, so there remains nothing to propagate and a trigger would only wake the fleet for a change it cannot observe. See ADR-0023 for why the policy is resolved at snapshot time rather than when a key is minted.
+Because the gateway now reads them, four of these tables **do** carry a `bump_config_version()` trigger: `access_profile_policies`, `access_profile_assignments`, `access_profiles` and `memberships` (a profile assigned to a team reaches every member, so a membership change alters someone's effective policy with no profile row changing). Since #1841 `access_profile_roles` does too, because a profile role is one of the ways a personal key's creator [still reaches the key's project](#personal-keys-follow-their-creator-1841). `custom_roles` and `custom_role_grants` still do not and still must not: they decide control-plane authorization, which is evaluated per request against the live database, so there remains nothing to propagate and a trigger would only wake the fleet for a change it cannot observe. See ADR-0023 for why the policy is resolved at snapshot time rather than when a key is minted.
 
 Changing one is safe by construction:
 

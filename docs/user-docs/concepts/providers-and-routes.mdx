@@ -19,6 +19,10 @@ A provider is an upstream AI service that Rolter can forward requests to. Each p
 | `api_key`      | —        | Inline API key — avoid in committed config files                                  |
 | `egress_proxy` | —        | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
 
+<Note>
+  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Route names, provider names and slugs, and provider group slugs are unique across the whole deployment for now, so a name another organization already uses is refused with `409 Conflict`, without saying which organization holds it. Providers and routes declared in `rolter.toml` belong to the whole deployment.
+</Note>
+
 ### Provider kinds
 
 | Kind                | Use case                                                       |
@@ -67,7 +71,7 @@ A route maps a **public model name** — what your application actually sends in
 
 | Field                | Description                                                                    |
 | -------------------- | ------------------------------------------------------------------------------ |
-| `model`              | Public model name clients request (must be unique across routes)               |
+| `model`              | Public model name clients request (must be unique across the deployment)       |
 | `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))       |
 | `[[routes.targets]]` | One or more upstream targets to balance across                                 |
 | `targets[].provider` | Name of a declared provider                                                    |
@@ -139,20 +143,34 @@ extra upstream headers, and catalog visibility. In the dashboard these are the
 "Limits & network", "Custom request headers" and "Access & permissions"
 sections of a model's sheet, and saving the sheet writes them back to the route.
 
-| Field                                                                  | Notes                                                                                                                                |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `base_url`                                                             | Absolute `http(s)` URL; overrides the provider endpoint for this model only                                                          |
-| `limits.rpm` / `limits.tpm` / `limits.concurrency`                     | Per-model ceilings; each is `1`–`10000000`. Leave blank to inherit the gateway and provider settings                                 |
-| `limits.timeout_secs` / `limits.retries`                               | Whole seconds and whole attempts. The dashboard's timeout field is in milliseconds and rounds to the nearest second, never below one |
-| `limits.context_window` / `limits.output_tokens`                       | Advertised model geometry, same `1`–`10000000` range                                                                                 |
-| `headers` / `locked_headers`                                           | Extra request headers, and which of them a caller may not replace. Credentials belong in the provider, not here                      |
-| `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                |
-| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                     |
+| Field                                                                  | Notes                                                                                                                                   |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_url`                                                             | Absolute `http(s)` URL; overrides the provider endpoint for this model only                                                             |
+| `limits.rpm` / `limits.tpm` / `limits.concurrency`                     | Per-model ceilings; each is `1`–`10000000`. Leave blank to inherit the gateway and provider settings                                    |
+| `limits.timeout_secs` / `limits.retries`                               | Whole seconds and whole attempts. The dashboard's timeout field is in milliseconds and rounds to the nearest second, never below one    |
+| `limits.context_window` / `limits.output_tokens`                       | Advertised model geometry, same `1`–`10000000` range                                                                                    |
+| `headers` / `locked_headers`                                           | Extra request headers, and which of them a caller may not replace. Credentials belong in the provider, not here                         |
+| `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                   |
+| `visibility.project_only`                                              | `true` serves the model only to keys minted in the route's own project. Omitted (the default), every key in the organization may use it |
+| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                        |
 
-The gateway enforces `allowed_team_ids` and `allowed_key_ids` on every endpoint
-that names a model, including audio uploads and Realtime sessions; a key outside
-the lists gets `403` with code `model_not_allowed`. `allowed_user_ids` and
-`minimum_role` apply in the dashboard, since a virtual key carries no user. See
+A route is only ever served to keys of the organization it belongs to — a key
+from another organization gets `403` with code `model_not_allowed`, and does not
+see the model in `GET /v1/models`. Within the organization, the sheet's
+**Access & permissions → Visibility** control narrows it further:
+
+- **Whole organization** (the default) — any key in the organization.
+- **This project** — only keys minted in the project the route lives in
+  (`visibility.project_only`).
+- **Restricted** — only the teams, virtual keys and users you list.
+
+The gateway enforces the organization boundary, `project_only`,
+`allowed_team_ids` and `allowed_key_ids` on every endpoint that names a model,
+including audio uploads and Realtime sessions; a key outside them gets `403`
+with code `model_not_allowed`. `allowed_user_ids` and `minimum_role` apply in the
+dashboard, since a virtual key carries no user. Keys defined in the gateway's
+own config file belong to the operator rather than to an organization and are
+not narrowed. See
 [the same checks on every endpoint](/security/rbac#the-same-checks-on-every-endpoint).
 
 The control plane validates the whole block before storing it and refuses the

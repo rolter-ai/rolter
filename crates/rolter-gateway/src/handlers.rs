@@ -182,9 +182,18 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // route happens to mention (#1647). owned_by names the provider so a client
     // can group by it. sorted + deduped for a stable listing, and filtered by
     // the same key allow-list
+    let key_org = vk.as_ref().map_or("", |vk| vk.org_id.as_str());
+    let admitted =
+        |tenancy: Option<&rolter_core::Tenancy>| rolter_core::Tenancy::admits(tenancy, key_org);
+    // another org's providers are neither addressable nor listed (#1844)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
+        .filter(|(_, name)| {
+            snap.providers
+                .get(name.as_str())
+                .is_none_or(|provider| admitted(provider.tenancy.as_ref()))
+        })
         .map(|(slug, name)| (name.as_str(), slug.as_str()))
         .collect();
     // provider name -> upstream models it serves, reused to expand group ids
@@ -192,6 +201,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         std::collections::HashMap::new();
     for entry in snap.routes.values() {
         let route = &entry.route;
+        if !admitted(route.tenancy.as_ref()) {
+            continue;
+        }
         let targets = route
             .targets
             .iter()
@@ -242,6 +254,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut grouped: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
     for (slug, group) in &snap.groups_by_slug {
+        if !admitted(group.tenancy.as_ref()) {
+            continue;
+        }
         for member in &group.members {
             let models: Vec<String> = match &member.model {
                 Some(m) => vec![m.clone()],
@@ -390,7 +405,23 @@ pub(crate) fn authorize_route(
 /// request path. User restrictions remain a control-plane authorization
 /// concern because a virtual key intentionally carries no user identity.
 pub(crate) fn model_visible_to(key: Option<&KeyMeta>, entry: &crate::state::RouteEntry) -> bool {
-    let visibility = &entry.route.advanced.visibility;
+    let route = &entry.route;
+    // another org's route is never served, whatever its lists say: its targets
+    // spend that org's provider credentials (#1844)
+    if !rolter_core::Tenancy::admits(route.tenancy.as_ref(), key.map_or("", |key| &key.org_id)) {
+        return false;
+    }
+    let visibility = &route.advanced.visibility;
+    // narrowed by its admin to the route's own project. A key with no org is
+    // the operator's, from the gateway's own config, and is not narrowed
+    if visibility.project_only {
+        let project = route.tenancy.as_ref().and_then(|t| t.project_id.as_deref());
+        if let (Some(key), Some(project)) = (key, project) {
+            if !key.org_id.is_empty() && key.project_id != project {
+                return false;
+            }
+        }
+    }
     if visibility.allowed_team_ids.is_empty()
         && visibility.allowed_key_ids.is_empty()
         && visibility.allowed_user_ids.is_empty()
@@ -4171,6 +4202,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         config.routes.push(ModelRoute {
             model: "claude".to_string(),
@@ -4185,6 +4217,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         config.virtual_keys.push(VirtualKeyConfig {
             key: "sk-gpt-only".to_string(),
@@ -4406,6 +4439,7 @@ mod tests {
                 model: Some("gpt-4o".to_string()),
                 weight: 1,
             }],
+            tenancy: None,
         });
         config
     }
@@ -4493,6 +4527,7 @@ mod tests {
                     model: None,
                     weight: 1,
                 }],
+                tenancy: None,
             });
         let state = AppState::new(&config);
         state
@@ -4779,6 +4814,7 @@ mod tests {
                     },
                 ],
             }],
+            tenancy: None,
         };
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
@@ -4840,6 +4876,7 @@ mod tests {
                     }],
                 },
             ],
+            tenancy: None,
         });
         let snap = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
         assert_eq!(snap.routes["ab"].variant_balancers.len(), 2);
@@ -4867,6 +4904,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4919,6 +4957,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4960,6 +4999,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5004,6 +5044,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5048,6 +5089,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5147,6 +5189,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5199,6 +5242,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5273,6 +5317,96 @@ mod tests {
             }),
             entry
         ));
+    }
+
+    fn key_in(org: &str, project: &str) -> KeyMeta {
+        KeyMeta {
+            org_id: org.to_string(),
+            project_id: project.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn owned_by(org: &str, project: Option<&str>) -> Option<rolter_core::Tenancy> {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: project.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn a_route_is_served_to_its_whole_org_and_to_no_other() {
+        let mut config = config_with_keys();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+
+        // org-wide by default: every project of the owning org
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a2")), entry));
+        // another org never, and it is refused before any policy is consulted
+        assert_eq!(
+            authorize_route(Some(&key_in("org-b", "proj-b1")), entry),
+            Err(AccessDenial::NotVisible)
+        );
+        // a key from the gateway's own config file has no org: the operator's
+        assert!(model_visible_to(Some(&key_in("", "")), entry));
+        // a route with no tenancy (config file) belongs to the deployment
+        let global = snapshot.routes.get("claude").unwrap();
+        assert!(model_visible_to(Some(&key_in("org-b", "proj-b1")), global));
+    }
+
+    #[test]
+    fn a_project_only_route_is_served_to_its_own_project() {
+        let mut config = config_with_keys();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        config.routes[0].advanced.visibility.project_only = true;
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
+        assert!(!model_visible_to(Some(&key_in("org-a", "proj-a2")), entry));
+        assert!(!model_visible_to(Some(&key_in("org-b", "proj-a1")), entry));
+        assert!(model_visible_to(Some(&key_in("", "")), entry));
+    }
+
+    #[test]
+    fn provider_and_group_addresses_carry_their_owners_org() {
+        let mut config = config_with_keys();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "edge".to_string(),
+            slug: Some("edge".to_string()),
+            api_base: "http://127.0.0.1:9".to_string(),
+            tenancy: owned_by("org-a", None),
+            ..Default::default()
+        });
+        config
+            .provider_groups
+            .push(rolter_core::ProviderGroupConfig {
+                name: "pool".to_string(),
+                slug: Some("pool".to_string()),
+                strategy: BalancingStrategy::RoundRobin,
+                members: vec![rolter_core::GroupMember {
+                    provider: "edge".to_string(),
+                    model: None,
+                    weight: 1,
+                }],
+                tenancy: owned_by("org-a", None),
+            });
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        for address in ["edge/gpt-4o", "pool/gpt-4o"] {
+            let entry = snapshot.resolve_pinned(address).unwrap();
+            assert!(
+                authorize_route(Some(&key_in("org-a", "proj-a1")), &entry).is_ok(),
+                "{address}"
+            );
+            // another org's key reaches neither the provider nor the group (#1844)
+            assert_eq!(
+                authorize_route(Some(&key_in("org-b", "proj-b1")), &entry),
+                Err(AccessDenial::NotVisible),
+                "{address}"
+            );
+        }
     }
 
     #[test]
