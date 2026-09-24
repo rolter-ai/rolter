@@ -178,3 +178,19 @@ The board conventions are in [issue tracking](issue-tracking.md).
 
 If an operator action produces no useful span in SigNoz, that is an
 observability gap and worth its own issue too.
+
+### Walking it as someone else
+
+"Do operator work" has a script now: the [user journeys](../product/user-journeys.md)
+walk each kind of person — org admin, team lead, engineer, service, FinOps,
+SecOps, DevOps, viewer — through their goal, step by step, with the status of
+every step and the issue behind every gap. They sign in as persona accounts,
+which one command creates on this stack:
+
+```bash
+just dogfood-personas        # or ./integration/dogfood/personas.sh
+```
+
+It is idempotent and prints the roster: one account per persona, each holding
+exactly the role and scope its script assumes, all sharing the dogfood password
+from `creds.env`.

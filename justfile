@@ -280,6 +280,10 @@ dogfood-watch minutes="30":
 dogfood-sheet:
     ./integration/dogfood/sheet.sh
 
+# create one account per user-journey persona (docs/dev-docs/product/)
+dogfood-personas:
+    ./integration/dogfood/personas.sh
+
 # mint a gateway virtual key and remember it for the sheet
 dogfood-key:
     #!/usr/bin/env bash
