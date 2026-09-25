@@ -138,7 +138,14 @@ impl From<rolter_core::Error> for ScimError {
             rolter_core::Error::NotFound(what) => {
                 Self::new(StatusCode::NOT_FOUND, None, what.to_string())
             }
-            other => Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, other.to_string()),
+            other => {
+                tracing::warn!(error = %other, "internal scim error");
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    None,
+                    "internal server error",
+                )
+            }
         }
     }
 }
@@ -725,11 +732,14 @@ impl From<ApiError> for ScimError {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
             ApiError::Core(err) => err.into(),
-            other => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                None,
-                format!("{other:?}"),
-            ),
+            other => {
+                tracing::warn!(error = ?other, "internal scim error from api error");
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    None,
+                    "internal server error",
+                )
+            }
         }
     }
 }
@@ -873,5 +883,20 @@ mod tests {
             active: None,
         };
         assert_eq!(unkeyed.email(), None);
+    }
+
+    #[test]
+    fn internal_store_errors_are_redacted_in_scim_error() {
+        let sensitive = "postgres connection failed at postgres://user:pass@ch:5432/db";
+        let err = rolter_core::Error::Store(sensitive.to_string());
+        let scim_err: ScimError = err.into();
+        assert_eq!(scim_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(scim_err.detail, "internal server error");
+        assert!(!scim_err.detail.contains(sensitive));
+
+        let api_err = ApiError::TooManyAttempts(std::time::Duration::from_secs(30));
+        let scim_err2: ScimError = api_err.into();
+        assert_eq!(scim_err2.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(scim_err2.detail, "internal server error");
     }
 }
