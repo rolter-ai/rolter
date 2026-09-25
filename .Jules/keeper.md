@@ -13,3 +13,8 @@
 
 **Learning:** Configuration fields on `ServerConfig` in `crates/rolter-core/src/config.rs` (`max_body_bytes`, `require_auth`) can quietly drift from `docs/user-docs/configuration/config-file.mdx`.
 **Action:** Guard `ServerConfig` documentation completeness using `all_server_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-09-25 - Runtime Environment Variables Drifting from Reference Docs
+
+**Learning:** Environment variables read across Rust crates (via `std::env::var` or `std::env::var_os`) can drift from `docs/user-docs/configuration/environment-variables.mdx` if the drift guard only checks `clap` `env = "..."` attributes.
+**Action:** Guard all runtime `ROLTER_` environment variable documentation completeness using `runtime_env_vars()` in `crates/rolter/tests/env_var_names.rs`.
