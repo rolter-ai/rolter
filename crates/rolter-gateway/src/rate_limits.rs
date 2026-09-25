@@ -23,6 +23,7 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::budgets::ScopeIds;
+use crate::metrics::{Metrics, RedisConsumer};
 use crate::redis_conn::ReconnectingRedis;
 use chrono::Utc;
 use rolter_core::{BudgetScope, RateLimitConfig};
@@ -170,12 +171,22 @@ impl RateLimiter {
 
     /// Build a limiter against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match ReconnectingRedis::new(redis_url, "rate limits") {
+        match ReconnectingRedis::new(redis_url, RedisConsumer::RateLimits.label()) {
             Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
                 tracing::warn!(error = %err, "invalid redis url; rate limiting disabled");
                 Self::disabled()
             }
+        }
+    }
+
+    /// Report this limiter's Redis connection, and the admissions it lets
+    /// through without Redis, on `/metrics`; and connect now rather than on
+    /// the first limited request (#1772). Does nothing when disabled.
+    pub fn watch(&self, metrics: &Metrics) {
+        if let Some(redis) = &self.redis {
+            metrics.watch_redis(RedisConsumer::RateLimits, redis.stats().clone());
+            redis.warm_up();
         }
     }
 
@@ -208,7 +219,11 @@ impl RateLimiter {
         if applicable.is_empty() {
             return None;
         }
-        let mut conn = redis.get().await?;
+        let Some(mut conn) = redis.get().await else {
+            // unchecked: the request is admitted as if under every limit (#1772)
+            redis.stats().on_fail_open();
+            return None;
+        };
         // the script is safe to replay on a fresh connection when the first
         // one turned out dead: see the note on `ADMIT`
         conn.replay_writes();
@@ -231,6 +246,7 @@ impl RateLimiter {
             Ok(verdict) => verdict,
             Err(err) => {
                 tracing::warn!(error = %err, "rate-limit admission failed; failing open");
+                redis.stats().on_fail_open();
                 return None;
             }
         };

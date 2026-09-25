@@ -1978,6 +1978,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             started,
             &trace_headers,
             vk.as_ref(),
+            &mut cancel,
         )
         .await;
         (
@@ -2051,6 +2052,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             };
             last_provider = target.provider.clone();
             last_target = target.model.clone().unwrap_or_else(|| model.clone());
+            // a caller who leaves from here on left this target, and the row
+            // says so (#1816)
+            cancel.attribute(&last_provider, &last_target, "");
             // weighted pick across the provider's key pool, skipping keys
             // parked on a cooldown (single-key providers yield their one key)
             let multi_key = provider.api_keys.len() > 1;
@@ -2491,10 +2495,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                 genai_span.clone(),
                             );
                         }
-                        Err(err) => {
-                            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-                            return error_json(StatusCode::BAD_GATEWAY, &err.to_string());
-                        }
+                        Err(err) => return body_read_failed(&state.log, log, started, &err),
                     }
                 }
             }
@@ -2786,6 +2787,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         };
         last_provider = target.provider.clone();
         last_target = target.model.clone().unwrap_or_else(|| model.clone());
+        // see the chat path: an abandoned upload names the target it left
+        cancel.attribute(&last_provider, &last_target, "");
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
         let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
@@ -3097,6 +3100,7 @@ async fn forward_variants(
     started: Instant,
     trace_headers: &[(&str, &str)],
     key_meta: Option<&KeyMeta>,
+    cancel: &mut crate::cancel::CancelGuard,
 ) -> ForwardOutcome {
     let route = &entry.route;
     let retry = &snap.retry;
@@ -3175,6 +3179,8 @@ async fn forward_variants(
         out.variant = v.name.clone();
         out.last_provider = target.provider.clone();
         out.last_target = target.model.clone().unwrap_or_else(|| model.to_string());
+        // see the classic path: an abandoned request names the target it left
+        cancel.attribute(&out.last_provider, &out.last_target, &out.variant);
 
         // merge variant params over route params for this candidate's body
         let mut injected = parsed.clone();
@@ -3431,6 +3437,30 @@ fn retry_delay_ms(
     cfg.backoff_ms(attempt, jitter(started))
 }
 
+/// The upstream sent its status line and then failed to deliver the body this
+/// gateway was buffering: a reset, a truncated body, a read timeout (#1775).
+///
+/// The request still happened, and the provider may have generated, and
+/// billed, some or all of an answer nobody received. So it is logged like any
+/// other upstream failure — one row, counted against its target by the passive
+/// health funnel — with its usage marked unknown rather than zero, because
+/// what the provider charged is what the lost body would have said.
+fn body_read_failed(
+    sink: &crate::logging::LogSink,
+    mut log: RequestLog,
+    started: Instant,
+    err: &reqwest::Error,
+) -> Response {
+    let message = format!("upstream response body could not be read: {err}");
+    log.status = StatusCode::BAD_GATEWAY.as_u16();
+    log.latency_ms = started.elapsed().as_millis() as u32;
+    log.error = message.clone();
+    log.usage_unknown = 1;
+    sink.metrics().upstream_errors_total.fetch_add(1, Relaxed);
+    sink.log(log);
+    error_json(StatusCode::BAD_GATEWAY, &message)
+}
+
 /// Convert an upstream response into a streaming axum response, teeing the body
 /// through [`UsageLoggingStream`] so token usage and latency are logged once the
 /// response has been fully forwarded.
@@ -3523,7 +3553,7 @@ async fn stream_response(
                     genai_span,
                 )
             }
-            Err(err) => error_json(StatusCode::BAD_GATEWAY, &err.to_string()),
+            Err(err) => body_read_failed(&sink, log, started, &err),
         };
     }
     let upstream: std::pin::Pin<

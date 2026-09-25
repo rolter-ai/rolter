@@ -41,6 +41,15 @@ repeatedly, while every budget and dashboard read zero.
    upstream answered successfully without reporting any usage, so its zeros are
    unknown rather than free. This covers every row, not only withheld ones. The
    usual cause is an OpenAI-style stream without `stream_options.include_usage`.
+7. **A body that never arrives is still logged (#1775).** Both buffered paths
+   (the policy branch of `stream_response` and the cacheable miss in `proxy`)
+   read the whole upstream body before answering. When that read fails after a
+   `2xx` status line, `body_read_failed` in `handlers.rs` writes one row: `502`,
+   the read error, `usage_unknown = 1`. It goes through `LogSink::log`, so the
+   target's passive health funnel and `rolter_target_requests_total{outcome="error"}`
+   count it, and `rolter_upstream_errors_total` moves. It used to return a bare
+   `502` with no row, as if the request had never happened. Covered by
+   `withheld_usage.rs` against an upstream that closes a `200` mid-body.
 
 `rolter_withheld_responses_total` counts refusals of both kinds, cache hits
 included.

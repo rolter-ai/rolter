@@ -567,7 +567,9 @@ snapshot reload.
 </ParamField>
 
 <ParamField path="workers" default="8" type="usize">
-  Concurrent upstream requests waiting for response headers for each provider.
+  Concurrent upstream requests waiting for response headers for each provider:
+  a provider with `workers = 8` has up to eight calls in flight, and the next one
+  waits for a worker.
 </ParamField>
 
 <ParamField path="backpressure" default="error" type="drop | block | error">
@@ -587,7 +589,7 @@ backpressure = "error"
 block_timeout_ms = 1000
 ```
 
-Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`.
+Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`. Depth, in-flight calls and the time requests wait for a worker are per-provider series described under [Provider queue](/observability/metrics#provider-queue).
 
 ---
 

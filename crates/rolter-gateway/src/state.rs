@@ -797,6 +797,11 @@ impl AppState {
             Some(url) => ResponseCache::new(url),
             None => ResponseCache::disabled(),
         };
+        // put each redis consumer's connection on `/metrics`, connected from
+        // startup so an idle gateway does not read as disconnected (#1772)
+        budgets.watch(&metrics);
+        rate_limiter.watch(&metrics);
+        response_cache.watch(&metrics);
         Self::assemble(
             config,
             metrics,

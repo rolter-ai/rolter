@@ -222,6 +222,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             rolter_core::telemetry::install_metrics(rolter_core::telemetry::MetricsExport {
                 scalars: move || scalars.scalars_for_export(),
                 labelled_families: metrics::LABELLED_FAMILIES,
+                labelled_gauge_families: metrics::LABELLED_GAUGE_FAMILIES,
                 labelled: move || labelled.labelled_for_export(),
                 latency_buckets_ms: metrics::Metrics::latency_buckets_ms(),
             });
