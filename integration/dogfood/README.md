@@ -200,12 +200,13 @@ Traces survive that — they live in ClickHouse, not in the database it removes.
 The dashboards can always be imported by hand instead: **Dashboards → Import
 JSON** in SigNoz, using the files in `signoz/dashboards/`.
 
-| Dashboard               | What it shows                                                                                |
-| ----------------------- | -------------------------------------------------------------------------------------------- |
-| `rolter · overview`     | request rate, p95 and errors across gateway, control plane and dashboard; slowest operations |
-| `rolter · dashboard UX` | the SPA's own browser tracing: which API calls fail, with which status, on which path        |
+| Dashboard                   | What it shows                                                                                              |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `rolter · overview`         | request rate, p95 and errors across gateway, control plane and dashboard; slowest operations               |
+| `rolter · dashboard UX`     | the SPA's own browser tracing: which API calls fail, with which status, on which path                      |
+| `rolter · gateway capacity` | provider queue wait p95, depth and in-flight calls; Redis connection state and requests admitted unchecked |
 
-Both query `signoz_traces` with ClickHouse SQL rather than the query builder, so
+The first two query `signoz_traces`, and the capacity board queries the gateway's OTLP metrics in `signoz_metrics`. All use ClickHouse SQL rather than the query builder, so
 they survive SigNoz changing the builder's shape between releases. The UX board
 is the one that makes an auth fault obvious: a screen 401ing while every route
 beside it returns 200 shows up as a wall of one status code, which is exactly

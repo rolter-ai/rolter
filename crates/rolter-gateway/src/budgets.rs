@@ -19,6 +19,7 @@ use chrono::Utc;
 use rolter_core::{BudgetConfig, BudgetScope, UnpricedPolicy};
 use rust_decimal::Decimal;
 
+use crate::metrics::{Metrics, RedisConsumer};
 use crate::redis_conn::ReconnectingRedis;
 
 /// Scope identity of a request, taken from its virtual key. An empty string
@@ -91,12 +92,22 @@ impl BudgetEnforcer {
 
     /// Build an enforcer against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match ReconnectingRedis::new(redis_url, "budgets") {
+        match ReconnectingRedis::new(redis_url, RedisConsumer::Budgets.label()) {
             Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
                 tracing::warn!(error = %err, "invalid redis url; budget enforcement disabled");
                 Self::disabled()
             }
+        }
+    }
+
+    /// Report this enforcer's Redis connection, and the budget checks it lets
+    /// through without Redis, on `/metrics`; and connect now rather than on
+    /// the first budgeted request (#1772). Does nothing when disabled.
+    pub fn watch(&self, metrics: &Metrics) {
+        if let Some(redis) = &self.redis {
+            metrics.watch_redis(RedisConsumer::Budgets, redis.stats().clone());
+            redis.warm_up();
         }
     }
 
@@ -112,15 +123,24 @@ impl BudgetEnforcer {
         if applicable.is_empty() {
             return None;
         }
-        let mut conn = redis.get().await?;
+        let Some(mut conn) = redis.get().await else {
+            // unchecked: the request goes on as if within budget (#1772)
+            redis.stats().on_fail_open();
+            return None;
+        };
         let now = Utc::now();
 
         let keys: Vec<String> = applicable.iter().map(|b| spend_key(b, now)).collect();
-        let spents: Vec<Option<String>> = redis::cmd("MGET")
-            .arg(&keys)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or_else(|_| vec![None; applicable.len()]);
+        let spents: Vec<Option<String>> =
+            match redis::cmd("MGET").arg(&keys).query_async(&mut conn).await {
+                Ok(spents) => spents,
+                Err(_) => {
+                    // the counters could not be read, so every budget reads as
+                    // unspent: as good as unchecked
+                    redis.stats().on_fail_open();
+                    vec![None; applicable.len()]
+                }
+            };
         for (budget, spent) in applicable.into_iter().zip(spents) {
             // Redis hands back the counter as a decimal string. Parsing it as
             // `Decimal` rather than `f64` makes this comparison exact at the

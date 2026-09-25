@@ -24,6 +24,16 @@ states what rolter does (#1083).
 Tokens the provider already produced stay on the row. An abandoned stream that
 received a usage frame is real spend; dropping it would under-bill.
 
+The row names the target the caller left (#1816). The guard is armed before a
+target is picked, so each attempt of the forward loop calls
+`CancelGuard::attribute(provider, target, variant)` as it picks one, and a retry
+that fails over moves the row with it. The classic loop, `forward_variants` and
+the multipart loop all do. A request abandoned before any pick keeps an empty
+`provider`, which is how that rarer case stays distinguishable. Without the
+attribution, the slow target that made callers give up was exactly the one
+missing from the logs: a dogfood run logged 17 timed-out requests as
+`provider = ''`.
+
 ## How it is enforced
 
 | Where                      | Mechanism                                                                                                                                                                                                                                                                                                                              |

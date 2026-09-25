@@ -278,15 +278,18 @@ const SNAPSHOT_BYTES_BUCKETS: [f64; 10] = [
 /// types so `rolter-core` needs no dependency on the gateway.
 pub type ScalarMetric = (&'static str, &'static str, &'static str, u64);
 
-/// One series of a labelled counter: `(family name, attributes, value)`.
+/// One series of a labelled counter or gauge: `(family name, attributes,
+/// value)`.
 ///
 /// Separate from [`ScalarMetric`] because the *set of series* is discovered at
-/// runtime — a model, target or variant only exists once traffic has used it —
-/// while the family it belongs to is fixed. The attribute values are owned
-/// because they come from `DashMap` keys that may change under the collection.
+/// runtime — a model, target, variant or provider only exists once traffic has
+/// used it — while the family it belongs to is fixed. The attribute values are
+/// owned because they come from `DashMap` keys that may change under the
+/// collection.
 pub type LabelledMetric = (&'static str, Vec<(&'static str, String)>, u64);
 
-/// A labelled counter family: `(name, help)`.
+/// A labelled counter or gauge family: `(name, help)`. Which of the two it is
+/// follows from the list of [`MetricsExport`] it is declared in.
 ///
 /// Declared up front rather than inferred from the first collection, because at
 /// install time a gateway has served nothing and every family is legitimately
@@ -300,7 +303,10 @@ pub struct MetricsExport<S, L> {
     pub scalars: S,
     /// Fixed set of labelled counter families.
     pub labelled_families: &'static [LabelledFamily],
-    /// Every currently-known series across those families.
+    /// Fixed set of labelled gauge families (#1862): values that go down as
+    /// well as up — a queue that drains, a connection that drops.
+    pub labelled_gauge_families: &'static [LabelledFamily],
+    /// Every currently-known series across both sets of families.
     pub labelled: L,
     /// Explicit histogram bucket boundaries, in milliseconds.
     ///
@@ -331,6 +337,9 @@ pub struct RequestHistograms {
 struct HistogramSet {
     latency: opentelemetry::metrics::Histogram<u64>,
     ttft: opentelemetry::metrics::Histogram<u64>,
+    /// how long a request waited for a provider queue worker (#1862),
+    /// recorded when a worker takes it, through a [`QueueWaitRecorder`]
+    queue_wait: opentelemetry::metrics::Histogram<u64>,
     /// the OTel GenAI *server* metric family (#808).
     ///
     /// The spec splits client and server metrics, and the server family is the
@@ -405,6 +414,56 @@ impl RequestHistograms {
         #[cfg(not(feature = "otlp"))]
         let active = false;
         active
+    }
+
+    /// A recorder for the queue waits of `provider` (#1862). Inert when metrics
+    /// export is off.
+    ///
+    /// Made once per provider, so the `provider` attribute is built once and
+    /// recording a wait allocates nothing.
+    #[must_use]
+    pub fn queue_wait(&self, provider: &str) -> QueueWaitRecorder {
+        #[cfg(feature = "otlp")]
+        if let Some(inner) = &self.inner {
+            return QueueWaitRecorder {
+                inner: Some((
+                    inner.queue_wait.clone(),
+                    [opentelemetry::KeyValue::new(
+                        "provider",
+                        provider.to_string(),
+                    )],
+                )),
+            };
+        }
+        let _ = provider;
+        QueueWaitRecorder::default()
+    }
+}
+
+/// Records one provider's queue waits into the OTLP histogram (#1862).
+///
+/// The Prometheus histogram of the same waits is pre-bucketed atomics, which
+/// OTel cannot read after the fact, so each wait is also recorded here at the
+/// moment a worker takes the job. A default-constructed value records nothing,
+/// which is what every deployment without OTLP holds.
+#[derive(Clone, Default)]
+pub struct QueueWaitRecorder {
+    #[cfg(feature = "otlp")]
+    inner: Option<(
+        opentelemetry::metrics::Histogram<u64>,
+        [opentelemetry::KeyValue; 1],
+    )>,
+}
+
+impl QueueWaitRecorder {
+    /// Record one wait of `wait_ms` milliseconds.
+    pub fn record(&self, wait_ms: u32) {
+        #[cfg(feature = "otlp")]
+        if let Some((histogram, attributes)) = &self.inner {
+            histogram.record(u64::from(wait_ms), attributes);
+        }
+        #[cfg(not(feature = "otlp"))]
+        let _ = wait_ms;
     }
 }
 
@@ -861,6 +920,7 @@ where
         let MetricsExport {
             scalars: collect,
             labelled_families,
+            labelled_gauge_families,
             labelled,
             latency_buckets_ms,
         } = export;
@@ -905,28 +965,7 @@ where
             }
         }
 
-        // one observable counter per family; the callback emits every series
-        // that family currently holds. registering per-series instead would
-        // freeze the set at install time, when the gateway has served nothing
-        for (family, help) in labelled_families {
-            let pick = labelled.clone();
-            meter
-                .u64_observable_counter(*family)
-                .with_description(*help)
-                .with_callback(move |obs| {
-                    for (name, attrs, value) in pick() {
-                        if name != *family {
-                            continue;
-                        }
-                        let kv: Vec<opentelemetry::KeyValue> = attrs
-                            .into_iter()
-                            .map(|(k, v)| opentelemetry::KeyValue::new(k, v))
-                            .collect();
-                        obs.observe(value, &kv);
-                    }
-                })
-                .build();
-        }
+        register_labelled(&meter, labelled_families, labelled_gauge_families, labelled);
 
         // process-level metrics: when a node degrades the first questions are
         // memory, cpu and file descriptors, and until #809 the gateway answered
@@ -938,48 +977,7 @@ where
         // domain counters cannot distinguish (#834)
         runtime::install(&meter);
 
-        // the GenAI server family is specified in seconds, so the shared
-        // millisecond boundaries are converted rather than redefined — two
-        // views of one measurement must not disagree about where a bucket falls
-        let seconds_buckets: Vec<f64> = latency_buckets_ms.iter().map(|ms| ms / 1000.0).collect();
-
-        // histograms are the one instrument that cannot be observable: OTel
-        // builds them from individual measurements, so the gateway's
-        // pre-bucketed counters cannot be handed over after the fact
-        let histograms = RequestHistograms {
-            inner: Some(std::sync::Arc::new(HistogramSet {
-                latency: meter
-                    .u64_histogram("rolter_request_latency_ms")
-                    .with_description("total request latency in milliseconds")
-                    .with_unit("ms")
-                    .with_boundaries(latency_buckets_ms.clone())
-                    .build(),
-                ttft: meter
-                    .u64_histogram("rolter_request_ttft_ms")
-                    .with_description("time to first token in milliseconds")
-                    .with_unit("ms")
-                    .with_boundaries(latency_buckets_ms)
-                    .build(),
-                server_duration: meter
-                    .f64_histogram("gen_ai.server.request.duration")
-                    .with_description("generative ai server request duration")
-                    .with_unit("s")
-                    .with_boundaries(seconds_buckets.clone())
-                    .build(),
-                server_ttft: meter
-                    .f64_histogram("gen_ai.server.time_to_first_token")
-                    .with_description("time to generate the first token")
-                    .with_unit("s")
-                    .with_boundaries(seconds_buckets.clone())
-                    .build(),
-                server_tpot: meter
-                    .f64_histogram("gen_ai.server.time_per_output_token")
-                    .with_description("time per output token after the first")
-                    .with_unit("s")
-                    .with_boundaries(TOKEN_SECONDS_BUCKETS.to_vec())
-                    .build(),
-            })),
-        };
+        let histograms = request_histograms(&meter, latency_buckets_ms);
 
         Some(MetricsGuard {
             provider: Some(provider),
@@ -991,6 +989,125 @@ where
     {
         let _ = export;
         None
+    }
+}
+
+/// One observable instrument per labelled family; each callback emits every
+/// series its family currently holds. Registering per series instead would
+/// freeze the set at install time, when the gateway has served nothing.
+///
+/// A counter family becomes a monotonic counter and a gauge family a gauge.
+/// The kind matters to the backend: a queue depth exported as a counter would
+/// be drawn as a line that never comes down, and a counter exported as a
+/// gauge would break `rate()`.
+#[cfg(feature = "otlp")]
+fn register_labelled<L>(
+    meter: &opentelemetry::metrics::Meter,
+    counters: &'static [LabelledFamily],
+    gauges: &'static [LabelledFamily],
+    labelled: L,
+) where
+    L: Fn() -> Vec<LabelledMetric> + Send + Sync + Clone + 'static,
+{
+    /// The current series of `family`, as OTel values and attributes.
+    fn observations(
+        all: Vec<LabelledMetric>,
+        family: &'static str,
+    ) -> impl Iterator<Item = (u64, Vec<opentelemetry::KeyValue>)> {
+        all.into_iter()
+            .filter(move |(name, _, _)| *name == family)
+            .map(|(_, attributes, value)| {
+                let attributes = attributes
+                    .into_iter()
+                    .map(|(key, value)| opentelemetry::KeyValue::new(key, value))
+                    .collect();
+                (value, attributes)
+            })
+    }
+
+    for &(family, help) in counters {
+        let pick = labelled.clone();
+        meter
+            .u64_observable_counter(family)
+            .with_description(help)
+            .with_callback(move |observer| {
+                for (value, attributes) in observations(pick(), family) {
+                    observer.observe(value, &attributes);
+                }
+            })
+            .build();
+    }
+    for &(family, help) in gauges {
+        let pick = labelled.clone();
+        meter
+            .u64_observable_gauge(family)
+            .with_description(help)
+            .with_callback(move |observer| {
+                for (value, attributes) in observations(pick(), family) {
+                    observer.observe(value, &attributes);
+                }
+            })
+            .build();
+    }
+}
+
+/// The gateway's request-path histograms, on the Prometheus endpoint's bucket
+/// boundaries.
+///
+/// Histograms are the one instrument that cannot be observable: OTel builds
+/// them from individual measurements, so the gateway's pre-bucketed counters
+/// cannot be handed over after the fact, and the request path records into
+/// these instead.
+#[cfg(feature = "otlp")]
+fn request_histograms(
+    meter: &opentelemetry::metrics::Meter,
+    latency_buckets_ms: Vec<f64>,
+) -> RequestHistograms {
+    // the GenAI server family is specified in seconds, so the shared
+    // millisecond boundaries are converted rather than redefined — two views
+    // of one measurement must not disagree about where a bucket falls
+    let seconds_buckets: Vec<f64> = latency_buckets_ms.iter().map(|ms| ms / 1000.0).collect();
+    RequestHistograms {
+        inner: Some(std::sync::Arc::new(HistogramSet {
+            latency: meter
+                .u64_histogram("rolter_request_latency_ms")
+                .with_description("total request latency in milliseconds")
+                .with_unit("ms")
+                .with_boundaries(latency_buckets_ms.clone())
+                .build(),
+            ttft: meter
+                .u64_histogram("rolter_request_ttft_ms")
+                .with_description("time to first token in milliseconds")
+                .with_unit("ms")
+                .with_boundaries(latency_buckets_ms.clone())
+                .build(),
+            queue_wait: meter
+                .u64_histogram("rolter_provider_queue_wait_ms")
+                .with_description(
+                    "time requests waited for a provider queue worker, in milliseconds",
+                )
+                .with_unit("ms")
+                .with_boundaries(latency_buckets_ms)
+                .build(),
+            server_duration: meter
+                .f64_histogram("gen_ai.server.request.duration")
+                .with_description("generative ai server request duration")
+                .with_unit("s")
+                .with_boundaries(seconds_buckets.clone())
+                .build(),
+            server_ttft: meter
+                .f64_histogram("gen_ai.server.time_to_first_token")
+                .with_description("time to generate the first token")
+                .with_unit("s")
+                .with_boundaries(seconds_buckets)
+                .build(),
+            server_tpot: meter
+                .f64_histogram("gen_ai.server.time_per_output_token")
+                .with_description("time per output token after the first")
+                .with_unit("s")
+                .with_boundaries(TOKEN_SECONDS_BUCKETS.to_vec())
+                .build(),
+        })),
     }
 }
 
@@ -2033,5 +2150,133 @@ mod otlp {
             std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
             assert!(super::try_build_provider().is_none());
         }
+    }
+}
+
+#[cfg(all(test, feature = "otlp"))]
+mod metrics_export_tests {
+    use super::*;
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::data::{
+        AggregatedMetrics, Metric, MetricData, ResourceMetrics,
+    };
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    const COUNTERS: &[LabelledFamily] = &[("test_requests_total", "requests")];
+    const GAUGES: &[LabelledFamily] = &[("test_queue_depth", "requests waiting")];
+
+    /// Register instruments on a meter backed by an in-memory exporter, then
+    /// collect once.
+    fn export(register: impl FnOnce(&opentelemetry::metrics::Meter)) -> Vec<ResourceMetrics> {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        register(&provider.meter("test"));
+        provider.force_flush().unwrap();
+        exporter.get_finished_metrics().unwrap()
+    }
+
+    fn metric<'a>(exported: &'a [ResourceMetrics], name: &str) -> &'a Metric {
+        exported
+            .iter()
+            .flat_map(ResourceMetrics::scope_metrics)
+            .flat_map(|scope| scope.metrics())
+            .find(|metric| metric.name() == name)
+            .unwrap_or_else(|| panic!("{name} was not exported"))
+    }
+
+    fn provider_of<'a>(
+        mut attributes: impl Iterator<Item = &'a opentelemetry::KeyValue>,
+    ) -> String {
+        attributes
+            .find(|kv| kv.key.as_str() == "provider")
+            .map(|kv| kv.value.as_str().into_owned())
+            .expect("a provider attribute")
+    }
+
+    /// A labelled gauge family reaches the backend as a gauge carrying each
+    /// series' attributes (#1862). A queue depth exported as a counter would
+    /// be drawn as a line that never comes down.
+    #[test]
+    fn a_labelled_gauge_family_is_exported_as_a_gauge_per_series() {
+        let series = || {
+            vec![
+                (
+                    "test_requests_total",
+                    vec![("provider", "a".to_string())],
+                    7,
+                ),
+                ("test_queue_depth", vec![("provider", "a".to_string())], 3),
+                ("test_queue_depth", vec![("provider", "b".to_string())], 0),
+            ]
+        };
+        let exported = export(|meter| register_labelled(meter, COUNTERS, GAUGES, series));
+
+        let AggregatedMetrics::U64(MetricData::Gauge(depth)) =
+            metric(&exported, "test_queue_depth").data()
+        else {
+            panic!("the depth family must be a u64 gauge");
+        };
+        let mut points: Vec<(String, u64)> = depth
+            .data_points()
+            .map(|point| (provider_of(point.attributes()), point.value()))
+            .collect();
+        points.sort();
+        assert_eq!(points, vec![("a".to_string(), 3), ("b".to_string(), 0)]);
+
+        let AggregatedMetrics::U64(MetricData::Sum(requests)) =
+            metric(&exported, "test_requests_total").data()
+        else {
+            panic!("the counter family must be a u64 sum");
+        };
+        assert!(requests.is_monotonic());
+        assert_eq!(requests.data_points().count(), 1);
+    }
+
+    /// Queue waits are recorded per provider on the boundaries the Prometheus
+    /// histogram uses, so the two exports of one measurement agree (#1862).
+    #[test]
+    fn queue_waits_are_recorded_per_provider_on_the_shared_boundaries() {
+        let buckets = vec![1.0, 10.0, 100.0];
+        let exported = export(|meter| {
+            let histograms = request_histograms(meter, buckets.clone());
+            let slow = histograms.queue_wait("slow");
+            slow.record(5);
+            slow.record(50);
+            histograms.queue_wait("fast").record(0);
+        });
+
+        let AggregatedMetrics::U64(MetricData::Histogram(waits)) =
+            metric(&exported, "rolter_provider_queue_wait_ms").data()
+        else {
+            panic!("the queue wait must be a u64 histogram");
+        };
+        let mut points: Vec<(String, u64, Vec<f64>, Vec<u64>)> = waits
+            .data_points()
+            .map(|point| {
+                (
+                    provider_of(point.attributes()),
+                    point.count(),
+                    point.bounds().collect(),
+                    point.bucket_counts().collect(),
+                )
+            })
+            .collect();
+        points.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            points[0],
+            ("fast".into(), 1, buckets.clone(), vec![1, 0, 0, 0])
+        );
+        assert_eq!(points[1], ("slow".into(), 2, buckets, vec![0, 1, 1, 0]));
+    }
+
+    /// Without an OTLP endpoint the recorder is inert and costs nothing.
+    #[test]
+    fn a_recorder_from_inert_histograms_records_nothing() {
+        let inert = RequestHistograms::default();
+        assert!(!inert.is_active());
+        inert.queue_wait("any").record(5);
+        QueueWaitRecorder::default().record(5);
     }
 }

@@ -145,25 +145,27 @@ metrics_path = "/internal/metrics"
 
 ### Provider queue
 
-These size `[provider_queue]` (**Settings → Performance Tuning**): `workers` requests per provider are sent upstream at a time, and up to `capacity` more wait for a worker. Each series carries a `provider` label, one per configured provider. The three per-provider series are Prometheus only for now; the OTLP exporter carries labelled counters but not yet labelled gauges.
+These size `[queue]` (**Settings → Performance Tuning**): `workers` requests per provider are sent upstream at a time, and up to `capacity` more wait for a worker. Each series carries a `provider` label, one per configured provider, and all three are exported over OTLP as well.
+
+`workers` is a real bound in both directions: a provider with `workers = 8` has up to eight calls in flight, and a ninth waits. Before 1.0 a provider's workers took turns and sent one request at a time, so if you sized `workers` against latency measured on an earlier build, measure again.
 
 <AccordionGroup>
   <Accordion title="rolter_provider_queue_depth">
-    **Type:** Gauge, per `provider` (Prometheus only)
+    **Type:** Gauge, per `provider`
 
-    Requests waiting for one of the provider's queue workers, sampled when you scrape. A depth that stays above zero means `workers` is the bottleneck for that provider — and latency climbs with it long before `rolter_provider_queue_rejections_total` moves. Reads `0` when queueing is off.
+    Requests waiting for one of the provider's queue workers, sampled when you scrape (or at the OTLP export interval). A burst shorter than the sampling interval can fall between two samples; `rolter_provider_queue_wait_ms` records every wait. A depth that stays above zero means `workers` is the bottleneck for that provider — and latency climbs with it long before `rolter_provider_queue_rejections_total` moves. Reads `0` when queueing is off.
 
   </Accordion>
 
   <Accordion title="rolter_provider_inflight">
-    **Type:** Gauge, per `provider` (Prometheus only)
+    **Type:** Gauge, per `provider`
 
     Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on. A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
 
   </Accordion>
 
   <Accordion title="rolter_provider_queue_wait_ms">
-    **Type:** Histogram, milliseconds, per `provider` (Prometheus only)
+    **Type:** Histogram, milliseconds, per `provider`
 
     How long each request waited for a queue worker, from arriving at the queue to a worker taking it. The same buckets as the latency histograms (1ms → 10s), so `histogram_quantile(0.95, sum by (le, provider) (rate(rolter_provider_queue_wait_ms_bucket[5m])))` sits beside the request latency p95 and shows how much of it is queueing.
 
@@ -173,6 +175,33 @@ These size `[provider_queue]` (**Settings → Performance Tuning**): `workers` r
     **Type:** Counter
 
     Requests refused because a provider's queue was full (`backpressure = "error"` or `"drop"`), and requests that gave up waiting for room with `backpressure = "block"`. Both are the end state the gauges above give you warning of.
+
+  </Accordion>
+</AccordionGroup>
+
+### Redis
+
+Budgets, rate limits and the response cache each keep their own connection to Redis. When Redis cannot be reached, budgets and rate limits **fail open**: requests go through unchecked rather than the gateway going down with the counter store. These series show when that is happening and what it let through. They appear only when the gateway runs with a Redis URL.
+
+<AccordionGroup>
+  <Accordion title="rolter_redis_connected">
+    **Type:** Gauge, per `consumer` (`budgets`, `rate_limits`, `response_cache`)
+
+    `1` while the consumer holds a live connection, `0` once its last connection attempt failed or its connection was lost. Each consumer connects at startup. After that the state is what the consumer's last use found: an idle consumer does not probe, so a gateway with no budgeted traffic can keep reading `0` after Redis is back until the next request uses it. For alerting, pair it with `rolter_fail_open_total`.
+
+  </Accordion>
+
+  <Accordion title="rolter_fail_open_total">
+    **Type:** Counter, per `control` (`budget`, `rate_limit`)
+
+    Requests an admission check let through without consulting Redis because Redis was unavailable. This is the cost exposure of an outage: `increase(rolter_fail_open_total{control="budget"}[1h])` is how many requests spent money no budget checked. Only requests that a budget or rate limit applies to are counted.
+
+  </Accordion>
+
+  <Accordion title="rolter_redis_reconnects_total / rolter_redis_connect_failures_total">
+    **Type:** Counter, per `consumer`
+
+    Connections re-established after one was lost, and connection attempts that failed. Attempts back off exponentially up to 5 seconds during an outage, so the failure count grows by one per window per consumer, not one per request.
 
   </Accordion>
 </AccordionGroup>
@@ -342,13 +371,13 @@ the default.
 
 ### What is exported
 
-| Kind                | Metrics                                                                                                   | How                   |
-| ------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
-| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                           | observable            |
-| Process and runtime | `process.*`, `tokio.runtime.*`                                                                            | observable, OTLP only |
-| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total` | observable            |
-| Not exported yet    | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_provider_queue_wait_ms`                | Prometheus only       |
-| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`                                                     | recorded per request  |
+| Kind                | Metrics                                                                                                                                                                                                     | How                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                                                                                                                             | observable               |
+| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                              | observable, OTLP only    |
+| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
+| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`                                                                                                                         | observable               |
+| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                      | recorded per measurement |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the
 request path, and the SDK reads the same atomics on its own schedule
@@ -357,7 +386,7 @@ nothing but an atomic add.
 
 Histograms are the one exception. OpenTelemetry builds a histogram from
 individual measurements, so rolter's pre-bucketed counters cannot be handed over
-after the fact — the value is recorded when the request completes. That work
+after the fact — each value is recorded when it is measured: a request's latency when it completes, a queue wait when a worker takes the job. That work
 happens only where an OTLP endpoint is configured; without one the recorder is
 inert and allocates nothing.
 

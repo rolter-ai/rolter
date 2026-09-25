@@ -164,6 +164,10 @@ async fn a_caller_that_hangs_up_before_the_answer_is_logged_499_and_never_retrie
         .await;
     assert_eq!(row["model"], "slow-chat");
     assert_eq!(row["error"], "client disconnected");
+    // the row names the target the caller gave up waiting on, which is the
+    // one an operator is looking for when callers time out (#1816)
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
     // a disconnect is the caller's decision, not an upstream failure: burning a
     // second provider on it would double the cost of every abandoned request
     assert_eq!(attempts.load(Ordering::Relaxed), 1);
@@ -176,6 +180,48 @@ async fn a_caller_that_hangs_up_before_the_answer_is_logged_499_and_never_retrie
         0.0,
         "the abandoned request must give its slot back"
     );
+}
+
+/// A route split into variants picks its target in its own loop, and the row
+/// names the variant as well as the target (#1816).
+#[tokio::test]
+async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            axum::Json(json!({"choices": []}))
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(upstream, clickhouse);
+    let route = &mut config.routes[0];
+    route.variants = vec![rolter_core::Variant {
+        name: "canary".into(),
+        weight: 1,
+        targets: std::mem::take(&mut route.targets),
+        params: Default::default(),
+    }];
+    let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
+
+    let hung_up = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await;
+    assert!(hung_up.is_err(), "the client was supposed to give up");
+
+    let row = rows
+        .wait_for("client-disconnect", |row| row["status"] == 499)
+        .await;
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
+    assert_eq!(row["variant"], "canary");
 }
 
 #[tokio::test]

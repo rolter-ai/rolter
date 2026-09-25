@@ -49,6 +49,28 @@ impl CancelGuard {
         }
     }
 
+    /// Name the target the forward loop just picked, so a request abandoned
+    /// while it waits on that upstream is logged against it (#1816).
+    ///
+    /// Called on every attempt: a retry that moves to another target moves the
+    /// row with it. A request abandoned before any pick keeps the empty
+    /// provider it was armed with, which is how that case stays
+    /// distinguishable. The row's strings are rewritten in place, so a
+    /// re-attribution reuses their buffers.
+    pub fn attribute(&mut self, provider: &str, target: &str, variant: &str) {
+        let Some(row) = self.row.as_mut() else {
+            return;
+        };
+        for (slot, value) in [
+            (&mut row.provider, provider),
+            (&mut row.target, target),
+            (&mut row.variant, variant),
+        ] {
+            slot.clear();
+            slot.push_str(value);
+        }
+    }
+
     /// Hand responsibility for the row to a path that logs it itself.
     pub fn disarm(&mut self) {
         self.row = None;
@@ -93,6 +115,45 @@ mod tests {
         let sink = LogSink::disabled(metrics.clone());
         drop(CancelGuard::new(sink, Instant::now(), row()));
         assert_eq!(metrics.client_disconnects_total.load(Relaxed), 1);
+    }
+
+    /// The provider, target and variant an armed guard would log.
+    fn attributed(guard: &CancelGuard) -> (String, String, String) {
+        let row = guard.row.as_ref().expect("still armed");
+        (
+            row.provider.clone(),
+            row.target.clone(),
+            row.variant.clone(),
+        )
+    }
+
+    #[test]
+    fn the_row_follows_the_target_each_attempt_picks() {
+        let metrics = Arc::new(Metrics::default());
+        let mut guard = CancelGuard::new(LogSink::disabled(metrics), Instant::now(), row());
+        // abandoned before any pick: nothing to name, and nothing is invented
+        assert_eq!(attributed(&guard), Default::default());
+
+        guard.attribute("vllm-spot-02", "deepseek-r1", "");
+        assert_eq!(
+            attributed(&guard),
+            ("vllm-spot-02".into(), "deepseek-r1".into(), String::new())
+        );
+        // a retry that fails over moves the row to the new target
+        guard.attribute("vllm-spot-01", "deepseek-r1-distill", "canary");
+        assert_eq!(
+            attributed(&guard),
+            (
+                "vllm-spot-01".into(),
+                "deepseek-r1-distill".into(),
+                "canary".into()
+            )
+        );
+
+        // and a disarmed guard has no row left to attribute
+        guard.disarm();
+        guard.attribute("other", "other", "");
+        assert!(guard.row.is_none());
     }
 
     #[test]

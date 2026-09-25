@@ -195,15 +195,26 @@ impl ProviderQueues {
                 return entry.sender.clone();
             }
         }
-        let sender = spawn_queue(config.clone(), self.forwarder.clone());
-        self.queues.insert(
-            provider.to_string(),
-            QueueEntry {
+        // decided under the entry's lock, so a burst of first calls to a
+        // provider — or of calls straddling a config change — shares one new
+        // queue. Checking and then inserting let each caller in the burst
+        // spawn a queue of its own, and a provider with `workers = 2` took
+        // five calls at once (#1815). Spawning never blocks, so holding the
+        // shard across it is brief
+        let mut entry = self
+            .queues
+            .entry(provider.to_string())
+            .or_insert_with(|| QueueEntry {
                 config: config.clone(),
-                sender: sender.clone(),
-            },
-        );
-        sender
+                sender: spawn_queue(config.clone(), self.forwarder.clone()),
+            });
+        if entry.config != *config {
+            *entry = QueueEntry {
+                config: config.clone(),
+                sender: spawn_queue(config.clone(), self.forwarder.clone()),
+            };
+        }
+        entry.sender.clone()
     }
 
     fn record_rejection(&self, err: QueueError) {
@@ -229,12 +240,26 @@ fn spawn_queue(config: QueueConfig, forwarder: Arc<Forwarder>) -> mpsc::Sender<J
         let receiver = receiver.clone();
         let forwarder = forwarder.clone();
         tokio::spawn(async move {
-            while let Some(job) = { receiver.lock().await.recv().await } {
+            while let Some(job) = next_job(&receiver).await {
                 run_job(&forwarder, job).await;
             }
         });
     }
     sender
+}
+
+/// Take the next job off a receiver the provider's workers share.
+///
+/// The lock is held while this worker waits for a job and released before the
+/// job runs, so each worker carries its own upstream call (#1815). It is a
+/// function of its own because the inline spelling — `while let Some(job) =
+/// receiver.lock().await.recv().await { … }` — keeps the guard alive until the
+/// end of the loop body: under edition 2021 a temporary in the `while let`
+/// scrutinee lives that long. Every worker then held the receiver across its
+/// whole upstream call, and a provider with eight workers served one request
+/// at a time.
+async fn next_job(receiver: &Mutex<mpsc::Receiver<Job>>) -> Option<Job> {
+    receiver.lock().await.recv().await
 }
 
 async fn run_job(forwarder: &Forwarder, job: Job) {
@@ -352,6 +377,7 @@ async fn enqueue<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn config(policy: BackpressurePolicy) -> QueueConfig {
         QueueConfig {
@@ -391,5 +417,136 @@ mod tests {
             enqueue(&sender, (), &config(BackpressurePolicy::Block)).await,
             Err(QueueError::Timeout)
         );
+    }
+
+    /// An upstream that holds every call for a while and records the most it
+    /// ever held at once.
+    #[derive(Clone, Default)]
+    struct Held {
+        now: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    async fn held_upstream(held: Held) -> String {
+        async fn slow(axum::extract::State(held): axum::extract::State<Held>) -> &'static str {
+            let now = held.now.fetch_add(1, Ordering::SeqCst) + 1;
+            held.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            held.now.fetch_sub(1, Ordering::SeqCst);
+            "{}"
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/v1/chat/completions", axum::routing::post(slow))
+            .with_state(held);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// `workers = N` puts N calls in flight to one provider at once (#1815).
+    /// Each worker used to hold the shared receiver across its whole upstream
+    /// call, so a provider's calls ran one at a time however many workers it
+    /// had, and latency grew linearly with concurrency.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_worker_carries_its_own_upstream_call() {
+        let held = Held::default();
+        let provider = ProviderConfig {
+            name: "slow".into(),
+            api_base: held_upstream(held.clone()).await,
+            ..Default::default()
+        };
+        let config = QueueConfig {
+            enabled: true,
+            capacity: 16,
+            workers: 4,
+            backpressure: BackpressurePolicy::Block,
+            block_timeout_ms: 5_000,
+        };
+        let metrics = Arc::new(Metrics::default());
+        let queues = ProviderQueues::new(Arc::new(Forwarder::new()), metrics.clone());
+        // one call first, so the burst below lands on one established queue
+        // and nothing but its workers decides how many calls run at once
+        assert_eq!(call(&queues, &config, &provider).await, Some(200));
+        held.peak.store(0, Ordering::SeqCst);
+
+        let started = std::time::Instant::now();
+        let calls: Vec<_> = (0..4)
+            .map(|_| {
+                let (queues, config, provider) = (queues.clone(), config.clone(), provider.clone());
+                tokio::spawn(async move { call(&queues, &config, &provider).await })
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.await.unwrap(), Some(200));
+        }
+        assert_eq!(
+            held.peak.load(Ordering::SeqCst),
+            4,
+            "four workers must hold four calls at once, not one after another"
+        );
+        // one after another would take four holds, 1.2s
+        assert!(
+            started.elapsed() < Duration::from_millis(1_000),
+            "{:?}",
+            started.elapsed()
+        );
+        let out = metrics.render();
+        assert!(out.contains("rolter_provider_queue_wait_ms_count{provider=\"slow\"} 5"));
+        assert!(out.contains("rolter_provider_inflight{provider=\"slow\"} 0"));
+    }
+
+    /// One chat call through `queues`; the upstream status, or `None` when
+    /// the call failed.
+    async fn call(
+        queues: &ProviderQueues,
+        config: &QueueConfig,
+        provider: &ProviderConfig,
+    ) -> Option<u16> {
+        queues
+            .forward_json(
+                config,
+                provider,
+                "/v1/chat/completions",
+                Bytes::from_static(br#"{"model":"m","messages":[]}"#),
+                None,
+                None,
+                &[],
+            )
+            .await
+            .ok()
+            .map(|response| response.status().as_u16())
+    }
+
+    /// The workers bound the calls too: past their number a call waits for a
+    /// free worker instead of going upstream alongside the others. Six calls
+    /// arriving together are the first a provider sees, which used to spawn a
+    /// queue per caller and let five through at once (#1815).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn calls_beyond_the_worker_count_wait_their_turn() {
+        let held = Held::default();
+        let provider = ProviderConfig {
+            name: "slow".into(),
+            api_base: held_upstream(held.clone()).await,
+            ..Default::default()
+        };
+        let config = QueueConfig {
+            enabled: true,
+            capacity: 16,
+            workers: 2,
+            backpressure: BackpressurePolicy::Block,
+            block_timeout_ms: 5_000,
+        };
+        let queues = ProviderQueues::new(Arc::new(Forwarder::new()), Arc::new(Metrics::default()));
+        let calls: Vec<_> = (0..6)
+            .map(|_| {
+                let (queues, config, provider) = (queues.clone(), config.clone(), provider.clone());
+                tokio::spawn(async move { call(&queues, &config, &provider).await })
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.await.unwrap(), Some(200));
+        }
+        assert_eq!(held.peak.load(Ordering::SeqCst), 2);
     }
 }

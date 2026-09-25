@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,15 +10,21 @@ use dashmap::DashMap;
 /// represented by the observation `count`.
 const LATENCY_BUCKETS_MS: [u32; 13] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
 
-/// Labelled counter family names, shared by the Prometheus renderers and the
-/// OTLP exporter so the two cannot name the same series differently.
+/// Labelled family names, shared by the Prometheus renderers and the OTLP
+/// exporter so the two cannot name the same series differently.
 const LABELLED_TARGET: &str = "rolter_target_requests_total";
 const LABELLED_VARIANT: &str = "rolter_variant_requests_total";
 const LABELLED_COMPLEXITY: &str = "rolter_complexity_route_requests_total";
+const LABELLED_REDIS_RECONNECTS: &str = "rolter_redis_reconnects_total";
+const LABELLED_REDIS_CONNECT_FAILURES: &str = "rolter_redis_connect_failures_total";
+const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
+const LABELLED_PROVIDER_INFLIGHT: &str = "rolter_provider_inflight";
+const LABELLED_PROVIDER_QUEUE_DEPTH: &str = "rolter_provider_queue_depth";
+const LABELLED_REDIS_CONNECTED: &str = "rolter_redis_connected";
 
-/// The labelled families, declared up front for the OTLP exporter. At install
-/// time the gateway has served nothing, so every family is legitimately empty
-/// and the set cannot be inferred from a first collection.
+/// The labelled counter families, declared up front for the OTLP exporter. At
+/// install time the gateway has served nothing, so every family is
+/// legitimately empty and the set cannot be inferred from a first collection.
 pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_TARGET,
@@ -31,6 +37,34 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_COMPLEXITY,
         "complexity routing decisions by requested model, tier, selected route and outcome",
+    ),
+    (
+        LABELLED_REDIS_RECONNECTS,
+        "redis connections re-established after one was lost, per consumer",
+    ),
+    (
+        LABELLED_REDIS_CONNECT_FAILURES,
+        "failed redis connection attempts, per consumer",
+    ),
+    (
+        LABELLED_FAIL_OPEN,
+        "requests a budget or rate limit let through unchecked because redis was unavailable",
+    ),
+];
+
+/// The labelled gauge families (#1862), declared up front for the same reason.
+pub const LABELLED_GAUGE_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
+    (
+        LABELLED_PROVIDER_INFLIGHT,
+        "upstream requests awaiting response headers, per provider",
+    ),
+    (
+        LABELLED_PROVIDER_QUEUE_DEPTH,
+        "requests waiting for a provider queue worker, per provider",
+    ),
+    (
+        LABELLED_REDIS_CONNECTED,
+        "1 while a redis consumer holds a live connection, 0 once its last attempt failed or its connection was lost",
     ),
 ];
 
@@ -77,14 +111,18 @@ pub(crate) struct ProviderLoad {
     inflight: AtomicU64,
     queued: AtomicU64,
     wait: Histogram,
+    /// the same waits, recorded into the OTLP histogram when an endpoint is
+    /// configured (#1862); inert otherwise
+    otlp_wait: rolter_core::telemetry::QueueWaitRecorder,
 }
 
 impl ProviderLoad {
-    fn new() -> Self {
+    fn new(otlp_wait: rolter_core::telemetry::QueueWaitRecorder) -> Self {
         Self {
             inflight: AtomicU64::new(0),
             queued: AtomicU64::new(0),
             wait: Histogram::new(),
+            otlp_wait,
         }
     }
 }
@@ -110,6 +148,7 @@ impl QueuedGuard {
     pub(crate) fn picked(self) -> InflightGuard {
         let waited = u32::try_from(self.since.elapsed().as_millis()).unwrap_or(u32::MAX);
         self.load.wait.observe(waited);
+        self.load.otlp_wait.record(waited);
         InflightGuard::new(self.load.clone())
     }
 }
@@ -135,6 +174,77 @@ impl InflightGuard {
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.0.inflight.fetch_sub(1, Relaxed);
+    }
+}
+
+/// One of the gateway's connections to Redis. Each subsystem that uses Redis
+/// keeps its own, so each reports on its own (#1772).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum RedisConsumer {
+    Budgets,
+    RateLimits,
+    ResponseCache,
+}
+
+impl RedisConsumer {
+    /// The `consumer` label, which the connection's log lines carry too.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Budgets => "budgets",
+            Self::RateLimits => "rate_limits",
+            Self::ResponseCache => "response_cache",
+        }
+    }
+
+    /// The admission control this consumer backs, which lets requests through
+    /// unchecked while Redis cannot be reached. The response cache backs none:
+    /// without Redis a lookup misses and the request is served as usual.
+    fn control(self) -> Option<&'static str> {
+        match self {
+            Self::Budgets => Some("budget"),
+            Self::RateLimits => Some("rate_limit"),
+            Self::ResponseCache => None,
+        }
+    }
+}
+
+/// One Redis consumer's connection, as its
+/// [`ReconnectingRedis`](crate::redis_conn::ReconnectingRedis) last saw it
+/// (#1772). Updated only on the slow path — a connection attempt, a lost
+/// connection, a check admitted without Redis — so a request served over a
+/// live connection pays nothing for it.
+#[derive(Default)]
+pub(crate) struct RedisConnStats {
+    connected: AtomicBool,
+    reconnects: AtomicU64,
+    connect_failures: AtomicU64,
+    fail_open: AtomicU64,
+}
+
+impl RedisConnStats {
+    /// A connection attempt succeeded; `reconnect` when it replaces one that
+    /// was lost.
+    pub(crate) fn on_connect(&self, reconnect: bool) {
+        self.connected.store(true, Relaxed);
+        if reconnect {
+            self.reconnects.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// A connection attempt failed.
+    pub(crate) fn on_connect_failure(&self) {
+        self.connected.store(false, Relaxed);
+        self.connect_failures.fetch_add(1, Relaxed);
+    }
+
+    /// The live connection died and was dropped.
+    pub(crate) fn on_lost(&self) {
+        self.connected.store(false, Relaxed);
+    }
+
+    /// An admission check let a request through without consulting Redis.
+    pub(crate) fn on_fail_open(&self) {
+        self.fail_open.fetch_add(1, Relaxed);
     }
 }
 
@@ -327,6 +437,10 @@ pub struct Metrics {
     /// come from the configured providers, so the label set is bounded by the
     /// config
     by_provider: DashMap<String, Arc<ProviderLoad>>,
+    /// connection state of each redis consumer, registered when the consumer
+    /// is built against a redis url. A deployment without redis registers
+    /// none and reports none (#1772)
+    redis: DashMap<RedisConsumer, Arc<RedisConnStats>>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -897,6 +1011,42 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_provider.iter() {
+            let load = entry.value();
+            for (family, value) in [
+                (LABELLED_PROVIDER_INFLIGHT, load.inflight.load(Relaxed)),
+                (LABELLED_PROVIDER_QUEUE_DEPTH, load.queued.load(Relaxed)),
+            ] {
+                out.push((family, vec![("provider", entry.key().clone())], value));
+            }
+        }
+        for entry in self.redis.iter() {
+            let (consumer, stats) = (*entry.key(), entry.value());
+            for (family, value) in [
+                (
+                    LABELLED_REDIS_CONNECTED,
+                    u64::from(stats.connected.load(Relaxed)),
+                ),
+                (LABELLED_REDIS_RECONNECTS, stats.reconnects.load(Relaxed)),
+                (
+                    LABELLED_REDIS_CONNECT_FAILURES,
+                    stats.connect_failures.load(Relaxed),
+                ),
+            ] {
+                out.push((
+                    family,
+                    vec![("consumer", consumer.label().to_string())],
+                    value,
+                ));
+            }
+            if let Some(control) = consumer.control() {
+                out.push((
+                    LABELLED_FAIL_OPEN,
+                    vec![("control", control.to_string())],
+                    stats.fail_open.load(Relaxed),
+                ));
+            }
+        }
         out
     }
 
@@ -920,14 +1070,30 @@ impl Metrics {
     /// The load counters of `provider`, created on first use. The lookup of an
     /// existing provider borrows the name, so the steady state allocates
     /// nothing.
+    ///
+    /// A provider's OTLP wait recorder is made with its counters, which is
+    /// after startup has installed the exporter: nothing reaches a provider
+    /// queue before the gateway serves.
     pub(crate) fn provider_load(&self, provider: &str) -> Arc<ProviderLoad> {
         if let Some(load) = self.by_provider.get(provider) {
             return load.clone();
         }
         self.by_provider
             .entry(provider.to_string())
-            .or_insert_with(|| Arc::new(ProviderLoad::new()))
+            .or_insert_with(|| {
+                let otlp_wait = self
+                    .otlp_histograms
+                    .get()
+                    .map(|histograms| histograms.queue_wait(provider))
+                    .unwrap_or_default();
+                Arc::new(ProviderLoad::new(otlp_wait))
+            })
             .clone()
+    }
+
+    /// Report `consumer`'s redis connection from now on (#1772).
+    pub(crate) fn watch_redis(&self, consumer: RedisConsumer, stats: Arc<RedisConnStats>) {
+        self.redis.insert(consumer, stats);
     }
 
     /// Render the counters in Prometheus text exposition format.
@@ -958,25 +1124,24 @@ impl Metrics {
         self.render_variant_counters(&mut out);
         self.render_complexity_counters(&mut out);
         self.render_provider_load(&mut out);
+        self.render_redis(&mut out);
         out
     }
 
     /// Append the per-provider queue gauges and the queue-wait histogram
-    /// (#1855). Prometheus only: the OTLP exporter carries labelled counters,
-    /// not labelled gauges.
+    /// (#1855). The OTLP exporter carries the same gauges as a labelled gauge
+    /// family and records the waits into its own histogram (#1862).
     fn render_provider_load(&self, out: &mut String) {
-        for (name, help, pick) in [
+        for (name, pick) in [
             (
-                "rolter_provider_inflight",
-                "upstream requests awaiting response headers, per provider",
+                LABELLED_PROVIDER_INFLIGHT,
                 (|load: &ProviderLoad| load.inflight.load(Relaxed)) as fn(&ProviderLoad) -> u64,
             ),
-            (
-                "rolter_provider_queue_depth",
-                "requests waiting for a provider queue worker, per provider",
-                |load: &ProviderLoad| load.queued.load(Relaxed),
-            ),
+            (LABELLED_PROVIDER_QUEUE_DEPTH, |load: &ProviderLoad| {
+                load.queued.load(Relaxed)
+            }),
         ] {
+            let help = family_help(name);
             let _ = writeln!(out, "# HELP {name} {help}");
             let _ = writeln!(out, "# TYPE {name} gauge");
             for entry in self.by_provider.iter() {
@@ -997,6 +1162,51 @@ impl Metrics {
         for entry in self.by_provider.iter() {
             let provider = escape_label(entry.key());
             write_histogram_series(out, name, "provider", &provider, &entry.value().wait);
+        }
+    }
+
+    /// Append each redis consumer's connection state, and how many requests
+    /// each admission control let through unchecked while redis was out of
+    /// reach (#1772).
+    fn render_redis(&self, out: &mut String) {
+        for (name, kind, pick) in [
+            (
+                LABELLED_REDIS_CONNECTED,
+                "gauge",
+                (|stats: &RedisConnStats| u64::from(stats.connected.load(Relaxed)))
+                    as fn(&RedisConnStats) -> u64,
+            ),
+            (LABELLED_REDIS_RECONNECTS, "counter", |stats| {
+                stats.reconnects.load(Relaxed)
+            }),
+            (LABELLED_REDIS_CONNECT_FAILURES, "counter", |stats| {
+                stats.connect_failures.load(Relaxed)
+            }),
+        ] {
+            let help = family_help(name);
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} {kind}");
+            for entry in self.redis.iter() {
+                let consumer = entry.key().label();
+                let _ = writeln!(
+                    out,
+                    "{name}{{consumer=\"{consumer}\"}} {}",
+                    pick(entry.value())
+                );
+            }
+        }
+        let name = LABELLED_FAIL_OPEN;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.redis.iter() {
+            if let Some(control) = entry.key().control() {
+                let _ = writeln!(
+                    out,
+                    "{name}{{control=\"{control}\"}} {}",
+                    entry.value().fail_open.load(Relaxed)
+                );
+            }
         }
     }
 
@@ -1130,6 +1340,16 @@ fn metric(out: &mut String, kind: &str, name: &str, help: &str, value: u64) {
     let _ = writeln!(out, "{name} {value}");
 }
 
+/// The help text a labelled family is declared with, so the Prometheus text
+/// and the OTLP description cannot drift apart.
+fn family_help(name: &str) -> &'static str {
+    LABELLED_FAMILIES
+        .iter()
+        .chain(LABELLED_GAUGE_FAMILIES)
+        .find(|(family, _)| *family == name)
+        .map_or("", |(_, help)| help)
+}
+
 /// Escape a Prometheus label value: backslash, double-quote and newline per the
 /// exposition format spec.
 fn escape_label(value: &str) -> String {
@@ -1162,6 +1382,9 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_complexity("gpt-4o", "cheap", "mini", true);
+        let _queued = QueuedGuard::new(m.provider_load("vllm"));
+        let _inflight = QueuedGuard::new(m.provider_load("vllm")).picked();
+        watch_all_redis_consumers(&m);
 
         let text = m.render();
         for (family, attrs, value) in m.labelled_for_export() {
@@ -1235,19 +1458,91 @@ mod tests {
         m.observe_target("openai", "gpt-4o", true);
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
+        let _load = m.provider_load("vllm");
+        watch_all_redis_consumers(&m);
 
         let produced: Vec<&str> = m
             .labelled_for_export()
             .into_iter()
             .map(|(family, _, _)| family)
             .collect();
-        for (family, help) in LABELLED_FAMILIES {
+        for (family, help) in LABELLED_FAMILIES.iter().chain(LABELLED_GAUGE_FAMILIES) {
             assert!(
                 produced.contains(family),
                 "declared but never produced: {family}"
             );
             assert!(!help.is_empty(), "{family} has no help text");
         }
+        // and each is declared once, as one kind: a family registered as both a
+        // counter and a gauge would reach the backend twice under one name
+        for (family, _) in LABELLED_FAMILIES {
+            assert!(
+                !LABELLED_GAUGE_FAMILIES
+                    .iter()
+                    .any(|(gauge, _)| gauge == family),
+                "{family} is declared as a counter and a gauge"
+            );
+        }
+    }
+
+    /// Register every redis consumer, the way a gateway with a redis url does.
+    fn watch_all_redis_consumers(m: &Metrics) -> Vec<Arc<RedisConnStats>> {
+        [
+            RedisConsumer::Budgets,
+            RedisConsumer::RateLimits,
+            RedisConsumer::ResponseCache,
+        ]
+        .into_iter()
+        .map(|consumer| {
+            let stats = Arc::new(RedisConnStats::default());
+            m.watch_redis(consumer, stats.clone());
+            stats
+        })
+        .collect()
+    }
+
+    /// A redis consumer reports whether it is connected, how often it had to
+    /// reconnect and how often it failed to, and — for the two consumers that
+    /// back an admission control — how many requests went through unchecked
+    /// (#1772).
+    #[test]
+    fn redis_consumers_report_their_connection_and_fail_open_count() {
+        let m = Metrics::default();
+        // nothing registered: a deployment without redis shows no series
+        let out = m.render();
+        assert!(out.contains("# TYPE rolter_redis_connected gauge"));
+        assert!(!out.contains("rolter_redis_connected{"));
+        assert!(!out.contains("rolter_fail_open_total{"));
+
+        let stats = watch_all_redis_consumers(&m);
+        let [budgets, rate_limits, cache] = &stats[..] else {
+            unreachable!()
+        };
+        budgets.on_connect(false);
+        rate_limits.on_connect(false);
+        // the rate limiter loses its connection, fails to get it back, and
+        // admits two requests unchecked before it reconnects
+        rate_limits.on_lost();
+        rate_limits.on_connect_failure();
+        rate_limits.on_fail_open();
+        rate_limits.on_fail_open();
+        cache.on_connect_failure();
+
+        let out = m.render();
+        assert!(out.contains("rolter_redis_connected{consumer=\"budgets\"} 1"));
+        assert!(out.contains("rolter_redis_connected{consumer=\"rate_limits\"} 0"));
+        assert!(out.contains("rolter_redis_connected{consumer=\"response_cache\"} 0"));
+        assert!(out.contains("rolter_redis_connect_failures_total{consumer=\"rate_limits\"} 1"));
+        assert!(out.contains("rolter_fail_open_total{control=\"rate_limit\"} 2"));
+        assert!(out.contains("rolter_fail_open_total{control=\"budget\"} 0"));
+        // the cache backs no admission control, so it has no fail-open series
+        assert_eq!(out.matches("rolter_fail_open_total{").count(), 2);
+
+        rate_limits.on_connect(true);
+        let out = m.render();
+        assert!(out.contains("rolter_redis_connected{consumer=\"rate_limits\"} 1"));
+        assert!(out.contains("rolter_redis_reconnects_total{consumer=\"rate_limits\"} 1"));
+        assert!(out.contains("rolter_redis_reconnects_total{consumer=\"budgets\"} 0"));
     }
 
     /// The OTLP histogram must use the boundaries the Prometheus one uses.

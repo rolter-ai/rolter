@@ -203,7 +203,7 @@ where withheld = 1 and ts > now() - interval 30 day;
 
 `rolter_withheld_responses_total` counts the same refusals in Prometheus. A sustained rate usually means a prompt is steering the model into output your policy forbids, and you pay for every attempt.
 
-`usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. Rows written before these columns existed default to `0`.
+`usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. It is also set on a `502` whose upstream answered and then failed to deliver the body the gateway was reading (a reset, a truncated response): the provider may have billed an answer nobody received. Rows written before these columns existed default to `0`.
 
 ## Paging the invocation log
 
