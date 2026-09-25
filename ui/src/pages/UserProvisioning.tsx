@@ -19,13 +19,6 @@ import { CopyButton } from "@/components/CopyButton";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -48,7 +41,7 @@ import {
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const TOKENS_QUERY_KEY = ["scim-tokens"];
@@ -375,7 +368,10 @@ export default function UserProvisioning() {
           size="sm"
           aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
           disabled={!!row.revoked_at || revoke.isPending}
-          onClick={() => setRevokeTarget(row)}
+          onClick={() => {
+            revoke.reset();
+            setRevokeTarget(row);
+          }}
         >
           {row.revoked_at
             ? t("pages.userProvisioning.revoked")
@@ -475,49 +471,32 @@ export default function UserProvisioning() {
         />
       )}
 
-      <Dialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.userProvisioning.revokeTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.userProvisioning.revokeBody"
-              values={{ name: revokeTarget?.name }}
-              components={[<span key="name" className="font-mono" />]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setRevokeTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={revoke.isPending}
-            onClick={() => {
-              if (!revokeTarget) return;
-              const what = revokeTarget.name;
-              // this dialog has nowhere to put a failure — it is hand-rolled
-              // and carries no error line — so both outcomes toast (#1197)
-              revoke.mutate(revokeTarget.id, {
-                onSuccess: () => {
-                  setRevokeTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-                },
-                onError: (error) => {
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {revoke.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t("pages.userProvisioning.revoke")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        name="scim-token-revoke"
+        open={!!revokeTarget}
+        onOpenChange={(open) => !open && setRevokeTarget(null)}
+        title={t("pages.userProvisioning.revokeTitle")}
+        description={
+          <Trans
+            i18nKey="pages.userProvisioning.revokeBody"
+            values={{ name: revokeTarget?.name }}
+            components={[<span key="name" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("pages.userProvisioning.revoke")}
+        pending={revoke.isPending}
+        error={revoke.error}
+        onConfirm={() => {
+          if (!revokeTarget) return;
+          const what = revokeTarget.name;
+          revoke.mutate(revokeTarget.id, {
+            onSuccess: () => {
+              setRevokeTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+          });
+        }}
+      />
     </PageBody>
   );
 }
