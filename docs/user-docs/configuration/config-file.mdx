@@ -568,8 +568,10 @@ snapshot reload.
 
 <ParamField path="workers" default="8" type="usize">
   Concurrent upstream requests waiting for response headers for each provider:
-  a provider with `workers = 8` has up to eight calls in flight, and the next one
-  waits for a worker.
+  a provider with `workers = 8` has up to eight such calls outstanding, and the
+  next one waits for a worker. A worker is released when the headers arrive, so
+  a streamed response keeps generating upstream after its worker has moved on
+  and does not count against this limit.
 </ParamField>
 
 <ParamField path="backpressure" default="error" type="drop | block | error">

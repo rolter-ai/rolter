@@ -145,9 +145,11 @@ metrics_path = "/internal/metrics"
 
 ### Provider queue
 
-These size `[queue]` (**Settings → Performance Tuning**): `workers` requests per provider are sent upstream at a time, and up to `capacity` more wait for a worker. Each series carries a `provider` label, one per configured provider, and all three are exported over OTLP as well.
+These size `[queue]` (**Settings → Performance Tuning**): `workers` is how many queue workers each provider has for sending requests upstream, and `capacity` is how many more requests can wait for one. Each series carries a `provider` label, one per configured provider, and all three are exported over OTLP as well.
 
-`workers` is a real bound in both directions: a provider with `workers = 8` has up to eight calls in flight, and a ninth waits. Before 1.0 a provider's workers took turns and sent one request at a time, so if you sized `workers` against latency measured on an earlier build, measure again.
+`workers` bounds how many requests per provider are waiting for the upstream's response headers: with `workers = 8`, eight such calls can be outstanding and a ninth waits. A worker is released as soon as the headers arrive, not when the answer is complete. A non-streamed request to an upstream that sends its headers with the finished answer holds its worker for the whole generation. A streamed one (`stream: true`) usually gets its headers almost at once and then keeps generating upstream after its worker has moved on, so `workers` does not cap how many streams, or how much GPU load, a provider carries. Cap concurrent generations at the engine itself.
+
+Before 1.0 a provider's workers took turns and sent one request at a time, so if you sized `workers` against latency measured on an earlier build, measure again.
 
 <AccordionGroup>
   <Accordion title="rolter_provider_queue_depth">
