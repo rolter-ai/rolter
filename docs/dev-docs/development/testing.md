@@ -433,10 +433,13 @@ it `ci-ok`. The CLI is free and unrestricted, so `quality.yml` now takes no
 secrets and behaves identically for forks, dependabot and direct pushes.
 
 Two passes run with the shared `.github/config/gitleaks.toml` policy: `gitleaks
-dir` over the working tree (everything the commit ships) and, on PRs, `gitleaks
-git --log-opts base..head` over the branch history (catches a secret added and
-then removed inside the same PR). The pinned digest is v8.30.1 — the version
-`prek.toml` already uses for the staged-content hook, so local and CI scans agree.
+dir` over the working tree (everything the commit ships) and, on PRs and
+merge-queue runs, `gitleaks git --log-opts base..head` over the branch history.
+That second pass catches a secret added and then removed inside the same PR; on
+a queue run the range is every commit the queue is about to write to `master`
+(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). The
+pinned digest is v8.30.1 — the version `prek.toml` already uses for the
+staged-content hook, so local and CI scans agree.
 
 Reproduce a CI run locally:
 
@@ -525,11 +528,11 @@ false positive for this repository, suppress that one rule on that one step with
 a bare suppression is indistinguishable from the noise this gate exists to stop.
 The four suppressions in the tree today are:
 
-| Where                                             | Rule                 | Why                                                                                                                                               |
-| ------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine-integration.yml` — `Swatinem/rust-cache`  | `cache-poisoning`    | nothing this workflow builds is published, so the cache cannot poison a release                                                                   |
-| `release-plz.yml` — both `actions/checkout` steps | `artipacked`         | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on                                |
-| `project-automation.yml` — `pull_request_target`  | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id and literal field names to `run:` |
+| Where                                             | Rule                 | Why                                                                                                                                                                                                |
+| ------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine-integration.yml` — `Swatinem/rust-cache`  | `cache-poisoning`    | nothing this workflow builds is published, so the cache cannot poison a release                                                                                                                    |
+| `release-plz.yml` — both `actions/checkout` steps | `artipacked`         | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on                                                                                 |
+| `project-automation.yml` — `pull_request_target`  | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id, the item's node id and url, and literal field names to `run:`, all through `env:` |
 
 ### Storybook play tests
 

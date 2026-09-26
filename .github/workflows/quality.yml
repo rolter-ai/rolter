@@ -215,12 +215,15 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo "$GITLEAKS_IMAGE" \
             dir . --config .github/config/gitleaks.toml --redact --exit-code 1
       # history for this branch: catches a secret added and then removed within
-      # the same PR, which a working-tree scan cannot see
+      # the same PR, which a working-tree scan cannot see. on a merge-queue run
+      # the range is what the queue is about to write to master, every entry
+      # batched ahead of this one included. the payload names both ends, so
+      # this needs no token and quality.yml stays secret-free (#734, #1722)
       - name: gitleaks (branch history)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           # the container runs as root over a runner-owned checkout, which git
           # rejects as dubious ownership unless /repo is marked safe
@@ -292,6 +295,21 @@ jobs:
           persist-credentials: false
       - name: check the release handoff is wired
         run: bash scripts/check-release-handoff.sh
+
+  # ── board automation: the add-to-board retry policy ─────────────────────────
+  # project-automation.yml decides which GitHub API failures to wait out and
+  # which to report, and it only runs on master when an issue or PR is opened,
+  # where a regression shows up as items quietly missing from the board. this
+  # runs that step against a fake gh, a fake clock and a fake board (#1718)
+  project-automation:
+    name: board automation retry policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: run the add-to-board step against a fake gh
+        run: bash scripts/test-project-automation.sh
 
   # ── helm chart: lint and render ─────────────────────────────────────────────
   # the chart carries the same pre-boot validation the CLI does (#854), and a
