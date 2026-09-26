@@ -208,8 +208,8 @@ changes it everywhere. The dashboard and SigNoz share one login:
 
 | Service                 | User               | Password                    |
 | ----------------------- | ------------------ | --------------------------- |
-| rolter dashboard        | `dev@rolter.local` | `rolter-dev-2026`           |
-| SigNoz                  | `dev@rolter.local` | `rolter-dev-2026`           |
+| rolter dashboard        | `dev@rolter.local` | `Rolter-dev-2026`           |
+| SigNoz                  | `dev@rolter.local` | `Rolter-dev-2026`           |
 | postgres                | `rolter`           | `rolter`                    |
 | redis, ClickHouse, OTLP | —                  | unauthenticated on loopback |
 
@@ -245,7 +245,40 @@ initialised — an existing volume keeps whatever it was built with.
 ### SigNoz
 
 `just dogfood` provisions SigNoz with that login and imports the dashboards in
-`signoz/dashboards/`. Re-running is a no-op.
+`signoz/dashboards/` through `provision-signoz.sh`. Re-running is a no-op: a
+board whose title SigNoz already has is skipped.
+
+The script and the boards target **SigNoz v0.136.0**, the release
+`docker/docker-compose.signoz.yml` pins. That release moved both APIs the script
+uses, which is why dashboards stopped importing when the pin moved to it
+(#1864):
+
+- it signs in with `POST /api/v2/sessions/email_password`, passing the org id
+  that `GET /api/v2/sessions/context` returns for the email
+- it creates boards with `POST /api/v2/dashboards`, since every v1 dashboard
+  route now answers `501 dashboard_deprecated`
+
+The older spellings (`/api/v1/login`, `/api/v2/auth/login`, `/api/v1/auth/login`
+and `/api/v1/dashboards`) stay as fallbacks for a SigNoz from before v0.136, but
+only v0.136.0 is tested. A SigNoz that answers none of them makes the script
+exit 2 with its version in the message. So does one that keeps the session
+context route but moves or reshapes the sign-in behind it (the SPA instead of
+json, a token under another key, a `404`/`405`/`501`): only SigNoz refusing the
+credential itself counts as a different account, so an API change never points
+you at `just signoz-reset`. `just dogfood` repeats a failure after the sheet so
+it does not scroll away, and `just dev-creds` exits with the script's code.
+Bumping the pin means running `just signoz-provision` against the new release
+before merging the bump.
+
+The boards stay in SigNoz's v1 import format (`title`, `widgets`, `layout`) and
+carry `"version": "v5"`. On v0.136 the create endpoint converts that shape to
+its v2 schema server-side, but only when `version` is present: without it the
+request fails with `json: unknown field "title"`, in the script and in the Import
+JSON dialog alike. The script adds `"version": "v5"` to a board that has none
+when every panel is ClickHouse SQL or PromQL, since the conversion copies those
+unchanged; a board with query-builder panels must carry the version SigNoz
+exported it with. A board already in the v2 schema (a top-level `spec`, the shape
+`GET /api/v2/dashboards/{id}` returns) is imported as it is.
 
 A SigNoz that already has a different account is left alone: rewriting the
 credential store of a running service behind its own back is not something this
@@ -257,8 +290,8 @@ just signoz-reset   # drops SigNoz's users, dashboards and alerts, then provisio
 
 Traces survive that — they live in ClickHouse, not in the database it removes.
 
-The dashboards can always be imported by hand instead: **Dashboards → Import
-JSON** in SigNoz, using the files in `signoz/dashboards/`.
+The dashboards can always be imported by hand instead: **Dashboards → New
+dashboard → Import JSON** in SigNoz, using the files in `signoz/dashboards/`.
 
 | Dashboard               | What it shows                                                                                |
 | ----------------------- | -------------------------------------------------------------------------------------------- |

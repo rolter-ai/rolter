@@ -282,9 +282,15 @@ dogfood:
     # with the switch off still works, and the script says how to retry
     ./"$d"/adaptive-routing.sh on || true
     # non-fatal: a SigNoz that already has a different account is a thing to
-    # report, not a reason to tear down a working stack
-    ./"$d"/provision-signoz.sh || true
+    # report, not a reason to tear down a working stack. but repeat it after the
+    # sheet, which otherwise scrolls the failure out of view and leaves a stack
+    # with no dashboards looking provisioned (#1792)
+    signoz_rc=0
+    ./"$d"/provision-signoz.sh || signoz_rc=$?
     ./"$d"/sheet.sh
+    if [ "$signoz_rc" -ne 0 ]; then
+      echo "[dogfood] SigNoz provisioning FAILED (exit $signoz_rc) — see the [signoz] lines above; rerun with: just signoz-provision" >&2
+    fi
     wait
 
 # prove the dashboard UX capture works end to end before relying on it
@@ -379,8 +385,16 @@ dev-creds:
       fi
     fi
 
-    ./"$d"/provision-signoz.sh || true
+    signoz_rc=0
+    ./"$d"/provision-signoz.sh || signoz_rc=$?
     ./"$d"/sheet.sh
+    # unlike `just dogfood` there is no running stack here for a failure to
+    # tear down, so hand the exit code on: `just dev-creds && ...` must not read
+    # a SigNoz with no dashboards as provisioned (#1792)
+    if [ "$signoz_rc" -ne 0 ]; then
+      echo "[dev-creds] SigNoz provisioning FAILED (exit $signoz_rc) — see the [signoz] lines above" >&2
+      exit "$signoz_rc"
+    fi
 
 # provision SigNoz with the shared dev login and the checked-in dashboards
 signoz-provision:

@@ -99,6 +99,10 @@ services:
         /signoz-otel-collector migrate async up
 
   signoz:
+    # integration/dogfood/provision-signoz.sh speaks this release's sign-in and
+    # dashboard APIs, which moved in v0.136 (#1864). run `just signoz-provision`
+    # against a new release before bumping this, or the dogfood stack comes up
+    # with no dashboards
     image: signoz/signoz:v0.136.0
     restart: unless-stopped
     depends_on:
