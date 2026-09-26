@@ -5382,6 +5382,32 @@ async fn self_service_key_lifecycle() {
         .unwrap();
     assert_eq!(usage.status(), 503);
 
+    // a window ClickHouse would read as the epoch is refused first, naming the
+    // bound, rather than widening the scan to 1970 (#1192)
+    for param in ["since", "until"] {
+        let usage = client
+            .get(format!("{base}/api/v1/me/usage?{param}=not-a-date"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(usage.status(), 400, "{param}");
+        let body: Value = usage.json().await.unwrap();
+        assert_eq!(body["error"]["param"], param);
+        assert_eq!(body["error"]["code"], "invalid_time_bound");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+    }
+    // and a valid one still reaches the handler, which 503s as before
+    let usage = client
+        .get(format!(
+            "{base}/api/v1/me/usage?since=2026-07-01T00:00:00Z&until=2026-07-08%2000:00:00"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(usage.status(), 503);
+
     // delete the new key
     let del = client
         .delete(format!("{base}/api/v1/me/virtual-keys/{new_id}"))

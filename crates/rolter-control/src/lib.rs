@@ -100,6 +100,7 @@ mod sso;
 #[cfg(feature = "postgres")]
 mod stability;
 mod telemetry;
+mod time_bounds;
 mod ui_config;
 #[cfg(feature = "postgres")]
 mod ui_events;
@@ -2531,7 +2532,7 @@ mod tests {
         assert_eq!(provider_kind_str(&AzureOpenai), "azure_openai");
     }
 
-    fn state_with_token(token: Option<&str>) -> ControlState {
+    pub(crate) fn state_with_token(token: Option<&str>) -> ControlState {
         state_with_tokens(token, None)
     }
 

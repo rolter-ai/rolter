@@ -614,6 +614,20 @@ is collector configuration.
 - Writes are **async and batched off the hot path** so logging never adds request latency.
 - The dashboard queries ClickHouse for usage, spend, latency percentiles and error rates, sliced by org/team/project/key/model.
 
+### Time bounds on the read API
+
+Every control-plane read over ClickHouse (the five `/api/v1/analytics/*` endpoints, the three `/api/v1/health/*` rollups, `/api/v1/mcp/logs` and its summary, and `/api/v1/me/usage`) takes a caller-supplied `since`/`until`, and the two keyset-paged lists also take a cursor whose first half is a timestamp. All of them are bound as ClickHouse parameters and parsed in SQL with `parseDateTime64BestEffortOrZero`. The `OrZero` variant is required: ClickHouse constant-folds both branches of the `if` that picks the default window, so a strict parse of an absent (empty) bound aborts the query (#1177). Its side effect is that anything the parser cannot read becomes `1970-01-01`, so before #1192 a typo in `since` silently scanned the whole table.
+
+`crates/rolter-control/src/time_bounds.rs` closes that gap before any SQL is built:
+
+- `is_time_bound` accepts one grammar: `YYYY-MM-DD`, optionally followed by `T` or a space and `hh:mm[:ss[.f{1,9}]]`, optionally followed by `Z` or `±hh:mm`. That is RFC 3339 as the dashboard writes it (`toISOString()`), the `YYYY-MM-DD hh:mm:ss.sss` form ClickHouse returns for a `DateTime64(3)` under the default `date_time_output_format=simple` (so every cursor the API hands out), and a bare date.
+- It is narrower than RFC 3339 exactly where ClickHouse misreads it. Measured against ClickHouse 24.10, each of these parses to the epoch: a lowercase `t` or `z`, year `0000`, a day the calendar lacks (`2026-02-30`), and an offset whose `+` a client left unencoded, which the query string decodes to a space. Years outside `DateTime64`'s `1900`-`2299` range are accepted because ClickHouse clamps them to that range instead.
+- The analytics, health, MCP-log and self-service modules import `time_bounds::Query` in place of axum's `Query`. It deserializes the same way, then checks `since` and `until` through the `TimeBounds` trait every windowed query type implements, so a new query type that never names its window does not compile. An empty bound still means "the default".
+- `analytics::parse_keyset_cursor` applies the same grammar to the cursor's timestamp half, for both the invocation list and the MCP call log.
+- A refusal is a `400` in the gateway's OpenAI-style envelope, `{"error": {"message", "type": "invalid_request_error", "param", "code"}}`, with `code` `invalid_time_bound`, `invalid_cursor`, or `invalid_query` for a query string that does not deserialize at all (axum's own rejection is plain text). When the value is a valid bound with its `+` turned into a space, the message says to send `%2B`.
+
+A valid bound is forwarded byte for byte, so it means what it always meant. The router-level tests in `time_bounds.rs` run every windowed route against a stand-in ClickHouse to prove both halves: a malformed bound never reaches the database, and a valid one arrives unchanged. `every_documented_time_bound_is_on_a_checked_route` fails when the served OpenAPI document gains a route with a `since`, `until` or `cursor` that the table there does not list. `/api/v1/me/usage` authenticates a session first, so `self_service_key_lifecycle` in `tests/control_integration.rs` covers it.
+
 ## Provider health events
 
 - Every health signal is written to **ClickHouse** (`provider_health_events`): `target_id`, `provider`, `source`, `outcome`, `status_code`, `latency_ms`, `error_kind`, and `ts`.
@@ -659,7 +673,7 @@ definition, and the client really did get a 200.
 
 ### Stability rollup API
 
-Read-only, window-bounded rollups over `provider_health_events`, served by the control plane when `--clickhouse-url` is set (otherwise `503`). All accept `since`/`until` (RFC3339, default last 7 days); time bounds are passed as ClickHouse query parameters, never interpolated.
+Read-only, window-bounded rollups over `provider_health_events`, served by the control plane when `--clickhouse-url` is set (otherwise `503`). All accept `since`/`until` (default last 7 days), checked as described in [time bounds on the read API](#time-bounds-on-the-read-api) and then passed as ClickHouse query parameters, never interpolated.
 
 - `GET /api/v1/health/uptime` — per provider/target: event counts, `uptime`, `failure_rate`, `error_budget_burn` and `sla_breached` against an `sla` target (query param, fraction in `(0,1]`, default `0.99`), and `last_event`.
 - `GET /api/v1/health/mttr` — per provider/target mean time to recovery (`mttr_seconds`) and incident count, computed from downtime episodes (a run of non-`ok` events bounded by `ok`).

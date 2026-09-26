@@ -246,21 +246,33 @@ impl Op {
     }
 }
 
+/// The inclusive lower bound every ClickHouse-backed read shares. The format is
+/// spelled out because a value outside it is a `400`, not a wider window: the
+/// bound reaches a best-effort parse that turns anything it cannot read into
+/// the epoch, so the control plane checks it first (#1192).
+const SINCE: QueryParam = QueryParam::new(
+    "since",
+    "string",
+    "inclusive lower bound, RFC 3339 (`2026-07-01T00:00:00Z`; percent-encode a `+` offset as \
+     `%2B`), `YYYY-MM-DD hh:mm:ss[.fff]` or `YYYY-MM-DD`; defaults to 7 days ago, and a value \
+     that does not parse is a 400",
+);
+
+/// The exclusive upper bound beside [`SINCE`], checked the same way.
+const UNTIL: QueryParam = QueryParam::new(
+    "until",
+    "string",
+    "exclusive upper bound, in the same forms as `since`; defaults to now, and a value that \
+     does not parse is a 400",
+);
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
 /// sees page one forever.
 const MCP_LOGS_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "server",
         "string",
@@ -283,7 +295,8 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "cursor",
         "string",
-        "opaque keyset cursor; send back the previous page's `next_cursor`",
+        "opaque keyset cursor; send back the previous page's `next_cursor` unchanged. one \
+         whose timestamp does not parse is a 400",
     ),
 ];
 
@@ -346,31 +359,12 @@ const SCOPE_QUERY: &[QueryParam] = &[
 ];
 
 /// The time window the analytics, health and usage summaries share.
-const WINDOW_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
-];
+const WINDOW_QUERY: &[QueryParam] = &[SINCE, UNTIL];
 
 /// The window plus the bucket only the timeseries endpoint reads.
 const TIMESERIES_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "bucket",
         "string",
@@ -380,16 +374,8 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
 
 /// The uptime endpoint's window plus the target it measures against.
 const UPTIME_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "sla",
         "number",
@@ -445,16 +431,8 @@ const EFFECTIVE_QUERY: &[QueryParam] = &[
 /// The attribution report's window plus the two knobs that change which rows
 /// come back at all — not merely how many.
 const ATTRIBUTION_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "dimension",
         "string",
@@ -471,16 +449,8 @@ const ATTRIBUTION_QUERY: &[QueryParam] = &[
 /// a caller that does not know to send back `next_cursor` as `cursor` cannot
 /// reach the second page at all (#1394).
 const INVOCATIONS_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new("model", "string", "exact model name; omit for every model"),
     QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
     QueryParam::new(
@@ -498,9 +468,10 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "cursor",
         "string",
-        "the preceding page's `next_cursor`; omit for the first page. paging is \
-         a keyset over `(ts, request_id)`, so rows logged between two pages \
-         cannot repeat or hide a row",
+        "the preceding page's `next_cursor`, unchanged; omit for the first page. \
+         paging is a keyset over `(ts, request_id)`, so rows logged between two \
+         pages cannot repeat or hide a row. one whose timestamp does not parse \
+         is a 400",
     ),
 ];
 
