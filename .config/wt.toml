@@ -20,3 +20,8 @@ storybook = "wt step tether -C {{ worktree_path }}/ui -- bunx storybook dev -p 6
 # reclaim reproducible Rust build output before a completed worktree is removed
 [pre-remove]
 target = "cargo clean"
+# drop the worktree's database on the shared test postgres (`just test-pg`).
+# the next test run in any worktree would drop it lazily anyway; this makes it
+# immediate. the script always exits 0, since a failing pre-remove hook aborts
+# the removal, and a worktree whose branch predates it simply skips the step
+test-db = "[ ! -f scripts/test-postgres.sh ] || bash scripts/test-postgres.sh release {{ worktree_path }}"

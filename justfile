@@ -15,6 +15,19 @@ test:
     cargo nextest run --workspace
     cargo test --doc --workspace
 
+# one throwaway postgres for every worktree's tests (#1736), idempotent.
+# start the shared test postgres if needed, print its export line: `eval "$(just test-pg)"`
+test-pg:
+    @bash scripts/test-postgres.sh up
+
+# connections in use against max_connections, and each worktree's database
+test-pg-status:
+    @bash scripts/test-postgres.sh status
+
+# remove the shared test postgres and everything in it
+test-pg-down:
+    @bash scripts/test-postgres.sh down
+
 # format rust sources
 fmt:
     cargo fmt --all
