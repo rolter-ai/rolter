@@ -408,9 +408,13 @@ ROLTER_PULLS_JSON=pulls.json \
 
 `pr-title` still cannot run on a dispatch — the action it uses reads the title
 out of the event payload, and there is no supported way to hand it one. The
-remaining gap is therefore narrow: on the only PR that takes the dispatch path,
-release-plz generates the title. `ci-ok` emits a `::warning::` naming that the
-title went unvalidated rather than letting a silent skip imply otherwise.
+remaining gap is therefore narrow: two PRs take the dispatch path, and a
+workflow writes both titles. release-plz titles the release PR, and
+`ui-security-updates.yml` gives its PR a fixed title that
+`ui/scripts/security-updates.test.ts` checks (see
+[UI security updates](testing.md#ui-security-updates)). `ci-ok` emits a
+`::warning::` naming that the title went unvalidated rather than letting a
+silent skip imply otherwise.
 
 ### Recovering a sha whose `opened` run saw a dirty body
 
