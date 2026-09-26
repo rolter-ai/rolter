@@ -99,11 +99,7 @@ impl FromRequestParts<ControlState> for Principal {
             .await?
             .ok_or(ApiError::Unauthenticated)?;
         let user = UserRepo(pool).get(session.user_id).await?;
-        if user.is_superadmin {
-            Ok(Principal::Superadmin)
-        } else {
-            Ok(Principal::User(user))
-        }
+        Ok(Principal::for_user(user))
     }
 }
 
@@ -368,6 +364,110 @@ pub(crate) async fn authorize(
     } else {
         Err(ApiError::Forbidden)
     }
+}
+
+impl Principal {
+    /// The principal a signed-in account acts as: the superadmin bit makes it
+    /// [`Principal::Superadmin`], exactly as the extractor decides for every
+    /// other route. Handlers that take a `CurrentUser` and then authorize must
+    /// build their principal here, or a superadmin with no membership is
+    /// refused what any org admin may do (#1847).
+    pub(crate) fn for_user(user: User) -> Self {
+        if user.is_superadmin {
+            Principal::Superadmin
+        } else {
+            Principal::User(user)
+        }
+    }
+}
+
+/// One caller's authority, checked against many scopes, with the memberships
+/// and grants fetched once.
+///
+/// A listing answers with the rows the caller may read instead of refusing
+/// the whole list because the caller holds no role at its parent (#1846,
+/// #1850). A project member lists their own team and project; a team admin
+/// lists their own team's people. Each row is decided by exactly the rule
+/// [`authorize`] would apply to it alone.
+pub(crate) struct ScopeFilter {
+    superadmin: bool,
+    memberships: Vec<Membership>,
+    grants: Vec<EffectiveGrant>,
+    requirement: Requirement,
+}
+
+impl ScopeFilter {
+    pub(crate) async fn load(
+        state: &ControlState,
+        principal: &Principal,
+        requirement: Requirement,
+    ) -> ApiResult<Self> {
+        let (superadmin, memberships, grants) = match principal {
+            Principal::Superadmin => (true, Vec::new(), Vec::new()),
+            Principal::User(user) => (
+                false,
+                MembershipRepo(pool(state)).list_for_user(user.id).await?,
+                AccessProfileRepo(pool(state))
+                    .effective_grants_for_user(user.id)
+                    .await?,
+            ),
+        };
+        Ok(Self {
+            superadmin,
+            memberships,
+            grants,
+            requirement,
+        })
+    }
+
+    /// The verdict [`authorize`] would give at `chain`.
+    pub(crate) fn allows(&self, chain: ScopeChain) -> bool {
+        if self.superadmin {
+            return true;
+        }
+        match self.requirement.authority {
+            Authority::Authenticated => true,
+            Authority::Superadmin => false,
+            Authority::Role(required) => {
+                user_authorized(&self.memberships, chain, required)
+                    || custom_grants_allow(&self.grants, chain, self.requirement)
+            }
+        }
+    }
+
+    pub(crate) fn is_superadmin(&self) -> bool {
+        self.superadmin
+    }
+
+    /// The full org → team → project chain of every scope the caller holds a
+    /// membership or a profile role at: what they can navigate to, even where
+    /// the role sits below the level being listed.
+    pub(crate) async fn reach(&self, pool: &PgPool) -> ApiResult<Vec<ScopeChain>> {
+        let scopes = self
+            .memberships
+            .iter()
+            .map(|m| (m.org_id, m.team_id, m.project_id))
+            .chain(
+                self.grants
+                    .iter()
+                    .map(|g| (g.org_id, g.team_id, g.project_id)),
+            );
+        let mut reach = Vec::new();
+        for (org, team, project) in scopes {
+            reach.push(match (org, team, project) {
+                (_, _, Some(project)) => ScopeChain::from_project(pool, project).await?,
+                (_, Some(team), None) => ScopeChain::from_team(pool, team).await?,
+                (Some(org), None, None) => ScopeChain::org(org),
+                (None, None, None) => continue,
+            });
+        }
+        Ok(reach)
+    }
+}
+
+/// Whether anything in `reach` sits inside `org`.
+pub(crate) fn reaches_org(reach: &[ScopeChain], org: Uuid) -> bool {
+    reach.iter().any(|chain| chain.org == Some(org))
 }
 
 /// The built-in role a user effectively holds at `chain`: the best of their

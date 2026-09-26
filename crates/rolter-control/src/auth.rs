@@ -563,16 +563,44 @@ pub(crate) fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
 #[derive(Debug, Serialize)]
 struct MeResponse {
     user: User,
-    memberships: Vec<Membership>,
+    memberships: Vec<MeMembership>,
+}
+
+/// A membership as `/auth/me` reports it: the row as stored, plus the org and
+/// team it sits under. A project membership names neither on the row, and the
+/// dashboard needs both to land a project member on their own project (#1846).
+#[derive(Debug, Serialize)]
+struct MeMembership {
+    #[serde(flatten)]
+    membership: Membership,
+    scope_org_id: Option<Uuid>,
+    scope_team_id: Option<Uuid>,
 }
 
 async fn me(
     current: CurrentUser,
     State(state): State<ControlState>,
 ) -> AuthResult<Json<MeResponse>> {
-    let memberships = MembershipRepo(pool(&state))
-        .list_for_user(current.user.id)
-        .await?;
+    let repo = MembershipRepo(pool(&state));
+    let memberships = repo.list_for_user(current.user.id).await?;
+    let ancestors: std::collections::HashMap<Uuid, (Option<Uuid>, Option<Uuid>)> = repo
+        .ancestors_for_user(current.user.id)
+        .await?
+        .into_iter()
+        .map(|(id, org, team)| (id, (org, team)))
+        .collect();
+    let memberships = memberships
+        .into_iter()
+        .map(|membership| {
+            let (scope_org_id, scope_team_id) =
+                ancestors.get(&membership.id).copied().unwrap_or_default();
+            MeMembership {
+                membership,
+                scope_org_id,
+                scope_team_id,
+            }
+        })
+        .collect();
     Ok(Json(MeResponse {
         user: current.user,
         memberships,

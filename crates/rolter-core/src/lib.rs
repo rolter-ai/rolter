@@ -36,9 +36,9 @@ pub use config::{
     ModelLimits, ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode,
     ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
     QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
-    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, TimeoutConfig,
-    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
-    MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
+    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy,
+    TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig,
+    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
 };
 pub use config_lint::{unknown_keys, UnknownKey};
 pub use config_migrate::{
@@ -78,3 +78,11 @@ pub use stability::{
 /// Redis pub/sub channel the control plane publishes config-version bumps
 /// on; gateways subscribe to it to trigger an immediate snapshot poll.
 pub const CONFIG_CHANNEL: &str = "rolter.config";
+
+/// The model id of the gateway's built-in deterministic responder.
+///
+/// The gateway answers it locally unless a route of the same name shadows it
+/// for the caller. The control plane refuses a database route by this name, so
+/// one tenant can never take the builtin away from the others; a route in a
+/// config file may still shadow it, which is how an operator replaces it.
+pub const FAKE_LLM_MODEL: &str = "fake-llm";

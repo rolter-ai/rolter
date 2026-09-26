@@ -53,6 +53,22 @@ const ACTIONS = [
   "budget.create",
   "budget.delete",
   "security.settings.update",
+  // account events: written with no org, and shown for this org's own people
+  "auth.login",
+  "auth.sso_login",
+  "auth.logout",
+  "auth.login_failed",
+  "auth.login_throttled",
+  "auth.login_locked",
+  "auth.mfa_enabled",
+  "auth.mfa_disabled",
+  "auth.mfa_failed",
+  "auth.mfa_confirm_failed",
+  "auth.mfa_disable_failed",
+  "auth.mfa_enrolment_required",
+  "auth.mfa_recovery_code_used",
+  "auth.mfa_recovery_codes_regenerated",
+  "auth.mfa_break_glass_reset",
 ] as const;
 
 const TARGET_TYPES = [

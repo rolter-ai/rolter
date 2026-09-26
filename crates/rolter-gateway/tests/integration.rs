@@ -96,6 +96,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }
@@ -514,6 +515,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     let gw = serve_gateway(&config).await;
 
@@ -546,6 +548,255 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         .find(|m| m["id"] == "vllm-spb/qwen3")
         .unwrap();
     assert_eq!(slug_entry["owned_by"], "vLLM SPB");
+}
+
+/// A key sees its own org's routes and provider addresses plus the deployment's
+/// own (config-file) ones, and never another org's: those would spend that
+/// org's provider credential (#1844).
+#[tokio::test]
+async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
+    let owned = |org: &str| {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        })
+    };
+    let route = |model: &str, provider: &str, tenancy| ModelRoute {
+        model: model.to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: provider.to_string(),
+            model: Some("m".to_string()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+        tenancy,
+    };
+    let mut config = GatewayConfig::default();
+    for (name, tenancy) in [
+        ("ours", owned("org-1")),
+        ("theirs", owned("org-2")),
+        ("shared", None),
+    ] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            slug: Some(name.to_string()),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: "http://127.0.0.1:1".to_string(),
+            tenancy,
+            ..Default::default()
+        });
+    }
+    config
+        .routes
+        .push(route("our-route", "ours", owned("org-1")));
+    config
+        .routes
+        .push(route("their-route", "theirs", owned("org-2")));
+    config.routes.push(route("shared-route", "shared", None));
+    let key = scoped_key(&config, "sk-org-1", "key-1", "team-1", None, Vec::new());
+    config.db_virtual_keys.push(key);
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    let models: Value = client
+        .get(format!("http://{gw}/v1/models"))
+        .bearer_auth("sk-org-1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<&str> = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    for id in ["our-route", "ours/m", "shared-route", "shared/m"] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+    for id in ["their-route", "theirs/m"] {
+        assert!(!ids.contains(&id), "{id} listed to another org: {ids:?}");
+    }
+
+    // another org's rows answer exactly as a model nobody configured does, so
+    // the refusal does not confirm that they exist
+    for model in ["their-route", "theirs/m", "nobody-configured-this"] {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth("sk-org-1")
+            .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{model} answered another org's key");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "model_not_found", "{model}: {body}");
+    }
+}
+
+/// Another org's route takes no name away from this org, on any request path.
+/// Org 2 holds a route literally called `edge/gpt-4o`, which is also the
+/// address of org 1's provider `edge`, and a route called `fake-llm`, which is
+/// the builtin's name. A route lookup that ignored tenancy found those first and
+/// then refused them, so org 1 lost its own address and the builtin (#1844).
+#[tokio::test]
+async fn another_orgs_route_shadows_no_address_or_builtin_on_any_path() {
+    let (ours_upstream, ours_hits) = counting_audio_upstream().await;
+    let (theirs_upstream, theirs_hits) = counting_audio_upstream().await;
+    let owned = |org: &str| {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        })
+    };
+    let mut config = GatewayConfig::default();
+    for (name, upstream, org) in [
+        ("edge", ours_upstream, "org-1"),
+        ("their-upstream", theirs_upstream, "org-2"),
+    ] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            slug: Some(name.to_string()),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{upstream}"),
+            tenancy: owned(org),
+            ..Default::default()
+        });
+    }
+    for model in ["edge/gpt-4o", "fake-llm", "their-realtime"] {
+        config.routes.push(ModelRoute {
+            model: model.to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets: vec![Target {
+                provider: "their-upstream".to_string(),
+                model: Some("m".to_string()),
+                weight: 1,
+            }],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy: owned("org-2"),
+        });
+    }
+    let ours = scoped_key(&config, "sk-org-1", "key-1", "team-1", None, Vec::new());
+    let mut theirs = scoped_key(&config, "sk-org-2", "key-2", "team-2", None, Vec::new());
+    theirs.org_id = "org-2".to_string();
+    theirs.project_id = "project-2".to_string();
+    config.db_virtual_keys.extend([ours, theirs]);
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+    let chat = |key: &'static str, model: &'static str| {
+        client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth(key)
+            .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+    };
+    let transcribe = |key: &'static str, model: &'static str| {
+        client
+            .post(format!("http://{gw}/v1/audio/transcriptions"))
+            .bearer_auth(key)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "multipart/form-data; boundary=AUDIT",
+            )
+            .body(audio_form(model))
+            .send()
+    };
+
+    // chat: org 1's own provider address and the builtin both answer org 1
+    let resp = chat("sk-org-1", "edge/gpt-4o").await.unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    assert_eq!(ours_hits.load(Ordering::SeqCst), 1);
+    let resp = chat("sk-org-1", "fake-llm").await.unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    // multipart: the same two names, through the upload path
+    let resp = transcribe("sk-org-1", "edge/gpt-4o").await.unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    assert_eq!(ours_hits.load(Ordering::SeqCst), 2);
+    let resp = transcribe("sk-org-1", "fake-llm").await.unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    let body: Value = resp.json().await.unwrap();
+    assert!(!body["text"].as_str().unwrap_or_default().is_empty());
+    assert_eq!(
+        theirs_hits.load(Ordering::SeqCst),
+        0,
+        "org 1's calls reached org 2's upstream"
+    );
+
+    // the listing keeps the builtin for org 1 and hides org 2's routes
+    let ids_for = |key: &'static str| {
+        let client = client.clone();
+        async move {
+            let models: Value = client
+                .get(format!("http://{gw}/v1/models"))
+                .bearer_auth(key)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            models["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    let ids = ids_for("sk-org-1").await;
+    assert_eq!(
+        ids.iter().filter(|id| *id == "fake-llm").count(),
+        1,
+        "the builtin went missing for org 1: {ids:?}"
+    );
+    assert!(!ids.iter().any(|id| id == "their-realtime"), "{ids:?}");
+
+    // realtime resolves named routes only: org 2's is a miss for org 1, answered
+    // as a model nobody configured, and never dialled
+    let unknown = tokio_tungstenite::connect_async(realtime_client_request(
+        gw,
+        "their-realtime",
+        Some("Bearer sk-org-1"),
+        None,
+    ))
+    .await
+    .unwrap_err();
+    match unknown {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status().as_u16(), 404);
+            let body: Value =
+                serde_json::from_slice(response.body().as_deref().unwrap_or_default())
+                    .unwrap_or(Value::Null);
+            assert_eq!(body["error"]["code"], "model_not_found", "{body}");
+        }
+        other => panic!("expected HTTP handshake rejection, got {other}"),
+    }
+    assert_eq!(theirs_hits.load(Ordering::SeqCst), 0);
+
+    // the control: org 2 still reaches its own routes under those names
+    let resp = chat("sk-org-2", "edge/gpt-4o").await.unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    assert_eq!(theirs_hits.load(Ordering::SeqCst), 1);
+    let ids = ids_for("sk-org-2").await;
+    for id in ["edge/gpt-4o", "fake-llm", "their-realtime"] {
+        assert!(
+            ids.iter().any(|listed| listed == id),
+            "{id} missing: {ids:?}"
+        );
+    }
+    assert_eq!(ours_hits.load(Ordering::SeqCst), 2);
 }
 
 /// A provider serves five models; one configured route names one of them. The
@@ -590,6 +841,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     // the catalogue rides the health sweep's existing probe, so probing is what
     // turns the wider listing on
@@ -1598,6 +1850,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
             advanced: Default::default(),
             cache: None,
             variants: Default::default(),
+            tenancy: None,
         });
     }
     let gw = serve_gateway(&config).await;
@@ -2300,6 +2553,7 @@ async fn variant_routing_fails_over_to_next_variant() {
             mk_variant("control", "down", 100),
             mk_variant("canary", "up", 1),
         ],
+        tenancy: None,
     });
     let gw = serve_gateway(&config).await;
 
@@ -4199,6 +4453,7 @@ async fn group_over_counting_upstreams(
             slug: Some("fleet".to_string()),
             strategy,
             members,
+            tenancy: None,
         });
     (serve_gateway(&config).await, counters)
 }
@@ -4312,6 +4567,7 @@ async fn a_dead_group_member_fails_over_to_a_sibling() {
                     weight,
                 })
                 .collect(),
+            tenancy: None,
         });
     let gw = serve_gateway(&config).await;
 

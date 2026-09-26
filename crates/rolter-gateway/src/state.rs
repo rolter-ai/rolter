@@ -36,6 +36,55 @@ pub struct RouteEntry {
     pub guardrails: rolter_core::guardrails::RuleSelection,
 }
 
+impl RouteEntry {
+    /// Whether this route belongs to the caller at all.
+    ///
+    /// A route another org owns, or one its admin narrowed to a project the key
+    /// was not minted in, is outside the caller's tenancy. Request resolution
+    /// treats such a route as absent rather than refusing it: it must not
+    /// shadow the caller's own `provider-slug/model`, `group-slug/model` or
+    /// builtin address, and the answer must not confirm that it exists. A key
+    /// with no org comes from the gateway's own config file and belongs to the
+    /// operator, so nothing is outside its tenancy.
+    pub fn in_tenancy_of(&self, key: Option<&KeyMeta>) -> bool {
+        let route = &self.route;
+        let key_org = key.map_or("", |key| key.org_id.as_str());
+        if !rolter_core::Tenancy::admits(route.tenancy.as_ref(), key_org) {
+            return false;
+        }
+        if route.advanced.visibility.project_only {
+            let project = route.tenancy.as_ref().and_then(|t| t.project_id.as_deref());
+            if let (Some(key), Some(project)) = (key, project) {
+                if !key.org_id.is_empty() && key.project_id != project {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// A route resolved for one request: a configured route the snapshot holds, or
+/// a synthetic `provider-slug/model` / `group-slug/model` entry built for it.
+// the value lives on one request's stack for the length of that request, and
+// boxing the pinned entry would add a heap allocation to every pinned call
+#[allow(clippy::large_enum_variant)]
+pub enum ResolvedRoute<'a> {
+    Named(&'a RouteEntry),
+    Pinned(RouteEntry),
+}
+
+impl std::ops::Deref for ResolvedRoute<'_> {
+    type Target = RouteEntry;
+
+    fn deref(&self) -> &RouteEntry {
+        match self {
+            Self::Named(entry) => entry,
+            Self::Pinned(entry) => entry,
+        }
+    }
+}
+
 /// A virtual key as the request path sees it: identity/scope for attribution
 /// plus the allow-list and validity window. Indexed by peppered digest in the
 /// snapshot; the plaintext key is never retained.
@@ -232,19 +281,32 @@ impl Snapshot {
             .collect();
         // index providers by their URL-safe slug for `provider-slug/model`
         // addressing; an explicit slug wins, otherwise derive one from the
-        // name. skip invalid/empty derived slugs, and let the first provider
-        // win a collision so the index stays deterministic
+        // name. skip invalid/empty derived slugs. walk the config's list rather
+        // than the map so the first provider in file order wins a collision on
+        // every build: the merged store puts the bootstrap file's rows first,
+        // so a database provider can never take a config-file provider's
+        // address. groups are indexed after every provider, so a legacy
+        // database provider still takes a readonly group's slug; the control
+        // plane's write-time check keeps new rows from getting there
         let mut providers_by_slug: HashMap<String, String> = HashMap::new();
-        for p in providers.values() {
+        for p in &config.providers {
             let slug = p
                 .slug
                 .clone()
                 .unwrap_or_else(|| rolter_core::slug::slugify(&p.name));
-            if rolter_core::slug::is_valid_slug(&slug) {
-                providers_by_slug
-                    .entry(slug)
-                    .or_insert_with(|| p.name.clone());
+            if !rolter_core::slug::is_valid_slug(&slug) {
+                continue;
             }
+            if let Some(holder) = providers_by_slug.get(&slug) {
+                tracing::warn!(
+                    %slug,
+                    provider = %p.name,
+                    holder = %holder,
+                    "provider slug already addresses another provider; this one is not addressable"
+                );
+                continue;
+            }
+            providers_by_slug.insert(slug, p.name.clone());
         }
         // index provider groups by slug for `group-slug/model` addressing
         // (ADR-0017 addendum). the slug shares the provider namespace: a group
@@ -256,10 +318,15 @@ impl Snapshot {
                 .slug
                 .clone()
                 .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
-            if !rolter_core::slug::is_valid_slug(&slug)
-                || g.members.is_empty()
-                || providers_by_slug.contains_key(&slug)
-            {
+            if !rolter_core::slug::is_valid_slug(&slug) || g.members.is_empty() {
+                continue;
+            }
+            if providers_by_slug.contains_key(&slug) {
+                tracing::warn!(
+                    %slug,
+                    group = %g.name,
+                    "provider group slug is a provider's slug; the group is not addressable"
+                );
                 continue;
             }
             groups_by_slug.entry(slug).or_insert_with(|| g.clone());
@@ -509,6 +576,32 @@ impl Snapshot {
         }
     }
 
+    /// The configured route named `model`, if it is in the caller's tenancy.
+    ///
+    /// Another org's route, or a project-only route of another project, is a
+    /// miss here rather than a refusal (see [`RouteEntry::in_tenancy_of`]), so
+    /// the builtin and the pinned addresses behind it still answer the caller.
+    pub fn named_route_for(&self, model: &str, key: Option<&KeyMeta>) -> Option<&RouteEntry> {
+        self.routes
+            .get(model)
+            .filter(|entry| entry.in_tenancy_of(key))
+    }
+
+    /// Resolve `model` for a caller the way every request path does: a
+    /// configured route in the caller's tenancy first, even one whose name
+    /// contains `/`, then `provider-slug/model` and `group-slug/model`
+    /// addressing, which answers only for a provider or group the caller's org
+    /// may use. `None` is the unknown-model answer, whether nothing by that
+    /// name exists or it belongs to someone else.
+    pub fn resolve_for(&self, model: &str, key: Option<&KeyMeta>) -> Option<ResolvedRoute<'_>> {
+        if let Some(entry) = self.named_route_for(model, key) {
+            return Some(ResolvedRoute::Named(entry));
+        }
+        self.resolve_pinned(model)
+            .filter(|entry| entry.in_tenancy_of(key))
+            .map(ResolvedRoute::Pinned)
+    }
+
     /// Resolve a `provider-slug/model` address to a synthetic single-target
     /// [`RouteEntry`] pinned to that provider (ADR-0017). Callers try
     /// [`Snapshot::routes`] first so a route whose name literally contains `/`
@@ -534,9 +627,15 @@ impl Snapshot {
                 weight: 1,
             };
             let strategy = rolter_core::BalancingStrategy::default();
+            // the address inherits the provider's org, so the route gate refuses
+            // it to another org's key exactly as it would a named route (#1844)
+            let tenancy = self
+                .providers
+                .get(provider_name)
+                .and_then(|provider| provider.tenancy.clone());
             // a single target has nothing to balance between, so a per-request
             // balancer is fine here
-            return Some(self.synthetic_route(model, strategy, vec![target], None));
+            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy));
         }
         if let Some(group) = self.groups_by_slug.get(slug) {
             // one target per member; each rewrites to its own upstream model
@@ -560,6 +659,7 @@ impl Snapshot {
                 group.strategy,
                 targets,
                 self.group_balancers.get(slug).cloned(),
+                group.tenancy.clone(),
             ));
         }
         None
@@ -578,6 +678,7 @@ impl Snapshot {
         strategy: rolter_core::BalancingStrategy,
         targets: Vec<Target>,
         balancer: Option<Arc<dyn LoadBalancer>>,
+        tenancy: Option<rolter_core::Tenancy>,
     ) -> RouteEntry {
         let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
@@ -597,6 +698,7 @@ impl Snapshot {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy,
         };
         RouteEntry {
             route,
@@ -1251,6 +1353,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1323,6 +1426,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         });
         // a group whose slug collides with a provider slug is dropped
         config.provider_groups.push(ProviderGroupConfig {
@@ -1334,6 +1438,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         // an empty group never routes
         config.provider_groups.push(ProviderGroupConfig {
@@ -1341,6 +1446,7 @@ mod tests {
             slug: Some("empty-group".to_string()),
             strategy: Default::default(),
             members: Vec::new(),
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1389,6 +1495,7 @@ mod tests {
             slug: Some("vllm-a100".to_string()),
             strategy,
             members,
+            tenancy: None,
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1467,6 +1574,7 @@ mod tests {
                         weight: 1,
                     })
                     .collect(),
+                tenancy: None,
             });
         }
         let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());
@@ -1511,6 +1619,35 @@ mod tests {
         assert_eq!(entry.route.targets.len(), 1);
         assert_eq!(entry.route.targets[0].provider, "vllm msk 1");
         assert!(!snap.groups_by_slug.contains_key("vllm-msk-1"));
+    }
+
+    /// Providers sharing a slug resolve to the first in file order, on every
+    /// build. The merged store lists bootstrap rows first, so this is what keeps
+    /// a database row off a config-file provider's address; walking the
+    /// provider map instead would pick a different holder from build to build.
+    #[test]
+    fn the_first_provider_in_file_order_keeps_a_shared_slug() {
+        let mut config = GatewayConfig::default();
+        // an explicit slug first, then rows whose explicit or derived slug is
+        // the same
+        config
+            .providers
+            .push(provider_cfg("bootstrap", Some("edge")));
+        config.providers.push(provider_cfg("edge", None));
+        for n in 0..8 {
+            config
+                .providers
+                .push(provider_cfg(&format!("db-{n}"), Some("edge")));
+        }
+        for _ in 0..16 {
+            let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());
+            assert_eq!(
+                snap.providers_by_slug.get("edge").map(String::as_str),
+                Some("bootstrap")
+            );
+            let entry = snap.resolve_pinned("edge/m").expect("resolves");
+            assert_eq!(entry.route.targets[0].provider, "bootstrap");
+        }
     }
 
     #[test]

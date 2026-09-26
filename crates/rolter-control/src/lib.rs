@@ -351,6 +351,10 @@ impl Default for Args {
 #[derive(Default)]
 struct ConfigOwned {
     providers: std::collections::HashSet<String>,
+    /// readonly provider slugs, explicit or derived from the name. They are
+    /// addresses every org can call, so no database provider or group may
+    /// take one
+    provider_slugs: std::collections::HashSet<String>,
     models: std::collections::HashSet<String>,
     /// readonly provider-group slugs; the CRUD API rejects mutations against
     /// these (ADR-0022). default-tier groups are DB-owned and absent here
@@ -364,6 +368,15 @@ impl ConfigOwned {
         // are deliberately editable, so they must not be tracked as config-owned
         Self {
             providers: config.providers.iter().map(|p| p.name.clone()).collect(),
+            provider_slugs: config
+                .providers
+                .iter()
+                .map(|p| {
+                    p.slug
+                        .clone()
+                        .unwrap_or_else(|| rolter_core::slug::slugify(&p.name))
+                })
+                .collect(),
             models: config.routes.iter().map(|r| r.model.clone()).collect(),
             groups: config
                 .provider_groups
@@ -375,6 +388,21 @@ impl ConfigOwned {
                 })
                 .collect(),
         }
+    }
+
+    /// Whether a readonly provider or provider group answers `slug`. The
+    /// gateway resolves both kinds in one namespace, so no database provider
+    /// or group may take it
+    #[cfg(feature = "postgres")]
+    fn holds_slug(&self, slug: &str) -> bool {
+        self.provider_slugs.contains(slug) || self.groups.contains(slug)
+    }
+
+    /// Whether a route named `model` would sit on the `slug/model` address of
+    /// a readonly provider or provider group
+    #[cfg(feature = "postgres")]
+    fn holds_address_of(&self, model: &str) -> bool {
+        rolter_core::slug::address_slug(model).is_some_and(|slug| self.holds_slug(slug))
     }
 }
 
@@ -1186,6 +1214,22 @@ pub async fn test_app_with_clickhouse_and_admin_token(
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] started with `bootstrap` as its config file, so the write
+/// paths see the readonly rows it declares.
+///
+/// Only the ownership set is taken from the file: the store stays the database
+/// alone, which is all a test of the write-time guards needs.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_bootstrap(
+    pool: sqlx::PgPool,
+    bootstrap: &GatewayConfig,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.config_owned = Arc::new(ConfigOwned::from_config(bootstrap));
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
@@ -1336,10 +1380,20 @@ async fn build_store(
     Ok((Arc::new(InMemoryConfigStore::new(config)), None))
 }
 
-/// Seed editable `[[models.default]]` routes exactly once. Defaults deliberately
-/// target the bootstrap `default/default/default` tenancy created by `rolter
-/// seed`; a deployment without that project is left untouched rather than
-/// guessing a tenant. Existing rows are never overwritten on a restart.
+/// Seed editable `[[models.default]]` routes. Defaults deliberately target the
+/// bootstrap `default/default/default` tenancy created by `rolter seed`; a
+/// deployment without that project is left untouched rather than guessing a
+/// tenant. Existing rows are never overwritten on a restart, but one the
+/// default project no longer has is seeded again, so deleting a default only
+/// lasts until the next restart unless the file drops it too.
+///
+/// A route name is held once across the deployment, the same rule the API and
+/// `rolter-seed --import` enforce (#1845): a default whose name another org's
+/// route or a readonly route already has, or that is the `slug/…` address of
+/// another org's or a readonly provider or group, is skipped with a warning,
+/// since a duplicate name would stop the snapshot from building for every org.
+/// The builtin `fake-llm` is the operator's to replace, so a default of that
+/// name is seeded as before.
 #[cfg(feature = "postgres")]
 async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     if config.models.defaults.is_empty() {
@@ -1365,6 +1419,7 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
     let providers = rolter_store::postgres::repo::ProviderRepo(pool)
         .list(org_id)
         .await?;
+    let readonly = ConfigOwned::from_config(config);
     for route in &config.models.defaults {
         if routes
             .list(project_id)
@@ -1372,6 +1427,19 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
             .iter()
             .any(|existing| existing.model == route.model)
         {
+            continue;
+        }
+        if readonly.models.contains(&route.model)
+            || readonly.holds_address_of(&route.model)
+            || routes.model_in_use(&route.model).await?
+            || routes
+                .name_takes_address_outside_org(&route.model, Some(org_id))
+                .await?
+        {
+            tracing::warn!(
+                model = %route.model,
+                "models.default not seeded: the name is already in use elsewhere in this deployment"
+            );
             continue;
         }
         let strategy = match route.strategy {
@@ -1490,10 +1558,16 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
     }
 }
 
-/// Seed editable `[providers.default]` providers exactly once (ADR-0022). Like
+/// Seed editable `[providers.default]` providers (ADR-0022). Like
 /// `seed_default_models`, defaults target the bootstrap `default/default/default`
-/// org; an existing provider with the same slug or name is never overwritten.
+/// org; an existing provider with the same slug or name is never overwritten,
+/// and one the default org deleted is seeded again on the next restart.
 /// Seeded providers are DB-owned and editable — not config-owned.
+///
+/// A default whose name another provider holds, or whose slug a provider or
+/// provider group anywhere in the deployment (readonly rows included) already
+/// answers, is skipped with a warning rather than written as a duplicate: the
+/// same deployment-wide rule the API enforces (#1845).
 #[cfg(feature = "postgres")]
 async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     if config.provider_defaults.is_empty() {
@@ -1508,6 +1582,7 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
     let repo = rolter_store::postgres::repo::ProviderRepo(pool);
     let keys = rolter_store::postgres::repo::ProviderKeyRepo(pool);
     let existing = repo.list(org_id).await?;
+    let readonly = ConfigOwned::from_config(config);
     for provider in &config.provider_defaults {
         let slug = provider
             .slug
@@ -1517,6 +1592,18 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
             .iter()
             .any(|p| p.name == provider.name || p.slug == slug)
         {
+            continue;
+        }
+        if readonly.providers.contains(&provider.name)
+            || readonly.holds_slug(&slug)
+            || repo.name_in_use(&provider.name).await?
+            || repo.address_slug_in_use(&slug, None).await?
+        {
+            tracing::warn!(
+                provider = %provider.name,
+                %slug,
+                "providers.default not seeded: the name or slug is already in use elsewhere in this deployment"
+            );
             continue;
         }
         let row = repo
@@ -1561,11 +1648,15 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
     Ok(())
 }
 
-/// Seed editable `[provider_groups.default]` groups exactly once (ADR-0022).
-/// Like the other default seeds, groups target the bootstrap default org and an
-/// existing group with the same slug is never overwritten. A member referencing
-/// a provider that is not DB-owned is skipped with a warning. Runs after the
-/// provider seed so a group member can reference a just-seeded provider.
+/// Seed editable `[provider_groups.default]` groups (ADR-0022). Like the other
+/// default seeds, groups target the bootstrap default org and an existing group
+/// with the same slug is never overwritten. A member referencing a provider
+/// that is not DB-owned is skipped with a warning. Runs after the provider seed
+/// so a group member can reference a just-seeded provider.
+///
+/// Group slugs share the provider slug namespace at the gateway, so a default
+/// whose slug any provider or group in the deployment (readonly rows included)
+/// already answers is skipped with a warning, as the API would refuse it.
 #[cfg(feature = "postgres")]
 async fn seed_default_provider_groups(
     pool: &sqlx::PgPool,
@@ -1585,12 +1676,25 @@ async fn seed_default_provider_groups(
         .list(org_id)
         .await?;
     let existing = groups.list(org_id).await?;
+    let readonly = ConfigOwned::from_config(config);
     for group in &config.provider_group_defaults {
         let slug = group
             .slug
             .clone()
             .unwrap_or_else(|| rolter_core::slug::slugify(&group.name));
         if existing.iter().any(|g| g.slug == slug) {
+            continue;
+        }
+        if readonly.holds_slug(&slug)
+            || rolter_store::postgres::repo::ProviderRepo(pool)
+                .address_slug_in_use(&slug, None)
+                .await?
+        {
+            tracing::warn!(
+                group = %group.name,
+                %slug,
+                "provider_groups.default not seeded: the slug is already in use elsewhere in this deployment"
+            );
             continue;
         }
         let strategy = balancing_strategy_str(group.strategy);
@@ -1689,11 +1793,23 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     for key in &mut config.virtual_keys {
         key.key = REDACTED.to_string();
     }
-    for key in &mut config.db_virtual_keys {
-        key.key_hash.clear();
-    }
-    // the dashboard never reads these; the gateway takes them from the snapshot
+    // the dashboard never reads these; the gateway takes them from the snapshot.
+    // a database key record names its org, team, project and creator, so even
+    // with its digest blanked the list maps every tenant and its people
+    config.db_virtual_keys.clear();
     config.mcp_oauth_sessions.clear();
+    // which org owns a row is the gateway's business (#1844). the rows
+    // themselves, every org's providers, routes and groups, are still listed:
+    // whether this anonymous document may describe that topology at all is #1840
+    for provider in &mut config.providers {
+        provider.tenancy = None;
+    }
+    for route in &mut config.routes {
+        route.tenancy = None;
+    }
+    for group in &mut config.provider_groups {
+        group.tenancy = None;
+    }
     config.logging.clickhouse_url = config.logging.clickhouse_url.as_deref().map(strip_userinfo);
 }
 
@@ -2259,8 +2375,11 @@ mod tests {
         // the record and the session have no Default; parse the smallest
         // JSON that carries the secret instead of spelling every field out
         config.db_virtual_keys.push(
-            serde_json::from_value::<VirtualKeyRecord>(json!({"key_hash": "deadbeef", "id": "k"}))
-                .unwrap(),
+            serde_json::from_value::<VirtualKeyRecord>(json!({
+                "key_hash": "deadbeef", "id": "k",
+                "org_id": "org-of-a-tenant", "user_id": "user-of-a-tenant"
+            }))
+            .unwrap(),
         );
         config.mcp_oauth_sessions.push(
             serde_json::from_value::<McpOAuthSessionConfig>(json!({
@@ -2279,6 +2398,10 @@ mod tests {
             "sk-rolter-plaintext",
             "deadbeef",
             "ya29.secret",
+            // not secrets, but they map every tenant and its people for a
+            // caller with no session
+            "org-of-a-tenant",
+            "user-of-a-tenant",
             "user:pw",
             "u:p@",
             "ch:pass",
@@ -2296,6 +2419,7 @@ mod tests {
             Some("http://proxy.internal:3128/")
         );
         assert!(config.mcp_oauth_sessions.is_empty());
+        assert!(config.db_virtual_keys.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
             Some("http://clickhouse:8123/")
@@ -3248,5 +3372,219 @@ mod tests {
             .get("access-control-allow-origin")
             .is_none());
         assert!(response.headers().get("vary").is_none());
+    }
+
+    /// A readonly provider's or group's slug, explicit or derived from the
+    /// name, is an address no database row may take, and a route name is on it
+    /// only in the lower-case `slug/model` shape the gateway splits.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn readonly_slugs_are_addresses_no_database_row_takes() {
+        let config: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "Edge Cluster"
+            kind = "openai_compatible"
+            api_base = "http://edge:8000"
+
+            [[providers]]
+            name = "spb"
+            kind = "openai_compatible"
+            slug = "vllm-spb"
+            api_base = "http://spb:8000"
+
+            [[provider_groups]]
+            name = "pool"
+            members = [{ provider = "spb" }]
+            "#,
+        )
+        .unwrap();
+        let owned = ConfigOwned::from_config(&config);
+        for slug in ["edge-cluster", "vllm-spb", "pool"] {
+            assert!(owned.holds_slug(slug), "{slug}");
+        }
+        assert!(
+            !owned.holds_slug("spb"),
+            "a name with an explicit slug is not one"
+        );
+        assert!(owned.holds_address_of("vllm-spb/qwen3"));
+        assert!(owned.holds_address_of("pool/org/model:tag"));
+        assert!(!owned.holds_address_of("vllm-spb"));
+        assert!(!owned.holds_address_of("Pool/qwen3"));
+        assert!(!owned.holds_address_of("other/qwen3"));
+    }
+
+    /// The startup seeders write into the default org and used to look for a
+    /// collision only there, so a default whose name another org already held
+    /// became a second row, and a duplicate route or provider name makes
+    /// `/internal/snapshot` refuse for every org (#1845). They skip every such
+    /// default now, the free ones still land, and the snapshot still builds.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn default_seeds_skip_what_another_org_already_holds() {
+        use rolter_core::{GroupMember, ModelRoute, ProviderConfig, ProviderGroupConfig};
+        use rolter_store::postgres::{test_database, test_schema::TestSchema};
+
+        let Some(url) = test_database::url().await else {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        };
+        let db = TestSchema::migrated(&url).await;
+        let pool = db.pool().clone();
+
+        // the bootstrap tenancy the seeders target, and another org holding a
+        // provider `openai`, a provider `edge`, a group `pool` and a route
+        let mut projects = Vec::new();
+        for org in ["default", "other"] {
+            let org_id: uuid::Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(org)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let team_id: uuid::Uuid = sqlx::query_scalar(
+                "insert into teams (org_id, name) values ($1, 'default') returning id",
+            )
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let project_id: uuid::Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, 'default') returning id",
+            )
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            projects.push((org_id, project_id));
+        }
+        let (default_org, default_project) = projects[0];
+        let (other_org, other_project) = projects[1];
+        for name in ["openai", "edge"] {
+            sqlx::query(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://example.com')",
+            )
+            .bind(other_org)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "insert into provider_groups (org_id, name, slug, strategy)
+             values ($1, 'pool', 'pool', 'round_robin')",
+        )
+        .bind(other_org)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'round_robin')",
+        )
+        .bind(other_project)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let provider = |name: &str, slug: Option<&str>| ProviderConfig {
+            name: name.to_string(),
+            slug: slug.map(str::to_string),
+            api_base: "https://example.com".to_string(),
+            ..Default::default()
+        };
+        let group = |slug: &str| ProviderGroupConfig {
+            name: slug.to_string(),
+            slug: Some(slug.to_string()),
+            strategy: Default::default(),
+            members: vec![GroupMember {
+                provider: "seeded".to_string(),
+                model: None,
+                weight: 1,
+            }],
+            tenancy: None,
+        };
+        let route = |model: &str| -> ModelRoute {
+            serde_json::from_value(json!({
+                "model": model,
+                "targets": [{"provider": "seeded"}]
+            }))
+            .unwrap()
+        };
+        let mut config = GatewayConfig {
+            provider_defaults: vec![
+                // another org's provider name
+                provider("openai", None),
+                // another org's group slug, under a free name
+                provider("fresh", Some("pool")),
+                provider("seeded", None),
+            ],
+            provider_group_defaults: vec![
+                // another org's provider slug, and another org's group slug
+                group("edge"),
+                group("pool"),
+                group("seeded-pool"),
+            ],
+            ..Default::default()
+        };
+        config.models.defaults = vec![
+            // another org's route name, and another org's provider address
+            route("gpt-4o"),
+            route("edge/gpt-4o"),
+            route("mine"),
+        ];
+
+        seed_default_providers(&pool, &config).await.unwrap();
+        seed_default_provider_groups(&pool, &config).await.unwrap();
+        seed_default_models(&pool, &config).await.unwrap();
+
+        let names = |sql: &'static str, id: uuid::Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(sql)
+                    .bind(id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            names("select name from providers where org_id = $1", default_org).await,
+            ["seeded"]
+        );
+        assert_eq!(
+            names(
+                "select slug from provider_groups where org_id = $1",
+                default_org
+            )
+            .await,
+            ["seeded-pool"]
+        );
+        assert_eq!(
+            names(
+                "select model from routes where project_id = $1",
+                default_project
+            )
+            .await,
+            ["mine"]
+        );
+
+        // a second start changes nothing, and the fleet's snapshot still builds
+        seed_default_providers(&pool, &config).await.unwrap();
+        seed_default_provider_groups(&pool, &config).await.unwrap();
+        seed_default_models(&pool, &config).await.unwrap();
+        let mut snapshot = rolter_store::PostgresConfigStore::new(pool.clone())
+            .load()
+            .await
+            .unwrap();
+        for model in ["gpt-4o", "edge/gpt-4o", "mine"] {
+            let holders = snapshot.routes.iter().filter(|r| r.model == model).count();
+            assert!(holders <= 1, "{model} is held {holders} times");
+        }
+        assert_eq!(snapshot.providers.len(), 3, "{:?}", snapshot.providers);
+        snapshot.sanitize_for_snapshot();
+        if let Err(problems) = snapshot.validate() {
+            panic!("the snapshot no longer builds: {problems:?}");
+        }
     }
 }

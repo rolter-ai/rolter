@@ -69,6 +69,7 @@ fn live_gateway(key: String, model: String) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config.providers = vec![provider];
     config
