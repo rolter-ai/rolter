@@ -727,15 +727,10 @@ fn enrolment_token_hash(token: &str) -> String {
 async fn sign_in_enrol(
     State(state): State<ControlState>,
     SafeJson(body): SafeJson<SignInEnrolRequest>,
-) -> Result<Json<EnrolmentResponse>, Response> {
+) -> Result<Json<EnrolmentResponse>, EnrolError> {
     let token_hash = enrolment_token_hash(&body.enrolment_token);
-    let user = enrolling_user(&state, &token_hash, false)
-        .await
-        .map_err(IntoResponse::into_response)?;
-    mint_secret(&state, &user)
-        .await
-        .map(Json)
-        .map_err(IntoResponse::into_response)
+    let user = enrolling_user(&state, &token_hash, false).await?;
+    Ok(Json(mint_secret(&state, &user).await?))
 }
 
 /// Arm the factor with a code from the minted secret, and sign in.
@@ -749,19 +744,16 @@ async fn sign_in_enrol(
 async fn sign_in_confirm(
     State(state): State<ControlState>,
     SafeJson(body): SafeJson<SignInConfirmRequest>,
-) -> Result<Json<EnrolledSignIn>, Response> {
+) -> Result<Json<EnrolledSignIn>, EnrolError> {
     let pool = pool(&state);
     let token_hash = enrolment_token_hash(&body.enrolment_token);
-    let user = enrolling_user(&state, &token_hash, true)
-        .await
-        .map_err(IntoResponse::into_response)?;
-    let kek = kek().map_err(IntoResponse::into_response)?;
+    let user = enrolling_user(&state, &token_hash, true).await?;
     let factor = MfaRepo(pool)
-        .open_secret(user.id, &kek)
+        .open_secret(user.id, &kek()?)
         .await
-        .map_err(|err| ApiError::from(err).into_response())?;
+        .map_err(ApiError::from)?;
     let Some(factor) = factor else {
-        return Err(invalid("no enrolment in progress; request a secret first").into_response());
+        return Err(invalid("no enrolment in progress; request a secret first").into());
     };
     let Some(step) = totp::verify_at(&factor.secret, &body.code, now_seconds()) else {
         audit(
@@ -774,23 +766,21 @@ async fn sign_in_confirm(
         return Err(invalid(
             "that code did not match; check the clock on the device and try again",
         )
-        .into_response());
+        .into());
     };
     let taken = MfaRepo(pool)
         .take_challenge(&token_hash, ChallengePurpose::Enrol)
         .await
-        .map_err(|err| ApiError::from(err).into_response())?;
+        .map_err(ApiError::from)?;
     if taken.is_none() {
         // another request with this token got here first, or it just expired
-        return Err(AuthError::InvalidCredentials.into_response());
+        return Err(AuthError::InvalidCredentials.into());
     }
     MfaRepo(pool)
         .confirm(user.id, step as i64)
         .await
-        .map_err(|err| ApiError::from(err).into_response())?;
-    let codes = mint_recovery_codes(&state, user.id)
-        .await
-        .map_err(IntoResponse::into_response)?;
+        .map_err(ApiError::from)?;
+    let codes = mint_recovery_codes(&state, user.id).await?;
     audit(
         &state,
         user.id,
@@ -798,13 +788,44 @@ async fn sign_in_confirm(
         serde_json::json!({ "recovery_codes": codes.len(), "at_sign_in": true }),
     )
     .await;
-    let session = crate::auth::issue_session(&state, user, false)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    let session = crate::auth::issue_session(&state, user, false).await?;
     Ok(Json(EnrolledSignIn {
         session,
         recovery_codes: codes,
     }))
+}
+
+/// What the two enrolment routes refuse with.
+///
+/// A dead token is the step-up's `invalid_credentials` ([`AuthError`]), so a
+/// client handles both challenges the same way; a wrong code or a missing KEK
+/// is the step's own answer ([`ApiError`]), the same one the account screen's
+/// enrolment gives. Kept as two small variants rather than a rendered
+/// `Response`, which is several times their size.
+enum EnrolError {
+    Token(AuthError),
+    Step(ApiError),
+}
+
+impl From<AuthError> for EnrolError {
+    fn from(err: AuthError) -> Self {
+        Self::Token(err)
+    }
+}
+
+impl From<ApiError> for EnrolError {
+    fn from(err: ApiError) -> Self {
+        Self::Step(err)
+    }
+}
+
+impl IntoResponse for EnrolError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Token(err) => err.into_response(),
+            Self::Step(err) => err.into_response(),
+        }
+    }
 }
 
 async fn audit(state: &ControlState, user_id: Uuid, action: &str, detail: serde_json::Value) {
