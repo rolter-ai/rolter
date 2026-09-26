@@ -625,7 +625,9 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
         assert!(!ids.contains(&id), "{id} listed to another org: {ids:?}");
     }
 
-    for model in ["their-route", "theirs/m"] {
+    // another org's rows answer exactly as a model nobody configured does, so
+    // the refusal does not confirm that they exist
+    for model in ["their-route", "theirs/m", "nobody-configured-this"] {
         let resp = client
             .post(format!("http://{gw}/v1/chat/completions"))
             .bearer_auth("sk-org-1")
@@ -633,7 +635,9 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), 403, "{model} answered another org's key");
+        assert_eq!(resp.status(), 404, "{model} answered another org's key");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "model_not_found", "{model}: {body}");
     }
 }
 
