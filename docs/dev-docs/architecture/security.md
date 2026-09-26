@@ -254,9 +254,9 @@ Two limits are known and tracked:
   provider's display name and no org, and names are unique per org only. A
   name that another org used and then deleted brings its history (uptime,
   latency, error kinds, `target_id`) to whichever org creates it next, until
-  the 90-day TTL drops it. A name two orgs hold at the same time does the same
-  for as long as both exist; #1859 refuses a provider name another org already
-  holds. Recording the org in the rows is #1908.
+  the 90-day TTL drops it. Provider names are unique across the deployment,
+  so two orgs never hold one at the same time. Recording the org in the rows
+  is #1908.
 - **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
   no store has no sessions, so the admin token is the only credential these
   routes accept, and the dashboard's e-mail-only sign-in cannot present it. The
@@ -292,7 +292,10 @@ must name a provider in the same org. Names the gateway indexes
 deployment-wide (route and provider names, and the one slug namespace
 providers and groups share) are unique across orgs, and so is a route name
 that would sit on another org's `slug/model` address. A collision is refused
-with a `409` that does not say which org holds the name. An admin can also
+with a `409` that does not say which org holds the name. The route-name check
+runs one way: a slug created after another org's `slug/…` route is accepted,
+and keys that carry no org then reach that route rather than the new address
+(the ADR-0017 addendum explains why). An admin can also
 narrow a route to its own project (`project_only`), which narrows that route
 but not the `slug/model` address of the provider behind it (#1919).
 The contract, the table of which keys admit which rows, and the write-time

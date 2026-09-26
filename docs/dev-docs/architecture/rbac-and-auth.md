@@ -169,7 +169,12 @@ The write path keeps the snapshot inside that rule:
   org holds `edge`), and a database route may not be named `fake-llm`. The
   gateway already treats those routes as absent for other orgs' keys; the
   refusal protects keys from a config file, which carry no org and would reach
-  the route instead of the address. An operator may still replace the builtin:
+  the route instead of the address. It runs one way only: a provider or group
+  created later with the slug of another org's existing `slug/…` route is
+  accepted, because refusing it would let any org reserve slugs by naming
+  routes after them. That org's own keys get their address; org-less keys (and
+  anonymous callers with `require_auth` off) resolve the named route first and
+  reach the other org's route. An operator may still replace the builtin:
   a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
   named `fake-llm` shadows it.
 - Every refusal is a `409` ("… is already in use in this deployment; choose
