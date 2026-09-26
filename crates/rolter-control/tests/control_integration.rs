@@ -2353,6 +2353,38 @@ async fn project_settings_are_read_by_viewers_and_changed_by_project_admins() {
     .await
     .unwrap();
     assert_eq!(audited, 1);
+
+    // a viewer of another org who names acme's project beside their own org
+    // resolves a role at that assembled chain, but holds none on the project's
+    // real one: the setting is acme's, and it must not come back as theirs
+    let umbrella: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Umbrella', 'umbrella') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let outsider = seed_user(&pool, "outsider@settings.test", false).await;
+    seed_membership(&pool, outsider, Some(umbrella), None, None, "viewer").await;
+    let outsider_token = seed_session(&pool, outsider, "settings_outsider").await;
+    let effective: Value = client
+        .get(format!(
+            "{base}/api/v1/rbac/effective?org_id={umbrella}&project_id={project}"
+        ))
+        .bearer_auth(&outsider_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(effective["role"], json!("viewer"), "{effective}");
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!allowed.contains(&"request_payload:read"), "{allowed:?}");
 }
 
 /// `GET /api/v1/config/export` hands back the deployment as an importable

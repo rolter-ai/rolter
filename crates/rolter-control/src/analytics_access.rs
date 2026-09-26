@@ -28,7 +28,11 @@
 //!   blanked and `payload_withheld` set, so the dashboard can say why they are
 //!   missing instead of claiming payload capture is off.
 //! * **Provider health** — those rows name a provider and carry no org, so a
-//!   user sees the providers of the orgs where they may read providers.
+//!   user sees the providers of the orgs where they may read providers. The
+//!   match is by name, and names are unique per org only: a name another org
+//!   used before (deleted, then created again here) brings its history along
+//!   until the rows expire. Writing the provider's org into the rows closes
+//!   that (#1908).
 //!
 //! # Why a filter rather than a guard
 //!
@@ -248,7 +252,8 @@ impl FromRequestParts<ControlState> for AnalyticsAccess {
             };
         }
         // without one there are no sessions, and the admin token is the only
-        // credential that exists
+        // credential that exists. the dashboard has no way to present it yet,
+        // so a store-less control plane shows these screens to curl only (#1909)
         if presents_admin_token(parts, expected) {
             Ok(Self::unrestricted())
         } else {
