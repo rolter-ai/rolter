@@ -280,3 +280,38 @@ export const KeepsTheClockForASaveThatLandsAfterClosing: Story = {
     await expect(lines(canvasElement).filter((l) => l.startsWith("form_abandon"))).toHaveLength(0);
   },
 };
+
+/**
+ * `save_confirmed` is read as the wait between pressing save and being told it
+ * worked, and the save-latency query in the observability docs calls anything
+ * past about two seconds a duplicate write waiting to happen. Measured from the
+ * opening it counted the form fill too, so a twenty-second read of a delete
+ * dialog came out as a twenty-second save (#1894). The press beside it keeps
+ * the dwell since the opening, which is what `form_submit` means.
+ */
+export const MeasuresTheSaveFromThePress: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the clock is shifted rather than frozen, so the runner's own timers keep
+    // moving and only the gap the story names is artificial
+    const realNow = Date.now;
+    let skew = 0;
+    Date.now = () => realNow() + skew;
+    try {
+      await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+      skew += 20_000; // twenty seconds spent reading the form
+      await userEvent.click(canvas.getByRole("button", { name: "save" }));
+      await userEvent.click(canvas.getByRole("button", { name: "land the save" }));
+    } finally {
+      Date.now = realNow;
+    }
+    await waitFor(() =>
+      expect(lines(canvasElement)).toContain("save_confirmed:providers:provider"),
+    );
+    const events = pendingUxEvents();
+    const press = events.find((e) => e.action === "form_submit");
+    const confirmed = events.find((e) => e.action === "save_confirmed");
+    await expect(press?.duration_ms).toBeGreaterThanOrEqual(20_000);
+    await expect(confirmed?.duration_ms).toBeLessThan(20_000);
+  },
+};

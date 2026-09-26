@@ -81,6 +81,26 @@ The queue is never flushed under a story, so it can be read directly.
 
 Run them with `bun run test:stories <file>` from `ui/`.
 
+## What `duration_ms` measures on a form
+
+`useFormTelemetry` keeps two clocks, and each action reads one of them:
+
+| Action                                           | `duration_ms` is the time since |
+| ------------------------------------------------ | ------------------------------- |
+| `form_submit` (`ok` and `error`), `retry_submit` | the form opened                 |
+| `form_abandon`, `abandon_dirty`                  | the form opened                 |
+| `save_confirmed`                                 | the last save press             |
+
+The dwell since opening is what separates a misclick from a decision, so every
+row about the operator's time in the form carries it. `save_confirmed` is read
+the other way: the save-latency query in the
+[observability docs](../../user-docs/observability/what-to-look-at.mdx) takes it
+as the wait between pressing save and being told it worked. A clock started at
+the opening would count the form fill too, and a twenty-second read of a delete
+dialog would come out as a twenty-second save (#1894). The press clock outlives
+the form closing, because a caller that closes from its mutation's `onSuccess`
+reports the landing a commit after the form went away (#1761).
+
 ## The struggle signals
 
 Three of the actions record what the operator _could not_ do (#1731). They are

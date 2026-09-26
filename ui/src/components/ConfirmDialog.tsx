@@ -138,12 +138,14 @@ export function ConfirmDialog({
     onConfirm();
   };
 
-  // Escape, the scrim and the close button wait for the request for the same
-  // reason cancel is disabled: it is already on the wire. a dialog dismissed
-  // mid-flight also has its caller reset the mutation whose answer is still
-  // coming, and the read above would take that silence for a landing
+  // Escape, the scrim and the close button still close the dialog mid-flight.
+  // neither the fetch nor the control plane times a request out, so a delete
+  // stuck behind a row lock would otherwise hold the operator in a full-page
+  // modal until a reload. the dismissal disarms the read above first: the
+  // caller resets the mutation on close, and the read would take that silence
+  // for a landing. the press stays on record and nothing after it does
   const dismiss = (next: boolean) => {
-    if (!next && busy) return;
+    if (!next && busy) pressed.current = null;
     onOpenChange(next);
   };
 

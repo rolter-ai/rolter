@@ -60,7 +60,9 @@ Four properties are load-bearing:
   spins so a slow request does not read as a dropped click, and cancel is
   disabled too — the request is already on the wire, and a button that looks
   like it recalls one would be lying. Escape, the scrim and the header's close
-  button wait for the request for the same reason.
+  button still close the dialog: neither the fetch nor the control plane times
+  a request out, so a delete stuck behind a row lock would otherwise hold the
+  operator in a full-page modal until a reload.
 
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
@@ -123,9 +125,11 @@ Two things follow for a call site:
   rendered only while a target exists unmounts on the closing edge and never
   sees the landing.
 - **Reset the mutation on close** (`remove.reset()` in `onOpenChange`), so a
-  refusal from one row does not greet the next row opened. The dialog also
-  refuses Escape and the scrim while `pending`, since a dismissal mid-flight
-  would reset a mutation whose answer is still coming.
+  refusal from one row does not greet the next row opened. A dismissal while
+  `pending` resets a mutation whose answer is still coming, which from inside
+  the dialog looks exactly like a landing, so the dialog disarms its read
+  before it passes the dismissal on: the press is recorded and nothing after
+  it.
 
 A confirmation rendered outside any `UxScreenProvider`, such as the scope
 switcher in the user menu, has no screen key and stays silent.

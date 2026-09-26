@@ -8,10 +8,11 @@
 // in `ui/scripts/` looked for a bare `<select>`, a raw `<pre>`, a
 // `window.confirm`, or a primitive re-declared inside the screen that needed
 // it. #1044 is what that costs — seven form primitives sat trapped in one
-// sheet's file for months because no check noticed they were there. A fifth
-// rule came later: a confirmation assembled out of `DialogFooter` and a
-// destructive `Button` rather than taken from `ConfirmDialog`, which eight
-// screens had drifted into by the time #1760 found them.
+// sheet's file for months because no check noticed they were there. The
+// repeated-shape rule (#1686) made five, and a sixth came later: a
+// confirmation assembled out of `DialogFooter` and a destructive `Button`
+// rather than taken from `ConfirmDialog`, which eight screens had drifted into
+// by the time #1760 found them.
 //
 // The rules are deliberately grep-level, the way `check-literals.ts` is: this
 // is a guard against the obvious mistake, not a type system. Two things keep

@@ -70,19 +70,17 @@ export const Pending: Story = {
 };
 
 /**
- * Escape, the scrim and the header's close button are refused mid-flight too,
- * not only the cancel button: a dialog that vanished while the request was on
- * the wire would leave nowhere to report how it ended.
+ * The header's close button, Escape and the scrim still close the dialog
+ * mid-flight. Nothing times a request out — not the fetch, not the control
+ * plane — so a delete stuck behind a row lock would otherwise trap the operator
+ * in a full-page modal until they reloaded.
  */
-export const DismissalWaitsForTheRequest: Story = {
+export const DismissalMidFlightStillCloses: Story = {
   args: { pending: true },
   play: async ({ args }) => {
-    const canvas = screen();
-    const dialog = await canvas.findByRole("dialog");
+    const dialog = await screen().findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
-    await userEvent.keyboard("{Escape}");
-    await expect(args.onOpenChange).not.toHaveBeenCalled();
-    await expect(canvas.getByRole("dialog")).toBeVisible();
+    await expect(args.onOpenChange).toHaveBeenCalledWith(false);
   },
 };
 
@@ -333,6 +331,49 @@ export const ALandedConfirmEmitsSaveConfirmed: Story = {
         .filter((e) => e.action === "form_submit" && e.target === TARGET)
         .map((e) => e.outcome),
     ).toEqual(["ok"]);
+    expectNoUxEvent("form_abandon", TARGET);
+  },
+};
+
+/**
+ * A dialog dismissed while its request is still out has the caller reset the
+ * mutation, so `pending` falls with no error and the dialog closed — exactly
+ * what a landing looks like from here. The dismissal disarms the read first, so
+ * the press is the last row: the dialog never learned how the request ended and
+ * does not claim to.
+ */
+function DismissedMidFlight(args: React.ComponentProps<typeof ConfirmDialog>) {
+  const [open, setOpen] = React.useState(true);
+  const [pending, setPending] = React.useState(false);
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <ConfirmDialog
+        {...args}
+        name={TARGET}
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          // what every call site does on close: `remove.reset()`
+          if (!next) setPending(false);
+        }}
+        pending={pending}
+        // the request never answers
+        onConfirm={() => setPending(true)}
+      />
+    </UxScreenProvider>
+  );
+}
+
+export const ADismissalMidFlightConfirmsNothing: Story = {
+  render: (args) => <DismissedMidFlight {...args} />,
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "Delete channel" }));
+    await waitFor(() => expect(screen().getByRole("button", { name: "Cancel" })).toBeDisabled());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen().queryByRole("dialog")).toBeNull());
+    await expectUxEvent("form_submit", TARGET);
+    expectNoUxEvent("save_confirmed", TARGET);
+    // a press on record is not an abandon either
     expectNoUxEvent("form_abandon", TARGET);
   },
 };
