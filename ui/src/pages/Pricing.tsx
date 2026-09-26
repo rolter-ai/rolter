@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDollarSign, Plus } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
@@ -10,14 +11,6 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, Toolbar } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -198,51 +191,37 @@ export default function Pricing() {
         onDone={invalidate}
       />
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.pricing.deleteTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.pricing.deleteBody"
-              values={{ model: deleteTarget?.model }}
-              components={[<span key="model" className="font-mono" />]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        {removePrice.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removePrice.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removePrice.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              const what = deleteTarget.model;
-              removePrice.mutate(what, {
-                onSuccess: () => {
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-                },
-                onError: (error) => {
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {t("common.delete")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        name="price-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleteTarget(null);
+          // a refusal for this price must not greet the next one opened
+          removePrice.reset();
+        }}
+        title={t("pages.pricing.confirm.deleteTitle", { model: deleteTarget?.model ?? "" })}
+        description={t("pages.pricing.confirm.deleteBody")}
+        confirmLabel={t("pages.pricing.confirm.deleteConfirm")}
+        pending={removePrice.isPending}
+        error={removePrice.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const what = deleteTarget.model;
+          removePrice.mutate(what, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) =>
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorDetail(error),
+              }),
+          });
+        }}
+      />
     </PageBody>
   );
 }

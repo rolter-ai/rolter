@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Layers, Loader2, Tag } from "lucide-react";
+import { Building2, Layers, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderGroupSheet, type ProviderGroupSheetMode } from "@/components/ProviderGroupSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
@@ -23,13 +24,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   deleteProviderGroup,
   fetchProviderGroups,
@@ -304,58 +298,43 @@ export default function ProviderGroups() {
         onDone={invalidate}
       />
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.providerGroups.deleteTitle")}</DialogTitle>
-          <DialogDescription>
-            <Trans
-              i18nKey="pages.providerGroups.deleteBody"
-              values={{
-                name: deleteTarget?.name,
-                address: `${deleteTarget?.slug}/model`,
-              }}
-              components={[
-                <span key="name" className="font-mono" />,
-                <span key="address" className="font-mono" />,
-              ]}
-            />
-          </DialogDescription>
-        </DialogHeader>
-        {removeGroup.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removeGroup.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removeGroup.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              const what = deleteTarget.name;
-              removeGroup.mutate(deleteTarget.id, {
-                onSuccess: () => {
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-                },
-                onError: (error) => {
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {removeGroup.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t("common.delete")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        name="provider-group-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleteTarget(null);
+          // a refusal for this group must not greet the next one opened
+          removeGroup.reset();
+        }}
+        title={t("pages.providerGroups.confirm.deleteTitle", { name: deleteTarget?.name ?? "" })}
+        description={
+          <Trans
+            i18nKey="pages.providerGroups.confirm.deleteBody"
+            values={{ address: `${deleteTarget?.slug}/model` }}
+            components={[<span key="address" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("pages.providerGroups.confirm.deleteConfirm")}
+        pending={removeGroup.isPending}
+        error={removeGroup.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const what = deleteTarget.name;
+          removeGroup.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) =>
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorDetail(error),
+              }),
+          });
+        }}
+      />
     </PageBody>
   );
 }

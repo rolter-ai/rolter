@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import {
@@ -159,10 +160,12 @@ const CREATE_KEYS: Record<Level, { title: string; hint: string }> = {
   project: { title: "scope.newProject", hint: "scope.newProjectHint" },
 };
 
+// the title names the row, so each level carries its own noun for the same
+// reason the row labels above do
 const DELETE_KEYS: Record<Level, string> = {
-  org: "scope.deleteOrgTitle",
-  team: "scope.deleteTeamTitle",
-  project: "scope.deleteProjectTitle",
+  org: "scope.confirm.orgTitle",
+  team: "scope.confirm.teamTitle",
+  project: "scope.confirm.projectTitle",
 };
 
 function ScopeRow({
@@ -349,36 +352,27 @@ function DeleteScopeDialog({
     },
   });
 
+  // the dialog's UX key is read once more on its closing edge, where `target`
+  // is already gone, so the level outlives the target by that one close. a key
+  // that changed with it would file the abandon under another form
+  const [level, setLevel] = React.useState<Level>(target?.level ?? "project");
+  if (target && target.level !== level) setLevel(target.level);
+
   return (
-    <Dialog open={!!target} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>{target ? t(DELETE_KEYS[target.level]) : ""}</DialogTitle>
-        <DialogDescription>
-          {/* the name is wrapped in <0> inside the catalog so each locale can
-              place it wherever its grammar wants it */}
-          <Trans
-            i18nKey={
-              target && target.level !== "project" ? "scope.deleteCascadeHint" : "scope.deleteHint"
-            }
-            values={{ name: target?.name ?? "" }}
-            components={[<span key="name" className="font-mono" />]}
-          />
-        </DialogDescription>
-      </DialogHeader>
-      {remove.isError && (
-        <p className="text-xs text-[color:var(--status-danger-text)]">
-          {(remove.error as Error).message}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          {t("common.cancel")}
-        </Button>
-        <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
-          {remove.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {t("common.delete")}
-        </Button>
-      </DialogFooter>
-    </Dialog>
+    <ConfirmDialog
+      name={`${level}-delete`}
+      open={!!target}
+      onOpenChange={(open) => {
+        onOpenChange(open);
+        // a refusal for this row must not greet the next one opened
+        if (!open) remove.reset();
+      }}
+      title={t(DELETE_KEYS[level], { name: target?.name ?? "" })}
+      description={t(level === "project" ? "scope.confirm.body" : "scope.confirm.cascadeBody")}
+      confirmLabel={t(ROW_KEYS[level].remove)}
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => remove.mutate()}
+    />
   );
 }

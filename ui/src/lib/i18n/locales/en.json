@@ -515,8 +515,11 @@
       "readOnlyPill": "read-only",
       "view": "View",
       "edit": "Edit",
-      "deleteTitle": "Delete model",
-      "deleteBody": "This removes all routes and targets for <0>{{model}}</0>. This cannot be undone."
+      "confirm": {
+        "deleteTitle": "Delete model {{model}}?",
+        "deleteBody": "Every route and target for it is removed. This cannot be undone.",
+        "deleteConfirm": "Delete model"
+      }
     },
     "providers": {
       "search": "Search providers",
@@ -662,8 +665,6 @@
       "edit": "Edit",
       "editTitle": "Edit {{model}}",
       "editSubtitle": "Prices are per million tokens (Mtok); saving upserts by model name.",
-      "deleteTitle": "Delete price",
-      "deleteBody": "Removes the pricing entry for <0>{{model}}</0>. Cost accounting for this model falls back to no known price.",
       "modelName": "Model name",
       "inputPrice": "Input price per Mtok",
       "outputPrice": "Output price per Mtok",
@@ -671,7 +672,12 @@
       "cachedPlaceholder": "defaults to input price",
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
-      "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget."
+      "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "confirm": {
+        "deleteTitle": "Delete the price for {{model}}?",
+        "deleteBody": "Cost accounting for this model falls back to no known price.",
+        "deleteConfirm": "Delete price"
+      }
     },
     "playground": {
       "groupRoutes": "Routes",
@@ -759,13 +765,6 @@
       "renameAction": "Rename {{name}}",
       "renamed": "Template details updated.",
       "deleteAction": "Delete {{name}}",
-      "deleteTitle": "Delete {{name}}?",
-      "deleteLive": "v{{version}} is live — anything routing through this template starts failing immediately.",
-      "deleteUnpublished": "This template has never been published.",
-      "deleteConsequence": "Every version, scope and sample is deleted with it. This cannot be undone.",
-      "deleteConfirmLabel": "Type {{slug}} to confirm",
-      "deleteSubmit": "Delete template",
-      "deleting": "Deleting…",
       "fieldName": "Name",
       "fieldDescription": "Description",
       "fieldOptional": "optional",
@@ -866,17 +865,18 @@
       "creating": "Creating…",
       "rollbackDescription": "This changes the live version from v{{from}} to immutable v{{to}}. The newer versions remain in history.",
       "keepLive": "Keep v{{version}} live",
-      "rollingBack": "Rolling back…"
+      "rollingBack": "Rolling back…",
+      "confirm": {
+        "deleteTitle": "Delete template {{name}}?",
+        "deleteLive": "v{{version}} is live — anything routing through this template starts failing immediately.",
+        "deleteUnpublished": "This template has never been published.",
+        "deleteConsequence": "Every version, scope and sample is deleted with it. This cannot be undone.",
+        "deleteSlugLabel": "Type {{slug}} to confirm",
+        "deleteConfirm": "Delete template"
+      }
     },
     "skillsRepo": {
       "deleteAction": "Delete {{name}}",
-      "deleteTitle": "Delete {{name}}?",
-      "deletePublished": "v{{version}} is published — agents resolving this skill start failing immediately.",
-      "deleteUnpublished": "This skill has never been published.",
-      "deleteConsequence": "Every version and access rule is deleted with it. Retire it instead if you only want it hidden.",
-      "deleteConfirmLabel": "Type {{slug}} to confirm",
-      "deleteSubmit": "Delete skill",
-      "deleting": "Deleting…",
       "settings": "Settings",
       "cancel": "Cancel",
       "created": "Skill created. Add its first immutable version.",
@@ -956,7 +956,15 @@
       "saveSettings": "Save settings",
       "rollbackDescription": "This changes the resolved version from v{{from}} to immutable v{{to}}. Newer versions remain in history.",
       "keepLive": "Keep v{{version}} live",
-      "rollingBack": "Rolling back…"
+      "rollingBack": "Rolling back…",
+      "confirm": {
+        "deleteTitle": "Delete skill {{name}}?",
+        "deletePublished": "v{{version}} is published — agents resolving this skill start failing immediately.",
+        "deleteUnpublished": "This skill has never been published.",
+        "deleteConsequence": "Every version and access rule is deleted with it. Retire it instead if you only want it hidden.",
+        "deleteSlugLabel": "Type {{slug}} to confirm",
+        "deleteConfirm": "Delete skill"
+      }
     },
     "tool-groups": {
       "confirm": {
@@ -1285,12 +1293,6 @@
       "emptyTitle": "No MCP servers registered",
       "emptyBody": "Register a custom endpoint or install a curated server from MCP Library.",
       "configure": "Configure",
-      "confirmDelete": {
-        "title": "Delete {{name}}?",
-        "body": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
-        "confirm": "Delete server",
-        "pending": "Deleting…"
-      },
       "dialog": {
         "titleAdd": "Register MCP server",
         "titleEdit": "Configure MCP server",
@@ -1368,7 +1370,10 @@
         "clearCredentialTitle": "Clear the stored credential for {{name}}?",
         "clearCredentialBody": "The credential is deleted and the server switches to no authentication, so Rolter calls it unauthenticated from now on. The value cannot be read back — to restore it you must paste it again.",
         "switchKindBody": "Switching to {{kind}} deletes the stored credential. The value cannot be read back — to go back you must paste it again.",
-        "clearCredentialConfirm": "Clear credential"
+        "clearCredentialConfirm": "Clear credential",
+        "deleteTitle": "Delete server {{name}}?",
+        "deleteBody": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
+        "deleteConfirm": "Delete server"
       }
     },
     "mcpOAuth": {
@@ -2129,8 +2134,11 @@
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
       "edit": "Edit",
-      "deleteTitle": "Delete provider group",
-      "deleteBody": "<0>{{name}}</0> will stop resolving as a <1>{{address}}</1> address. Member providers are unaffected. This cannot be undone."
+      "confirm": {
+        "deleteTitle": "Delete provider group {{name}}?",
+        "deleteBody": "It stops resolving as a <0>{{address}}</0> address. Member providers are unaffected. This cannot be undone.",
+        "deleteConfirm": "Delete group"
+      }
     },
     "teams": {
       "emptyTitle": "No teams yet",
@@ -2702,6 +2710,13 @@
     "deleteOrg": "Delete org",
     "deleteTeam": "Delete team",
     "deleteProject": "Delete project",
+    "confirm": {
+      "orgTitle": "Delete org {{name}}?",
+      "teamTitle": "Delete team {{name}}?",
+      "projectTitle": "Delete project {{name}}?",
+      "cascadeBody": "Everything under it is removed with it. This cannot be undone.",
+      "body": "Everything scoped to it is removed with it, routes and virtual keys included. This cannot be undone."
+    },
     "newOrg": "New org",
     "newTeam": "New team",
     "newProject": "New project",
@@ -2709,11 +2724,6 @@
     "newOrgHint": "Creates an org with a URL-safe slug derived from the name.",
     "newTeamHint": "Creates a team under the currently selected org.",
     "newProjectHint": "Creates a project under the currently selected team.",
-    "deleteOrgTitle": "Delete org",
-    "deleteTeamTitle": "Delete team",
-    "deleteProjectTitle": "Delete project",
-    "deleteCascadeHint": "This removes <0>{{name}}</0> and everything under it. This cannot be undone.",
-    "deleteHint": "This removes <0>{{name}}</0>. This cannot be undone.",
     "errors": {
       "orgsFailed": "failed to load orgs",
       "noOrg": "no org configured — create one to get started",
@@ -3047,12 +3057,6 @@
       "selectProject": "Select a project in the sidebar to mint a virtual key",
       "emptyTitle": "No virtual keys yet",
       "empty": "You haven't minted a virtual key yet. Create one to start calling the gateway.",
-      "delete": {
-        "title": "Delete virtual key",
-        "body": "will stop authenticating immediately. This cannot be undone.",
-        "cancel": "Cancel",
-        "confirm": "Delete"
-      },
       "card": {
         "unnamed": "unnamed key",
         "disabled": "disabled",
@@ -3082,6 +3086,11 @@
         "title": "Rotate {{name}}?",
         "body": "A new secret is issued and the current one stops authenticating immediately, so anything still using the old key starts failing.",
         "confirm": "Rotate key"
+      },
+      "deleteConfirm": {
+        "title": "Delete key {{name}}?",
+        "body": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
+        "confirm": "Delete key"
       }
     },
     "mfa": {
