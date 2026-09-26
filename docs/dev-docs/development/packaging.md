@@ -217,8 +217,13 @@ hook) asserts the wiring is still in place. It reads `release-plz.yml`,
 `release.yml` and `ci.yml` as parsed YAML and checks structure: a job exists, its
 `needs` set holds the required job ids, a trigger or dispatch input is declared.
 The few assertions that are text by nature, a `gh workflow run` command or the
-`push-by-digest=true` option, look only inside the job they belong to. So the
-check holds however the files are laid out, prettier's reflow included. Run it
+`push-by-digest=true` option, look only inside the job they belong to, and they
+read its shell with the comments removed: a dispatch commented out to pause
+releases fails the check rather than passing it. A job or step switched off
+with `if: false` counts as missing. So the check holds however the files are
+laid out, prettier's reflow included. The `gh api` run confirmations keep
+`event=workflow_dispatch` in the URL path; any other query field is accepted
+as a `-f` flag only when the call pins `-X GET`. Run it
 with `uv run --script scripts/check-release-handoff.py`; `--self-test` breaks
 each invariant in a copy of the workflows and fails unless the matching check
 catches it, which is how a check edited into one that can never fail gets

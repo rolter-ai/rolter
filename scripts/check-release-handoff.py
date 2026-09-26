@@ -21,9 +21,11 @@ to v0.0.6-v0.0.10 while PyPI sat on 0.0.5 (#903).
 Every assertion reads the workflows as parsed YAML: a job exists, its `needs`
 *set* holds the required ids, a trigger or input is declared. The few that are
 text by nature (a command inside a `run:` block, an option string passed to an
-action) search only the job they belong to. So the check passes however a
-workflow is laid out, reflowed by prettier included, and fails when the wiring
-itself is wrong (#1723).
+action) search only the job they belong to, and read its shell with the
+comments taken out, so a command that survives only as a comment does not count.
+A job or step switched off with `if: false` counts as missing. So the check
+passes however a workflow is laid out, reflowed by prettier included, and fails
+when the wiring itself is wrong (#1723).
 
     uv run --script scripts/check-release-handoff.py              # check the workflows
     uv run --script scripts/check-release-handoff.py --self-test  # prove each check can fail
@@ -128,9 +130,16 @@ def load(root: Path) -> tuple[Tree, list[str]]:
 # ── reading the parsed structure ────────────────────────────────────────────
 
 
+def disabled(node: dict) -> bool:
+    # `if: false` and `if: ${{ false }}` switch a job or step off for good; one
+    # that never runs wires nothing, so the checks treat it as absent
+    cond = node.get("if")
+    return cond is False or (isinstance(cond, str) and expression(cond) == "false")
+
+
 def job(wf: Workflow, name: str) -> Optional[dict]:
     found = (wf.get("jobs") or {}).get(name)
-    return found if isinstance(found, dict) else None
+    return found if isinstance(found, dict) and not disabled(found) else None
 
 
 def needs(j: Optional[dict]) -> set:
@@ -140,12 +149,68 @@ def needs(j: Optional[dict]) -> set:
 
 
 def steps(j: Optional[dict]) -> list:
-    return [s for s in (j or {}).get("steps") or [] if isinstance(s, dict)]
+    return [s for s in (j or {}).get("steps") or [] if isinstance(s, dict) and not disabled(s)]
+
+
+def strip_shell_comments(script: str) -> str:
+    # a `#` that starts a word outside quotes comments out the rest of its line.
+    # quoting is tracked across lines, so a multi-line jq program keeps its text,
+    # and `$(` opens a fresh unquoted context even inside double quotes, as it
+    # does in bash, so `runs="$(gh api \⏎ # ...` is a comment. a `#` inside a
+    # word (`${REF#v}`, `$#`) or inside quotes is not
+    out: list[str] = []
+    stack = [""]  # "" unquoted, "'" or '"' quoted, "(" an open $( or ( group
+    i = 0
+    while i < len(script):
+        c, top = script[i], stack[-1]
+        if top == "'":
+            if c == "'":
+                stack.pop()
+        elif c == "\\":
+            out.append(script[i : i + 2])
+            i += 2
+            continue
+        elif c == "$" and script[i + 1 : i + 2] == "(":
+            stack.append("(")
+            out.append("$(")
+            i += 2
+            continue
+        elif top == '"':
+            if c == '"':
+                stack.pop()
+        elif c in "'\"":
+            stack.append(c)
+        elif c == "(":
+            stack.append("(")
+        elif c == ")" and top == "(":
+            stack.pop()
+        elif c == "#" and (i == 0 or script[i - 1] in " \t\n;&|()"):
+            end = script.find("\n", i)
+            i = len(script) if end == -1 else end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def shell_commands(script: str) -> Iterator[str]:
+    # one logical command per line: comments dropped first, as the shell does,
+    # so a comment ending in a backslash continues nothing, then continuations joined
+    for line in re.sub(r"\\\n\s*", " ", strip_shell_comments(script)).splitlines():
+        if line.strip():
+            yield line
 
 
 def run_text(j: Optional[dict]) -> str:
-    # the shell every step of one job runs; textual checks look here and only here
-    return "\n".join(s["run"] for s in steps(j) if isinstance(s.get("run"), str))
+    # the shell every step of one job runs, comments removed; textual checks look
+    # here and only here. each step is its own script, so a quote left open in
+    # one never swallows the next
+    return "\n".join(
+        command
+        for s in steps(j)
+        if isinstance(s.get("run"), str)
+        for command in shell_commands(s["run"])
+    )
 
 
 def all_run_text(wf: Workflow) -> str:
@@ -168,13 +233,6 @@ def all_strings(wf: Workflow) -> str:
     # forbidden pattern stays forbidden wherever it moves, and a yaml comment that
     # names one is not part of the parse, so it never trips the check
     return "\n".join(strings(wf))
-
-
-def shell_commands(text: str) -> Iterator[str]:
-    # one logical command per line, backslash continuations joined, shell comments dropped
-    for line in re.sub(r"\\\n\s*", " ", text).splitlines():
-        if not line.lstrip().startswith("#"):
-            yield line
 
 
 def triggers(wf: Workflow) -> dict:
@@ -309,17 +367,22 @@ def no_first_tagged_release(wf: Workflow) -> bool:
 
 # `gh api` switches to POST as soon as any -f/-F is present, which 404s the
 # GET-only workflow-runs endpoint and aborted the confirmation loop (#1026).
-# `event=` is the parameter that did it; any other field on a runs query does
-# the same unless the method is pinned to GET
+# `event=` was the field that did it, and it stays in the path whatever the
+# method: that is the form the #1026 fix settled on and the form the two
+# confirmation checks below read. any other field is fine once -X GET is pinned
 FIELD_FLAG = re.compile(r"(?<!\S)(?:-[fF]|--(?:raw-)?field)")
+EVENT_FIELD = re.compile(r"(?<!\S)(?:-[fF]|--(?:raw-)?field)(?:\s+|=)?event=")
 GET_METHOD = re.compile(r"(?<!\S)(?:-X|--method)(?:\s+|=)?GET(?!\S)")
 
 
-@check(PLZ, "the run-confirmation query must be in the path; -f makes gh api POST")
-def runs_query_in_path(wf: Workflow) -> bool:
-    if re.search(r"(?<!\S)(?:-[fF]|--(?:raw-)?field)(?:\s+|=)?event=", all_strings(wf)):
-        return False
-    for command in shell_commands(all_run_text(wf)):
+@check(PLZ, "event=workflow_dispatch must stay in the runs query path, never a -f/-F field")
+def runs_event_in_path(wf: Workflow) -> bool:
+    return not EVENT_FIELD.search(all_strings(wf))
+
+
+@check(PLZ, "a -f/-F field on a gh api runs query needs -X GET, or gh api POSTs and 404s")
+def runs_query_is_get(wf: Workflow) -> bool:
+    for command in all_run_text(wf).splitlines():
         _, api, call = command.partition("gh api ")
         if api and "/runs" in call and FIELD_FLAG.search(call) and not GET_METHOD.search(call):
             return False
@@ -532,7 +595,8 @@ FOOTER = """
 the release handoff is broken. see docs/dev-docs/development/packaging.md ("Release
 pipeline"); a release that loses this wiring publishes a github release and
 crates.io but never a pypi wheel, or leaves the release pr unable to reach a
-green ci-ok, and nothing goes red."""
+green ci-ok, and nothing goes red. a job or step disabled with `if: false`
+counts as missing, and so does a command left only in a shell comment."""
 
 
 def run(root: Path) -> int:
@@ -626,6 +690,43 @@ def append_run(file: str, name: str, line: str) -> Callable[[Tree], None]:
     return mutate
 
 
+def comment_out(
+    file: str, name: str, needle: str, whole_step: bool = False
+) -> Callable[[Tree], None]:
+    # the edit someone makes to pause a command: `# ` in front of the line, or in
+    # front of every line of the step when the command spans several
+    def mutate(tree: Tree) -> None:
+        hit = False
+        for s in steps(jobs_of(tree, file)[name]):
+            script = s.get("run")
+            if not isinstance(script, str) or needle not in script:
+                continue
+            s["run"] = "\n".join(
+                f"# {line}" if whole_step or needle in line else line for line in script.split("\n")
+            )
+            hit = True
+        if not hit:
+            raise NoOp(f"{file}: {name} runs nothing mentioning {needle!r}")
+
+    return mutate
+
+
+def disable(file: str, name: str, step_mentioning: Optional[str] = None) -> Callable[[Tree], None]:
+    # `if: false` on the job, or on the step whose shell mentions the given text
+    def mutate(tree: Tree) -> None:
+        j = jobs_of(tree, file)[name]
+        if step_mentioning is None:
+            j["if"] = False
+            return
+        for s in steps(j):
+            if step_mentioning in str(s.get("run", "")):
+                s["if"] = "${{ false }}"
+                return
+        raise NoOp(f"{file}: {name} has no step running {step_mentioning!r}")
+
+    return mutate
+
+
 def drop_steps(file: str, name: str, match: Callable[[dict], bool]) -> Callable[[Tree], None]:
     def mutate(tree: Tree) -> None:
         j = jobs_of(tree, file)[name]
@@ -683,9 +784,34 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         rename_job(PLZ, "dispatch-artifact-release", "dispatch"),
     ),
     (
+        "handoff_job",
+        "handoff job disabled with if: false",
+        disable(PLZ, "dispatch-artifact-release"),
+    ),
+    (
         "handoff_dispatches_release",
         "dispatch removed from the handoff",
         replace_in_job(PLZ, "dispatch-artifact-release", "gh workflow run release.yml", "true"),
+    ),
+    (
+        "handoff_dispatches_release",
+        "dispatch commented out",
+        comment_out(PLZ, "dispatch-artifact-release", "gh workflow run release.yml"),
+    ),
+    (
+        "handoff_dispatches_release",
+        "dispatch left only in a trailing comment",
+        replace_in_job(
+            PLZ,
+            "dispatch-artifact-release",
+            "gh workflow run release.yml",
+            "true  # gh workflow run release.yml",
+        ),
+    ),
+    (
+        "handoff_dispatches_release",
+        "dispatch step disabled with if: false",
+        disable(PLZ, "dispatch-artifact-release", "gh workflow run release.yml"),
     ),
     (
         "handoff_dispatches_release",
@@ -733,9 +859,21 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         ),
     ),
     (
+        "tag_selected_by_name",
+        "tag resolution commented out",
+        comment_out(
+            PLZ, "release-plz-release", 'select(.package_name == "rolter-gateway")', whole_step=True
+        ),
+    ),
+    (
         "tag_validated",
         "vX.Y.Z validation dropped",
         replace_in_job(PLZ, "release-plz-release", "grep -Eq '^v[0-9]", "grep -Eq '^"),
+    ),
+    (
+        "tag_validated",
+        "vX.Y.Z validation commented out",
+        comment_out(PLZ, "release-plz-release", "grep -Eq '^v[0-9]"),
     ),
     (
         "no_first_tagged_release",
@@ -747,7 +885,7 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         ),
     ),
     (
-        "runs_query_in_path",
+        "runs_event_in_path",
         "query moved to -f on its own line",
         append_run(
             PLZ,
@@ -757,15 +895,35 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         ),
     ),
     (
-        "runs_query_in_path",
+        "runs_event_in_path",
         "query moved to -F inline",
         append_run(PLZ, "dispatch-release-pr-ci", 'gh api "$url" -F event=workflow_dispatch'),
     ),
     (
-        "runs_query_in_path",
+        "runs_event_in_path",
+        "event sent as a field even with -X GET",
+        replace_in_job(
+            PLZ,
+            "dispatch-artifact-release",
+            'runs?event=workflow_dispatch&per_page=20"',
+            'runs?per_page=20" -X GET -f event=workflow_dispatch',
+        ),
+    ),
+    (
+        "runs_query_is_get",
         "another field moved out of the runs query path",
         replace_in_job(
             PLZ, "dispatch-release-pr-ci", '&branch=$BRANCH&per_page=20"', '" -f branch="$BRANCH"'
+        ),
+    ),
+    (
+        "runs_query_is_get",
+        "-X GET named only in a trailing comment",
+        replace_in_job(
+            PLZ,
+            "dispatch-release-pr-ci",
+            '&branch=$BRANCH&per_page=20"',
+            '" -f branch="$BRANCH"  # -X GET',
         ),
     ),
     (
@@ -778,11 +936,21 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
             "actions/runs?event=workflow_dispatch",
         ),
     ),
+    (
+        "handoff_confirms_run",
+        "confirmation query commented out",
+        comment_out(PLZ, "dispatch-artifact-release", "actions/workflows/release.yml/runs?event="),
+    ),
     ("pr_gate_job", "release-pr gate deleted", drop_job(PLZ, "dispatch-release-pr-ci")),
     (
         "pr_gate_dispatches_ci",
         "ci dispatch removed from the gate",
         replace_in_job(PLZ, "dispatch-release-pr-ci", "gh workflow run ci.yml", "true"),
+    ),
+    (
+        "pr_gate_dispatches_ci",
+        "ci dispatch commented out",
+        comment_out(PLZ, "dispatch-release-pr-ci", "gh workflow run ci.yml"),
     ),
     (
         "pr_gate_can_dispatch",
@@ -803,6 +971,11 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
             "actions/workflows/ci.yml/runs?event=workflow_dispatch",
             "actions/runs?event=workflow_dispatch",
         ),
+    ),
+    (
+        "pr_gate_confirms_run",
+        "ci confirmation query commented out",
+        comment_out(PLZ, "dispatch-release-pr-ci", "actions/workflows/ci.yml/runs?event="),
     ),
     ("ci_dispatchable", "ci.yml workflow_dispatch removed", drop_trigger(CI, "workflow_dispatch")),
     ("ci_ok_job", "ci-ok job deleted", drop_job(CI, "ci-ok")),
@@ -839,6 +1012,11 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         replace_in_job(REL, "verify-external-checks", "RELEASE_REQUIRED_CHECKS ||", "REQUIRED ||"),
     ),
     ("parity_job", "verify-parity deleted", drop_job(REL, "verify-parity")),
+    (
+        "parity_job",
+        "verify-parity disabled with if: false",
+        edit_job(REL, "verify-parity", set_key("if", "${{ false }}")),
+    ),
     (
         "parity_observes_publish",
         "verify-parity stops observing publish-pypi",
@@ -880,9 +1058,19 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         replace_in_job(REL, "verify-parity", 'expect "macos x86_64 wheel"', "true"),
     ),
     (
+        "parity_expects_macos_x86_64",
+        "macos x86_64 expectation commented out",
+        comment_out(REL, "verify-parity", 'expect "macos x86_64 wheel"'),
+    ),
+    (
         "parity_expects_sdist",
         "sdist expectation dropped",
         replace_in_job(REL, "verify-parity", 'expect "sdist"', "true"),
+    ),
+    (
+        "parity_expects_sdist",
+        "sdist expectation commented out",
+        comment_out(REL, "verify-parity", 'expect "sdist"'),
     ),
     ("build_image_job", "build-image deleted", drop_job(REL, "build-image")),
     (
@@ -912,6 +1100,29 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         "wheel_smoke_offline",
         "wheel smoke may resolve from pypi",
         replace_in_job(REL, "smoke-wheels", "--no-index ", ""),
+    ),
+    (
+        "wheel_smoke_offline",
+        "--no-index left only in a comment",
+        chain(
+            replace_in_job(REL, "smoke-wheels", "--no-index ", ""),
+            append_run(REL, "smoke-wheels", "# keep --no-index here"),
+        ),
+    ),
+    (
+        "wheel_smoke_offline",
+        "--no-index left only in a trailing comment",
+        replace_in_job(
+            REL,
+            "smoke-wheels",
+            '--no-index --find-links dist "rolter==$VERSION"',
+            '--find-links dist "rolter==$VERSION"  # --no-index',
+        ),
+    ),
+    (
+        "wheel_smoke_offline",
+        "wheel install step disabled with if: false",
+        disable(REL, "smoke-wheels", "--no-index"),
     ),
 ]
 
@@ -947,6 +1158,44 @@ BENIGN: list[tuple[str, Callable[[Tree], None]]] = [
     (
         "triggers written as a list",
         lambda t: t[CI].__setitem__("on", sorted(triggers(t[CI]))),
+    ),
+    (
+        "a trailing comment after the dispatch",
+        replace_in_job(
+            PLZ,
+            "dispatch-artifact-release",
+            '-f tag="$TAG"',
+            '-f tag="$TAG"  # hand the tag to release.yml',
+        ),
+    ),
+    (
+        "a # inside quotes or a parameter expansion before the command",
+        replace_in_job(
+            REL,
+            "smoke-wheels",
+            "python -m pip install",
+            ': "${REF#v}" \'#\' "#"; python -m pip install',
+        ),
+    ),
+    (
+        "a comment line inside a multi-line quoted string",
+        replace_in_job(
+            PLZ,
+            "release-plz-release",
+            'map(select(.package_name == "rolter-gateway"))',
+            '# keep the order\n           map(select(.package_name == "rolter-gateway"))',
+        ),
+    ),
+    (
+        "a job or step with a real condition",
+        chain(
+            edit_job(
+                REL,
+                "smoke-wheels",
+                lambda j: [s.__setitem__("if", "${{ !cancelled() }}") for s in j["steps"]],
+            ),
+            edit_job(PLZ, "dispatch-artifact-release", set_key("if", "${{ needs.x.outputs.y }}")),
+        ),
     ),
 ]
 
