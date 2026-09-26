@@ -19,13 +19,6 @@ CLAUDE.md
 # yaml parser cannot read `{{- if ... }}` at all
 charts/rolter/templates/
 
-# workflow yaml is asserted as *text* by scripts/check-release-handoff.sh, whose
-# invariants are line-oriented greps ("needs: [a, b, c]" on one line). prettier
-# reflowing that list into a block flow sequence breaks the check without
-# changing a thing the runner sees, and actionlint plus zizmor already own these
-# files. see #1723
-.github/workflows/
-
 # the scheduled Jules agents keep their own learning journals here and append
 # to them from environments that do not run prettier; an unformatted entry
 # would fail the docs gate on every one of their PRs, and nothing reads these
