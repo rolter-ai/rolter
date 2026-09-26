@@ -853,6 +853,9 @@ pub struct MfaChallenge {
     pub user_id: Uuid,
     pub attempts: i32,
     pub expires_at: DateTime<Utc>,
+    /// whether the password step that minted it followed a lockout, so the
+    /// session it is redeemed for can say so on its `auth.login` row
+    pub after_lock: bool,
 }
 
 /// a record of an admin/CRUD/auth action, for the audit-log API

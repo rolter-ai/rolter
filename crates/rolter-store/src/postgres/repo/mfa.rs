@@ -88,21 +88,26 @@ pub struct OpenFactor {
     pub confirmed: bool,
     /// the highest step this factor has accepted, if any
     pub last_used_step: Option<i64>,
+    /// the nonce the secret is sealed under. A fresh one comes with every
+    /// secret, so it names *which* secret was opened, and
+    /// [`MfaRepo::confirm`] arms the factor only while it still holds that one
+    pub nonce: Vec<u8>,
 }
 
 impl MfaRepo<'_> {
     /// Start (or restart) enrolment: seal a fresh secret as the user's
     /// unconfirmed factor.
     ///
-    /// Restarting replaces the secret outright and clears `confirmed_at`,
-    /// which means a user who begins a second enrolment while one factor is
-    /// already armed **loses the armed factor**. That is the safe direction:
-    /// the alternative is two live secrets, only one of which the user can
-    /// still generate codes from. Callers that must not disarm an existing
-    /// factor check [`Self::status`] first.
-    pub async fn begin_enrolment(&self, user_id: Uuid, secret: &[u8], kek: &Kek) -> Result<()> {
+    /// Restarting replaces a *pending* secret outright, so only the latest one
+    /// can be proved. An **armed** factor is never replaced: the upsert only
+    /// touches a row whose `confirmed_at` is still null, and returns `false`
+    /// when it found an armed one instead. The condition sits in the statement
+    /// rather than in a check before it, because a check is a read that a
+    /// confirm landing a moment later makes stale, and the upsert would then
+    /// silently disarm the factor that confirm had just armed.
+    pub async fn begin_enrolment(&self, user_id: Uuid, secret: &[u8], kek: &Kek) -> Result<bool> {
         let (ciphertext, nonce) = kek.encrypt(&hex_encode(secret))?;
-        sqlx::query(
+        let result = sqlx::query(
             "insert into user_totp_factors (user_id, secret_ciphertext, secret_nonce)
              values ($1, $2, $3)
              on conflict (user_id) do update
@@ -110,7 +115,8 @@ impl MfaRepo<'_> {
                      secret_nonce = excluded.secret_nonce,
                      confirmed_at = null,
                      last_used_step = null,
-                     updated_at = now()",
+                     updated_at = now()
+                 where user_totp_factors.confirmed_at is null",
         )
         .bind(user_id)
         .bind(ciphertext)
@@ -118,7 +124,7 @@ impl MfaRepo<'_> {
         .execute(self.0)
         .await
         .map_err(store_err)?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Unseal the factor for verification. `None` when the user has none.
@@ -141,6 +147,7 @@ impl MfaRepo<'_> {
             secret,
             confirmed: row.confirmed_at.is_some(),
             last_used_step: row.last_used_step,
+            nonce: row.secret_nonce,
         }))
     }
 
@@ -172,19 +179,27 @@ impl MfaRepo<'_> {
 
     /// Arm the factor, recording the step the confirming code came from.
     ///
-    /// Returns `false` when there is no factor to confirm. Confirming an
-    /// already-confirmed factor is allowed and simply re-stamps it -- a
-    /// duplicate submit of the enrolment form must not be an error.
-    pub async fn confirm(&self, user_id: Uuid, step: i64) -> Result<bool> {
+    /// `nonce` is the one [`Self::open_secret`] returned for the secret the
+    /// code was checked against, and the factor is armed only while the row
+    /// still holds that secret. Without it, a second enrolment landing between
+    /// the check and this write would have its secret armed by a code from the
+    /// first -- a secret the person confirming never saw.
+    ///
+    /// Returns `false` when there is no factor to confirm or the secret has
+    /// changed since it was opened. Confirming an already-confirmed factor is
+    /// allowed and simply re-stamps it -- a duplicate submit of the enrolment
+    /// form must not be an error.
+    pub async fn confirm(&self, user_id: Uuid, step: i64, nonce: &[u8]) -> Result<bool> {
         let result = sqlx::query(
             "update user_totp_factors
              set confirmed_at = coalesce(confirmed_at, now()),
                  last_used_step = $2,
                  updated_at = now()
-             where user_id = $1",
+             where user_id = $1 and secret_nonce = $3",
         )
         .bind(user_id)
         .bind(step)
+        .bind(nonce)
         .execute(self.0)
         .await
         .map_err(store_err)?;
@@ -286,22 +301,27 @@ impl MfaRepo<'_> {
     }
 
     /// Issue a challenge for a half-completed login.
+    ///
+    /// `after_lock` records whether the password step came straight after a
+    /// lockout, for the session the challenge is later redeemed for.
     pub async fn create_challenge(
         &self,
         user_id: Uuid,
         token_hash: &str,
         expires_at: DateTime<Utc>,
         purpose: ChallengePurpose,
+        after_lock: bool,
     ) -> Result<MfaChallenge> {
         sqlx::query_as(
-            "insert into mfa_challenges (user_id, token_hash, expires_at, purpose)
-             values ($1, $2, $3, $4)
-             returning id, user_id, attempts, expires_at",
+            "insert into mfa_challenges (user_id, token_hash, expires_at, purpose, after_lock)
+             values ($1, $2, $3, $4, $5)
+             returning id, user_id, attempts, expires_at, after_lock",
         )
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
         .bind(purpose.as_str())
+        .bind(after_lock)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -326,7 +346,7 @@ impl MfaRepo<'_> {
             "update mfa_challenges set attempts = attempts + 1
              where token_hash = $1 and purpose = $2 and expires_at > now()
                and attempts < $3
-             returning id, user_id, attempts, expires_at",
+             returning id, user_id, attempts, expires_at, after_lock",
         )
         .bind(token_hash)
         .bind(purpose.as_str())
@@ -349,7 +369,7 @@ impl MfaRepo<'_> {
         max_attempts: i32,
     ) -> Result<Option<MfaChallenge>> {
         sqlx::query_as(
-            "select id, user_id, attempts, expires_at from mfa_challenges
+            "select id, user_id, attempts, expires_at, after_lock from mfa_challenges
              where token_hash = $1 and purpose = $2 and expires_at > now()
                and attempts < $3",
         )
@@ -376,7 +396,7 @@ impl MfaRepo<'_> {
         sqlx::query_as(
             "delete from mfa_challenges
              where token_hash = $1 and purpose = $2 and expires_at > now()
-             returning id, user_id, attempts, expires_at",
+             returning id, user_id, attempts, expires_at, after_lock",
         )
         .bind(token_hash)
         .bind(purpose.as_str())
@@ -393,6 +413,22 @@ impl MfaRepo<'_> {
             .await
             .map_err(store_err)?;
         Ok(())
+    }
+
+    /// Drop every challenge a user has in flight, step-up and enrolment alike.
+    ///
+    /// For the moments that change what a challenge minted earlier should be
+    /// worth: a break-glass reset, a new password, a deactivation. Each of
+    /// those says the password that minted it can no longer be trusted, and an
+    /// enrolment token left alive would re-arm the account for whoever held it
+    /// the moment the reset cleared the factor.
+    pub async fn delete_challenges_for_user(&self, user_id: Uuid) -> Result<u64> {
+        let result = sqlx::query("delete from mfa_challenges where user_id = $1")
+            .bind(user_id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(result.rows_affected())
     }
 
     /// Drop expired challenges. Cheap enough to run on the login path: the

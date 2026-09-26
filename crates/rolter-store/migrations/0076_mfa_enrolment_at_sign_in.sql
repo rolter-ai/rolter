@@ -26,6 +26,14 @@ exception
 end
 $$;
 
+-- whether the password step that minted the challenge came straight after a
+-- lockout. The session is issued by a later request, the one that redeems the
+-- challenge, and that request no longer knows; without this the `auth.login`
+-- row an investigator reads after a credential-stuffing run looks like any
+-- other sign-in. Existing rows predate the column and are recorded as not.
+alter table mfa_challenges
+    add column if not exists after_lock boolean not null default false;
+
 -- the moment a `required_*` policy starts sending unenrolled members through
 -- enrolment before they get a session. null means it already does. A date
 -- lets an org announce the requirement and give people time to enrol from

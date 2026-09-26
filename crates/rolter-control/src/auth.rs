@@ -425,14 +425,14 @@ async fn login(
     if armed {
         state.metrics.record_login("mfa_challenge");
         return Ok(Json(LoginOutcome::Challenge(
-            crate::mfa::issue_challenge(&state, user.id).await?,
+            crate::mfa::issue_challenge(&state, user.id, after_lock).await?,
         )));
     }
     if effective.enforced() {
         // never a session without the factor an org that set `required_*`
         // asked for. What the user gets instead is the one thing that fixes
         // it: a token that can enrol and do nothing else (#1852)
-        if crate::mfa::can_enrol() {
+        if crate::mfa::can_enrol(&state) {
             state.metrics.record_login("mfa_enrolment");
             let _ = AuditLogRepo(pool)
                 .create(
@@ -441,11 +441,17 @@ async fn login(
                     "auth.mfa_enrolment_challenge",
                     Some("user"),
                     Some(user.id),
-                    Some(serde_json::json!({ "policy": effective.policy })),
+                    // a lockout followed by a sign-in that enrols a factor is
+                    // the shape a stuffing run takes against an unenrolled
+                    // account, so the row an investigator reads says so
+                    Some(serde_json::json!({
+                        "policy": effective.policy,
+                        "after_lock": after_lock,
+                    })),
                 )
                 .await;
             return Ok(Json(LoginOutcome::Enrolment(
-                crate::mfa::issue_enrolment_challenge(&state, user.id).await?,
+                crate::mfa::issue_enrolment_challenge(&state, user.id, after_lock).await?,
             )));
         }
         // this control plane cannot seal a secret, so an enrolment challenge

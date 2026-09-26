@@ -114,14 +114,16 @@ pub(crate) fn router() -> Router<ControlState> {
 /// Never a plaintext fallback: a TOTP secret is a bearer credential, so a
 /// deployment without a KEK must be told it cannot enrol rather than quietly
 /// storing one in the clear.
-fn kek() -> ApiResult<Kek> {
-    Kek::from_env().ok_or_else(|| {
-        ApiError::Core(Error::Config(
-            "enrolling a second factor requires the ROLTER_KEK environment variable on the \
-             control plane, so the shared secret is sealed at rest"
-                .to_string(),
-        ))
-    })
+fn kek(state: &ControlState) -> ApiResult<Kek> {
+    Kek::from_env()
+        .filter(|_| !state.mfa_without_kek)
+        .ok_or_else(|| {
+            ApiError::Core(Error::Config(
+                "enrolling a second factor requires the ROLTER_KEK environment variable on the \
+                 control plane, so the shared secret is sealed at rest"
+                    .to_string(),
+            ))
+        })
 }
 
 /// Whether this control plane can seal a new secret at all.
@@ -129,9 +131,10 @@ fn kek() -> ApiResult<Kek> {
 /// The login exchange asks before it hands out an enrolment challenge: without
 /// a KEK the challenge would lead to a refusal one step later, and a user is
 /// better served by the refusal up front, with a code that says the remedy is
-/// an operator's.
-pub(crate) fn can_enrol() -> bool {
-    Kek::from_env().is_some()
+/// an operator's. The auth policy endpoint asks before it accepts a
+/// `required_*` policy, which without a KEK would lock out everyone it binds.
+pub(crate) fn can_enrol(state: &ControlState) -> bool {
+    kek(state).is_ok()
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -285,36 +288,51 @@ async fn begin_enrolment(
     current: CurrentUser,
     State(state): State<ControlState>,
 ) -> ApiResult<Json<EnrolmentResponse>> {
-    let pool = pool(&state);
-    if MfaRepo(pool).has_armed_factor(current.user.id).await? {
-        return Err(ApiError::Conflict(
+    let already = || {
+        ApiError::Conflict(
             "a second factor is already enabled for this account; disable it before enrolling \
              a new one"
                 .to_string(),
-        ));
+        )
+    };
+    if MfaRepo(pool(&state))
+        .has_armed_factor(current.user.id)
+        .await?
+    {
+        return Err(already());
     }
-    Ok(Json(mint_secret(&state, &current.user).await?))
+    // the check above is the common answer; this one is the race, a confirm
+    // from another tab landing in between
+    mint_secret(&state, &current.user)
+        .await?
+        .map(Json)
+        .ok_or_else(already)
 }
 
 /// Seal a fresh secret as the user's pending factor and return it, once.
 ///
 /// Shared by the session-authenticated enrolment and the one a sign-in is
-/// sent through, so both hand out exactly the same thing. Deliberately not
-/// audited: an enrolment that is never confirmed is not an event, and the
-/// confirm is the one that changes how the account authenticates.
-async fn mint_secret(state: &ControlState, user: &User) -> ApiResult<EnrolmentResponse> {
-    let kek = kek()?;
+/// sent through, so both hand out exactly the same thing. `None` when the
+/// account has an armed factor by the time the secret is written, which is
+/// never replaced. Deliberately not audited: an enrolment that is never
+/// confirmed is not an event, and the confirm is the one that changes how the
+/// account authenticates.
+async fn mint_secret(state: &ControlState, user: &User) -> ApiResult<Option<EnrolmentResponse>> {
+    let kek = kek(state)?;
     let mut secret = [0u8; totp::SECRET_BYTES];
     rand::rng().fill_bytes(&mut secret);
-    MfaRepo(pool(state))
+    let written = MfaRepo(pool(state))
         .begin_enrolment(user.id, &secret, &kek)
         .await?;
-    Ok(EnrolmentResponse {
+    if !written {
+        return Ok(None);
+    }
+    Ok(Some(EnrolmentResponse {
         otpauth_uri: totp::otpauth_uri(&issuer(), &user.email, &secret),
         secret: totp::base32_encode(&secret),
         digits: totp::DIGITS,
         period: totp::STEP_SECONDS,
-    })
+    }))
 }
 
 /// The issuer an authenticator app shows beside the account. Deployment-set so
@@ -345,7 +363,10 @@ async fn confirm_enrolment(
     SafeJson(body): SafeJson<ConfirmRequest>,
 ) -> ApiResult<Json<RecoveryCodesResponse>> {
     let pool = pool(&state);
-    let Some(factor) = MfaRepo(pool).open_secret(current.user.id, &kek()?).await? else {
+    let Some(factor) = MfaRepo(pool)
+        .open_secret(current.user.id, &kek(&state)?)
+        .await?
+    else {
         return Err(invalid("no enrolment in progress; request a secret first"));
     };
     let Some(step) = totp::verify_at(&factor.secret, &body.code, now_seconds()) else {
@@ -360,7 +381,16 @@ async fn confirm_enrolment(
             "that code did not match; check the clock on the device and try again",
         ));
     };
-    MfaRepo(pool).confirm(current.user.id, step as i64).await?;
+    if !MfaRepo(pool)
+        .confirm(current.user.id, step as i64, &factor.nonce)
+        .await?
+    {
+        // another enrolment replaced the secret after this code was checked
+        // against it; arming the new one would arm a secret nobody here saw
+        return Err(invalid(
+            "the secret changed while this code was checked; start the enrolment again",
+        ));
+    }
     let codes = mint_recovery_codes(&state, current.user.id).await?;
     audit(
         &state,
@@ -521,9 +551,9 @@ async fn verify_challenge(
         .get(challenge.user_id)
         .await
         .map_err(|err| AuthError::Internal(err.to_string()))?;
-    // `after_lock` is the password step's business, and the challenge was only
-    // reachable because that step already succeeded
-    crate::auth::issue_session(&state, user, false)
+    // the password step knew whether it followed a lockout and wrote it on the
+    // challenge, so the session it finally mints says so like any other
+    crate::auth::issue_session(&state, user, challenge.after_lock)
         .await
         .map(Json)
 }
@@ -537,7 +567,7 @@ async fn prove_factor(state: &ControlState, user_id: Uuid, presented: &str) -> A
     let pool = pool(state);
     let presented = presented.trim();
     if presented.len() == totp::DIGITS as usize && presented.bytes().all(|b| b.is_ascii_digit()) {
-        let Some(factor) = MfaRepo(pool).open_secret(user_id, &kek()?).await? else {
+        let Some(factor) = MfaRepo(pool).open_secret(user_id, &kek(state)?).await? else {
             return Ok(false);
         };
         let Some(step) = totp::verify_at(&factor.secret, presented, now_seconds()) else {
@@ -572,13 +602,19 @@ pub(crate) struct MfaChallengeResponse {
     /// present this to `POST /api/v1/auth/mfa/verify` with a code
     pub(crate) mfa_token: String,
     pub(crate) expires_at: chrono::DateTime<Utc>,
+    /// seconds from now until `expires_at`. A client times the prompt from
+    /// this rather than from `expires_at`, which it would have to compare with
+    /// its own clock, and a browser clock a few minutes fast would expire the
+    /// prompt the moment it appeared
+    pub(crate) expires_in: i64,
 }
 
 /// Issue a challenge for a login that got past the password but still owes a
-/// factor.
+/// factor. `after_lock` is whether that password step followed a lockout.
 pub(crate) async fn issue_challenge(
     state: &ControlState,
     user_id: Uuid,
+    after_lock: bool,
 ) -> Result<MfaChallengeResponse, AuthError> {
     let (mfa_token, expires_at) = mint_challenge(
         state,
@@ -586,12 +622,14 @@ pub(crate) async fn issue_challenge(
         "rolter_mfa",
         CHALLENGE_TTL_MINUTES,
         ChallengePurpose::Verify,
+        after_lock,
     )
     .await?;
     Ok(MfaChallengeResponse {
         mfa_required: true,
         mfa_token,
         expires_at,
+        expires_in: CHALLENGE_TTL_MINUTES * 60,
     })
 }
 
@@ -602,6 +640,7 @@ async fn mint_challenge(
     prefix: &str,
     ttl_minutes: i64,
     purpose: ChallengePurpose,
+    after_lock: bool,
 ) -> Result<(String, DateTime<Utc>), AuthError> {
     let pool = pool(state);
     // the table only ever holds logins in flight, so this stays small
@@ -609,7 +648,7 @@ async fn mint_challenge(
     let (token, token_hash) = crate::auth::generate_token(prefix, &session_pepper());
     let expires_at = Utc::now() + Duration::minutes(ttl_minutes);
     MfaRepo(pool)
-        .create_challenge(user_id, &token_hash, expires_at, purpose)
+        .create_challenge(user_id, &token_hash, expires_at, purpose, after_lock)
         .await
         .map_err(|err| AuthError::Internal(err.to_string()))?;
     Ok((token, expires_at))
@@ -630,13 +669,18 @@ pub(crate) struct MfaEnrolmentChallengeResponse {
     /// else: it is not a session, and the step-up does not accept it either
     pub(crate) enrolment_token: String,
     pub(crate) expires_at: DateTime<Utc>,
+    /// seconds from now until `expires_at`, for the same reason as the
+    /// step-up's
+    pub(crate) expires_in: i64,
 }
 
 /// Issue an enrolment challenge for a login the policy will not let in
-/// without a factor.
+/// without a factor. `after_lock` is whether that password step followed a
+/// lockout.
 pub(crate) async fn issue_enrolment_challenge(
     state: &ControlState,
     user_id: Uuid,
+    after_lock: bool,
 ) -> Result<MfaEnrolmentChallengeResponse, AuthError> {
     let (enrolment_token, expires_at) = mint_challenge(
         state,
@@ -644,12 +688,14 @@ pub(crate) async fn issue_enrolment_challenge(
         "rolter_enrol",
         ENROLMENT_TTL_MINUTES,
         ChallengePurpose::Enrol,
+        after_lock,
     )
     .await?;
     Ok(MfaEnrolmentChallengeResponse {
         mfa_enrolment_required: true,
         enrolment_token,
         expires_at,
+        expires_in: ENROLMENT_TTL_MINUTES * 60,
     })
 }
 
@@ -730,7 +776,13 @@ async fn sign_in_enrol(
 ) -> Result<Json<EnrolmentResponse>, EnrolError> {
     let token_hash = enrolment_token_hash(&body.enrolment_token);
     let user = enrolling_user(&state, &token_hash, false).await?;
-    Ok(Json(mint_secret(&state, &user).await?))
+    // `None` is a factor armed since `enrolling_user` looked -- another tab
+    // finished first -- which this token must not disarm, and which leaves it
+    // exactly as dead as `enrolling_user` would have found it a moment later
+    match mint_secret(&state, &user).await? {
+        Some(enrolment) => Ok(Json(enrolment)),
+        None => Err(AuthError::InvalidCredentials.into()),
+    }
 }
 
 /// Arm the factor with a code from the minted secret, and sign in.
@@ -738,9 +790,12 @@ async fn sign_in_enrol(
 /// The one place an enrolment token turns into a session, and only once: the
 /// code is checked first, then the token is consumed by a delete that exactly
 /// one request can win, and only that request arms the factor and mints the
-/// recovery codes and the session. The session is issued by the same path
+/// recovery codes and the session. It arms the secret the code was checked
+/// against and no other: a pending secret replaced in between (another live
+/// enrolment token for the same account) fails the request rather than arming
+/// a secret this caller never saw. The session is issued by the same path
 /// every other sign-in takes, so it is audited as an `auth.login` like any
-/// other.
+/// other, `after_lock` included.
 async fn sign_in_confirm(
     State(state): State<ControlState>,
     SafeJson(body): SafeJson<SignInConfirmRequest>,
@@ -749,7 +804,7 @@ async fn sign_in_confirm(
     let token_hash = enrolment_token_hash(&body.enrolment_token);
     let user = enrolling_user(&state, &token_hash, true).await?;
     let factor = MfaRepo(pool)
-        .open_secret(user.id, &kek()?)
+        .open_secret(user.id, &kek(&state)?)
         .await
         .map_err(ApiError::from)?;
     let Some(factor) = factor else {
@@ -772,14 +827,20 @@ async fn sign_in_confirm(
         .take_challenge(&token_hash, ChallengePurpose::Enrol)
         .await
         .map_err(ApiError::from)?;
-    if taken.is_none() {
+    let Some(taken) = taken else {
         // another request with this token got here first, or it just expired
         return Err(AuthError::InvalidCredentials.into());
-    }
-    MfaRepo(pool)
-        .confirm(user.id, step as i64)
+    };
+    let armed = MfaRepo(pool)
+        .confirm(user.id, step as i64, &factor.nonce)
         .await
         .map_err(ApiError::from)?;
+    if !armed {
+        // the pending secret was replaced after the code was checked. The token
+        // is spent either way, and a fresh sign-in is the only way to a secret
+        // this caller has actually seen
+        return Err(AuthError::InvalidCredentials.into());
+    }
     let codes = mint_recovery_codes(&state, user.id).await?;
     audit(
         &state,
@@ -788,7 +849,7 @@ async fn sign_in_confirm(
         serde_json::json!({ "recovery_codes": codes.len(), "at_sign_in": true }),
     )
     .await;
-    let session = crate::auth::issue_session(&state, user, false).await?;
+    let session = crate::auth::issue_session(&state, user, taken.after_lock).await?;
     Ok(Json(EnrolledSignIn {
         session,
         recovery_codes: codes,
@@ -858,6 +919,10 @@ pub async fn break_glass_reset(
     // in unknown hands, and leaving a session alive would leave the factor
     // bypassed for up to a week
     SessionRepo(pool).delete_for_user(user_id).await?;
+    // and every challenge in flight. An enrolment token minted before the reset
+    // is only refused while a factor is armed, so once the reset clears it,
+    // whoever holds one could arm a factor of their own and sign in
+    MfaRepo(pool).delete_challenges_for_user(user_id).await?;
     let _ = AuditLogRepo(pool)
         .create(
             None,
