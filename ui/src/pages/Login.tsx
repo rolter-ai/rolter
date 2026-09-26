@@ -1,5 +1,5 @@
 import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { LocalePicker } from "@/components/LocalePicker";
@@ -12,12 +12,24 @@ import {
   ApiError,
   getAuthMethods,
   isMfaChallenge,
+  isMfaEnrolmentChallenge,
   login,
   verifyMfaChallenge,
   type AuthMethods,
+  type LoginResponse,
   type MfaChallenge,
+  type MfaEnrolmentChallenge,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useFormat } from "@/lib/i18n/format";
+import { useToast } from "@/lib/toast";
+
+/**
+ * The enrolment step a `required_*` policy sends an unenrolled member through
+ * (#1852). Lazy, because this screen is the first paint for every signed-out
+ * visitor and the QR encoder behind it is needed by almost none of them.
+ */
+const SignInEnrolment = lazy(() => import("@/components/SignInEnrolment"));
 
 /**
  * Guesses one challenge allows, matching `MAX_CHALLENGE_ATTEMPTS` in
@@ -35,6 +47,8 @@ const MFA_ATTEMPT_BUDGET = 3;
 export default function Login() {
   const { t } = useTranslation();
   const { signIn, expired } = useAuth();
+  const toast = useToast();
+  const fmt = useFormat();
   // empty by design: the prototype shipped a fake demo account here, which a
   // real deployment then showed to every operator as if it were a login
   const [email, setEmail] = useState("");
@@ -61,6 +75,37 @@ export default function Login() {
   // already dead — so the budget is counted here, or the user would keep
   // typing codes into a token that can no longer redeem anything
   const [attemptsLeft, setAttemptsLeft] = useState(MFA_ATTEMPT_BUDGET);
+  // the password was right, the org requires a factor, and the account has
+  // none (#1852). What used to be a refusal is now a third step: set one up,
+  // and the session comes out of that
+  const [enrolment, setEnrolment] = useState<MfaEnrolmentChallenge | null>(null);
+
+  /**
+   * Hand the session to the shell. An org that announced a requirement ahead
+   * of time gets said once, here, on the way in: this is the one moment every
+   * member bound by it passes through, and the account screen that can do
+   * something about it is a click away (#1852).
+   */
+  const finishSignIn = useCallback(
+    (res: LoginResponse) => {
+      if (res.mfa_enrol_by) {
+        toast.push({
+          tone: "info",
+          title: t("auth.enrolBy.title", { date: fmt.date(res.mfa_enrol_by) }),
+          detail: t("auth.enrolBy.detail"),
+          // a deadline is read, not glanced at
+          duration: 15_000,
+        });
+      }
+      signIn(res.user.email, res.token, res.user);
+    },
+    [fmt, signIn, t, toast],
+  );
+
+  const leaveEnrolment = useCallback((reason: string | null) => {
+    setEnrolment(null);
+    setError(reason);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -131,7 +176,12 @@ export default function Login() {
         setPending(false);
         return;
       }
-      signIn(res.user.email, res.token, res.user);
+      if (isMfaEnrolmentChallenge(res)) {
+        setEnrolment(res);
+        setPending(false);
+        return;
+      }
+      finishSignIn(res);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         // the endpoint is not served here after all: this is the open-mode
@@ -160,7 +210,7 @@ export default function Login() {
     setPending(true);
     try {
       const res = await verifyMfaChallenge(challenge.mfa_token, code.trim());
-      signIn(res.user.email, res.token, res.user);
+      finishSignIn(res);
     } catch (err) {
       const left = attemptsLeft - 1;
       if (err instanceof ApiError && err.status === 401 && left > 0) {
@@ -275,7 +325,16 @@ export default function Login() {
               </button>
             </form>
           )}
-          {resolved && !challenge && showPassword && (
+          {enrolment && (
+            <Suspense fallback={<FormSkeleton fields={2} />}>
+              <SignInEnrolment
+                challenge={enrolment}
+                onSignedIn={finishSignIn}
+                onRestart={leaveEnrolment}
+              />
+            </Suspense>
+          )}
+          {resolved && !challenge && !enrolment && showPassword && (
             <form
               className="flex flex-col gap-4"
               onSubmit={(e) => {
@@ -342,7 +401,7 @@ export default function Login() {
               </Button>
             </form>
           )}
-          {resolved && !challenge && (
+          {resolved && !challenge && !enrolment && (
             <div
               className={
                 showPassword
@@ -400,9 +459,11 @@ function loginErrorMessage(
     case "password_login_disabled":
       return t("auth.errors.passwordLoginDisabled");
     case "mfa_enrolment_required":
-      // the password was right; the org demands a factor this account has
-      // none of. Nothing to retype, and the remedy is an administrator's, so
-      // it must not read like a mistyped password (#1078)
+      // the password was right and the org demands a factor this account has
+      // none of — and this control plane cannot enrol one, since it has no key
+      // to seal the secret with. Any other deployment walks the user through
+      // enrolment instead (#1852). Nothing to retype, and the remedy is an
+      // operator's, so it must not read like a mistyped password (#1078)
       return t("auth.mfa.errors.enrolmentRequired");
     case "too_many_attempts":
       // the lock carries how long it lasts; saying so beats making the user

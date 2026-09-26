@@ -44,6 +44,7 @@ import {
   type SsoGroupMappingRow,
   type SsoProviderRow,
 } from "@/lib/api";
+import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -80,9 +81,11 @@ function Detail({ label, value, copyLabel }: { label: string; value: string; cop
 }
 
 /**
- * The two `mfa_policy` values that can refuse a session to an existing member.
+ * The two `mfa_policy` values that make a factor mandatory: a member without
+ * one is walked through enrolment at their next sign-in before they get a
+ * session (#1852).
  *
- * `optional` cannot: it changes who *may* enrol, not who may sign in.
+ * `optional` does not: it changes who *may* enrol, not who has to.
  */
 const MFA_LOCKS_OUT: MfaPolicy[] = ["required_superadmin", "required_all"];
 
@@ -111,6 +114,36 @@ const MFA_DOCS_URL =
   "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/security/two-factor-authentication.mdx#break-glass-a-lost-device";
 
 /**
+ * How long an org may give its members before a `required_*` policy starts
+ * sending the unenrolled through enrolment (#1852), in days.
+ *
+ * Presets rather than a date picker: the decision is "how much notice", and a
+ * calendar invites a precision nobody needs while making "next Tuesday at
+ * midnight in whose timezone" the admin's problem.
+ */
+const GRACE_DAYS = [7, 14, 30];
+
+/**
+ * The org's announced start, when it is still ahead. A window that has passed
+ * reads as no window at all — the requirement already applies — so it is not
+ * offered as something to keep.
+ */
+function pendingWindow(policy: OrgAuthPolicy): string | null {
+  const at = policy.mfa_enforce_after;
+  return at && Date.parse(at) > Date.now() ? at : null;
+}
+
+/**
+ * What `mfa_enforce_after` to send for a grace choice: `keep` the pending
+ * window, start `now` (null), or a number of days from the moment of saving.
+ */
+function graceDeadline(grace: string, pending: string | null): string | null {
+  if (grace === "keep") return pending;
+  if (grace === "now") return null;
+  return new Date(Date.now() + Number(grace) * 86_400_000).toISOString();
+}
+
+/**
  * Which ways into the dashboard this org allows, and what it demands on the
  * way in.
  *
@@ -120,10 +153,12 @@ const MFA_DOCS_URL =
  * its own message, so the local guard below only covers the case an operator
  * can see for themselves.
  *
- * `mfa_policy` travels with them (#1078). It is the one setting here that can
- * lock people out *without* being wrong — a `required_*` value refuses a
- * session to any member who has not armed a factor yet — so it is the one
- * that confirms first, and the confirmation names the way back in.
+ * `mfa_policy` travels with them (#1078), and with it the grace window
+ * (#1852). It is the one setting here that changes what every member meets at
+ * sign-in — a `required_*` value sends anyone without an armed factor through
+ * enrolment before they get a session — so it is the one that confirms first,
+ * and the confirmation says when it starts and names the way back in for a
+ * lost device.
  */
 function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPolicy }) {
   const { t } = useTranslation();
@@ -132,7 +167,11 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   const [password, setPassword] = React.useState(policy.allow_password_login);
   const [sso, setSso] = React.useState(policy.allow_sso);
   const [mfa, setMfa] = React.useState<MfaPolicy>(policy.mfa_policy);
+  const pending = pendingWindow(policy);
+  const initialGrace = pending ? "keep" : "now";
+  const [grace, setGrace] = React.useState(initialGrace);
   const [confirming, setConfirming] = React.useState(false);
+  const fmt = useFormat();
 
   // re-seed when the server's copy moves under us — another admin, or our own
   // save coming back
@@ -140,7 +179,19 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
     setPassword(policy.allow_password_login);
     setSso(policy.allow_sso);
     setMfa(policy.mfa_policy);
-  }, [policy.allow_password_login, policy.allow_sso, policy.mfa_policy]);
+    setGrace(initialGrace);
+  }, [policy.allow_password_login, policy.allow_sso, policy.mfa_policy, initialGrace]);
+
+  const requires = MFA_LOCKS_OUT.includes(mfa);
+  // the grace choice only means something while a factor is required
+  const graceDirty = requires && grace !== initialGrace;
+  // only a *tightening* is worth a confirmation: turning a requirement on, or
+  // cutting an announced window short. Relaxing the policy or moving a date
+  // binds nobody sooner, and a dialog in front of it would be the
+  // click-through that teaches people to dismiss the one that matters
+  const tightens = requires && (mfa !== policy.mfa_policy || (pending !== null && grace === "now"));
+  // when the requirement starts, as the confirmation should say it
+  const deadline = requires ? graceDeadline(grace, pending) : null;
 
   // how many accounts the tightening would bind. Best-effort: a caller who may
   // not read the org's memberships still gets the warning, just without a
@@ -148,7 +199,7 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   const members = useQuery({
     queryKey: ["memberships", orgId],
     queryFn: () => fetchMemberships(orgId),
-    enabled: MFA_LOCKS_OUT.includes(mfa) && mfa !== policy.mfa_policy,
+    enabled: tightens,
     retry: false,
   });
 
@@ -158,6 +209,9 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
         allow_password_login: password,
         allow_sso: sso,
         mfa_policy: mfa,
+        // computed at the moment of saving, so "in 7 days" counts from the
+        // click rather than from when the card rendered
+        mfa_enforce_after: requires ? graceDeadline(grace, pending) : null,
       }),
     onSuccess: (next) => {
       setConfirming(false);
@@ -181,12 +235,9 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   const dirty =
     password !== policy.allow_password_login ||
     sso !== policy.allow_sso ||
-    mfa !== policy.mfa_policy;
+    mfa !== policy.mfa_policy ||
+    graceDirty;
   const bothOff = !password && !sso;
-  // only a *tightening* is worth a confirmation: relaxing the policy locks
-  // nobody out, and a dialog in front of it would be the click-through that
-  // teaches people to dismiss the one that matters
-  const locksOut = MFA_LOCKS_OUT.includes(mfa) && mfa !== policy.mfa_policy;
 
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
@@ -236,6 +287,34 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
             }))}
           />
         </Field>
+        {/* how much notice the members get (#1852). only while a factor is
+            required: under `off` and `optional` there is nothing to postpone,
+            and the control plane drops a window sent with them */}
+        {requires && (
+          <Field label={t("pages.sso.policy.graceLabel")} hint={t("pages.sso.policy.graceHint")}>
+            <Combobox
+              value={grace}
+              onChange={setGrace}
+              options={[
+                ...(pending
+                  ? [
+                      {
+                        value: "keep",
+                        label: t("pages.sso.policy.graceOptions.keep", {
+                          date: fmt.date(pending),
+                        }),
+                      },
+                    ]
+                  : []),
+                { value: "now", label: t("pages.sso.policy.graceOptions.now") },
+                ...GRACE_DAYS.map((days) => ({
+                  value: String(days),
+                  label: t("pages.sso.policy.graceOptions.days", { count: days }),
+                })),
+              ]}
+            />
+          </Field>
+        )}
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t border-[color:var(--border-subtle)] px-4 py-3">
         {bothOff && (
@@ -257,7 +336,7 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
           disabled={!dirty || bothOff || save.isPending}
           onClick={() => {
             save.reset();
-            if (locksOut) setConfirming(true);
+            if (tightens) setConfirming(true);
             else save.mutate();
           }}
         >
@@ -283,7 +362,16 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
         error={save.error}
         onConfirm={() => save.mutate()}
       >
-        {/* the way back in, named before the lockout rather than after it */}
+        {/* the date, when there is one: the body says what happens, this says
+            when, and an admin reading "at their next sign-in" while having
+            picked a window would think the window had been ignored */}
+        {deadline && (
+          <p className="text-sm text-muted-foreground">
+            {t("pages.sso.policy.mfaConfirm.grace", { date: fmt.date(deadline) })}
+          </p>
+        )}
+        {/* the way back in for a member who loses their device, named before
+            it happens rather than after */}
         <p className="text-xs text-muted-foreground">
           {t("pages.sso.policy.mfaConfirm.breakGlass")}{" "}
           <a

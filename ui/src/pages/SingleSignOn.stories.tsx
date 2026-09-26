@@ -92,6 +92,7 @@ const POLICY: OrgAuthPolicy = {
   allow_password_login: true,
   allow_sso: true,
   mfa_policy: "off",
+  mfa_enforce_after: null,
   updated_at: NOW,
 };
 
@@ -582,6 +583,8 @@ export const SavesPolicy: Story = {
       // the current value", which is right, but sending it is what makes this
       // assertion prove the field is wired at all (#1078)
       mfa_policy: "off",
+      // and the grace window travels with it, null under `off` (#1852)
+      mfa_enforce_after: null,
     });
     await expectToast(canvasElement, /the sign-in policy updated/i);
   },
@@ -612,11 +615,12 @@ export const RefusesToDisableEverySignIn: Story = {
 const mfaSave = recording(api({ providers: () => [provider()] }));
 
 /**
- * Tightening `mfa_policy` is the one setting on this card that can lock people
- * out without being wrong, so it confirms first — and the confirmation names
- * the way back in rather than only the consequence.
+ * Tightening `mfa_policy` changes what every member meets at sign-in, so it
+ * confirms first — the confirmation says an unenrolled member sets a factor
+ * up on the way in (#1852) rather than being refused, and names the way back
+ * in for a lost device.
  */
-export const RequiringASecondFactorWarnsAboutTheLockout: Story = {
+export const RequiringASecondFactorConfirmsFirst: Story = {
   render: () => (
     <Harness fetchStub={mfaSave.stub}>
       <Toasted>
@@ -635,23 +639,109 @@ export const RequiringASecondFactorWarnsAboutTheLockout: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     const dialog = await within(document.body).findByRole("dialog");
     await expect(
-      within(dialog).getByText(/cannot set one up without signing in first/i),
+      within(dialog).getByText(/at their next sign-in, before they get a session/i),
     ).toBeVisible();
     await expect(within(dialog).getByText(/rolter mfa reset/)).toBeVisible();
+    // no window was picked, so there is no date to announce
+    await expect(within(dialog).queryByText(/It starts on/)).not.toBeInTheDocument();
 
     // backing out sends nothing: the policy is unchanged until it is confirmed
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     mfaSave.expectNotSent("PUT", "/auth-policy");
 
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await confirmDestructive(/cannot set one up/, "Require it");
+    await confirmDestructive(/before they get a session/, "Require it");
     await expect(await mfaSave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual(
       {
         allow_password_login: true,
         allow_sso: true,
         mfa_policy: "required_all",
+        mfa_enforce_after: null,
       },
     );
+  },
+};
+
+const graceSave = recording(api({ providers: () => [provider()] }));
+
+/**
+ * An org can announce the requirement before it bites (#1852): a grace window
+ * picked beside the policy, said in the confirmation as a date, and sent as
+ * that many days from the moment of saving.
+ */
+export const AGraceWindowAnnouncesTheRequirement: Story = {
+  render: () => (
+    <Harness fetchStub={graceSave.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the window only exists while a factor is required
+    await canvas.findByLabelText("Second factor");
+    await expect(canvas.queryByLabelText("Start requiring it")).not.toBeInTheDocument();
+    await pickOption(canvas.getByLabelText("Second factor"), "Required for everyone");
+    await pickOption(await canvas.findByLabelText("Start requiring it"), "In 14 days");
+
+    const before = Date.now();
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    const dialog = await confirmation();
+    await expect(within(dialog).getByText(/It starts on/)).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
+
+    const body = await graceSave.expectSentBody<{ mfa_policy: string; mfa_enforce_after: string }>(
+      "PUT",
+      `/api/v1/orgs/${ORG.id}/auth-policy`,
+    );
+    await expect(body.mfa_policy).toBe("required_all");
+    const days = (Date.parse(body.mfa_enforce_after) - before) / 86_400_000;
+    await expect(days).toBeGreaterThan(13.99);
+    await expect(days).toBeLessThan(14.01);
+  },
+};
+
+/**
+ * A window already announced is offered back as itself, dated, so saving an
+ * unrelated switch does not quietly restart the clock — and pulling it in to
+ * "at their next sign-in" is a tightening, so that confirms.
+ */
+const graceKeep = recording(
+  api({
+    providers: () => [provider()],
+    policy: () => ({
+      ...POLICY,
+      mfa_policy: "required_all",
+      mfa_enforce_after: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+    }),
+  }),
+);
+
+export const AnAnnouncedWindowIsKeptUntilChanged: Story = {
+  render: () => (
+    <Harness fetchStub={graceKeep.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const grace = await canvas.findByLabelText("Start requiring it");
+    await waitFor(() => expect((grace as HTMLInputElement).value).toMatch(/as announced/));
+
+    await pickOption(grace, "At their next sign-in");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await confirmDestructive(/before they get a session/, "Require it");
+    await expect(
+      await graceKeep.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
+    ).toEqual({
+      allow_password_login: true,
+      allow_sso: true,
+      mfa_policy: "required_all",
+      mfa_enforce_after: null,
+    });
   },
 };
 
@@ -685,6 +775,7 @@ export const RelaxingThePolicySavesWithoutAConfirmation: Story = {
       allow_password_login: true,
       allow_sso: true,
       mfa_policy: "optional",
+      mfa_enforce_after: null,
     });
     await expectToast(canvasElement, /the sign-in policy updated/i);
   },

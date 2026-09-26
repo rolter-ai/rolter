@@ -34,8 +34,24 @@
       "errors": {
         "spent": "Too many wrong codes. Sign in with your password again to get a new prompt.",
         "expired": "That prompt expired. Sign in with your password again.",
-        "enrolmentRequired": "Your organization requires a second factor, and this account has none set up. An administrator has to relax the policy or clear the account before you can sign in."
+        "enrolmentRequired": "Your organization requires a second factor, and this control plane cannot set one up because it has no encryption key configured. An operator has to set ROLTER_KEK, or an administrator has to relax the policy, before you can sign in."
       }
+    },
+    "enrol": {
+      "title": "Set up two-factor authentication",
+      "subtitle": "Your password was accepted. Your organization requires a second factor, so set one up to finish signing in.",
+      "confirm": "Turn on and sign in",
+      "confirming": "Turning on…",
+      "continue": "Continue to the dashboard",
+      "errors": {
+        "wrongCode": "That code was not accepted — check the clock on your device and try the next one.",
+        "expired": "That setup prompt expired. Sign in with your password again to get a new one.",
+        "restart": "That setup prompt can no longer be used. Sign in with your password again."
+      }
+    },
+    "enrolBy": {
+      "title": "Two-factor authentication is required from {{date}}",
+      "detail": "Your organization requires it. Set it up under Account before then — after that date, signing in asks you to set it up first."
     }
   },
   "common": {
@@ -1781,16 +1797,25 @@
         "mfaHints": {
           "off": "Nobody is asked for an authenticator code, and the dashboard does not offer to set one up.",
           "optional": "Members may set up an authenticator app from their account. Nobody is required to.",
-          "requiredSuperadmin": "Superadmins are refused a session until they have an authenticator app set up. Everyone else may still choose.",
-          "requiredAll": "Every member is refused a session until they have an authenticator app set up. Superadmins included."
+          "requiredSuperadmin": "Superadmins without an authenticator app set one up at their next sign-in, before they get a session. Everyone else may still choose.",
+          "requiredAll": "Every member without an authenticator app sets one up at their next sign-in, before they get a session. Superadmins included."
+        },
+        "graceLabel": "Start requiring it",
+        "graceHint": "Notice for members who have not set one up yet. Until then they sign in with their password as before, and are told by when.",
+        "graceOptions": {
+          "now": "At their next sign-in",
+          "days_one": "In {{count}} day",
+          "days_other": "In {{count}} days",
+          "keep": "On {{date}}, as announced"
         },
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
-          "body": "Members who have not set up an authenticator app are refused a session from their next sign-in — they cannot set one up without signing in first, so turn this on once the accounts it binds have enrolled.",
-          "bodyWithCount_one": "This organization has {{count}} member. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
-          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
+          "body": "Members who have not set up an authenticator app set one up at their next sign-in, before they get a session. Nobody without one is let in.",
+          "bodyWithCount_one": "This organization has {{count}} member. Without an authenticator app set up, they set one up at their next sign-in, before they get a session.",
+          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up sets one up at their next sign-in, before they get a session.",
           "confirm": "Require it",
-          "breakGlass": "Someone locked out is cleared on the host with `rolter mfa reset`, which is audited.",
+          "grace": "It starts on {{date}}. Until then, members without one sign in as before and are told by when to set one up.",
+          "breakGlass": "Someone who loses their device is cleared on the host with `rolter mfa reset`, which is audited.",
           "breakGlassLink": "Break-glass procedure"
         }
       },
@@ -3105,7 +3130,8 @@
       "off": {
         "title": "No second factor on this account",
         "body": "A dashboard session reaches every provider credential in this deployment. An authenticator app adds a code only your device can produce.",
-        "requiredBody": "Your organization requires a second factor. Set one up now — without it, your next sign-in is refused.",
+        "requiredBody": "Your organization requires a second factor. Set one up now — otherwise your next sign-in asks you to set one up before it lets you in.",
+        "requiredByBody": "Your organization requires a second factor from {{date}}. Set one up before then — after that, signing in asks you to set one up before it lets you in.",
         "cta": "Set up two-factor authentication"
       },
       "on": {
