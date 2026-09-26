@@ -2038,6 +2038,8 @@ export interface MfaChallenge {
   /** present this to `verifyMfaChallenge`; authenticates nothing on its own */
   mfa_token: string;
   expires_at: string;
+  /** seconds from the response until `expires_at`; time the prompt from this */
+  expires_in: number;
 }
 
 /**
@@ -2053,6 +2055,24 @@ export interface MfaEnrolmentChallenge {
   mfa_enrolment_required: true;
   enrolment_token: string;
   expires_at: string;
+  /** seconds from the response until `expires_at`; time the prompt from this */
+  expires_in: number;
+}
+
+/**
+ * When a challenge dies, on this browser's clock: the moment it arrived plus
+ * the control plane's `expires_in`.
+ *
+ * Never `expires_at` compared with `Date.now()`. That compares the server's
+ * clock with the laptop's, and a laptop running more than the challenge's
+ * lifetime fast would expire every prompt the moment it appeared — under a
+ * `required_*` policy, a member who could never get in (#1852).
+ */
+export function challengeDeadline(
+  challenge: { expires_in: number },
+  receivedAt: number = Date.now(),
+): number {
+  return receivedAt + challenge.expires_in * 1000;
 }
 
 /** what `POST /auth/login` answers: a session, or a challenge that mints one */

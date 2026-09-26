@@ -10,11 +10,23 @@ import { Button } from "@/components/ui/button";
 import {
   ApiError,
   beginSignInEnrolment,
+  challengeDeadline,
   confirmSignInEnrolment,
   type EnrolledSignIn,
   type LoginResponse,
   type MfaEnrolmentChallenge,
 } from "@/lib/api";
+
+/**
+ * Codes one enrolment challenge accepts, matching `MAX_ENROLMENT_ATTEMPTS` in
+ * `crates/rolter-control/src/mfa.rs`.
+ *
+ * Counted here because a wrong code is a 400 that says nothing about how many
+ * are left, and the one after the last is a 401 that looks like any other dead
+ * token. Without the count, the card says "try the next one" to a member whose
+ * next code, right or not, can only send them back to the password step.
+ */
+const ENROLMENT_ATTEMPT_BUDGET = 5;
 
 /**
  * The sign-in step an org's `required_*` policy sends an unenrolled member
@@ -32,10 +44,17 @@ import {
  */
 export default function SignInEnrolment({
   challenge,
+  receivedAt,
   onSignedIn,
   onRestart,
 }: {
   challenge: MfaEnrolmentChallenge;
+  /**
+   * When the challenge arrived, by `Date.now()`. This card is loaded lazily,
+   * so its first render can trail the response by a chunk download; the clock
+   * starts at the response. Defaults to the first render.
+   */
+  receivedAt?: number;
   onSignedIn: (session: LoginResponse) => void;
   /**
    * Back to the password step, with the sentence that says why. The token is
@@ -48,6 +67,14 @@ export default function SignInEnrolment({
   const [code, setCode] = React.useState("");
   const [signedIn, setSignedIn] = React.useState<EnrolledSignIn | null>(null);
   const [saved, setSaved] = React.useState(false);
+  const [attemptsLeft, setAttemptsLeft] = React.useState(ENROLMENT_ATTEMPT_BUDGET);
+  // fixed once, when the challenge arrived: a later render must not restart
+  // the clock, and the server's absolute `expires_at` is never compared with
+  // this browser's clock (see challengeDeadline)
+  const diesAt = React.useMemo(
+    () => challengeDeadline(challenge, receivedAt),
+    [challenge, receivedAt],
+  );
 
   const enrolment = useQuery({
     queryKey: ["mfa-sign-in-enrolment", challenge.enrolment_token],
@@ -67,20 +94,30 @@ export default function SignInEnrolment({
       setSignedIn(result);
     },
     onError: (err) => {
-      // a wrong code keeps the challenge; a dead one never comes back
-      if (err instanceof ApiError && err.status === 400) setCode("");
+      // a wrong code keeps the challenge but spends one of its codes; a dead
+      // one never comes back
+      if (err instanceof ApiError && err.status === 400) {
+        setCode("");
+        setAttemptsLeft((left) => left - 1);
+      }
     },
   });
+
+  // the last code is spent: the server would refuse the next one whatever it
+  // is, so the card goes back now and says why, rather than after one more try
+  React.useEffect(() => {
+    if (attemptsLeft <= 0) onRestart(t("auth.enrol.errors.spent"));
+  }, [attemptsLeft, onRestart, t]);
 
   // the challenge lives ten minutes. Past that, typing on is pointless, so the
   // card goes back to the password step and says why. Only while enrolling:
   // once the code is accepted the token is spent and the session is real
   React.useEffect(() => {
     if (signedIn) return;
-    const left = new Date(challenge.expires_at).getTime() - Date.now();
+    const left = diesAt - Date.now();
     const timer = setTimeout(() => onRestart(t("auth.enrol.errors.expired")), Math.max(left, 0));
     return () => clearTimeout(timer);
-  }, [challenge.expires_at, signedIn, onRestart, t]);
+  }, [diesAt, signedIn, onRestart, t]);
 
   // a token that died on the server — spent, or the account enrolled from
   // somewhere else meanwhile — is the same dead end the timer is, reached by
@@ -148,7 +185,11 @@ export default function SignInEnrolment({
           code={code}
           onCodeChange={setCode}
           onSubmit={() => confirm.mutate()}
-          error={confirm.error && !deadToken ? confirmErrorMessage(confirm.error, t) : undefined}
+          error={
+            confirm.error && !deadToken
+              ? confirmErrorMessage(confirm.error, attemptsLeft, t)
+              : undefined
+          }
           autoFocus
         />
       )}
@@ -181,14 +222,16 @@ export default function SignInEnrolment({
 /**
  * The sentence under the code field when a confirm is refused. The control
  * plane's 400 is English prose; the reason it stands for is always the same
- * one here, so it is said in the reader's language instead.
+ * one here, so it is said in the reader's language instead, with how many of
+ * the challenge's codes are left.
  */
 function confirmErrorMessage(
   err: unknown,
+  attemptsLeft: number,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   if (!(err instanceof ApiError)) return t("auth.errors.unavailable");
-  if (err.status === 400) return t("auth.enrol.errors.wrongCode");
+  if (err.status === 400) return t("auth.enrol.errors.attemptsLeft", { count: attemptsLeft });
   return err.status >= 500
     ? t("auth.errors.unavailable")
     : t("auth.errors.unexpected", { message: err.message });

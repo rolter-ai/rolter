@@ -185,13 +185,17 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   const requires = MFA_LOCKS_OUT.includes(mfa);
   // the grace choice only means something while a factor is required
   const graceDirty = requires && grace !== initialGrace;
-  // only a *tightening* is worth a confirmation: turning a requirement on, or
-  // cutting an announced window short. Relaxing the policy or moving a date
-  // binds nobody sooner, and a dialog in front of it would be the
-  // click-through that teaches people to dismiss the one that matters
-  const tightens = requires && (mfa !== policy.mfa_policy || (pending !== null && grace === "now"));
   // when the requirement starts, as the confirmation should say it
   const deadline = requires ? graceDeadline(grace, pending) : null;
+  // an announced window moved earlier binds members sooner than they were
+  // told, whether to "at their next sign-in" or to a nearer preset
+  const pullsIn =
+    pending !== null && (deadline === null || Date.parse(deadline) < Date.parse(pending));
+  // only a *tightening* is worth a confirmation: turning a requirement on, or
+  // cutting an announced window short. Relaxing the policy or moving a date
+  // later binds nobody sooner, and a dialog in front of it would be the
+  // click-through that teaches people to dismiss the one that matters
+  const tightens = requires && (mfa !== policy.mfa_policy || pullsIn);
 
   // how many accounts the tightening would bind. Best-effort: a caller who may
   // not read the org's memberships still gets the warning, just without a

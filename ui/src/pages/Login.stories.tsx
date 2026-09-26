@@ -268,6 +268,7 @@ const CHALLENGE = {
   mfa_token: "rolter-mfa-example-token",
   // five minutes out, which is what the control plane issues
   expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+  expires_in: 300,
 };
 
 const SESSION = {
@@ -425,14 +426,20 @@ export const AnExhaustedChallengeReturnsToThePassword: Story = {
   },
 };
 
-/** An expired challenge is the same dead end, reached by waiting instead. */
+/**
+ * An expired challenge is the same dead end, reached by waiting instead.
+ *
+ * The prompt is timed from `expires_in`, so that is the field that says it is
+ * already dead. `expires_at` stays in the future on purpose: a screen that
+ * still read it would keep the prompt up, and this story would fail.
+ */
 export const AnExpiredChallengeReturnsToThePassword: Story = {
   render: () => (
     <Harness
       fetchStub={stepUp(() => json(SESSION), {
         ...CHALLENGE,
         // already dead when it arrives: the timer fires on the next tick
-        expires_at: new Date(Date.now() - 1000).toISOString(),
+        expires_in: 0,
       })}
     >
       <AuthProvider>
@@ -478,6 +485,7 @@ const ENROLMENT_CHALLENGE = {
   enrolment_token: "rolter-enrol-example-token",
   // ten minutes out, which is what the control plane issues
   expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+  expires_in: 600,
 };
 
 const SETUP_KEY = {
@@ -604,11 +612,55 @@ export const AWrongEnrolmentCodeKeepsTheSetup: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await signIn(canvasElement);
-    await userEvent.type(await canvas.findByLabelText(/code from the app/i), "000000");
-    await userEvent.click(canvas.getByRole("button", { name: /turn on and sign in/i }));
-    await expect(await canvas.findByText(/check the clock on your device/i)).toBeVisible();
+    await submitEnrolmentCode(canvasElement, "000000");
+    // what happened and how much of the budget is left, in one line
+    await expect(
+      await canvas.findByText(/check the clock on your device.*4 attempts left/i),
+    ).toBeVisible();
     await expect(canvas.getByLabelText(/code from the app/i)).toHaveValue("");
     await expect(canvas.getByText(SETUP_KEY.secret)).toBeInTheDocument();
+  },
+};
+
+async function submitEnrolmentCode(canvasElement: HTMLElement, code: string) {
+  const canvas = within(canvasElement);
+  await userEvent.type(await canvas.findByLabelText(/code from the app/i), code);
+  await userEvent.click(canvas.getByRole("button", { name: /turn on and sign in/i }));
+}
+
+/**
+ * The challenge takes five codes. The server's answer to a wrong one does not
+ * say how many are left, and its answer to the sixth looks like any dead
+ * token — so the card counts, and after the fifth it goes back to the password
+ * step and says what to do about the entry already saved in the app, rather
+ * than inviting one more code that can only fail.
+ */
+export const TheLastWrongEnrolmentCodeReturnsToThePassword: Story = {
+  render: () => (
+    <Harness
+      fetchStub={enrolAtSignIn({
+        confirm: () => json({ error: { message: "that code did not match" } }, 400),
+      })}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await signIn(canvasElement);
+    for (const left of [4, 3, 2, 1]) {
+      await submitEnrolmentCode(canvasElement, "000000");
+      await expect(
+        await canvas.findByText(new RegExp(`${left} attempts? left`, "i")),
+      ).toBeVisible();
+    }
+    await submitEnrolmentCode(canvasElement, "000000");
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/last code/i);
+    await expect(alert).toHaveTextContent(/delete the entry/i);
+    await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
   },
 };
 
@@ -635,15 +687,14 @@ export const ADeadEnrolmentTokenReturnsToThePassword: Story = {
   },
 };
 
-/** An expired setup prompt is the same dead end, reached by waiting instead. */
+/**
+ * An expired setup prompt is the same dead end, reached by waiting instead.
+ * As with the step-up, `expires_in` is what says so and `expires_at` stays in
+ * the future, so a card still reading the absolute time would fail this.
+ */
 export const AnExpiredEnrolmentReturnsToThePassword: Story = {
   render: () => (
-    <Harness
-      fetchStub={enrolAtSignIn(
-        {},
-        { ...ENROLMENT_CHALLENGE, expires_at: new Date(Date.now() - 1000).toISOString() },
-      )}
-    >
+    <Harness fetchStub={enrolAtSignIn({}, { ...ENROLMENT_CHALLENGE, expires_in: 0 })}>
       <AuthProvider>
         <Login />
       </AuthProvider>
@@ -654,6 +705,39 @@ export const AnExpiredEnrolmentReturnsToThePassword: Story = {
     await signIn(canvasElement);
     await expect(await canvas.findByRole("alert")).toHaveTextContent(/setup prompt expired/i);
     await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
+  },
+};
+
+/**
+ * A laptop clock that runs fast must not expire the prompt on arrival.
+ *
+ * Here the browser believes `expires_at` passed a quarter of an hour ago — the
+ * server's clock and this one disagree — while the server says the prompt has
+ * its full ten minutes. Compared with the local clock, the card would send the
+ * member back before the setup key could even load, every sign-in, and under
+ * a `required_*` policy they would never get in.
+ */
+export const AFastBrowserClockKeepsTheSetupPrompt: Story = {
+  render: () => (
+    <Harness
+      fetchStub={enrolAtSignIn(
+        {},
+        { ...ENROLMENT_CHALLENGE, expires_at: new Date(Date.now() - 15 * 60_000).toISOString() },
+      )}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await signIn(canvasElement);
+    // the setup key only arrives after the card has mounted and fetched it, so
+    // a timer read off `expires_at` would already have fired by now
+    await expect(await canvas.findByText(SETUP_KEY.secret)).toBeInTheDocument();
+    await expect(canvas.getByLabelText(/code from the app/i)).toBeVisible();
+    await expect(canvas.queryByLabelText(/^password/i)).not.toBeInTheDocument();
   },
 };
 

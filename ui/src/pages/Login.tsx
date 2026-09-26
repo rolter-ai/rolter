@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Field } from "@/components/ui/field";
 import {
   ApiError,
+  challengeDeadline,
   getAuthMethods,
   isMfaChallenge,
   isMfaEnrolmentChallenge,
@@ -69,6 +70,8 @@ export default function Login() {
   // dashboard modelled only the session branch, so an org that set
   // `mfa_policy` past `off` locked every dashboard user out of login
   const [challenge, setChallenge] = useState<MfaChallenge | null>(null);
+  // when that challenge dies, fixed the moment it arrived (see challengeDeadline)
+  const [challengeDiesAt, setChallengeDiesAt] = useState(0);
   const [code, setCode] = useState("");
   // the control plane spends a challenge after three guesses and answers the
   // same `invalid_credentials` whether the code was wrong or the challenge is
@@ -79,6 +82,7 @@ export default function Login() {
   // none (#1852). What used to be a refusal is now a third step: set one up,
   // and the session comes out of that
   const [enrolment, setEnrolment] = useState<MfaEnrolmentChallenge | null>(null);
+  const [enrolmentReceivedAt, setEnrolmentReceivedAt] = useState(0);
 
   /**
    * Hand the session to the shell. An org that announced a requirement ahead
@@ -136,7 +140,7 @@ export default function Login() {
   // they type, and the reason is said rather than dressed up as a wrong code
   useEffect(() => {
     if (!challenge) return;
-    const left = new Date(challenge.expires_at).getTime() - Date.now();
+    const left = challengeDiesAt - Date.now();
     const timer = setTimeout(
       () => {
         setChallenge(null);
@@ -145,7 +149,7 @@ export default function Login() {
       Math.max(left, 0),
     );
     return () => clearTimeout(timer);
-  }, [challenge, t]);
+  }, [challenge, challengeDiesAt, t]);
 
   /**
    * Sign in against a real local account, which is what the self-service
@@ -170,6 +174,7 @@ export default function Login() {
     try {
       const res = await login(addr, pw);
       if (isMfaChallenge(res)) {
+        setChallengeDiesAt(challengeDeadline(res));
         setChallenge(res);
         setAttemptsLeft(MFA_ATTEMPT_BUDGET);
         setCode("");
@@ -177,6 +182,7 @@ export default function Login() {
         return;
       }
       if (isMfaEnrolmentChallenge(res)) {
+        setEnrolmentReceivedAt(Date.now());
         setEnrolment(res);
         setPending(false);
         return;
@@ -329,6 +335,7 @@ export default function Login() {
             <Suspense fallback={<FormSkeleton fields={2} />}>
               <SignInEnrolment
                 challenge={enrolment}
+                receivedAt={enrolmentReceivedAt}
                 onSignedIn={finishSignIn}
                 onRestart={leaveEnrolment}
               />

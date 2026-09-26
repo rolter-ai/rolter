@@ -107,10 +107,13 @@ function api({
   providers = () => PROVIDERS as unknown,
   policy = () => POLICY as unknown,
   status = 200,
+  putPolicy,
 }: {
   providers?: () => unknown;
   policy?: () => unknown;
   status?: number;
+  /** answers a policy save; by default it echoes the body back as saved */
+  putPolicy?: () => Response;
 } = {}): FetchStub {
   // a 204 carries no body at all — `new Response(body, { status: 204 })` throws
   const noContent = () => new Response(null, { status: 204 });
@@ -135,6 +138,7 @@ function api({
       return json(providers(), status);
     }
     if (url.includes("/auth-policy")) {
+      if (method === "PUT" && putPolicy) return putPolicy();
       if (method === "PUT") {
         const next = JSON.parse(String(init?.body)) as Partial<OrgAuthPolicy>;
         return json({ ...POLICY, ...next }, 200);
@@ -639,7 +643,7 @@ export const RequiringASecondFactorConfirmsFirst: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     const dialog = await within(document.body).findByRole("dialog");
     await expect(
-      within(dialog).getByText(/at their next sign-in, before they get a session/i),
+      within(dialog).getByText(/next password sign-in, before they get a session/i),
     ).toBeVisible();
     await expect(within(dialog).getByText(/rolter mfa reset/)).toBeVisible();
     // no window was picked, so there is no date to announce
@@ -742,6 +746,117 @@ export const AnAnnouncedWindowIsKeptUntilChanged: Story = {
       mfa_policy: "required_all",
       mfa_enforce_after: null,
     });
+  },
+};
+
+/** An announced window, `days` from now, on a `required_all` policy. */
+const announced = (days: number) =>
+  recording(
+    api({
+      providers: () => [provider()],
+      policy: () => ({
+        ...POLICY,
+        mfa_policy: "required_all",
+        mfa_enforce_after: new Date(Date.now() + days * 86_400_000).toISOString(),
+      }),
+    }),
+  );
+
+const pulledIn = announced(20);
+
+/**
+ * Moving an announced window to a nearer preset binds members sooner than
+ * they were told, just as "at their next sign-in" does, so it confirms too.
+ */
+export const PullingAnAnnouncedWindowInConfirms: Story = {
+  render: () => (
+    <Harness fetchStub={pulledIn.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const grace = await canvas.findByLabelText("Start requiring it");
+    await waitFor(() => expect((grace as HTMLInputElement).value).toMatch(/as announced/));
+    await pickOption(grace, "In 7 days");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialog = await confirmation();
+    await expect(within(dialog).getByText(/It starts on/)).toBeVisible();
+    // nothing is sent until the admin confirms the earlier date
+    pulledIn.expectNotSent("PUT", "/auth-policy");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
+    const body = await pulledIn.expectSentBody<{ mfa_enforce_after: string }>(
+      "PUT",
+      `/api/v1/orgs/${ORG.id}/auth-policy`,
+    );
+    const days = (Date.parse(body.mfa_enforce_after) - Date.now()) / 86_400_000;
+    await expect(days).toBeGreaterThan(6.9);
+    await expect(days).toBeLessThan(7.01);
+  },
+};
+
+const pushedOut = announced(5);
+
+/**
+ * Moving an announced window later binds nobody sooner, so it saves at once,
+ * like any other relaxation.
+ */
+export const MovingAnAnnouncedWindowLaterSavesWithoutAConfirmation: Story = {
+  render: () => (
+    <Harness fetchStub={pushedOut.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const grace = await canvas.findByLabelText("Start requiring it");
+    await waitFor(() => expect((grace as HTMLInputElement).value).toMatch(/as announced/));
+    await pickOption(grace, "In 30 days");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    // sent straight away: a confirmation in front of it would hold the PUT
+    await pushedOut.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`);
+    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+    await expectToast(canvasElement, /the sign-in policy updated/i);
+  },
+};
+
+const KEK_REFUSAL =
+  "a required second factor needs ROLTER_KEK set on the control plane: without it nobody " +
+  "can enrol, so every account this policy binds would be locked out. Set ROLTER_KEK and " +
+  "restart the control plane, or choose optional";
+
+/**
+ * A control plane with no `ROLTER_KEK` refuses a `required_*` policy with a
+ * 409, since nobody on it could enrol. The confirmation stays open and shows
+ * the refusal in the control plane's own words, beside the button that caused
+ * it, so the admin reads why rather than a promise that did not hold.
+ */
+export const WithoutAKeyARequirementIsRefused: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        providers: () => [provider()],
+        putPolicy: () => json({ error: { message: KEK_REFUSAL, code: "conflict" } }, 409),
+      })}
+    >
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Second factor"), "Required for everyone");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    const dialog = await confirmation();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
+    await expect(await within(dialog).findByText(/ROLTER_KEK/)).toBeVisible();
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };
 
