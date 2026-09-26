@@ -562,6 +562,44 @@ fn overloaded(target: usize, loads: &[u64], usable: &dyn Fn(usize) -> bool) -> b
         && load as f64 > min as f64 * BALANCE_REL_THRESHOLD
 }
 
+/// The targets one [`CacheAware`] pick may choose from, asked of the caller
+/// once each, since the caller's answer may take locks. A route with up to 64
+/// targets keeps the answer in a word, so a pick allocates nothing.
+enum Usable {
+    Word(u64),
+    Wide(Vec<bool>),
+}
+
+impl Usable {
+    /// Ask `eligible` about each of `n > 0` targets. With nothing eligible the
+    /// caller fails open over every target, so all of them are weighed, as a
+    /// plain pick does.
+    fn ask(n: usize, eligible: &dyn Fn(usize) -> bool) -> Self {
+        if n <= 64 {
+            let mut word = 0u64;
+            for i in (0..n).filter(|&i| eligible(i)) {
+                word |= 1 << i;
+            }
+            if word == 0 {
+                word = u64::MAX >> (64 - n);
+            }
+            return Usable::Word(word);
+        }
+        let mut mask: Vec<bool> = (0..n).map(eligible).collect();
+        if !mask.contains(&true) {
+            mask.fill(true);
+        }
+        Usable::Wide(mask)
+    }
+
+    fn contains(&self, i: usize) -> bool {
+        match self {
+            Usable::Word(word) => i < 64 && word & (1 << i) != 0,
+            Usable::Wide(mask) => mask.get(i).copied().unwrap_or(false),
+        }
+    }
+}
+
 /// Approximate cache-aware routing.
 ///
 /// Each target keeps a byte trie of prompts it has served. Incoming prompts are
@@ -618,14 +656,8 @@ impl LoadBalancer for CacheAware {
         if self.n == 0 {
             return None;
         }
-        // asked once per target, since the caller's answer may take locks;
-        // with nothing eligible the caller fails open over every target, so
-        // weigh them all, as a plain pick does
-        let mut mask: Vec<bool> = (0..self.n).map(eligible).collect();
-        if !mask.contains(&true) {
-            mask.fill(true);
-        }
-        let usable = |i: usize| mask.get(i).copied().unwrap_or(false);
+        let mask = Usable::ask(self.n, eligible);
+        let usable = |i: usize| mask.contains(i);
         if let Some(prompt) = ctx.prompt {
             if !prompt.is_empty() {
                 let mut best: Option<(usize, f32)> = None;
@@ -861,6 +893,40 @@ mod tests {
         assert_eq!(lb.pick_eligible(&cold, &[4, 3, 0], &alive), Some(1));
         // a warm replica that is itself ineligible leaves the affinity
         assert_eq!(lb.pick_eligible(&ctx, &[0, 0, 0], &|i| i != 1), Some(0));
+    }
+
+    /// Eligibility is kept in a word for up to 64 targets and in a list past
+    /// that; both ends of the word and the list answer the same way.
+    #[test]
+    fn cache_aware_eligibility_holds_for_any_number_of_targets() {
+        let cold = RouteContext::default();
+        for n in [1usize, 63, 64, 65, 130] {
+            let lb = CacheAware::new(n, 0.5);
+            let last = n - 1;
+            // the last target is the least loaded but dead; the one before it
+            // is the least loaded live one
+            let mut loads = vec![5u64; n];
+            loads[last] = 0;
+            if n > 1 {
+                loads[last - 1] = 1;
+                assert_eq!(
+                    lb.pick_eligible(&cold, &loads, &|i| i != last),
+                    Some(last - 1),
+                    "n = {n}"
+                );
+            }
+            assert_eq!(
+                lb.pick_eligible(&cold, &loads, &|i| i == last),
+                Some(last),
+                "n = {n}"
+            );
+            // nothing eligible weighs every target
+            assert_eq!(
+                lb.pick_eligible(&cold, &loads, &|_| false),
+                Some(last),
+                "n = {n}"
+            );
+        }
     }
 
     #[test]

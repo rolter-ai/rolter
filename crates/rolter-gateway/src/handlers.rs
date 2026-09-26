@@ -3061,6 +3061,61 @@ fn variant_target_order(
     order
 }
 
+/// Whether target `ti` of variant `v` (balanced under `key`) can lead an
+/// attempt: the same skip rules the attempt loop applies, so the variant's
+/// balancer weighs only targets it can lead with (#1851).
+fn variant_target_eligible(
+    state: &AppState,
+    key_meta: Option<&KeyMeta>,
+    key: &str,
+    v: &rolter_core::Variant,
+    cd_enabled: bool,
+    ti: usize,
+) -> bool {
+    v.targets.get(ti).is_some_and(|target| {
+        key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+            && !(cd_enabled && state.cooldowns.is_parked(key, ti))
+            && state.health.is_healthy(&target.provider)
+            && state.breaker.allows(key, ti)
+    })
+}
+
+/// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
+/// then the rest in declared order, each variant's targets flattened with the
+/// one its balancer picks from the eligible targets in the lead.
+fn variant_candidates(
+    state: &AppState,
+    entry: &crate::state::RouteEntry,
+    model: &str,
+    ctx: &RouteContext<'_>,
+    primary: usize,
+    key_meta: Option<&KeyMeta>,
+    cd_enabled: bool,
+) -> Vec<(usize, usize)> {
+    let route = &entry.route;
+    let mut candidates: Vec<(usize, usize)> =
+        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
+    for vi in route.fallback_order(primary) {
+        if let Some(v) = route.variants.get(vi) {
+            let key = variant_key(model, &v.name);
+            let mut loads = state.loads.snapshot(&key, v.targets.len());
+            for (i, target) in v.targets.iter().enumerate() {
+                if let Some(l) = loads.get_mut(i) {
+                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+                }
+            }
+            let eligible =
+                |ti: usize| variant_target_eligible(state, key_meta, &key, v, cd_enabled, ti);
+            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
+                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
+                    candidates.push((vi, ti));
+                }
+            }
+        }
+    }
+    candidates
+}
+
 /// Forward through the weighted-variant fallback chain. Samples a primary
 /// variant by weight, then flattens the deterministic fallback order into an
 /// ordered candidate list and drives it through the same retry/cooldown/breaker
@@ -3088,38 +3143,8 @@ async fn forward_variants(
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
 
-    // primary by weight, then the rest in declared order; flatten each variant's
-    // targets into one ordered candidate list, letting the variant's balancer
-    // choose which of its targets leads
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let mut candidates: Vec<(usize, usize)> =
-        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
-    for vi in route.fallback_order(primary) {
-        if let Some(v) = route.variants.get(vi) {
-            let key = variant_key(model, &v.name);
-            let mut loads = state.loads.snapshot(&key, v.targets.len());
-            for (i, target) in v.targets.iter().enumerate() {
-                if let Some(l) = loads.get_mut(i) {
-                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-                }
-            }
-            // the same skip rules the attempt loop below applies, so the
-            // variant's balancer weighs only targets it can lead with
-            let eligible = |ti: usize| {
-                v.targets.get(ti).is_some_and(|target| {
-                    key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
-                        && !(cd_enabled && state.cooldowns.is_parked(&key, ti))
-                        && state.health.is_healthy(&target.provider)
-                        && state.breaker.allows(&key, ti)
-                })
-            };
-            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
-                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
-                    candidates.push((vi, ti));
-                }
-            }
-        }
-    }
+    let candidates = variant_candidates(state, entry, model, ctx, primary, key_meta, cd_enabled);
 
     let mut out = ForwardOutcome {
         outcome: None,
@@ -4857,6 +4882,70 @@ mod tests {
         assert_eq!(
             variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
             vec![0, 1]
+        );
+    }
+
+    /// A dead variant target drains to an empty queue. The variant's
+    /// balancer must not read that zero as the least-loaded target, or the
+    /// warm target looks overloaded and the spill leads with the dead one.
+    #[test]
+    fn a_dead_variant_target_does_not_shape_the_variants_pick() {
+        let variant = rolter_core::Variant {
+            name: "v".to_string(),
+            weight: 1,
+            params: Default::default(),
+            targets: ["a", "b", "c"]
+                .into_iter()
+                .map(|provider| Target {
+                    provider: provider.to_string(),
+                    model: None,
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            targets: Vec::new(),
+            variants: vec![variant.clone()],
+            tenancy: None,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
+        rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
+            variant_balancers: vec![Box::new(cache_aware)],
+            route,
+        };
+        let state = AppState::new(&config_with_keys());
+        state.health.set("c", false);
+        // ten in flight on the first target, three on the warm one, and none on
+        // the dead one, which drained when it stopped taking traffic
+        let key = variant_key("m", "v");
+        let _in_flight: Vec<_> = std::iter::repeat_n(0, 10)
+            .chain(std::iter::repeat_n(1, 3))
+            .map(|ti| state.loads.begin(&key, ti))
+            .collect();
+        assert_eq!(state.loads.snapshot(&key, 3), vec![10, 3, 0]);
+        let candidates = variant_candidates(&state, &entry, "m", &ctx, 0, None, false);
+        assert_eq!(
+            candidates.first(),
+            Some(&(0, 1)),
+            "the warm live target should lead: {candidates:?}"
+        );
+        // the same pick blind to eligibility leads with the dead target
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 3, &[10, 3, 0], &|_| true)[0],
+            2
         );
     }
 
