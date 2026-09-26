@@ -284,7 +284,10 @@ impl Snapshot {
         // name. skip invalid/empty derived slugs. walk the config's list rather
         // than the map so the first provider in file order wins a collision on
         // every build: the merged store puts the bootstrap file's rows first,
-        // so a database row can never take a config-file provider's address
+        // so a database provider can never take a config-file provider's
+        // address. groups are indexed after every provider, so a legacy
+        // database provider still takes a readonly group's slug; the control
+        // plane's write-time check keeps new rows from getting there
         let mut providers_by_slug: HashMap<String, String> = HashMap::new();
         for p in &config.providers {
             let slug = p
@@ -1621,6 +1624,35 @@ mod tests {
         assert_eq!(entry.route.targets.len(), 1);
         assert_eq!(entry.route.targets[0].provider, "vllm msk 1");
         assert!(!snap.groups_by_slug.contains_key("vllm-msk-1"));
+    }
+
+    /// Providers sharing a slug resolve to the first in file order, on every
+    /// build. The merged store lists bootstrap rows first, so this is what keeps
+    /// a database row off a config-file provider's address; walking the
+    /// provider map instead would pick a different holder from build to build.
+    #[test]
+    fn the_first_provider_in_file_order_keeps_a_shared_slug() {
+        let mut config = GatewayConfig::default();
+        // an explicit slug first, then rows whose explicit or derived slug is
+        // the same
+        config
+            .providers
+            .push(provider_cfg("bootstrap", Some("edge")));
+        config.providers.push(provider_cfg("edge", None));
+        for n in 0..8 {
+            config
+                .providers
+                .push(provider_cfg(&format!("db-{n}"), Some("edge")));
+        }
+        for _ in 0..16 {
+            let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());
+            assert_eq!(
+                snap.providers_by_slug.get("edge").map(String::as_str),
+                Some("bootstrap")
+            );
+            let entry = snap.resolve_pinned("edge/m").expect("resolves");
+            assert_eq!(entry.route.targets[0].provider, "bootstrap");
+        }
     }
 
     #[test]

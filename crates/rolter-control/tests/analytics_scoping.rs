@@ -327,7 +327,7 @@ async fn visible(
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "invocations as {token}");
+    assert_eq!(response.status(), 200, "invocations");
     let body: Value = response.json().await.unwrap();
     let mut seen: Vec<(String, bool, bool)> = body["data"]
         .as_array()
@@ -557,7 +557,7 @@ async fn invocation_rows(
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "invocations as {token}");
+    assert_eq!(response.status(), 200, "invocations");
     let body: Value = response.json().await.unwrap();
     let mut seen: Vec<(String, String, String, bool)> = body["data"]
         .as_array()
@@ -732,7 +732,7 @@ async fn health_providers(
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "health/{route} as {token}");
+    assert_eq!(response.status(), 200, "health/{route}");
     let body: Value = response.json().await.unwrap();
     let mut seen: Vec<String> = body["data"]
         .as_array()

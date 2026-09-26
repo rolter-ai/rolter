@@ -71,6 +71,12 @@ During a rolling upgrade your control plane and your gateways are briefly differ
 
 The control-plane-to-gateway snapshot is a separate matter and is not yet version-negotiated. Until it is, upgrade the gateways and the control plane from the same release rather than leaving a mixed fleet running longer than a rollout takes.
 
+### Captured payloads from older gateways
+
+Roll the gateways out before the control plane when you upgrade from v0.1.0 or earlier with [payload capture](/observability/log-settings#payload-capture) on.
+
+The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.
