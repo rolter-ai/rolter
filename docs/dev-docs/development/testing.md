@@ -910,6 +910,70 @@ headers were a `div role="button"` wrapping the info hint's own button
 label with the solid `--status-*` signal colour, which is below AA as text — the
 `--status-*-text` pair exists for exactly that.
 
+#### A StrictMode story mounts its subject in a later commit (#1744)
+
+The obvious way to test `React.StrictMode` behaviour in a story is to wrap the
+subject in `<React.StrictMode>` inside `render`. That story renders the subject
+twice, but it mounts each effect once and never runs a cleanup, so an assertion
+about the simulated unmount and remount passes against broken code. The first
+`StrictMode*` story in `ui/src/components/EditorSheet.stories.tsx` did exactly
+that in #1743: it stayed green against the naive fix it was written to refuse.
+
+React decides what to double after each commit. It walks down from the root to
+every newly placed fiber and runs the simulated unmount and remount on it only
+if the walk passed a `StrictMode` element on the way, or the placed fiber is one
+(`recursivelyTraverseAndDoubleInvokeEffectsInDEV` in
+`react-dom-client.development.js`, React 19.3). Storybook mounts every story as
+`<ErrorBoundary key={storyId}><Story /></ErrorBoundary>` (`renderToCanvas` in
+`@storybook/react`), so the placed fiber is that boundary. It sits above the
+story's own `StrictMode`, the walk stops there, and nothing below it is doubled.
+Double rendering follows a different rule, the fiber's mode, which is why the
+renders still come in pairs and the story looks strict.
+
+So mount the `StrictMode` first and the subject into it later. The host renders
+the subject only when its own state says so, `render` starts it without one, and
+the play function mounts it with a click:
+
+```tsx
+export const StrictModeDoesNotInventAnAbandon: Story = {
+  render: () => (
+    <React.StrictMode>
+      <Unmountable mounted={false} />
+    </React.StrictMode>
+  ),
+  play: async () => {
+    // mounts the sheet in a later commit, under a StrictMode that is already there
+    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
+    // the double-invoke has happened by the time the sheet can be used
+  },
+};
+```
+
+This is also the app's own shape. `ui/src/main.tsx` makes the root strict long
+before anyone opens a sheet, so a story built this way runs the same lifecycle a
+browser on `bun run dev` does.
+
+Two more habits keep such a story from passing for the wrong reason:
+
+- **Anchor an absence on something that happened.** "No `form_abandon`" is also
+  true before the sheet has finished mounting, so `expectNoUxEvent(…)` on the
+  line after the click proves nothing. `StrictModeDoesNotInventAnAbandon` first
+  presses the sheet's save button and waits for its `form_submit`: the button
+  cannot be pressed until the sheet has mounted, been remounted and settled, so
+  the absence asserted after that point covers the whole double-invoke.
+- **Watch it fail once.** Break the code the story guards and run the file with
+  `bun run test:stories`; for #1739 that meant emitting the abandon straight
+  from the effect cleanup. A StrictMode story that stays green against the
+  broken code is asserting against a lifecycle that never ran. When the reason
+  is unclear, a probe settles it: a child whose effect counts its mounts and
+  cleanups should read two mounts and one cleanup under a working `StrictMode`,
+  and reads one and zero in the same-commit shape.
+
+`framework.options.strictMode` in `ui/.storybook/main.ts` would put a
+`StrictMode` above that boundary for every story. It is off, and turning it on
+changes the lifecycle of every story in the tree, which is a larger decision
+than one assertion needs.
+
 ### Full-stack compose smoke
 
 The `compose-smoke` job boots the production-shaped Docker Compose topology
