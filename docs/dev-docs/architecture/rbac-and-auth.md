@@ -26,16 +26,24 @@ re-implements a check inline:
 | `authorize_model` | on the requested model id, before budgets, plugins and rate limits      | `403 model_not_allowed`               |
 | `authorize_route` | on the resolved route (named or `provider-slug/model`), before upstream | `403` with the code of the first gate |
 
+Before either gate sees a route, resolution (`Snapshot::resolve_for`) has
+already set aside every row outside the key's tenancy: a route of another org,
+a route narrowed by `advanced.visibility.project_only` to a project the key was
+not minted in, and a provider or group address of another org. Such a row is a
+miss, so the request goes on to the builtin and the `slug/model` addresses as
+if it did not exist, and ends in the `404 model_not_found` an unknown model
+gets (see [One org never reaches another](#one-org-never-reaches-another-1844-1845)).
+
 `authorize_route` checks, in order:
 
 1. **tenancy and visibility** (`model_visible_to`); refused as
    `model_not_allowed`. It runs first so a hidden route never reveals whether
-   the other gates would also have refused. In order: the route must belong to
-   the key's own org (see [One org never reaches another](#one-org-never-reaches-another-1844-1845));
-   `advanced.visibility.project_only` narrows it to keys minted in the route's
-   own project; and `advanced.visibility.allowed_team_ids` / `allowed_key_ids`
-   narrow it to the teams and keys they list. A request with no key at all is
-   refused by any non-empty visibility list.
+   the other gates would also have refused. The tenancy half
+   (`RouteEntry::in_tenancy_of`) repeats what resolution did and only matters
+   where a route was reached some other way, such as a complexity tier or a
+   stored response's route; then `advanced.visibility.allowed_team_ids` /
+   `allowed_key_ids` narrow the route to the teams and keys they list. A
+   request with no key at all is refused by any non-empty visibility list.
 2. **route policy** — the access-profile policy of the key's creator
    (`KeyMeta::route_permitted`, #791); refused as `route_not_allowed`.
 3. **provider allow-list** — at least one target on the route (classic pool or
@@ -114,18 +122,27 @@ file carry none. `Tenancy::admits` decides whether a key may use a row:
 | `tenancy` of the key's own org | admitted                             | admitted                                    |
 | `tenancy` of another org       | refused                              | admitted                                    |
 
-The check is the first thing `model_visible_to` does, so every way of
-addressing a model passes through it: a named route; `provider-slug/model`,
-whose synthetic route takes the provider's tenancy; and `group-slug/model`,
-whose synthetic route takes the group's. `GET /v1/models` lists providers,
-routes and groups through the same rule, so a key neither lists nor calls
-another org's rows. Before #1844 any key could address any org's provider by
-slug and spend that org's credential.
+Every way of addressing a model resolves through `Snapshot::resolve_for`,
+which applies the rule before anything else: a named route; then
+`provider-slug/model`, whose synthetic route takes the provider's tenancy; then
+`group-slug/model`, whose synthetic route takes the group's. A row the key's
+org may not use is a miss, not a refusal. Another org's route named
+`edge/gpt-4o` therefore never shadows this org's own `edge` provider, and
+another org's route named `fake-llm` never hides the builtin. The key gets the
+`404 model_not_found` a model nobody configured gets, so the answer does not
+confirm the row exists. `GET /v1/models` lists providers, routes and groups
+through the same rule, so a key neither lists nor calls another org's rows.
+Before #1844 any key could address any org's provider by slug and spend that
+org's credential.
 
 `advanced.visibility.project_only` narrows a route further, to keys minted in
-the project the route lives in. It is off by default — a route is visible to
-its whole org — and an admin turns it on as **This project** under the model's
-**Access & permissions**. A key from the gateway's config file is not narrowed.
+the project the route lives in, and a key of another project gets the same
+miss. It is off by default (a route is visible to its whole org), and an admin
+turns it on as **This project** under the model's **Access & permissions**. A
+key from the gateway's config file is not narrowed. It narrows the named route
+only: the provider or group behind it stays reachable org-wide as
+`provider-slug/model` or `group-slug/model`, so confining a provider to one
+project takes the key's `providers` allow-list (#1919).
 
 The write path keeps the snapshot inside that rule:
 
@@ -134,16 +151,38 @@ The write path keeps the snapshot inside that rule:
   gets, so the refusal does not confirm that the provider exists. The snapshot
   loader also drops, with a warning, any cross-org target or member written
   before the guard existed, rather than serve it.
-- Route names, provider names and slugs, and provider-group slugs share one
-  namespace across the whole deployment, because the gateway indexes them that
-  way and `Config::validate` refuses a snapshot holding a duplicate — which
-  would stop config propagation for every org at once. Creating one that another
-  org already holds is a `409` ("… is already in use in this deployment; choose
-  another") that never says which org holds it, and `rolter-seed --import`
-  refuses the same collisions. Per-org namespaces are #1857.
+- Route names and provider names are unique across the whole deployment,
+  because the gateway indexes them that way and `Config::validate` refuses a
+  snapshot holding a duplicate, which would stop config propagation for every
+  org at once.
+- Provider slugs and provider-group slugs form one address namespace across
+  the deployment, bootstrap-file rows included, because the gateway resolves
+  `provider-slug/model` and `group-slug/model` from it. `Config::validate` does
+  not check slugs; a second holder would silently take the address instead, and
+  a group whose slug a provider holds would drop out of routing. So a provider
+  slug is refused when any provider or group holds it, and the same for a
+  group slug, on create and on a slug change. The gateway indexes first-wins in
+  file order, bootstrap rows before database rows, so a slug two rows still
+  share from before the guard resolves the same way on every build.
+- A route name may contain `/` (`Qwen/Qwen2.5-7B`), but not as the address of
+  another org's or a bootstrap-file provider or group (`edge/…` while another
+  org holds `edge`), and a database route may not be named `fake-llm`. The
+  gateway already treats those routes as absent for other orgs' keys; the
+  refusal protects keys from a config file, which carry no org and would reach
+  the route instead of the address. An operator may still replace the builtin:
+  a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
+  named `fake-llm` shadows it.
+- Every refusal is a `409` ("… is already in use in this deployment; choose
+  another") that never says which org holds the name. `rolter-seed --import`
+  refuses the same collisions, and the startup seeders (`[[providers.default]]`,
+  `[[provider_groups.default]]`, `[[models.default]]`) skip a colliding default
+  with a warning instead of writing it. Per-org namespaces are #1857.
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
-along with the credentials.
+along with the credentials, and drops the database key records, which name
+every key's org, team, project and creator. The unauthenticated
+`GET /api/v1/config` still lists every org's providers, routes and groups;
+whether it may describe that topology at all is #1840.
 
 ### Empty key sets
 

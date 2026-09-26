@@ -31,7 +31,7 @@ several-hundred-model catalogue cannot bury the rest of your fleet. Models named
 by a route target are always listed, regardless of that cap.
 
 <Note>
-  Rolter also exposes a built-in `fake-llm` model that responds locally without forwarding to any upstream. It appears in the model list unless a configured route shadows it with the same name. It is useful for testing authentication and connectivity without incurring upstream costs.
+  Rolter also exposes a built-in `fake-llm` model that responds locally without forwarding to any upstream. It appears in the model list unless a route your key can use shadows it with the same name. A route another organization owns never hides it, and the dashboard and API refuse `fake-llm` as a route name; only the operator can replace it, from `rolter.toml`. It is useful for testing authentication and connectivity without incurring upstream costs.
 </Note>
 
 ## Request

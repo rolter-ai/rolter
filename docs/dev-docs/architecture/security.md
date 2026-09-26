@@ -274,12 +274,17 @@ same provider name also froze config propagation for everyone, because the
 snapshot refuses duplicate names.
 
 Every row loaded from the store now carries its org (and a route its project)
-as `tenancy`, and the route authorization contract refuses a key from another
-org before anything else is checked — on all three address forms and in
-`GET /v1/models`. On the write path a route target or group member must name a
-provider in the same org, and names the gateway indexes deployment-wide are
-unique across orgs, refused with a `409` that does not say which org holds the
-name. An admin can also narrow a route to its own project (`project_only`).
+as `tenancy`, and the gateway resolves a model only among the rows the key's
+org may use, on all three address forms and in `GET /v1/models`. Another org's
+row is a miss: it shadows nothing of the caller's own, and the caller gets the
+`404` an unknown model gets. On the write path a route target or group member
+must name a provider in the same org. Names the gateway indexes
+deployment-wide (route and provider names, and the one slug namespace
+providers and groups share) are unique across orgs, and so is a route name
+that would sit on another org's `slug/model` address. A collision is refused
+with a `409` that does not say which org holds the name. An admin can also
+narrow a route to its own project (`project_only`), which narrows that route
+but not the `slug/model` address of the provider behind it (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);

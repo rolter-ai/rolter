@@ -261,6 +261,26 @@ ambiguous.
   above — individual instances can carry mundane slugs (`vllm-msk-1`), while the group
   owns the meaningful address (`vllm-cluster`, or even `vllm`).
 
+## Addendum (26 Sep 2026) — precedence within the caller's tenancy (#1844, #1845)
+
+Resolution runs within the calling key's tenancy (`Snapshot::resolve_for` in
+`crates/rolter-gateway/src/state.rs`). A named route of another org, or one its admin
+narrowed to another project, counts as a miss rather than a refusal. It shadows neither
+the caller's own `slug/model` address nor the builtin `fake-llm`, and the caller gets the
+same `404 model_not_found` as for a model nobody configured. A pinned address of another
+org's provider or group answers the same way. Route names may still contain `/`
+(`Qwen/Qwen2.5-7B`), and a route of the caller's own org still wins over the caller's own
+address.
+
+Until per-org namespaces land (#1857), one slug namespace spans the whole deployment:
+providers and groups of every org plus the bootstrap file's readonly rows. The control
+plane refuses a provider or group slug that any of them holds, and a route name that is
+the `slug/…` address of another org's or a readonly provider or group, or the builtin.
+Keys from a config file carry no org, so for them every row is in scope. The write-time
+refusal is what keeps another org's route off the address those keys meant. The gateway
+indexes slugs first-wins in file order, bootstrap rows before database rows, so a slug
+two rows still share from before the guard resolves the same way on every build.
+
 ## Proposed follow-up implementation issues
 
 1. **store**: add immutable `slug` to providers — migration, `unique(org_id, slug)`,
