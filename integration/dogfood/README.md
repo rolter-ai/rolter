@@ -16,12 +16,45 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 
 ## What is here
 
-| File            | What it is                                                                           |
-| --------------- | ------------------------------------------------------------------------------------ |
-| `fleet.ts`      | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  |
-| `dogfood.toml`  | the matching rolter config — fifteen providers, three provider groups, eleven routes |
-| `keys.env`      | the API keys the fleet expects (fake, loopback-only, checked in on purpose)          |
-| `ux-capture.sh` | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)    |
+| File                  | What it is                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `fleet.ts`            | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                           |
+| `gateway.toml`        | the gateway's runtime config: what `--config` points at                                       |
+| `dogfood.toml`        | the desired state `rolter-seed --import` writes to Postgres: providers, groups, eleven routes |
+| `keys.env`            | the API keys the fleet expects (fake, loopback-only, checked in on purpose)                   |
+| `adaptive-routing.sh` | turns the adaptive-routing kill switch on or off (#1817)                                      |
+| `ux-capture.sh`       | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)             |
+
+### Which config file does what
+
+The two TOML files look alike and are read by different programs, so a setting
+only takes effect in the one whose reader looks at it (#1288).
+
+`gateway.toml` is the gateway's runtime config. `just dogfood` starts the gateway
+with `--config integration/dogfood/gateway.toml`, and nothing else reads it. It
+matters for what the gateway needs before (or without) a control plane: the
+listen address in `[server]`, and `[logging].clickhouse_url`, which opens the
+request-log sink once at startup. Everything else in it is replaced wholesale by
+the first snapshot the control plane serves. That includes
+`[logging.payload_capture]`, which from then on comes from Postgres, so a stack
+that was never seeded serves capture off (#1911).
+
+`dogfood.toml` is desired state for `rolter-seed --import` (`just dogfood-seed`),
+and no running process reads it. The importer writes its providers, provider
+groups and routes, `[[model_prices]]` and the templates under
+`[prompt_templates]`, plus `[logging.payload_capture]` and `[logging].ui_events`
+into the `logging_settings` row the snapshot is built from. The two logging keys
+are written only when the file spells them out, so leaving one out keeps
+whatever the dashboard set. It accepts every other `rolter.toml` section and writes none
+of them: `[server]` and `[logging].clickhouse_url` are there so the file reads
+as a complete config, and `[adaptive_routing]`, `[retry]` or `[[budgets]]`
+added here would change nothing (#1818). Those live behind the control plane's
+API; `adaptive-routing.sh` is how this stack sets the one it needs.
+
+A setting for the gateway process goes in `gateway.toml`, and a fleet or policy
+row goes in `dogfood.toml`. Both files declare `[logging.payload_capture]`, for
+the two readers above, so change them together. That section is the only one
+where a mismatch changes behaviour.
 
 ## The fleet
 
@@ -45,6 +78,14 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.signoz.yml 
   up -d postgres redis clickhouse signoz-zookeeper signoz-clickhouse \
         signoz-schema-migrator signoz-otel-collector signoz signoz-mcp
 ```
+
+If both ClickHouse containers fail to start with
+`error setting rlimit type 7: operation not permitted`, the container runtime
+cannot grant them 262144 open files. Add `CLICKHOUSE_NOFILE=20000` (or whatever
+the runtime allows) to `docker/.env` and rerun (#1819). Compose reads that file
+on every call against these compose files, `just` recipes included; a `.env` at
+the repository root is not read, and a one-off prefix on a single command is
+undone by the next compose call without it.
 
 Start the fleet, then seed the database from the same config:
 
@@ -74,7 +115,8 @@ dropped by the control plane with a `204`, and logged nowhere — leaving the
 Cluster and Adaptive Routing screens empty forever (#1644). `just dogfood` sets
 it.
 
-Run the control plane and the gateway, both exporting to the collector:
+Run the control plane and the gateway, both exporting to the collector. The
+gateway runs on `gateway.toml`, as `just dogfood` runs it, not on the seed file:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
@@ -84,12 +126,30 @@ OTEL_SERVICE_NAME=rolter-control ROLTER_UI_DIR=ui/dist \
   cargo run -p rolter-control --features postgres --bin rolter-control &
 OTEL_SERVICE_NAME=rolter-gateway \
   ROLTER_SNAPSHOT_URL=http://127.0.0.1:4001/internal/snapshot \
-  cargo run -p rolter-gateway -- --config integration/dogfood/dogfood.toml &
+  cargo run -p rolter-gateway -- --config integration/dogfood/gateway.toml &
 ```
 
-`[logging].clickhouse_url` in `dogfood.toml` is what makes the dashboard's
+`[logging].clickhouse_url` in `gateway.toml` is what makes the dashboard's
 analytics screens fill; the control plane's `CLICKHOUSE_URL` only lets it
 _read_ the table (#929).
+
+Then turn adaptive routing on, or `deepseek-r1` serves its fallback stack all
+session:
+
+```bash
+./integration/dogfood/adaptive-routing.sh on   # `just dogfood-adaptive on`
+```
+
+`deepseek-r1` is the fleet's `strategy = "adaptive"` route, and that strategy
+only routes once the deployment-wide kill switch is on. The switch ships off and
+lives in Postgres, where the importer does not write it. `just dogfood` runs the
+script after the control plane is up. The script changes only `enabled`, so
+blend weights set on **Adaptive Routing → Settings** survive it. The route then
+engages once it has served `min_samples` picks (50 by default), and the
+**Adaptive Routing → Dashboard** screen shows `engaged` from then on. To compare
+against the fallback stack, run `just dogfood-adaptive off`, or flip the switch
+on the Settings screen. The choice survives a restart of the control plane, but
+the next `just dogfood` turns the switch back on.
 
 ## Proving the UX capture before a week of it
 

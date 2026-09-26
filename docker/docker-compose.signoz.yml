@@ -66,10 +66,12 @@ services:
       - signoz-clickhouse:/var/lib/clickhouse/
     environment:
       - CLICKHOUSE_SKIP_USER_SETUP=1
+    # same knob as rolter's own clickhouse in docker-compose.yml: lower it where
+    # the runtime cannot grant 262144 open files (#1819)
     ulimits:
       nofile:
-        soft: 262144
-        hard: 262144
+        soft: ${CLICKHOUSE_NOFILE:-262144}
+        hard: ${CLICKHOUSE_NOFILE:-262144}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
       interval: 10s
