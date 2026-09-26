@@ -97,11 +97,11 @@ curl -X PUT -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 `GET /api/v1/analytics/by-attribution` rolls `request_logs` up by one governance dimension over a time window:
 
-| Parameter              | Meaning                                                              |
-| ---------------------- | -------------------------------------------------------------------- |
-| `since` / `until`      | window bounds; both default to the last 7 days                       |
-| `dimension`            | `business_unit` or `customer` (defaults to `business_unit`)          |
-| `include_unattributed` | include the bucket for keys that named neither (defaults to `false`) |
+| Parameter              | Meaning                                                                                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `since` / `until`      | window bounds in one of the [time window](/observability/logs-and-cost#time-windows) forms; both default to the last 7 days, and a malformed one is a `400` |
+| `dimension`            | `business_unit` or `customer` (defaults to `business_unit`)                                                                                                 |
+| `include_unattributed` | include the bucket for keys that named neither (defaults to `false`)                                                                                        |
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

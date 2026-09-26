@@ -1228,6 +1228,7 @@ mod tests {
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
+        ("time_bounds.rs", include_str!("time_bounds.rs")),
         ("ui_config.rs", include_str!("ui_config.rs")),
         ("ui_events.rs", include_str!("ui_events.rs")),
         ("update_check.rs", include_str!("update_check.rs")),
