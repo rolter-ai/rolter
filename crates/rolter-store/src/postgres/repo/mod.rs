@@ -1231,6 +1231,49 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Whether a provider or a provider group other than `except` already
+    /// answers `slug`, in any org.
+    ///
+    /// The gateway resolves `provider-slug/model` and `group-slug/model` in one
+    /// namespace across the deployment, and a group whose slug a provider holds
+    /// is not addressable at all. So a new or renamed slug has to be free in
+    /// both tables, or the second holder silently takes the address from the
+    /// first. Row ids are unique across the two tables, so one `except` covers
+    /// a rename of either kind.
+    pub async fn address_slug_in_use(&self, slug: &str, except: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where slug = $1 \
+                            and ($2::uuid is null or id <> $2)) \
+                 or exists(select 1 from provider_groups where slug = $1 \
+                            and ($2::uuid is null or id <> $2))",
+        )
+        .bind(slug)
+        .bind(except)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether a provider or provider group outside `org_id` answers `slug`.
+    ///
+    /// A route named `slug/…` in `org_id` would sit on that holder's
+    /// `provider-slug/model` or `group-slug/model` address, and a key with no
+    /// org (the operator's) would reach the route instead of the address.
+    /// `None` treats every org as another one.
+    pub async fn address_slug_outside_org(&self, slug: &str, org_id: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where slug = $1 \
+                            and ($2::uuid is null or org_id <> $2)) \
+                 or exists(select 1 from provider_groups where slug = $1 \
+                            and ($2::uuid is null or org_id <> $2))",
+        )
+        .bind(slug)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
             "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
@@ -2141,6 +2184,24 @@ impl RouteRepo<'_> {
             .fetch_one(self.0)
             .await
             .map_err(store_err)
+    }
+
+    /// Whether a route named `model` in `org_id` would sit on the
+    /// `provider-slug/model` or `group-slug/model` address of a provider or
+    /// provider group outside that org. `None` treats every org as another one.
+    pub async fn name_takes_address_outside_org(
+        &self,
+        model: &str,
+        org_id: Option<Uuid>,
+    ) -> Result<bool> {
+        match rolter_core::slug::address_slug(model) {
+            Some(slug) => {
+                ProviderRepo(self.0)
+                    .address_slug_outside_org(slug, org_id)
+                    .await
+            }
+            None => Ok(false),
+        }
     }
 
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<Route>> {

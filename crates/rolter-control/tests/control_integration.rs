@@ -500,6 +500,166 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
     );
 }
 
+/// Providers and provider groups answer `slug/model` from one namespace at the
+/// gateway, so a slug either kind holds is refused to the other kind too, on
+/// create and on rename. A route name is refused where it would sit on another
+/// org's `slug/model` address or on the builtin `fake-llm`, and is otherwise
+/// free to contain `/` (#1845).
+#[tokio::test]
+async fn providers_groups_and_route_names_share_the_gateways_address_namespace() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let tenant = |slug: &'static str| {
+        let base = base.clone();
+        async move {
+            let (_, org) = post(
+                format!("{base}/api/v1/orgs"),
+                json!({"name": slug, "slug": slug}),
+            )
+            .await;
+            let org_id = org["id"].as_str().unwrap().to_string();
+            let (_, team) = post(
+                format!("{base}/api/v1/orgs/{org_id}/teams"),
+                json!({"name": "core"}),
+            )
+            .await;
+            let team_id = team["id"].as_str().unwrap();
+            let (_, project) = post(
+                format!("{base}/api/v1/teams/{team_id}/projects"),
+                json!({"name": "app"}),
+            )
+            .await;
+            (org_id, project["id"].as_str().unwrap().to_string())
+        }
+    };
+    let (org_a, project_a) = tenant("tenant-a").await;
+    let (org_b, project_b) = tenant("tenant-b").await;
+    let provider = |org: &str, name: &str, slug: &str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "slug": slug, "kind": "openai_compatible",
+                   "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+
+    // org a holds provider slug `edge` and group slug `pool`
+    let (status, edge) = provider(&org_a, "edge", "edge").await;
+    assert_eq!(status, 200, "{edge}");
+    let (status, pool) = post(
+        format!("{base}/api/v1/orgs/{org_a}/provider-groups"),
+        json!({"name": "pool", "slug": "pool", "strategy": "round_robin",
+               "members": [{"provider_id": edge["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{pool}");
+
+    // across kinds: a provider may not take a group's slug, nor a group a
+    // provider's, and the refusal does not say which org holds it
+    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
+    assert_eq!(status, 409, "provider on a group slug: {body}");
+    assert!(!body.to_string().contains("tenant-a"), "{body}");
+    let (status, own) = provider(&org_b, "edge-b", "edge-b").await;
+    assert_eq!(status, 200, "{own}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group on a provider slug: {body}");
+    let (status, own_group) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "pool-b", "slug": "pool-b", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{own_group}");
+
+    // the same on rename
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
+        json!({"slug": "pool", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "provider renamed onto a group slug: {body}");
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            own_group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "edge", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "group renamed onto a provider slug: {body}");
+    // re-sending a group's own slug is no collision
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            own_group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "pool-b", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "a group collided with itself: {body}");
+
+    let route = |project: &str, model: &str| {
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": model, "strategy": "round_robin"}),
+        )
+    };
+    // another org's addresses, and the builtin, are not a route name
+    for model in ["edge/gpt-4o", "pool/gpt-4o", "fake-llm"] {
+        let (status, body) = route(&project_b, model).await;
+        assert_eq!(status, 409, "{model}: {body}");
+        assert!(!body.to_string().contains("tenant-a"), "{model}: {body}");
+    }
+    // the org's own address is its choice, and an hf-style name is no address
+    for (project, model) in [
+        (&project_a, "edge/gpt-4o"),
+        (&project_b, "edge-b/gpt-4o"),
+        (&project_b, "Qwen/Qwen2.5-7B-Instruct"),
+    ] {
+        let (status, body) = route(project, model).await;
+        assert_eq!(status, 200, "{model}: {body}");
+    }
+
+    // nothing refused above reached the snapshot, and it still builds
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        snapshot["config"].is_object(),
+        "snapshot refused: {snapshot}"
+    );
+}
+
 /// Listings answer a caller whose role sits below the org with what that
 /// caller reaches, instead of refusing the whole list (#1846, #1850). A project
 /// member can navigate to their own project, a team admin sees and manages
