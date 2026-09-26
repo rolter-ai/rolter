@@ -290,6 +290,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("no snapshot url configured; running with static bootstrap config");
     }
 
+    // kept past the router so shutdown can reach the realtime sessions, which
+    // axum's drain does not wait for
+    let realtime = state.clone();
     let mut app = build_router(
         state,
         &config.server.metrics_path,
@@ -306,9 +309,21 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!(%addr, metrics_path = %config.server.metrics_path, "rolter-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // drain in-flight requests on SIGINT/SIGTERM instead of dropping them
+    let closing = realtime.realtime_sessions.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // an upgraded socket is outside axum's drain, so realtime sessions
+            // start closing now, alongside the http requests it does wait for
+            closing.close();
+        })
         .await?;
+    if !realtime.drain_realtime_sessions(REALTIME_DRAIN_GRACE).await {
+        tracing::warn!(
+            grace_secs = REALTIME_DRAIN_GRACE.as_secs(),
+            "realtime sessions still open after the drain grace; their unflushed usage is lost"
+        );
+    }
     tracing::info!("rolter-gateway shut down cleanly");
     Ok(())
 }
@@ -427,6 +442,13 @@ pub fn build_router_from_config(config: &GatewayConfig) -> Router {
         config.server.max_body_bytes,
     )
 }
+
+/// How long shutdown waits for realtime sessions to close and their meters to
+/// flush once the HTTP drain is done. Well inside the 30 seconds an
+/// orchestrator usually allows between `SIGTERM` and `SIGKILL`: the sessions
+/// were told to close when the signal arrived, so this only covers a meter
+/// still waiting on Redis.
+const REALTIME_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
 /// or `SIGTERM` on Unix — the signal orchestrators send on rollout/scale-down).

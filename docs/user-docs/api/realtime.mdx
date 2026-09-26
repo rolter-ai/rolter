@@ -54,6 +54,7 @@ upgrade gets the HTTP status and error body a chat request would:
 | a budget in the key's scope is spent                             | `402`  | `insufficient_quota`  |
 | the model has no price and `unpriced_policy` resolves to `block` | `402`  | `model_unpriced`      |
 | an `rpm` or `tpm` window is full                                 | `429`  | `rate_limit_exceeded` |
+| the gateway is shutting down                                     | `503`  | `null`                |
 
 Opening a session counts as one request against `rpm`, and a `429` carries
 `Retry-After`.
@@ -97,6 +98,22 @@ visible rather than counted as free. See
 [Withheld responses](/observability/logs-and-cost#withheld-responses) for how
 to query it.
 
+## Gateway restarts
+
+When a gateway receives `SIGTERM` (a rolling deploy, a scale-down) or Ctrl-C,
+it closes every live session with WebSocket close code `1001` (going away) and
+refuses new ones with `503`. Reconnect, and the load balancer in front of the
+fleet sends you to a gateway that is still running.
+
+Before the process exits, each session's usage so far is charged to budgets and
+`tpm`, including turns still waiting for the next `usage_flush_secs`, and its
+request-log rows are queued. A response in flight at that moment is logged with
+status `503` and `usage_unknown = 1`. The gateway waits up to 10 seconds for
+this, so give the process a termination grace period of at least that on top of
+your longest HTTP request. Rows queued in the last `[logging] flush_ms` before
+exit can still be lost, for HTTP and realtime alike
+([#1924](https://github.com/rolter-ai/rolter/issues/1924)).
+
 ## Current limits
 
 - **WebRTC/browser ephemeral-token handoff is not exposed.** Only the
@@ -129,7 +146,8 @@ metering cadence:
   sends a frame
 - `usage_flush_secs` (default `15`) — how often finished responses are logged,
   charged to budgets and `tpm`, and followed by a budget check. `0` does this
-  after every response instead of on a timer
+  after every response instead of on a timer, and re-checks the budgets every
+  second while the session is quiet
 
 Set any of the first three to `0` to disable that limit. Metering itself cannot
 be switched off. See [Configuration](/configuration/config-file) for

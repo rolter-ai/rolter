@@ -89,7 +89,7 @@ The WebSocket-first implementation supports the OpenAI Realtime event stream, in
 
 A session is admitted through the same budget, `unpriced_policy` and rate-limit checks as an HTTP request, on the same key, project, team and org scope, and a refusal is the HTTP status and error body a chat request would get (`402 insufficient_quota`, `402 model_unpriced`, `429 rate_limit_exceeded`). Opening a session takes one `rpm` slot.
 
-Once open, the session is metered per response turn: each `response.done` event's `usage` becomes one `request_logs` row, priced and attributed like an HTTP row, and its cost and tokens are added to the scope's budgets and `tpm` windows every `[realtime] usage_flush_secs`. When a budget runs out mid-session the client receives an `error` event with code `insufficient_quota`, then a `1008` close. [Realtime metering](../architecture/realtime-metering.md) has the full model, including how a response cut short is recorded. Guardrails and plugins do not run on realtime events yet (#1880).
+Once open, the session is metered per response turn: each `response.done` event's `usage` becomes one `request_logs` row, priced and attributed like an HTTP row, and its cost and tokens are added to the scope's budgets and `tpm` windows every `[realtime] usage_flush_secs`. When a budget runs out mid-session the client receives an `error` event with code `insufficient_quota`, then a `1008` close. A gateway shutting down closes each live session with `1001` (going away) after metering it, and refuses new upgrades with `503`. [Realtime metering](../architecture/realtime-metering.md) has the full model, including how a response cut short is recorded. Guardrails and plugins do not run on realtime events yet (#1880).
 
 ## MCP gateway
 

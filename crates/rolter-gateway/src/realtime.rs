@@ -10,6 +10,11 @@
 //! refuses the upgrade before any upstream is dialled. Once the session is
 //! live, [`crate::realtime_metering`] meters it per response turn and closes it
 //! when its budget runs out (#1396).
+//!
+//! A session outlives the HTTP request that opened it, so axum's graceful
+//! shutdown does not wait for it. [`Sessions`] tracks every relay and meter
+//! task instead, and a shutting-down gateway closes each session and waits for
+//! its meter's last flush before the process exits.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
@@ -28,6 +33,8 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message as UpstreamMessage},
 };
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::handlers::{
     authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
@@ -36,19 +43,34 @@ use crate::handlers::{
 use crate::realtime_metering::{SessionEnd, SessionMeter, TurnTracker};
 use crate::state::{AppState, Snapshot};
 
-/// Process-local admission counter for persistent sessions.
+/// How long a shutting-down relay may spend writing its close frames. A
+/// client that stopped reading must not hold the drain past its grace and cost
+/// the meter its last flush.
+const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Process-local registry of persistent sessions: the admission counter, plus
+/// what shutdown needs to end them.
+///
+/// axum's graceful shutdown stops tracking a connection once it upgrades to a
+/// WebSocket, so it would let the process exit under a live session and drop
+/// the turns its meter had not flushed yet. Every relay and meter task is
+/// tracked here instead, and `closing` tells the relays to end.
 #[derive(Clone, Default)]
-pub(crate) struct Sessions(Arc<AtomicU64>);
+pub(crate) struct Sessions {
+    live: Arc<AtomicU64>,
+    closing: CancellationToken,
+    tasks: TaskTracker,
+}
 
 impl Sessions {
     fn acquire(&self, limit: u64) -> Option<SessionGuard> {
         loop {
-            let current = self.0.load(Relaxed);
+            let current = self.live.load(Relaxed);
             if limit != 0 && current >= limit {
                 return None;
             }
             if self
-                .0
+                .live
                 .compare_exchange_weak(current, current + 1, Relaxed, Relaxed)
                 .is_ok()
             {
@@ -56,13 +78,33 @@ impl Sessions {
             }
         }
     }
+
+    /// Tell every live session to end, and refuse new ones. Idempotent.
+    pub(crate) fn close(&self) {
+        self.closing.cancel();
+    }
+
+    /// Wait, at most `grace`, for every session's relay and meter to finish.
+    /// Returns whether they all did.
+    pub(crate) async fn drained(&self, grace: Duration) -> bool {
+        self.tasks.close();
+        tokio::time::timeout(grace, self.tasks.wait()).await.is_ok()
+    }
+
+    /// Run a session's meter where shutdown waits for it.
+    pub(crate) fn spawn_meter<F>(&self, meter: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.tasks.spawn(meter);
+    }
 }
 
 struct SessionGuard(Sessions);
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        self.0 .0.fetch_sub(1, Relaxed);
+        self.0.live.fetch_sub(1, Relaxed);
     }
 }
 
@@ -111,6 +153,10 @@ pub async fn realtime(
     let priced = snap.prices.contains_key(&entry.route.model);
     if let Some(refusal) = unpriced_admission(&state, &snap, &scope, &entry.route.model, priced) {
         return refusal;
+    }
+    // a session opened now would be closed before its first turn
+    if state.realtime_sessions.closing.is_cancelled() {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "gateway shutting down");
     }
     let Some(session_guard) = state
         .realtime_sessions
@@ -177,8 +223,14 @@ pub async fn realtime(
         },
     };
 
-    ws.on_upgrade(move |socket| relay(socket, selected, meter))
-        .into_response()
+    // counted from here rather than from inside the callback, which only runs
+    // once the handshake completes: a drain that starts in between still waits
+    let tracked = state.realtime_sessions.tasks.token();
+    ws.on_upgrade(move |socket| async move {
+        let _tracked = tracked;
+        relay(socket, selected, meter).await;
+    })
+    .into_response()
 }
 
 struct SelectedSession {
@@ -416,6 +468,7 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
         target,
         variant: _,
     } = session;
+    let closing = state.realtime_sessions.closing.clone();
     let (meter, exhausted) = meter.spawn();
     let mut exhausted = Some(exhausted);
     let mut turns = TurnTracker::default();
@@ -458,6 +511,12 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
             }
         };
         tokio::select! {
+            _ = closing.cancelled() => {
+                let _ = tokio::time::timeout(CLOSE_WRITE_TIMEOUT, client_sender.send(shutdown_close_frame())).await;
+                let _ = tokio::time::timeout(CLOSE_WRITE_TIMEOUT, upstream_sender.send(UpstreamMessage::Close(None))).await;
+                end = SessionEnd::shutting_down();
+                break;
+            },
             _ = session_wait => {
                 end = SessionEnd::limit_reached("max_session_secs");
                 break;
@@ -553,6 +612,15 @@ fn budget_close_frame() -> Message {
     }))
 }
 
+/// A going-away close, the code a WebSocket server sends when it shuts down, so
+/// a client knows to reconnect rather than treat the session as refused.
+fn shutdown_close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: close_code::AWAY,
+        reason: Utf8Bytes::from_static("gateway shutting down"),
+    }))
+}
+
 fn to_upstream(message: Message) -> UpstreamMessage {
     match message {
         Message::Text(text) => UpstreamMessage::Text(text.to_string().into()),
@@ -580,7 +648,45 @@ fn api_error(status: StatusCode, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::realtime_url;
+    use super::{realtime_url, Sessions};
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// The drain is what keeps the runtime alive under a meter's last flush,
+    /// so it must hold for as long as any meter is still running.
+    #[tokio::test]
+    async fn a_drain_waits_for_every_meter_to_finish() {
+        let sessions = Sessions::default();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let flushed = Arc::new(AtomicBool::new(false));
+        let done = flushed.clone();
+        sessions.spawn_meter(async move {
+            let _ = released.await;
+            done.store(true, SeqCst);
+        });
+        sessions.close();
+        assert!(
+            !sessions.drained(Duration::from_millis(50)).await,
+            "a meter still flushing holds the drain"
+        );
+        release.send(()).unwrap();
+        assert!(sessions.drained(Duration::from_secs(5)).await);
+        assert!(flushed.load(SeqCst));
+    }
+
+    /// A session is counted from admission, before its handshake completes,
+    /// so a drain that starts in between still waits for it.
+    #[tokio::test]
+    async fn a_drain_waits_for_a_session_still_upgrading() {
+        let sessions = Sessions::default();
+        let upgrading = sessions.tasks.token();
+        sessions.close();
+        assert!(sessions.closing.is_cancelled(), "new sessions are refused");
+        assert!(!sessions.drained(Duration::from_millis(50)).await);
+        drop(upgrading);
+        assert!(sessions.drained(Duration::from_secs(5)).await);
+    }
 
     #[test]
     fn converts_http_base_to_websocket_realtime_url() {

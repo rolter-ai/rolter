@@ -230,7 +230,7 @@ These are the gateway's own resource guards, not tenant policy. A session also m
 - `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame
-- `usage_flush_secs` (u64, default `15`) — how often a live session's finished response turns are written to the request log, added to budgets and `tpm` windows, and followed by a budget re-check. It bounds how long a session can overspend a budget before it is closed. `0` flushes after every turn instead of on a timer; metering cannot be switched off
+- `usage_flush_secs` (u64, default `15`) — how often a live session's finished response turns are written to the request log, added to budgets and `tpm` windows, and followed by a budget re-check. It bounds how long a session can overspend a budget before it is closed. `0` flushes after every turn instead of on a timer, and re-checks the budgets every second while the session is quiet; metering cannot be switched off
 
 ### `[egress]`
 

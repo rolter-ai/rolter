@@ -452,7 +452,8 @@ disabled = false # revoke without deleting
 # metered. a session also meets [[budgets]], [[rate_limits]] and unpriced_policy
 # at admission; while it runs, each finished response is logged and charged, and
 # a spent budget closes the session at the next flush. 0 disables a limit;
-# usage_flush_secs = 0 flushes after every response instead of on a timer.
+# usage_flush_secs = 0 flushes after every response instead of on a timer, and
+# re-checks budgets every second while a session is quiet.
 # defaults shown below.
 # [realtime]
 # max_connections = 1000     # concurrent sessions this gateway process admits

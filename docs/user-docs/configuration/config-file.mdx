@@ -693,7 +693,7 @@ Resource limits and metering cadence for [`/v1/realtime`](/api/realtime) WebSock
 </ParamField>
 
 <ParamField path="usage_flush_secs" default="15" type="u64">
-  How often a live session's finished responses are written to the request log, charged to budgets and `tpm` windows, and followed by a budget check that closes the session once a budget is spent. It bounds how far a session can overspend. `0` flushes after every response instead of on a timer; metering cannot be switched off.
+  How often a live session's finished responses are written to the request log, charged to budgets and `tpm` windows, and followed by a budget check that closes the session once a budget is spent. It bounds how far a session can overspend. `0` flushes after every response instead of on a timer, and re-checks the budgets every second while the session is quiet; metering cannot be switched off.
 </ParamField>
 
 ```toml

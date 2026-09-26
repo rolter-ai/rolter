@@ -231,6 +231,8 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
 
     The queue is bounded on purpose: recording writes to Redis, and an unbounded backlog would grow worst exactly when the gateway is under stress. A non-zero rate here says the counter store is not keeping up — check Redis latency first, then raise `[usage_recording] workers` or `queue_capacity`. Sustained drops mean budget enforcement is under-counting and will let spend through.
 
+    [Realtime](/api/realtime) sessions count here too. Each session meters its finished responses through a queue of its own, fixed at 1024 responses, and a response dropped from it loses its request-log row as well as its budget charge and `tpm` tokens. The `[usage_recording]` settings do not size that queue, so if drops continue after raising them, look at Redis latency during realtime sessions.
+
   </Accordion>
 
   <Accordion title="rolter_usage_records_queued">

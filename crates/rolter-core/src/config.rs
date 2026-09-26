@@ -594,7 +594,8 @@ pub struct RealtimeConfig {
     /// how often a live session's completed response turns are written to the
     /// request log, added to budgets and `tpm` windows, and followed by a
     /// budget re-check. 0 flushes after every completed turn instead of on a
-    /// timer; metering itself cannot be switched off (#1396)
+    /// timer, and re-checks the budgets every second while the session is
+    /// quiet; metering itself cannot be switched off (#1396)
     #[serde(default = "default_realtime_usage_flush_secs")]
     pub usage_flush_secs: u64,
 }

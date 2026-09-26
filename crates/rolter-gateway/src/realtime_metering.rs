@@ -21,7 +21,11 @@
 //!   the meter flushes: one `request_logs` row per turn, the window's cost
 //!   added to every applicable budget and its tokens to every applicable `tpm`
 //!   window. It then re-reads the budgets, and a spent budget closes the
-//!   session, whoever spent it.
+//!   session, whoever spent it. With `usage_flush_secs = 0` every turn flushes
+//!   as it finishes, and the budgets are still re-read every second while the
+//!   session is quiet.
+//! - A gateway shutting down closes every session and waits for its meter's
+//!   last flush, since axum's own drain does not see an upgraded socket.
 //! - A response still in flight when the session ends never reports usage. Its
 //!   row carries `usage_unknown = 1`, so the spend shows up as unknown rather
 //!   than disappearing.
@@ -57,6 +61,11 @@ const MAX_OPEN: usize = 32;
 
 /// How far into a `type` value the tracker reads before giving up on it.
 const TYPE_MAX_LEN: usize = 128;
+
+/// How often a session that flushes per turn re-reads its budgets while it is
+/// quiet. Such a session has no flush timer, and without this a budget spent
+/// by other traffic would only be noticed after its own next billed turn.
+const IDLE_BUDGET_CHECK: Duration = Duration::from_secs(1);
 
 /// One finished response and what the upstream reported it used.
 #[derive(Debug)]
@@ -113,8 +122,13 @@ impl TurnTracker {
 
     fn observe_at(&mut self, frame: &str, now: Instant) -> Option<Turn> {
         match leading_type(frame) {
+            // only a response's own output is its first token. an input
+            // transcription delta describes what the user said, and can land
+            // well before the model answers
             Some(kind) if kind.ends_with(".delta") => {
-                self.first_delta(now);
+                if kind.starts_with("response.") {
+                    self.first_delta(frame, now);
+                }
                 None
             }
             Some("response.created" | "response.done") => self.lifecycle(frame, now),
@@ -122,8 +136,11 @@ impl TurnTracker {
             // `type` was not among the leading keys. a frame shaped that way is
             // still metered correctly, it just costs a scan of the whole frame
             None => {
-                if self.awaiting_delta && frame.contains(".delta\"") {
-                    self.first_delta(now);
+                if self.awaiting_delta
+                    && frame.contains(".delta\"")
+                    && frame.contains("\"response.")
+                {
+                    self.first_delta(frame, now);
                 }
                 if frame.contains("\"response.done\"") || frame.contains("\"response.created\"") {
                     self.lifecycle(frame, now)
@@ -157,6 +174,7 @@ impl TurnTracker {
                     .iter()
                     .position(|turn| turn.id == id)
                     .map(|index| self.open.remove(index));
+                self.awaiting_delta = self.open.iter().any(|turn| turn.first_delta.is_none());
                 // a response whose start was never seen is still billed; it
                 // only has no latency to report
                 let (started, (latency_ms, ttft_ms)) = match &open {
@@ -175,14 +193,19 @@ impl TurnTracker {
         }
     }
 
-    fn first_delta(&mut self, now: Instant) {
+    /// Stamp time to first token on the response this delta belongs to, or on
+    /// every response still waiting for one when the delta names none.
+    fn first_delta(&mut self, frame: &str, now: Instant) {
         if !self.awaiting_delta {
             return;
         }
+        let owner = response_id(frame);
         for turn in &mut self.open {
-            turn.first_delta.get_or_insert(now);
+            if owner.is_none_or(|owner| owner == turn.id) {
+                turn.first_delta.get_or_insert(now);
+            }
         }
-        self.awaiting_delta = false;
+        self.awaiting_delta = self.open.iter().any(|turn| turn.first_delta.is_none());
     }
 
     /// The responses still open, for the session's last flush.
@@ -222,6 +245,17 @@ fn leading_string(after_key: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((rest.get(..end)?, rest.get(end + 1..)?))
+}
+
+/// The `response_id` a delta event names.
+///
+/// Delta events are flat and write it ahead of the delta itself, so the search
+/// stops within the first few dozen bytes. A quoted `"response_id"` inside the
+/// delta's text is escaped in the frame, so it cannot match here.
+fn response_id(frame: &str) -> Option<&str> {
+    let at = frame.find("\"response_id\"")?;
+    let after_key = frame.get(at + "\"response_id\"".len()..)?;
+    leading_string(after_key).map(|(value, _)| value)
 }
 
 /// Skip a leading member's string value and its trailing comma, returning the
@@ -318,6 +352,15 @@ impl SessionEnd {
         }
     }
 
+    /// the gateway is shutting down
+    pub(crate) fn shutting_down() -> Self {
+        Self {
+            status: 503,
+            error: "gateway shutting down".to_string(),
+            upstream_fault: false,
+        }
+    }
+
     pub(crate) fn upstream_fault(&self) -> bool {
         self.upstream_fault
     }
@@ -374,7 +417,8 @@ pub(crate) struct SessionMeter {
     /// the upgrade request's id; each turn's row appends its ordinal
     pub(crate) request_id: String,
     pub(crate) trace_id: String,
-    /// `None` flushes after every turn instead of on a timer
+    /// `None` flushes after every turn instead of on a timer, and re-reads
+    /// the budgets every [`IDLE_BUDGET_CHECK`] in between
     pub(crate) flush_every: Option<Duration>,
 }
 
@@ -388,13 +432,16 @@ impl SessionMeter {
             tx,
             metrics: self.state.metrics.clone(),
         };
+        let sessions = self.state.realtime_sessions.clone();
         let runner = Runner {
             meter: self,
             pending: Vec::new(),
             seq: 0,
             exhausted: Some(exhausted_tx),
         };
-        tokio::spawn(runner.run(rx));
+        // tracked, so a gateway shutting down waits for this meter's last
+        // flush before the runtime is dropped under it
+        sessions.spawn_meter(runner.run(rx));
         (handle, exhausted_rx)
     }
 }
@@ -410,20 +457,13 @@ struct Runner {
 
 impl Runner {
     async fn run(mut self, mut rx: mpsc::Receiver<MeterEvent>) {
-        let mut ticker = self.meter.flush_every.map(|every| {
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker
-        });
+        // with no flush timer the tick only re-reads the budgets: every turn
+        // was flushed as it arrived, so there is nothing pending to write
+        let every = self.meter.flush_every.unwrap_or(IDLE_BUDGET_CHECK);
+        let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            let tick = async {
-                match ticker.as_mut() {
-                    Some(ticker) => {
-                        ticker.tick().await;
-                    }
-                    None => std::future::pending::<()>().await,
-                }
-            };
+            let tick = ticker.tick();
             tokio::select! {
                 event = rx.recv() => match event {
                     Some(MeterEvent::Turn(turn)) => {
@@ -452,7 +492,8 @@ impl Runner {
     ///
     /// The check runs on every tick, not only after this session spent
     /// something: a budget is shared by the whole scope chain, so another
-    /// session or plain HTTP traffic may be what used it up.
+    /// session or plain HTTP traffic may be what used it up. It costs nothing
+    /// when no budget applies to the session or Redis is not configured.
     async fn flush_and_check(&mut self) {
         let snap = self.meter.state.snapshot.load_full();
         self.flush(&snap).await;
@@ -769,6 +810,60 @@ mod tests {
         let open = tracker.into_open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, "resp_2");
+    }
+
+    /// With server VAD the user's transcript streams while the model is still
+    /// thinking. It is input, so it must not count as the answer's first token.
+    #[test]
+    fn an_input_transcription_delta_is_not_a_first_token() {
+        let mut tracker = TurnTracker::default();
+        let start = Instant::now();
+        tracker.observe_at(&created("resp_1"), start);
+        let transcript = r#"{"type":"conversation.item.input_audio_transcription.delta","event_id":"e","item_id":"item_1","delta":"good"}"#;
+        tracker.observe_at(transcript, start + Duration::from_millis(20));
+        // the same event with `type` behind other keys takes the slow path
+        let late_type = r#"{"event_id":"e","item_id":"item_1","type":"conversation.item.input_audio_transcription.delta","delta":" day"}"#;
+        tracker.observe_at(late_type, start + Duration::from_millis(30));
+        let audio = r#"{"type":"response.output_audio.delta","event_id":"e","response_id":"resp_1","delta":"AAAA"}"#;
+        tracker.observe_at(audio, start + Duration::from_millis(400));
+        let turn = tracker
+            .observe_at(&done("resp_1", USAGE), start + Duration::from_millis(900))
+            .unwrap();
+        assert_eq!((turn.latency_ms, turn.ttft_ms), (900, 400));
+    }
+
+    #[test]
+    fn a_delta_stamps_only_the_response_it_names() {
+        let mut tracker = TurnTracker::default();
+        let start = Instant::now();
+        tracker.observe_at(&created("resp_1"), start);
+        tracker.observe_at(&created("resp_2"), start);
+        let second = r#"{"type":"response.output_text.delta","response_id":"resp_2","delta":"a"}"#;
+        tracker.observe_at(second, start + Duration::from_millis(50));
+        let first = r#"{"type":"response.output_text.delta","response_id":"resp_1","delta":"b"}"#;
+        tracker.observe_at(first, start + Duration::from_millis(300));
+        let one = tracker
+            .observe_at(&done("resp_1", USAGE), start + Duration::from_millis(500))
+            .unwrap();
+        let two = tracker
+            .observe_at(&done("resp_2", USAGE), start + Duration::from_millis(600))
+            .unwrap();
+        assert_eq!(one.ttft_ms, 300);
+        assert_eq!(two.ttft_ms, 50);
+    }
+
+    #[test]
+    fn the_response_id_is_read_from_its_own_key() {
+        assert_eq!(
+            response_id(r#"{"type":"x","response_id":"resp_1","delta":"a"}"#),
+            Some("resp_1")
+        );
+        // the key quoted inside the delta's text is escaped in the frame
+        assert_eq!(
+            response_id(r#"{"type":"x","delta":"say \"response_id\": \"no\""}"#),
+            None
+        );
+        assert_eq!(response_id(r#"{"type":"x"}"#), None);
     }
 
     #[test]

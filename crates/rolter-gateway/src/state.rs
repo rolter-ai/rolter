@@ -923,6 +923,22 @@ impl AppState {
             .config_reloads_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// Close every live `/v1/realtime` session and wait, at most `grace`, for
+    /// each one's meter to run its last flush. Returns whether every session
+    /// finished inside `grace`.
+    ///
+    /// axum's graceful shutdown stops tracking a connection once it upgrades
+    /// to a WebSocket. A gateway that returned from `axum::serve` without this
+    /// would drop its runtime under live sessions, and with them every turn
+    /// their meters had not flushed yet: the request-log rows, the budget
+    /// charges and the `tpm` tokens. Each session is sent a `1001` (going
+    /// away) close, a response still in flight is logged with its usage
+    /// unknown, and new sessions are refused with `503` from the first call on.
+    pub async fn drain_realtime_sessions(&self, grace: std::time::Duration) -> bool {
+        self.realtime_sessions.close();
+        self.realtime_sessions.drained(grace).await
+    }
 }
 
 /// How long a closed breaker entry may sit with an unmoved failure count before

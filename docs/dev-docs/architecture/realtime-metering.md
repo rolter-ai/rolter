@@ -20,9 +20,10 @@ customer the key is attributed to). They run before any upstream is dialled:
 | 1     | authentication, model, route   | `401` / `403` / `404`, unchanged                           |
 | 2     | budgets                        | `402 insufficient_quota`, the HTTP path's `budget_refusal` |
 | 3     | `unpriced_policy`              | `402 model_unpriced` when the policy resolves to `block`   |
-| 4     | `[realtime] max_connections`   | `429`, the process-local resource guard                    |
-| 5     | rate limits                    | `429 rate_limit_exceeded` with `Retry-After`               |
-| 6     | upstream connect with failover | `502` when every candidate target fails                    |
+| 4     | the gateway is shutting down   | `503`, see [Shutdown](#shutdown)                           |
+| 5     | `[realtime] max_connections`   | `429`, the process-local resource guard                    |
+| 6     | rate limits                    | `429 rate_limit_exceeded` with `Retry-After`               |
+| 7     | upstream connect with failover | `502` when every candidate target fails                    |
 
 Opening a session is one request against `rpm`. The process-local cap is checked
 first so that a session this gateway could not hold anyway never costs the key a
@@ -62,9 +63,12 @@ Realtime API writes it) and fully parses only `response.created` and
 `response.done`, which are small. A frame whose `type` sits anywhere else falls
 back to a substring scan: slower, but still metered correctly.
 
-`response.created` opens a turn and starts its clock, the first `*.delta` after
-it stamps time to first token, and `response.done` closes it. A `done` whose
-`created` was never seen is still billed, with zero latency.
+`response.created` opens a turn and starts its clock, and `response.done` closes
+it. Time to first token is stamped by the first `response.*.delta` that names
+the turn in its `response_id`, or by the first one naming none. Other deltas do
+not count: `conversation.item.input_audio_transcription.delta` streams the
+user's own words, often well before the model answers. A `done` whose `created`
+was never seen is still billed, with zero latency.
 
 ## The periodic flush
 
@@ -88,8 +92,10 @@ and token counts in analytics describe one model response, as they do for HTTP.
 The flush window only batches the counter writes and bounds how late enforcement
 can be.
 
-`usage_flush_secs = 0` flushes after every turn instead of on a timer. There is
-no setting that turns metering off.
+`usage_flush_secs = 0` flushes after every turn instead of on a timer. The meter
+still ticks once a second in that mode, but only to re-read the budgets while
+the session is quiet (see the next section), so `0` is the tightest setting on
+both counts. There is no setting that turns metering off.
 
 The snapshot is read per flush, so a price, budget or limit edited mid-session
 applies from the next flush on.
@@ -98,7 +104,9 @@ applies from the next flush on.
 
 The meter re-reads the budgets on every tick, not only after this session
 spent something: a budget is shared by its whole scope chain, so another
-session or plain HTTP traffic may be what used it up.
+session or plain HTTP traffic may be what used it up. A tick is one
+`usage_flush_secs`, or one second when that is `0`. The re-read costs nothing
+when no budget applies to the session or Redis is not configured.
 
 When a budget is spent the session is **closed**. The client first receives a
 Realtime `error` event whose `error` object is the HTTP refusal's:
@@ -146,6 +154,7 @@ as its status:
 | the upstream connection failed  | `502`    | `upstream realtime connection failed`  |
 | `max_session_secs` or idle time | `408`    | `realtime session closed by <limit>`   |
 | a budget ran out                | `402`    | the budget refusal message             |
+| the gateway shut down           | `503`    | `gateway shutting down`                |
 
 This follows [Client disconnects](client-disconnects.md) and
 [Billed but withheld](billed-but-withheld.md): spend that cannot be counted is
@@ -160,6 +169,40 @@ once for the whole session.
 A turn whose `response.done` says `status: "failed"` is logged with status
 `502`. Its usage is billed if the upstream reported any.
 
+## Shutdown
+
+A session outlives the HTTP request that opened it. axum's graceful shutdown
+stops tracking a connection once it upgrades to a WebSocket, so on its own it
+would let the process exit under live sessions. The runtime would then cancel
+each relay and meter wherever it stood, and every turn still waiting for the
+next flush would lose its row, its budget charge and its `tpm` tokens. With the
+default `usage_flush_secs` that is up to 15 seconds of every session, on every
+rollout.
+
+So the gateway drains realtime sessions itself (`Sessions` in `realtime.rs`,
+`AppState::drain_realtime_sessions`):
+
+1. Every relay and meter task is tracked from admission on, including the
+   moment between the upgrade response and the completed handshake.
+2. When `SIGTERM` or Ctrl-C arrives, every session is told to close at once,
+   in parallel with axum's drain of plain HTTP requests. Each client receives a
+   `1001` (going away) close, the code a WebSocket server sends when it stops,
+   so an SDK reconnects rather than treating the session as refused. The
+   upstream leg is closed too.
+3. New upgrades are refused with `503` from that moment.
+4. Each meter runs its last flush: rows for finished turns, `usage_unknown` rows
+   with status `503` for responses in flight, budget and `tpm` writes.
+5. Once the HTTP drain is done, the process waits up to 10 seconds for the
+   tracked tasks to finish, then exits. The sessions were closed when the signal
+   arrived, so the wait only covers a meter still waiting on Redis, and it fits
+   well inside the 30 seconds an orchestrator usually allows before `SIGKILL`.
+   A session still open after it is logged as a warning.
+
+The budget and `tpm` writes are awaited by the meter, so they land before the
+process exits. The request-log rows are handed to the shared ClickHouse writer,
+which is not drained at shutdown yet, so rows from the last `[logging]
+flush_ms` can still be lost. That gap is not specific to realtime (#1924).
+
 ## Failure modes
 
 - **Redis down.** Admission and recording fail open, as on the HTTP path: the
@@ -172,12 +215,18 @@ A turn whose `response.done` says `status: "failed"` is logged with status
   inside one stalled flush.
 - **The relay task dies.** The meter sees its channel close, flushes what it
   was already handed and stops.
+- **The process shuts down.** Covered by [Shutdown](#shutdown). A `SIGKILL`, or
+  a drain that outlives its 10 seconds, still loses whatever the meter had not
+  written.
 
 ## What is not metered
 
 These are tracked rather than silently missing:
 
-- Guardrails and plugins do not run on realtime events (#1880).
+- Guardrails and plugins do not run on realtime events (#1880). This is why
+  `realtime` still carries its [stability marker](../development/stability-markers.md):
+  the marker's note named guardrails alongside metering, and a subsystem
+  graduates in the pull request that closes the last gap its note names.
 - A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).
@@ -190,10 +239,25 @@ These are tracked rather than silently missing:
 `crates/rolter-gateway/tests/realtime_metering.rs` drives real sessions against
 a mock Realtime upstream: a completed turn is logged with its usage and cost, a
 session that stays open is accounted on the flush timer, a response cut short is
-logged as unknown, an unpriced model is refused under `block`, a spent budget
-refuses a new session, a session is closed when its budget runs out, a budget
-spent by other traffic closes an idle session on the flush timer, usage is
-charged while the session continues, `rpm` applies per key rather than per
-process, and turn tokens fill the key's `tpm` window. The Redis-backed ones read
-`ROLTER_TEST_REDIS_URL` and skip without it. The tracker's frame handling is
+logged as unknown, turns waiting on the timer are flushed when the session
+ends, an unpriced model is refused under `block`, a spent budget refuses a new
+session, a session is closed when its budget runs out, a budget spent by other
+traffic closes an idle session on the flush timer and, with
+`usage_flush_secs = 0`, on the one-second budget tick, usage is charged while
+the session continues, `rpm` applies per key rather than per process, and turn
+tokens fill the key's `tpm` window. The Redis-backed ones read
+`ROLTER_TEST_REDIS_URL` and skip, or skip their Redis assertions, without it.
+
+Shutdown has three: an in-process drain flushes every live session before it
+returns and refuses new ones with `503`, a response in flight at shutdown is
+logged as unknown, and a real `rolter-gateway` child sent `SIGTERM` closes its
+session with `1001` and exits `0` only after the meter has flushed. With Redis,
+the first and the third route the gateway through a relay that holds every
+reply back by 200ms once shutdown starts. A flush charges a budget with `INCRBYFLOAT` and
+sends its `EXPIRE` only after that reply, so a budget key that carries its
+expiry proves the meter ran to the end of its flush instead of merely starting
+it. `Sessions` itself is unit-tested for holding the drain while a meter or an
+upgrade is still running.
+
+The tracker's frame handling, including which deltas count as a first token, is
 unit-tested in `realtime_metering.rs` itself.
