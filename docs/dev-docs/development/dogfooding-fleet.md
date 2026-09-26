@@ -118,6 +118,14 @@ chart on their own defaults.
 - **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
   control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).
+- **The SigNoz dashboards are tied to the SigNoz pin.** `provision-signoz.sh`
+  targets v0.136.0, the release `docker/docker-compose.signoz.yml` pins, which
+  moved sign-in to `/api/v2/sessions/email_password` and dashboard creation to
+  `/api/v2/dashboards` (#1864). The boards are written in the v1 import format
+  with `"version": "v5"`, which v0.136 converts on import. A SigNoz the script
+  cannot talk to makes it exit 2 naming the version, and `just dogfood` repeats
+  the failure after the sheet. Run `just signoz-provision` against a new release
+  before moving the pin.
 
 ## Before a week of capture: prove the UX stream
 

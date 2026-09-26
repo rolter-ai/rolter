@@ -1,5 +1,6 @@
 {
   "title": "rolter · dashboard UX",
+  "version": "v5",
   "description": "What the dashboard's own browser tracing sees: which API calls the SPA makes, which fail, and how slow they are. This is the view that surfaced the /me/* 401s in #942 — a screen returning 401 while every route beside it returns 200 is obvious here and invisible in the UI. Imported by `just dogfood` (#956).",
   "tags": ["rolter", "ui", "provisioned"],
   "variables": {},
