@@ -126,13 +126,16 @@ await step("E5.1", "errors name their cause", async () => {
 await step("E5.2", "find the failing request in LLM Logs, bodies included", async () => {
   const fail = await chat(key, "gpt-4o", { max_tokens: -1 });
   const rid = fail.headers.get("x-request-id") ?? "";
+  assert(rid, `the failing call (${fail.status}) carried no x-request-id`);
+  // the failing call's own row, not the earlier successful one: the step is
+  // about finding the request that went wrong
   const found = await until(async () => {
     const r = await api("GET", `/api/v1/analytics/invocations?limit=100&key=${keyId}`, token);
-    return r.json?.data?.find((x: any) => x.request_id === requestId) ?? null;
+    return r.json?.data?.find((x: any) => x.request_id === rid) ?? null;
   }, 30000);
   const body = found.request_payload ?? "";
   const byId = /request_id|request id/i.test(await (async () => { await goto(page, "/logs"); return await page.locator("main").innerText(); })());
-  const note = `row found by key filter (${found.status}, ${found.provider}, ${found.latency_ms} ms); bodies ${body ? "readable" : "withheld"}; a failing call → ${fail.status} rid=${rid ? "yes" : "no"}`;
+  const note = `failing call → ${fail.status}; its row found by key filter (${found.status}, ${found.provider}, ${found.latency_ms} ms); bodies ${body ? "readable" : "withheld"}`;
   if (!body) return ["fail", note];
   return byId ? ["pass", note] : ["partial", `${note}; no lookup by the x-request-id the client got (#1849)`];
 }, page);
