@@ -340,7 +340,7 @@ const SCOPE_QUERY: &[QueryParam] = &[
     QueryParam::required(
         "scope_type",
         "string",
-        "what the limit is attached to: `org`, `team`, `project`, `key`, `user` or `business_unit`",
+        "what the limit is attached to: `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`",
     ),
     QueryParam::required("scope_id", "string", "uuid of that scope"),
 ];
@@ -1130,6 +1130,13 @@ fn operations() -> Vec<Op> {
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
+            Op::patch(
+                "/api/v1/budgets/{id}",
+                "updateBudget",
+                "Change a spend budget's limit, period or unpriced policy in place",
+            )
+            .body(Payload::Ref("UpdateBudget"))
+            .ok(Payload::Ref("Budget")),
             Op::delete(
                 "/api/v1/budgets/{id}",
                 "deleteBudget",
@@ -1144,6 +1151,13 @@ fn operations() -> Vec<Op> {
                 "Create a rate limit",
             )
             .body(Payload::Ref("CreateRateLimit"))
+            .ok(Payload::Ref("RateLimit")),
+            Op::patch(
+                "/api/v1/rate-limits/{id}",
+                "updateRateLimit",
+                "Change a rate limit's rpm or tpm cap in place",
+            )
+            .body(Payload::Ref("UpdateRateLimit"))
             .ok(Payload::Ref("RateLimit")),
             Op::delete(
                 "/api/v1/rate-limits/{id}",
@@ -2659,13 +2673,19 @@ fn governance_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
+    // the `SCOPE_TYPES` allowlist in `crud.rs`: business unit and customer are
+    // the governance dimensions a key's spend rolls up to (#539)
+    let scope_type = json!({
+        "type": "string",
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+    });
     json!({
         "Budget": {
             "type": "object",
             "required": ["id", "scope_type", "scope_id", "limit_usd", "period", "created_at"],
             "properties": {
                 "id": uuid,
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": {"type": "string", "description": "decimal(12,4) as text"},
                 "period": string,
@@ -2677,11 +2697,25 @@ fn governance_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["scope_type", "scope_id", "limit_usd"],
             "properties": {
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": string,
                 "period": {"type": "string", "default": "30d"},
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+            },
+            "additionalProperties": false
+        },
+        "UpdateBudget": {
+            "type": "object",
+            "description": "every field is optional; omit one to leave it unchanged. The scope is not editable",
+            "properties": {
+                "limit_usd": {"type": "string", "description": "a finite decimal of zero or more"},
+                "period": string,
+                "unpriced_policy": {
+                    "type": ["string", "null"],
+                    "enum": ["ignore", "warn", "block", null],
+                    "description": "null drops the override and inherits the deployment-wide setting"
+                }
             },
             "additionalProperties": false
         },
@@ -2691,7 +2725,7 @@ fn governance_schemas(p: &Prim) -> Value {
             "required": ["id", "scope_type", "scope_id", "created_at"],
             "properties": {
                 "id": uuid,
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
@@ -2702,10 +2736,19 @@ fn governance_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["scope_type", "scope_id"],
             "properties": {
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]}
+            },
+            "additionalProperties": false
+        },
+        "UpdateRateLimit": {
+            "type": "object",
+            "description": "omit a cap to leave it unchanged, send null to lift it; at least one cap must remain",
+            "properties": {
+                "rpm": {"type": ["integer", "null"], "minimum": 0},
+                "tpm": {"type": ["integer", "null"], "minimum": 0}
             },
             "additionalProperties": false
         },

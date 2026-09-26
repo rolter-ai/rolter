@@ -2484,6 +2484,44 @@ impl BudgetRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Change a budget in place (#1285).
+    ///
+    /// `None` leaves a field as it is. `unpriced_policy` is doubly optional
+    /// because clearing an override is an edit of its own: `Some(None)` sends
+    /// the budget back to inheriting the deployment-wide setting, while `None`
+    /// does not touch it.
+    ///
+    /// It is one `update` statement, so the statement-level
+    /// `budgets_bump_config_version` trigger fires once and a polling gateway
+    /// sees either the old budget or the new one, never a scope with no cap
+    /// in between. The row keeps its id and `created_at`.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        limit_usd: Option<&str>,
+        period: Option<&str>,
+        unpriced_policy: Option<Option<&str>>,
+    ) -> Result<Budget> {
+        sqlx::query_as(
+            "update budgets set
+                 limit_usd = coalesce($2::numeric, limit_usd),
+                 period = coalesce($3, period),
+                 unpriced_policy = case when $4 then $5 else unpriced_policy end
+             where id = $1
+             returning id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                       unpriced_policy, created_at",
+        )
+        .bind(id)
+        .bind(limit_usd)
+        .bind(period)
+        .bind(unpriced_policy.is_some())
+        .bind(unpriced_policy.flatten())
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("budget {id}")))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from budgets where id = $1")
             .bind(id)
@@ -2544,6 +2582,36 @@ impl RateLimitRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Change a rate limit's caps in place (#1285).
+    ///
+    /// Each cap is doubly optional: `None` leaves it alone, `Some(None)`
+    /// lifts it, `Some(Some(n))` sets it. One statement, so the
+    /// `rate_limits_bump_config_version` trigger bumps `config_version` once
+    /// for the whole edit.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        rpm: Option<Option<i32>>,
+        tpm: Option<Option<i32>>,
+    ) -> Result<RateLimit> {
+        sqlx::query_as(
+            "update rate_limits set
+                 rpm = case when $2 then $3 else rpm end,
+                 tpm = case when $4 then $5 else tpm end
+             where id = $1
+             returning id, scope_type, scope_id, rpm, tpm, created_at",
+        )
+        .bind(id)
+        .bind(rpm.is_some())
+        .bind(rpm.flatten())
+        .bind(tpm.is_some())
+        .bind(tpm.flatten())
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
