@@ -15,8 +15,10 @@
 // The decision is deliberately narrow. GitHub's dependency graph reads
 // `ui/package.json` but not `bun.lock`, so every alert it raises for ui/ is
 // about a *direct* dependency, judged by the lowest version its declared range
-// admits. The fix that closes such an alert is to raise that range's floor to
-// the first patched release, keeping its operator, and let `bun install
+// admits. A vulnerable package that only arrives transitively through
+// `bun.lock` raises no alert at all, so this script never hears of it (#1930).
+// The fix that closes a direct alert is to raise that range's floor to the
+// first patched release, keeping its operator, and let `bun install
 // --lockfile-only` bring the lockfile along. That is only done when the patched
 // release is semver-compatible with the current floor: a breaking bump is a
 // migration, and no scheduled job should start one on its own. Everything the
@@ -104,6 +106,15 @@ function ref(alert: Alert): AlertRef {
   };
 }
 
+function firstPatched(alert: Alert): string {
+  return alert.security_vulnerability.first_patched_version?.identifier ?? "";
+}
+
+// the highest first patched release among `alerts`, which must not be empty
+function highest(alerts: Alert[]): string {
+  return alerts.map(firstPatched).reduce((best, v) => (Bun.semver.order(v, best) > 0 ? v : best));
+}
+
 /** Work out which ranges in `manifest` to raise for the open ui/ alerts in `alerts`. */
 export function planUpdates(alerts: Alert[], manifest: Manifest): Plan {
   const byPackage = new Map<string, Alert[]>();
@@ -129,13 +140,6 @@ export function planUpdates(alerts: Alert[], manifest: Manifest): Plan {
       });
     }
     if (patched.length === 0) continue;
-    const alertRefs = patched.map(ref);
-
-    // one bump has to clear every advisory at once, so aim for the highest of
-    // the first patched releases
-    const target = patched
-      .map((a) => a.security_vulnerability.first_patched_version?.identifier ?? "")
-      .reduce((best, v) => (Bun.semver.order(v, best) > 0 ? v : best));
 
     const sections = SECTIONS.filter((s) => manifest[s]?.[name] !== undefined);
     if (sections.length === 0) {
@@ -143,7 +147,7 @@ export function planUpdates(alerts: Alert[], manifest: Manifest): Plan {
         name,
         reason:
           "not a direct dependency of ui/package.json; a transitive fix is an `overrides` entry, which is raised by hand",
-        alerts: alertRefs,
+        alerts: patched.map(ref),
       });
       continue;
     }
@@ -155,30 +159,52 @@ export function planUpdates(alerts: Alert[], manifest: Manifest): Plan {
         plan.skipped.push({
           name,
           reason: `\`${spec}\` in ${section} is not a plain \`^\`, \`~\` or exact version`,
-          alerts: alertRefs,
+          alerts: patched.map(ref),
         });
         continue;
       }
       const [, operator, floor] = match;
-      if (Bun.semver.order(floor, target) >= 0) {
+
+      // each alert is judged on its own, so one advisory patched only in the
+      // next major cannot hold back the compatible fix for the others
+      const stale: Alert[] = [];
+      const compatible: Alert[] = [];
+      const breaking: Alert[] = [];
+      for (const alert of patched) {
+        const fixedIn = firstPatched(alert);
+        if (Bun.semver.order(floor, fixedIn) >= 0) stale.push(alert);
+        else if (Bun.semver.satisfies(fixedIn, `^${floor}`)) compatible.push(alert);
+        else breaking.push(alert);
+      }
+
+      if (compatible.length > 0) {
+        // one bump has to clear every compatible advisory at once, so aim for
+        // the highest of their first patched releases
+        const target = highest(compatible);
+        plan.bumps.push({
+          name,
+          section,
+          from: spec,
+          to: `${operator}${target}`,
+          alerts: compatible.map(ref),
+        });
+      }
+      if (breaking.length > 0) {
+        plan.skipped.push({
+          name,
+          reason: `the first patched release, ${highest(breaking)}, is a breaking bump from \`${spec}\` in ${section}`,
+          alerts: breaking.map(ref),
+        });
+      }
+      if (stale.length > 0) {
         // the range already starts at a patched release. the alert is stale
         // and closes once github re-reads the manifest; nothing to raise
         plan.skipped.push({
           name,
-          reason: `\`${spec}\` in ${section} already starts at or above ${target}`,
-          alerts: alertRefs,
+          reason: `\`${spec}\` in ${section} already starts at or above ${highest(stale)}`,
+          alerts: stale.map(ref),
         });
-        continue;
       }
-      if (!Bun.semver.satisfies(target, `^${floor}`)) {
-        plan.skipped.push({
-          name,
-          reason: `the first patched release, ${target}, is a breaking bump from \`${spec}\` in ${section}`,
-          alerts: alertRefs,
-        });
-        continue;
-      }
-      plan.bumps.push({ name, section, from: spec, to: `${operator}${target}`, alerts: alertRefs });
     }
   }
   return plan;
@@ -273,6 +299,83 @@ export function renderCommitMessage(plan: Plan): string {
   return `${lines.join("\n")}\n`;
 }
 
+// what every body the workflow writes ends with, proposal or withdrawal
+const ABOUT =
+  "Opened by `.github/workflows/ui-security-updates.yml`, which stands in for Dependabot security updates on `ui/`: the `bun` ecosystem does version updates only (#1148). The workflow rebuilds this branch from `master` when the change it needs moves, and dispatches `ci.yml` against it, since a pull request opened with the repository token triggers no `pull_request` run.";
+
+// how a person says no, which only a proposal needs to say
+const DECLINE =
+  "Close this pull request unmerged to decline these exact bumps: the workflow opens a new one only once the set of bumps changes.";
+
+/**
+ * The hidden line that ties a pull request body to the exact set of ranges it
+ * raises. It is what `declinedBy` looks for, so it names each raised range and
+ * its target and nothing that moves with `master`: an unrelated dependency
+ * change leaves it alone, a new or different bump changes it.
+ */
+export function planMarker(plan: Plan): string {
+  const key = plan.bumps
+    .map((b) => `${b.name} ${b.section} ${b.to}`)
+    .sort()
+    .join("; ");
+  return `<!-- ui-security-updates plan: ${key} -->`;
+}
+
+/** The fields of a closed pull request (`gh pr list --json number,mergedAt,body`) read here. */
+export interface ClosedPull {
+  number: number;
+  mergedAt: string | null;
+  body: string | null;
+}
+
+/**
+ * The pull request a person closed unmerged while it offered exactly `plan`,
+ * or null when there is none.
+ *
+ * Only a person's close counts. When the workflow withdraws its own pull
+ * request it first rewrites the body without the marker (`renderPullBody` for
+ * an empty plan), so that close never matches. The decision reads pull request
+ * state rather than the branch: a branch can outlive its pull request for
+ * reasons that are not a decision, such as a run that pushed and then failed to
+ * open the pull request, and its bytes change whenever `master` does.
+ */
+export function declinedBy(plan: Plan, closed: ClosedPull[]): number | null {
+  if (plan.bumps.length === 0) return null;
+  const marker = planMarker(plan);
+  const hits = closed
+    .filter((p) => !p.mergedAt && (p.body ?? "").includes(marker))
+    .map((p) => p.number)
+    .sort((a, b) => b - a);
+  return hits[0] ?? null;
+}
+
+/**
+ * The first paragraph of a withdrawn pull request, also used as the comment
+ * that closes it. It says why from the plan itself, so it never claims every
+ * alert is gone while some are still open and waiting on a person.
+ */
+export function renderWithdrawal(plan: Plan): string {
+  if (plan.skipped.length === 0) {
+    return "No open Dependabot alert on `ui/` needs a bump any more, so this pull request is withdrawn.";
+  }
+  return `Nothing in this pull request is still needed as it stands, so it is withdrawn. ${plan.skipped.length} package(s) with an open Dependabot alert on \`ui/\` are left for a person; the description lists each one and why.`;
+}
+
+/**
+ * The pull request body for `plan`. With something to raise it is the summary,
+ * the footer and the plan marker. With nothing to raise it is the withdrawal
+ * notice and the summary, with no marker, which is the body the workflow writes
+ * just before it closes its own pull request.
+ */
+export function renderPullBody(plan: Plan): string {
+  if (plan.bumps.length === 0) {
+    // with nothing open at all, the summary would only repeat the withdrawal
+    const summary = plan.skipped.length > 0 ? `${renderSummary(plan).trimEnd()}\n\n` : "";
+    return `${renderWithdrawal(plan)}\n\n${summary}---\n\n${ABOUT}\n`;
+  }
+  return `${renderSummary(plan).trimEnd()}\n\n---\n\n${ABOUT} ${DECLINE}\n\n${planMarker(plan)}\n`;
+}
+
 function arg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
@@ -283,7 +386,7 @@ if (import.meta.main) {
   const alertsPath = arg(args, "--alerts");
   if (!alertsPath) {
     console.error(
-      "usage: bun scripts/security-updates.ts --alerts <alerts.json> [--manifest <package.json>] [--summary <out.md>] [--commit-message <out.txt>] [--github-output <file>] [--write]",
+      "usage: bun scripts/security-updates.ts --alerts <alerts.json> [--manifest <package.json>] [--closed-pulls <pulls.json>] [--summary <out.md>] [--pr-body <out.md>] [--close-comment <out.txt>] [--commit-message <out.txt>] [--github-output <file>] [--write]",
     );
     process.exit(2);
   }
@@ -292,9 +395,16 @@ if (import.meta.main) {
   const manifestText = readFileSync(manifestPath, "utf8");
   const plan = planUpdates(alerts, JSON.parse(manifestText) as Manifest);
   const summary = renderSummary(plan);
+  const closedPath = arg(args, "--closed-pulls");
+  const closed = closedPath ? (JSON.parse(readFileSync(closedPath, "utf8")) as ClosedPull[]) : [];
+  const declined = declinedBy(plan, closed);
 
   const summaryPath = arg(args, "--summary");
   if (summaryPath) writeFileSync(summaryPath, summary);
+  const bodyPath = arg(args, "--pr-body");
+  if (bodyPath) writeFileSync(bodyPath, renderPullBody(plan));
+  const commentPath = arg(args, "--close-comment");
+  if (commentPath) writeFileSync(commentPath, `${renderWithdrawal(plan)}\n`);
   const commitPath = arg(args, "--commit-message");
   if (commitPath) writeFileSync(commitPath, renderCommitMessage(plan));
   if (args.includes("--write") && plan.bumps.length > 0) {
@@ -304,8 +414,14 @@ if (import.meta.main) {
   // than on the wording of the summary
   const outputPath = arg(args, "--github-output");
   if (outputPath) {
-    appendFileSync(outputPath, `bumps=${plan.bumps.length}\nskipped=${plan.skipped.length}\n`);
+    appendFileSync(
+      outputPath,
+      `bumps=${plan.bumps.length}\nskipped=${plan.skipped.length}\ndeclined=${declined ?? ""}\n`,
+    );
   }
   console.log(summary);
   console.log(`${plan.bumps.length} range(s) raised, ${plan.skipped.length} left for a hand bump`);
+  if (declined !== null) {
+    console.log(`#${declined} offered exactly these bumps and was closed unmerged`);
+  }
 }

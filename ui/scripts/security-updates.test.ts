@@ -4,12 +4,17 @@ import { fileURLToPath, URL } from "node:url";
 
 import {
   type Alert,
+  type ClosedPull,
   type Manifest,
   SUBJECT,
   applyPlan,
+  declinedBy,
+  planMarker,
   planUpdates,
   renderCommitMessage,
+  renderPullBody,
   renderSummary,
+  renderWithdrawal,
 } from "./security-updates";
 
 const UI_MANIFEST = fileURLToPath(new URL("../package.json", import.meta.url));
@@ -156,6 +161,32 @@ describe("planUpdates", () => {
     expect(zeroPatch.bumps.map((b) => b.to)).toEqual(["^0.222.4"]);
   });
 
+  it("raises the compatible fix even when another advisory on the package is patched only in the next major", () => {
+    // judging the package by its highest patched release would call the whole
+    // bump breaking and drop the fix that clears the first alert
+    const plan = planUpdates(
+      [alert("vite", "8.3.2", { number: 1 }), alert("vite", "9.0.0", { number: 2 })],
+      { devDependencies: { vite: "^8.3.0" } },
+    );
+    expect(plan.bumps.map((b) => [b.to, b.alerts.map((a) => a.number)])).toEqual([["^8.3.2", [1]]]);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toContain(
+      "the first patched release, 9.0.0, is a breaking bump",
+    );
+    expect(plan.skipped[0].alerts.map((a) => a.number)).toEqual([2]);
+  });
+
+  it("reports an alert the floor already clears apart from the one it still raises", () => {
+    const plan = planUpdates(
+      [alert("pkg", "1.2.0", { number: 1 }), alert("pkg", "1.4.0", { number: 2 })],
+      { dependencies: { pkg: "^1.3.0" } },
+    );
+    expect(plan.bumps.map((b) => [b.to, b.alerts.map((a) => a.number)])).toEqual([["^1.4.0", [2]]]);
+    expect(plan.skipped.map((s) => [s.reason, s.alerts.map((a) => a.number)])).toEqual([
+      ["`^1.3.0` in dependencies already starts at or above 1.2.0", [1]],
+    ]);
+  });
+
   it("raises a tilde range past its own upper bound when the release is still semver-compatible", () => {
     // `~1.2.0` stops before 1.3.0, but 1.3.0 is a minor release: raising the
     // floor to it is the same kind of change a `^` bump is
@@ -252,6 +283,84 @@ describe("renderSummary", () => {
       .split("\n")
       .find((line) => line.startsWith("| `odd`"));
     expect(row).toContain("`a\\\\\\|b`");
+  });
+});
+
+describe("planMarker", () => {
+  it("names each raised range and target, in a stable order", () => {
+    const plan = planUpdates([alert("zeta", "1.0.1"), alert("@scope/alpha", "2.0.3")], {
+      dependencies: { "@scope/alpha": "^2.0.0", zeta: "~1.0.0" },
+    });
+    expect(planMarker(plan)).toBe(
+      "<!-- ui-security-updates plan: @scope/alpha dependencies ^2.0.3; zeta dependencies ~1.0.1 -->",
+    );
+  });
+
+  it("does not move when master changes a floor but not the target", () => {
+    // an unrelated bump on master can change `from`; the decision a person
+    // made about the target still stands
+    const before = planUpdates([alert("pkg", "1.2.7")], { dependencies: { pkg: "^1.2.0" } });
+    const after = planUpdates([alert("pkg", "1.2.7")], { dependencies: { pkg: "^1.2.3" } });
+    expect(planMarker(after)).toBe(planMarker(before));
+  });
+});
+
+describe("declinedBy", () => {
+  const plan = planUpdates([alert("foo", "1.2.7")], { dependencies: { foo: "^1.2.0" } });
+  const offered = renderPullBody(plan);
+
+  it("finds the pull request a person closed while it offered exactly this plan", () => {
+    const closed: ClosedPull[] = [
+      { number: 40, mergedAt: null, body: offered },
+      { number: 52, mergedAt: null, body: offered },
+    ];
+    expect(declinedBy(plan, closed)).toBe(52);
+  });
+
+  it("ignores a merged pull request, and one that offered a different set of bumps", () => {
+    const wider = planUpdates([alert("foo", "1.2.7"), alert("bar", "2.0.1")], {
+      dependencies: { foo: "^1.2.0", bar: "^2.0.0" },
+    });
+    const closed: ClosedPull[] = [
+      { number: 40, mergedAt: "2026-09-20T10:00:00Z", body: offered },
+      { number: 41, mergedAt: null, body: renderPullBody(wider) },
+      { number: 42, mergedAt: null, body: null },
+    ];
+    expect(declinedBy(plan, closed)).toBeNull();
+  });
+
+  it("ignores a pull request the workflow withdrew itself", () => {
+    // the withdrawal body replaces the proposal before the close, marker and all
+    const withdrawn = renderPullBody(planUpdates([], {}));
+    expect(withdrawn).not.toContain("ui-security-updates plan:");
+    expect(declinedBy(plan, [{ number: 40, mergedAt: null, body: withdrawn }])).toBeNull();
+  });
+
+  it("never reports a declined plan when there is nothing to raise", () => {
+    const empty = planUpdates([], {});
+    const closed: ClosedPull[] = [{ number: 40, mergedAt: null, body: renderPullBody(empty) }];
+    expect(declinedBy(empty, closed)).toBeNull();
+  });
+});
+
+describe("renderPullBody and renderWithdrawal", () => {
+  it("ends a proposal with the plan marker", () => {
+    const plan = planUpdates([alert("foo", "1.2.7")], { dependencies: { foo: "^1.2.0" } });
+    const body = renderPullBody(plan);
+    expect(body.startsWith(renderSummary(plan).trimEnd())).toBe(true);
+    expect(body.trimEnd().endsWith(planMarker(plan))).toBe(true);
+  });
+
+  it("says every alert is gone only when none is left for a person", () => {
+    const clean = planUpdates([], {});
+    expect(renderWithdrawal(clean)).toContain("No open Dependabot alert");
+
+    const waiting = planUpdates([alert("lib", "3.0.0")], { dependencies: { lib: "^2.9.0" } });
+    expect(waiting.bumps).toEqual([]);
+    expect(renderWithdrawal(waiting)).not.toContain("No open Dependabot alert");
+    expect(renderWithdrawal(waiting)).toContain("1 package(s)");
+    // the withdrawn body keeps the table of what is left, so the reason survives the close
+    expect(renderPullBody(waiting)).toContain("| `lib` | the first patched release, 3.0.0");
   });
 });
 

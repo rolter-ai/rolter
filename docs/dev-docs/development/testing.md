@@ -420,8 +420,14 @@ Dependabot has spoken bun since bun 1.1.39, so `/ui` now runs as
 `package-ecosystem: bun` and `package-lock.json` is gone. Dependabot writes
 `bun.lock` itself, so a stale lockfile fails on the PR that caused it and never
 reaches `master`. The trade is that the bun ecosystem does version updates but
-not security updates. Alerts still fire on `ui` dependencies; the pull request
-that fixes them comes from the workflow below instead of from Dependabot.
+not security updates, and GitHub's dependency graph reads `ui/package.json` but
+not `bun.lock`. Alerts still fire for the dependencies `ui/package.json`
+declares, and the pull request that fixes them comes from the workflow below
+instead of from Dependabot. A package that only arrives transitively through
+`bun.lock` raises no alert at all: every transitive `ui` alert was marked
+`fixed` the moment `package-lock.json` was deleted, with no version having
+changed. Nothing monitors that class until #1930 audits the lockfile itself, and
+#1931 tracks the vulnerable transitive packages `bun audit` reports today.
 
 ### UI security updates
 
@@ -440,31 +446,54 @@ It runs daily at 06:30 UTC and on demand. Each run:
    direct dependency in `ui/package.json` to its first patched release and keeps
    the range operator (`^1.2.0` becomes `^1.2.7`);
 3. refreshes `bun.lock` with `bun install --lockfile-only`;
-4. rebuilds the `security/ui-dependencies` branch from `master` and opens or
-   updates one pull request, titled
+4. rebuilds the `security/ui-dependencies` branch from `master` when the planned
+   change differs from what the branch already carries, and opens or updates
+   one pull request, titled
    `build(deps): raise vulnerable ui dependencies to patched releases`;
-5. dispatches `ci.yml` against that branch, since a pull request opened with
-   the repository token triggers no `pull_request` run. This is the same path
-   the release PR takes (see [ci-gating](ci-gating.md)).
+5. dispatches `ci.yml` against that branch after every push, since a pull
+   request opened with the repository token triggers no `pull_request` run.
+   This is the same path the release PR takes (see [ci-gating](ci-gating.md)).
 
-The script only raises what it can raise safely. It leaves these alerts for a
-hand bump and lists each one, with its reason, in the run summary and the pull
-request body:
+The script only raises what it can raise safely. It judges each alert on its
+own, raises a package to the highest first patched release among the alerts a
+semver-compatible bump clears, and leaves the rest for a hand bump. Each one is
+listed, with its reason, in the run summary and the pull request body:
 
 - no patched release has been published yet;
 - the package is not a direct dependency (the fix would be an `overrides` entry,
   which changes what every other dependent resolves);
 - the range is not a plain `^`, `~` or exact version;
 - the first patched release is a breaking bump from the current floor (a new
-  major, or a new minor below 1.0).
+  major, or a new minor below 1.0). One such advisory does not hold back a
+  compatible fix for another advisory on the same package;
+- the range already starts at the patched release, so the alert is stale and
+  closes on its own once GitHub re-reads the manifest.
 
-GitHub's dependency graph reads `ui/package.json` but not `bun.lock`, so today
-every `ui` alert is about a direct dependency. A transitive alert only appears
-if the graph learns to read the lockfile.
+The pull request carries `station:mac`, since the mac station owns `ui/`, and
+that station reviews and merges it like any other of its PRs. It does not reach
+the project board: `project-automation.yml` does not fire for a pull request the
+repository token opens.
 
-When no alert needs a bump any more, the run closes the standing pull request and
-deletes its branch. A branch that still carries the same change with no open
-pull request was closed by a person, and the workflow does not reopen it.
+Each proposal body ends with a hidden marker naming the ranges it raises and
+their targets. Closing the pull request unmerged declines that exact set of
+bumps: while a closed, unmerged pull request for the branch carries the marker
+of today's plan, the workflow does not open another. The decision reads pull
+request state, never the branch, so an unrelated dependency change on `master`
+does not reopen a declined bump, while a new alert or a different target does.
+
+When nothing is left to raise, the workflow withdraws its own pull request. It
+first rewrites the body to say why, with the table of anything still left for a
+person and without the marker, so a withdrawal never counts as a person
+declining, then closes the pull request and deletes the branch.
+
+The run heals itself when a step fails half way:
+
+- a push that landed before `gh pr create` failed leaves a branch with no pull
+  request and no declined one, and the next run opens the pull request for it;
+- when the branch already carries the planned change and `ci.yml` has no run for
+  its head that is in progress or ended in success or failure, the workflow
+  dispatches one. A cancelled or never-dispatched gate is re-run the next day;
+  a failed one is left for a person to read and re-run.
 
 To try a change to the workflow before it merges, dispatch it with `dry-run`
 from the branch. A dry run writes the plan to the run summary and pushes
@@ -473,6 +502,21 @@ nothing. A run that publishes refuses to start anywhere but `master`.
 ```bash
 gh workflow run ui-security-updates.yml --ref <branch> -f dry-run=true
 ```
+
+The publish path only runs from `master`, and with no open alert it has nothing
+to publish. The `synthetic-alert` input exercises it on purpose: it adds one
+made-up alert (number `#0`, advisory `SYNTHETIC`, linking to the run) on a direct
+dependency, patched at the version you name, which must be a real release above
+the current floor and semver-compatible with it. After a change to the publish or dispatch steps
+merges, run it once from `master`:
+
+```bash
+gh workflow run ui-security-updates.yml -f synthetic-alert=@opentelemetry/api@1.9.1
+```
+
+Then check that the pull request opened with `station:mac`, that the dispatched
+`ci.yml` run reported `ci-ok` on its head, and that the next run without the
+input withdrew it and deleted the branch. Merge nothing from a synthetic run.
 
 The planner runs locally against a saved alert listing:
 

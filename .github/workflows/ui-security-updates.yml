@@ -3,17 +3,22 @@ name: ui-security-updates
 # dependabot opens security-update pull requests for cargo and the workflow
 # actions, but not for ui/. that entry runs as `package-ecosystem: bun` (#1137),
 # and GitHub's supported-ecosystems table still lists bun as version updates
-# only (last checked 2026-09-26). the alerts keep firing on ui dependencies;
-# what went missing is the pull request that fixes them, and this workflow
-# raises it instead (#1148).
+# only (last checked 2026-09-26). dependabot alerts still fire for the
+# dependencies ui/package.json declares; what went missing is the pull request
+# that fixes them, and this workflow raises it instead (#1148). a package that
+# only arrives transitively through bun.lock raises no alert at all, since the
+# dependency graph does not read that file, so it is out of this workflow's
+# sight (#1930).
 #
-# every run rebuilds one branch from master. it lists the open dependabot
-# alerts, lets ui/scripts/security-updates.ts raise each vulnerable direct
-# dependency to its first patched release (semver-compatible bumps only),
-# refreshes bun.lock, and opens or updates a single pull request. an alert the
-# script will not fix on its own (no patched release yet, a transitive package,
-# a breaking bump) is listed in the run summary and the pull request body for a
-# hand bump. once no alert needs a bump, the standing pull request is closed.
+# every run lists the open dependabot alerts, lets
+# ui/scripts/security-updates.ts raise each vulnerable direct dependency to its
+# first patched release (semver-compatible bumps only), refreshes bun.lock, and
+# keeps one pull request in step with that plan. an alert the script will not
+# fix on its own (no patched release yet, a transitive package, a breaking
+# bump) is listed in the run summary and the pull request body for a hand bump.
+# once nothing is left to raise, the standing pull request is withdrawn. a
+# person declines a plan by closing its pull request unmerged, and the workflow
+# does not offer that exact set of bumps again.
 #
 # it all runs on the repo GITHUB_TOKEN: `vulnerability-alerts: read` is the
 # scope that lists dependabot alerts, and the repository already lets actions
@@ -30,6 +35,10 @@ on:
         description: write the plan to the run summary only; push nothing and touch no pull request
         type: boolean
         default: false
+      synthetic-alert:
+        description: "<package>@<version>: add one made-up alert on a direct ui dependency, patched at that version, to exercise the publish path end to end; the next run without it withdraws the pull request"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -70,6 +79,8 @@ jobs:
       - name: list open dependabot alerts
         env:
           GH_TOKEN: ${{ github.token }}
+          SYNTHETIC: ${{ inputs.synthetic-alert }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # the script filters again on manifest path, so a looser listing here
@@ -85,6 +96,37 @@ jobs:
           jq 'add // []' "${RUNNER_TEMP}/pages.json" > "${RUNNER_TEMP}/alerts.json"
           echo "open npm alerts: $(jq length "${RUNNER_TEMP}/alerts.json")"
 
+          # a made-up alert, so the publish, pull request and dispatch path can
+          # be run on purpose rather than first meeting a real advisory. it is
+          # alert #0 with the advisory id SYNTHETIC and links to this run
+          if [ -n "${SYNTHETIC}" ]; then
+            if ! [[ "${SYNTHETIC}" =~ ^((@[a-z0-9._-]+/)?[a-z0-9._-]+)@([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              echo "::error::synthetic-alert must look like <package>@<major.minor.patch>"
+              exit 1
+            fi
+            jq --arg name "${BASH_REMATCH[1]}" --arg version "${BASH_REMATCH[3]}" --arg url "${RUN_URL}" \
+              '. + [{
+                number: 0, state: "open", html_url: $url,
+                dependency: {package: {ecosystem: "npm", name: $name}, manifest_path: "ui/package.json", relationship: "direct"},
+                security_advisory: {ghsa_id: "SYNTHETIC", severity: "low"},
+                security_vulnerability: {vulnerable_version_range: ("< " + $version), first_patched_version: {identifier: $version}}
+              }]' "${RUNNER_TEMP}/alerts.json" > "${RUNNER_TEMP}/alerts.tmp"
+            mv "${RUNNER_TEMP}/alerts.tmp" "${RUNNER_TEMP}/alerts.json"
+            echo "::notice::added a synthetic alert for ${SYNTHETIC}"
+          fi
+
+      # a person declines a plan by closing its pull request unmerged, so the
+      # planner needs this branch's closed pull requests to tell a new plan
+      # from one that was turned down
+      - name: list closed pull requests for the branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "${REPO}" --head "${BRANCH}" --base master --state closed --limit 100 \
+            --json number,mergedAt,body > "${RUNNER_TEMP}/closed.json"
+          echo "closed pull requests for ${BRANCH}: $(jq length "${RUNNER_TEMP}/closed.json")"
+
       - name: plan the bumps
         id: plan
         working-directory: ui
@@ -92,7 +134,10 @@ jobs:
           set -euo pipefail
           bun scripts/security-updates.ts \
             --alerts "${RUNNER_TEMP}/alerts.json" \
+            --closed-pulls "${RUNNER_TEMP}/closed.json" \
             --summary "${RUNNER_TEMP}/summary.md" \
+            --pr-body "${RUNNER_TEMP}/body.md" \
+            --close-comment "${RUNNER_TEMP}/close.md" \
             --commit-message "${RUNNER_TEMP}/commit.txt" \
             --github-output "${GITHUB_OUTPUT}" \
             --write
@@ -117,34 +162,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BUMPS: ${{ steps.plan.outputs.bumps }}
+          DECLINED: ${{ steps.plan.outputs.declined }}
         run: |
           set -euo pipefail
-          gh auth setup-git
           open_pr="$(gh pr list --repo "${REPO}" --head "${BRANCH}" --base master --state open \
             --json number --jq '.[0].number // ""')"
 
           if [ "${BUMPS}" = "0" ]; then
             if [ -n "${open_pr}" ]; then
-              # the alerts it raised were fixed or dismissed some other way.
-              # the branch goes with it: it is this workflow's own, nothing is
-              # ever stacked on it, and leaving it would read as a pull request
-              # a human closed on purpose (see below)
+              # the alerts it raised were fixed or dismissed some other way, or
+              # what is left needs a person. the body is rewritten first: it
+              # says why, keeps the table of what is left, and drops the plan
+              # marker, so this close never reads as a person declining the
+              # plan. the branch goes too: it is this workflow's own and nothing
+              # is ever stacked on it
+              gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${RUNNER_TEMP}/body.md"
               gh pr close "${open_pr}" --repo "${REPO}" --delete-branch \
-                --comment "No open Dependabot alert on \`ui/\` needs a bump any more, so this pull request is not needed. Closed by \`.github/workflows/ui-security-updates.yml\`."
+                --comment "$(cat "${RUNNER_TEMP}/close.md")"
+              echo "withdrew #${open_pr}"
             fi
             echo "nothing to raise"
             exit 0
           fi
 
-          body="${RUNNER_TEMP}/body.md"
-          {
-            cat "${RUNNER_TEMP}/summary.md"
-            echo
-            echo "---"
-            echo
-            echo "Opened by \`.github/workflows/ui-security-updates.yml\`, which stands in for Dependabot security updates on \`ui/\`: the \`bun\` ecosystem does version updates only (#1148). The workflow rebuilds this branch from \`master\` on every run and dispatches \`ci.yml\` against it, since a pull request opened with the repository token triggers no \`pull_request\` run."
-          } > "${body}"
+          if [ -z "${open_pr}" ] && [ -n "${DECLINED}" ]; then
+            # the planner found a pull request closed unmerged with this exact
+            # plan in its body. respect that, as dependabot does, until the
+            # set of bumps changes
+            echo "::notice::#${DECLINED} offered exactly these bumps and was closed unmerged; not opening it again"
+            exit 0
+          fi
 
+          gh auth setup-git
           remote_sha="$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)"
           same=false
           if [ -n "${remote_sha}" ]; then
@@ -157,46 +206,64 @@ jobs:
           if [ "${same}" = "true" ]; then
             # the branch already carries exactly this change. re-pushing it
             # would only re-run the whole gate every day for nothing
-            if [ -n "${open_pr}" ]; then
-              gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${body}"
-              echo "${BRANCH} is current; refreshed the body of #${open_pr}"
-            else
-              # the workflow deletes the branch whenever it closes the pull
-              # request itself, so a branch with no open pull request is one a
-              # human closed. respect that, as dependabot does
-              echo "::notice::${BRANCH} already carries this change and its pull request was closed by hand; not reopening it"
-            fi
-            exit 0
+            head_sha="${remote_sha}"
+            pushed=false
+            echo "${BRANCH} already carries this change at ${head_sha}"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -B "${BRANCH}"
+            git add ui/package.json ui/bun.lock
+            git commit --no-verify -F "${RUNNER_TEMP}/commit.txt"
+            # the lease pins the branch to the sha read above, or to absent, so
+            # a push that landed in between is never overwritten blind
+            git push --force-with-lease="refs/heads/${BRANCH}:${remote_sha}" \
+              origin "HEAD:refs/heads/${BRANCH}"
+            head_sha="$(git rev-parse HEAD)"
+            pushed=true
           fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "${BRANCH}"
-          git add ui/package.json ui/bun.lock
-          git commit --no-verify -F "${RUNNER_TEMP}/commit.txt"
-          # the lease pins the branch to the sha read above, or to absent, so a
-          # push that landed in between is never overwritten blind
-          git push --force-with-lease="refs/heads/${BRANCH}:${remote_sha}" \
-            origin "HEAD:refs/heads/${BRANCH}"
 
           if [ -n "${open_pr}" ]; then
-            gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${body}"
+            gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${RUNNER_TEMP}/body.md"
             echo "updated #${open_pr}"
           else
+            # also the path that heals a run whose push landed and whose
+            # `gh pr create` then failed: its branch is here, unchanged, with
+            # neither an open nor a declined pull request. station:mac owns
+            # ui/, so the pull request has an owner the way any other does
             gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
-              --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${body}" \
-              --label dependencies --label javascript --label security --label ui-dashboard
+              --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${RUNNER_TEMP}/body.md" \
+              --label dependencies --label javascript --label security --label ui-dashboard \
+              --label station:mac
           fi
-          echo "pushed=true" >> "${GITHUB_OUTPUT}"
+          {
+            echo "sha=${head_sha}"
+            echo "pushed=${pushed}"
+          } >> "${GITHUB_OUTPUT}"
 
       # a dispatch that silently produced no run would leave the pull request
       # without ci-ok and this job green, so confirm the run exists
       - name: dispatch ci.yml against the branch
-        if: steps.publish.outputs.pushed == 'true'
+        if: steps.publish.outputs.sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.publish.outputs.sha }}
+          PUSHED: ${{ steps.publish.outputs.pushed }}
         run: |
           set -euo pipefail
+          if [ "${PUSHED}" != "true" ]; then
+            # the sha is not new, so a run may already stand for it. dispatch
+            # again only when none is running and none reached a verdict: the
+            # run an earlier job meant to dispatch never happened, or it was
+            # cancelled. a failed run is left for a person to read and re-run
+            live="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100" \
+              -q '[.workflow_runs[] | select(.status != "completed" or .conclusion == "success" or .conclusion == "failure")] | length')"
+            if [ "${live}" != "0" ]; then
+              echo "ci.yml already ran or is running for ${SHA}"
+              exit 0
+            fi
+            echo "no ci.yml run with a verdict for ${SHA}; dispatching one"
+          fi
           started="$(date -u +%s)"
           gh workflow run ci.yml --repo "${REPO}" --ref "${BRANCH}"
           for _ in $(seq 1 20); do
