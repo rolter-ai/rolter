@@ -5,12 +5,16 @@ import { expect, within } from "storybook/test";
 import Dashboard from "./Dashboard";
 import {
   Harness,
+  expectGateAnswered,
   expectSkeleton,
   json,
   pending,
+  recording,
   routes,
   scoped,
   type FetchStub,
+  type Recorder,
+  type StoryRole,
 } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
@@ -99,9 +103,9 @@ const loaded: FetchStub = routes([
 
 // the first-run checklist the screen now opens with links to four screens, so
 // the dashboard's stories need a router around them (#1585)
-const render = (stub: FetchStub) => (
+const render = (stub: FetchStub, role?: StoryRole) => (
   <MemoryRouter>
-    <Harness fetchStub={stub}>
+    <Harness fetchStub={stub} role={role}>
       <Dashboard />
     </Harness>
   </MemoryRouter>
@@ -136,15 +140,14 @@ export const Loading: Story = {
 // to notice
 const QUIET = Object.fromEntries(Object.keys(SUMMARY).map((k) => [k, 0]));
 
+const quiet: FetchStub = routes([
+  ["/api/v1/analytics/summary", () => ({ data: [QUIET] })],
+  ["/api/v1/analytics", () => ({ data: [] })],
+  ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+]);
+
 export const Empty: Story = {
-  render: () =>
-    render(
-      routes([
-        ["/api/v1/analytics/summary", () => ({ data: [QUIET] })],
-        ["/api/v1/analytics", () => ({ data: [] })],
-        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
-      ]),
-    ),
+  render: () => render(quiet),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(en.pages.dashboard.statRequests)).toBeVisible();
@@ -227,5 +230,67 @@ export const NoAnalyticsStore: Story = {
     await expect(await canvas.findByText(/Analytics are not configured/i)).toBeVisible();
     await expect(canvas.getByText(/CLICKHOUSE_URL/)).toBeVisible();
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  },
+};
+
+/**
+ * The quiet deployment #1848 was found on, as a caller below admin sees it: the
+ * setup checklist's three lists all answer 403. A fresh recorder per story,
+ * since each asserts on its own calls.
+ */
+function refusedChecklist(): Recorder {
+  return recording(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (/\/(providers|routes|virtual-keys)$/.test(path)) {
+      return json({ error: { message: "forbidden" } }, 403);
+    }
+    return quiet(input, init);
+  });
+}
+
+/** the screen, with no checklist and no error card where it used to be */
+async function expectNoChecklist(canvasElement: HTMLElement, calls: Recorder) {
+  const canvas = within(canvasElement);
+  await expect(await canvas.findByText(en.pages.dashboard.statRequests)).toBeVisible();
+  // hidden, as opposed to not rendered yet, only once the gate has answered
+  await expectGateAnswered();
+  await expect(canvas.queryByText(en.pages.gettingStarted.title)).toBeNull();
+  await expect(canvas.queryByRole("alert")).toBeNull();
+  for (const fragment of ["/providers", "/routes", "/virtual-keys"]) {
+    calls.expectNotSent("GET", fragment);
+  }
+}
+
+const asMember = refusedChecklist();
+
+/**
+ * A member lands on the Dashboard to see traffic, and the first-run checklist
+ * is not theirs: every step on it is an admin task. It used to open the screen
+ * with "You do not have access to the setup checklist" (#1848).
+ */
+export const AsMember: Story = {
+  render: () => render(asMember.stub, "member"),
+  play: async ({ canvasElement }) => expectNoChecklist(canvasElement, asMember),
+};
+
+const asViewer = refusedChecklist();
+
+/** a viewer — a FinOps analyst, say — gets the same screen with no error card */
+export const AsViewer: Story = {
+  render: () => render(asViewer.stub, "viewer"),
+  play: async ({ canvasElement }) => expectNoChecklist(canvasElement, asViewer),
+};
+
+/**
+ * The same quiet deployment for the admin who sets it up: the checklist is
+ * there. What keeps the two stories above from passing on a card that never
+ * renders for anyone.
+ */
+export const AsAdmin: Story = {
+  render: () => render(quiet, "admin"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(en.pages.gettingStarted.subtitle)).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };

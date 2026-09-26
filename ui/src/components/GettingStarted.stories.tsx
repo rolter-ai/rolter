@@ -5,23 +5,30 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { GettingStarted } from "./GettingStarted";
 import {
   Harness,
+  effectiveFor,
   expectEmptyState,
+  expectGateAnswered,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
+  matrixFixture,
   pending,
+  recording,
   routes,
   scoped,
   type FetchStub,
+  type Recorder,
   type StoryRole,
 } from "@/pages/story-harness";
+import { CapabilityProvider } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
 
 // The first-run checklist (#1585). Its whole job is to say which screen comes
 // next while the deployment is still empty, so the states that matter are the
 // ones where it is wrong to show it at all: after a dismissal, once the
-// deployment is configured and serving, and for a caller who would be sent to
-// a form that will 403.
+// deployment is configured and serving, and for a caller who can act on none
+// of its steps (#1848).
 
 const PROVIDER = {
   id: "prov-1",
@@ -214,21 +221,185 @@ export const StaysWhileOnlyTheBuiltInModelWasCalled: Story = {
 };
 
 /**
- * A member may not create a provider, a route or a key. They are shown what the
- * step is and which role it takes, on a disabled control — not a link into a
- * form that answers 403 after they have filled it in.
+ * What a caller below admin got back from the three lists on the deployment
+ * #1848 was found on. A fresh recorder per story, since each asserts on its own
+ * calls.
  */
-export const MemberSeesNoCtaThatWould403: Story = {
-  render: () => render(empty, {}, "member"),
+function refusedLists() {
+  return recording(
+    scoped(async (input) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (/\/(providers|routes|virtual-keys)$/.test(path)) {
+        return json({ error: { message: "forbidden" } }, 403);
+      }
+      return json([]);
+    }),
+  );
+}
+
+/** the absence below means something only once the gate has answered */
+async function expectHidden(canvasElement: HTMLElement, lists: Recorder) {
+  const canvas = within(canvasElement);
+  await expectGateAnswered();
+  // the title, not the subtitle: the way back after a dismissal carries the
+  // same words, and a member should not get that either
+  await expect(canvas.queryByText(en.pages.gettingStarted.title)).toBeNull();
+  await expect(canvas.queryByRole("alert")).toBeNull();
+  // nor are the lists sent only to be refused
+  for (const fragment of ["/providers", "/routes", "/virtual-keys"]) {
+    lists.expectNotSent("GET", fragment);
+  }
+}
+
+const asMember = refusedLists();
+
+/**
+ * Every setup step is an admin task, and a member can act on none of them, so
+ * the card is not theirs. It used to render anyway, and the lists behind it
+ * came back 403: the first screen every engineer opened said "You do not have
+ * access to the setup checklist" (#1848).
+ */
+export const HiddenFromAMember: Story = {
+  render: () => render(asMember.stub, {}, "member"),
+  play: async ({ canvasElement }) => expectHidden(canvasElement, asMember),
+};
+
+const asViewer = refusedLists();
+
+/** the same for a viewer, who can create nothing at all */
+export const HiddenFromAViewer: Story = {
+  render: () => render(asViewer.stub, {}, "viewer"),
+  play: async ({ canvasElement }) => expectHidden(canvasElement, asViewer),
+};
+
+/**
+ * A dismissal is no way back in for a caller the card is not for: the
+ * "Getting started" button it leaves behind would open onto three refusals.
+ */
+export const HiddenFromAMemberWhoDismissedIt: Story = {
+  beforeEach: () => {
+    localStorage.setItem("rolter.getting-started.dismissed", "1");
+  },
+  render: () => render(refusedLists().stub, {}, "member"),
+  play: async ({ canvasElement }) => {
+    await expectGateAnswered();
+    await expect(
+      within(canvasElement).queryByRole("button", { name: en.pages.gettingStarted.reopen }),
+    ).toBeNull();
+  },
+};
+
+// a member whose custom role adds routes and keys, but not providers. The
+// harness's `role` answers from the built-in table alone, so the provider is
+// mounted by hand and this stub has the last word on the gate
+const partialGrant: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/rbac/effective") {
+    const member = effectiveFor("member");
+    return json({ ...member, allowed: [...member.allowed, "route:create", "virtual_key:create"] });
+  }
+  if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
+  return empty(input, init);
+};
+
+/**
+ * One setup step within reach is enough for the card to stay, and the steps
+ * that are not are shown with the role they take, on a disabled control — not
+ * a link into a form that answers 403 after it has been filled in.
+ */
+export const RefusedStepsNameTheirRole: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={partialGrant}>
+        <CapabilityProvider>
+          <GettingStarted />
+        </CapabilityProvider>
+      </Harness>
+    </MemoryRouter>
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const action = en.pages.gettingStarted.steps.provider.action;
-    await waitFor(() => expect(canvas.getByRole("button", { name: action })).toBeDisabled());
-    await expect(canvas.queryByRole("link", { name: new RegExp(action) })).toBeNull();
-    // the Playground needs no capability at all, so that one stays a link
-    await expect(
-      canvas.getByRole("link", { name: new RegExp(en.pages.gettingStarted.steps.call.action) }),
-    ).toHaveAttribute("href", "/playground");
+    await expectRefused(canvasElement, en.pages.gettingStarted.steps.provider.action);
+    for (const [step, href] of [
+      ["route", "/routing-rules"],
+      ["key", "/virtual-keys"],
+      // the Playground needs no capability at all, so that one is always a link
+      ["call", "/playground"],
+    ] as const) {
+      const action = en.pages.gettingStarted.steps[step].action;
+      await waitFor(() =>
+        expect(canvas.getByRole("link", { name: new RegExp(action) })).toHaveAttribute(
+          "href",
+          href,
+        ),
+      );
+    }
+  },
+};
+
+const unanswered = recording(
+  scoped(async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/rbac/effective") return json({ error: "boom" }, 500);
+    if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
+    return json([]);
+  }),
+);
+
+/**
+ * Only an explicit "no" hides the card. A control plane that cannot answer the
+ * question — an older one, or one whose RBAC route failed — still shows it, and
+ * leaves the 403 to say the rest.
+ */
+export const ShownWhenTheGateCannotAnswer: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={unanswered.stub}>
+        <CapabilityProvider>
+          <GettingStarted />
+        </CapabilityProvider>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await unanswered.expectSent("GET", "/api/v1/rbac/effective");
+    await expect(await canvas.findByText(en.pages.gettingStarted.subtitle)).toBeVisible();
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("link", {
+          name: new RegExp(en.pages.gettingStarted.steps.provider.action),
+        }),
+      ).toHaveAttribute("href", "/providers"),
+    );
+  },
+};
+
+const forbidden = recording(
+  scoped(async (input) =>
+    String(input).includes("/providers")
+      ? json({ error: { message: "forbidden" } }, 403)
+      : json([]),
+  ),
+);
+
+/**
+ * A list the caller may not read is an answer, not an outage. The gate cannot
+ * always say it first — a role held below the org the provider list is read
+ * at, or no gate at all — and the 403 that says it instead must not become the
+ * error card #1848 was filed over. A 500 still does; that is `LoadFailed`.
+ */
+export const RefusedListIsNotALoadError: Story = {
+  render: () => render(forbidden.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await forbidden.expectSent("GET", "/providers");
+    // the card is up, in its skeleton, until the 403 lands, so this waits on
+    // the answer rather than passing before it
+    await waitFor(() => {
+      expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull();
+      expect(canvas.queryByRole("alert")).toBeNull();
+    });
   },
 };
 
