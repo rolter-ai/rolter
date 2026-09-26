@@ -176,7 +176,8 @@ jobs:
               # marker, so this close never reads as a person declining the
               # plan. the branch goes too: it is this workflow's own and nothing
               # is ever stacked on it
-              gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${RUNNER_TEMP}/body.md"
+              gh api --method PATCH "repos/${REPO}/pulls/${open_pr}" \
+                -F "body=@${RUNNER_TEMP}/body.md" --silent
               gh pr close "${open_pr}" --repo "${REPO}" --delete-branch \
                 --comment "$(cat "${RUNNER_TEMP}/close.md")"
               echo "withdrew #${open_pr}"
@@ -224,7 +225,9 @@ jobs:
           fi
 
           if [ -n "${open_pr}" ]; then
-            gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${RUNNER_TEMP}/body.md"
+            # a rest patch writes the body and nothing else
+            gh api --method PATCH "repos/${REPO}/pulls/${open_pr}" \
+              -F "body=@${RUNNER_TEMP}/body.md" --silent
             echo "updated #${open_pr}"
           else
             # also the path that heals a run whose push landed and whose
