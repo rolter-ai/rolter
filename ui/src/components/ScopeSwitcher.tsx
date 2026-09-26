@@ -1,5 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Plus, Settings, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -12,8 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LoadError } from "@/components/LoadError";
+import { FormSkeleton } from "@/components/LoadingState";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createOrg,
   createProject,
@@ -21,6 +24,8 @@ import {
   deleteOrg,
   deleteProject,
   deleteTeam,
+  fetchProjectSettings,
+  updateProjectSettings,
 } from "@/lib/api";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -42,6 +47,9 @@ export function ScopeSwitcher() {
     id: string;
     name: string;
   } | null>(null);
+  const [settingsTarget, setSettingsTarget] = React.useState<{ id: string; name: string } | null>(
+    null,
+  );
 
   const invalidateScope = () => {
     queryClient.invalidateQueries({ queryKey: ["scope"] });
@@ -93,6 +101,15 @@ export function ScopeSwitcher() {
         value={scope.projectId ?? ""}
         options={scope.projects.map((p) => ({ id: p.id, name: p.name }))}
         onChange={scope.setProjectId}
+        onSettings={
+          scope.projectId
+            ? () =>
+                setSettingsTarget({
+                  id: scope.projectId as string,
+                  name: scope.projects.find((p) => p.id === scope.projectId)?.name ?? "",
+                })
+            : undefined
+        }
         onAdd={scope.teamId ? () => setCreateLevel("project") : undefined}
         onDelete={
           scope.projectId
@@ -129,6 +146,11 @@ export function ScopeSwitcher() {
           invalidateScope();
           setDeleteTarget(null);
         }}
+      />
+
+      <ProjectSettingsDialog
+        target={settingsTarget}
+        onOpenChange={(open) => !open && setSettingsTarget(null)}
       />
     </div>
   );
@@ -170,6 +192,7 @@ function ScopeRow({
   value,
   options,
   onChange,
+  onSettings,
   onAdd,
   onDelete,
   disabled,
@@ -178,6 +201,7 @@ function ScopeRow({
   value: string;
   options: { id: string; name: string }[];
   onChange: (id: string) => void;
+  onSettings?: () => void;
   onAdd?: () => void;
   onDelete?: () => void;
   disabled?: boolean;
@@ -196,6 +220,17 @@ function ScopeRow({
         placeholder={options.length === 0 ? t(keys.empty) : undefined}
         options={options.map((o) => ({ value: o.id, label: o.name }))}
       />
+      {onSettings && (
+        <button
+          type="button"
+          aria-label={t("scope.projectSettings")}
+          title={t("scope.projectSettings")}
+          onClick={onSettings}
+          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <Settings className="h-3.5 w-3.5" />
+        </button>
+      )}
       {onAdd && (
         <button
           type="button"
@@ -219,6 +254,95 @@ function ScopeRow({
         </button>
       )}
     </div>
+  );
+}
+
+/**
+ * A project's own settings (#1820), opened from the project row.
+ *
+ * Today that is one switch: whether the project's viewers may read the request
+ * and response bodies payload capture stored for its traffic. Members and
+ * admins always may; viewers only once a project admin turns this on, because
+ * a prompt is the most sensitive thing the request log holds. Anyone on the
+ * project can open the dialog and see where it stands — only the switch is
+ * gated, on the same `project_settings:update` the server enforces.
+ */
+function ProjectSettingsDialog({
+  target,
+  onOpenChange,
+}: {
+  target: { id: string; name: string } | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const id = target?.id;
+  const settings = useQuery({
+    queryKey: ["project-settings", id],
+    queryFn: () => fetchProjectSettings(id as string),
+    enabled: !!id,
+  });
+  const save = useMutation({
+    mutationFn: (viewers: boolean) =>
+      updateProjectSettings(id as string, { payload_min_role: viewers ? "viewer" : "member" }),
+    onSuccess: (next) => {
+      queryClient.setQueryData(["project-settings", id], next);
+      // an open request log re-reads with the new floor rather than showing
+      // bodies it would no longer be sent, or hiding ones it now would
+      queryClient.invalidateQueries({ queryKey: ["invocations"] });
+      toast.push({
+        tone: "success",
+        title: t("toast.saved"),
+        detail: t("toast.savedDetail", { what: target?.name ?? "" }),
+      });
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: target?.name ?? "" }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+  // the switch follows the click while the save is in flight, then the answer
+  const viewers = save.isPending
+    ? save.variables === true
+    : settings.data?.payload_min_role === "viewer";
+
+  return (
+    <Dialog open={!!target} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>{t("scope.settings.title", { name: target?.name ?? "" })}</DialogTitle>
+        <DialogDescription>{t("scope.settings.hint")}</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-3">
+        {settings.isError ? (
+          <LoadError
+            error={settings.error}
+            resource={t("errors.resources.projectSettings")}
+            onRetry={() => settings.refetch()}
+          />
+        ) : settings.isPending ? (
+          <FormSkeleton fields={1} />
+        ) : (
+          <SwitchRow
+            title={t("scope.settings.viewersSeePayloads")}
+            hint={t("scope.settings.viewersSeePayloadsHint")}
+            checked={viewers}
+            onChange={(next) => save.mutate(next)}
+            disabled={save.isPending}
+            gate="project_settings:update"
+            control="project-payload-visibility"
+          />
+        )}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          {t("common.close")}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 

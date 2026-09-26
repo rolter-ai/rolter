@@ -54,6 +54,10 @@ pub fn router() -> Router<ControlState> {
         .route("/api/v1/orgs/{org_id}/projects", get(list_org_projects))
         .route("/api/v1/projects/{id}", delete(delete_project))
         .route(
+            "/api/v1/projects/{id}/settings",
+            get(get_project_settings).put(update_project_settings),
+        )
+        .route(
             "/api/v1/orgs/{org_id}/business-units",
             get(list_business_units).post(create_business_unit),
         )
@@ -2020,6 +2024,72 @@ async fn delete_project(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A project's own settings (#1820).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectSettings {
+    /// the lowest built-in role that may read the request and response bodies
+    /// payload capture stored for this project's traffic: `member` (the
+    /// default) or `viewer`. An admin always may
+    payload_min_role: String,
+}
+
+/// The roles `payload_min_role` may take. `admin` is not one: an admin always
+/// reads what a member reads, so it would change nothing.
+const PAYLOAD_MIN_ROLES: [&str; 2] = ["member", "viewer"];
+
+/// `GET /api/v1/projects/{id}/settings`.
+async fn get_project_settings(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ProjectSettings>> {
+    let chain = ScopeChain::from_project(pool(&state), id).await?;
+    authorize(&state, &principal, chain, cap!("project_settings", Read)).await?;
+    Ok(Json(ProjectSettings {
+        payload_min_role: ProjectRepo(pool(&state)).payload_min_role(id).await?,
+    }))
+}
+
+/// `PUT /api/v1/projects/{id}/settings` — a project admin's.
+///
+/// Lowering `payload_min_role` to `viewer` lets every viewer of the project
+/// read its captured prompts and completions in the request log, so the change
+/// is audited with the value it was set to.
+async fn update_project_settings(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<ProjectSettings>,
+) -> ApiResult<Json<ProjectSettings>> {
+    let chain = ScopeChain::from_project(pool(&state), id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("project_settings", Update)).await?;
+    let role = body.payload_min_role.trim();
+    if !PAYLOAD_MIN_ROLES.contains(&role) {
+        return Err(ApiError::Core(Error::Config(format!(
+            "payload_min_role must be one of {}",
+            PAYLOAD_MIN_ROLES.join(", ")
+        ))));
+    }
+    ProjectRepo(pool(&state))
+        .set_payload_min_role(id, role)
+        .await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "project.settings.update",
+        "project",
+        id,
+        serde_json::json!({"payload_min_role": role}),
+    )
+    .await;
+    Ok(Json(ProjectSettings {
+        payload_min_role: role.to_string(),
+    }))
 }
 
 // --- providers ---

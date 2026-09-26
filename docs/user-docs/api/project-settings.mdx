@@ -1,0 +1,59 @@
+---
+title: "Project Settings"
+sidebarTitle: "Project settings"
+description: "GET and PUT /api/v1/projects/{id}/settings read and change a project's own settings — today, whether the project's viewers may read the request and response bodies payload capture stored for it."
+---
+
+A project carries a small set of settings of its own, apart from the project
+row. Today there is one: `payload_min_role`, the lowest built-in role that may
+read the request and response bodies [payload capture](/observability/log-settings#payload-capture)
+stored for the project's traffic.
+
+| value              | who reads the captured bodies of this project's requests |
+| ------------------ | -------------------------------------------------------- |
+| `member` (default) | the project's members and admins                         |
+| `viewer`           | its viewers as well                                      |
+
+Admins always may. Whether anything is captured at all is still the
+deployment-wide [log settings](/observability/log-settings), and who sees the
+request-log rows themselves is covered in
+[who sees which request logs](/security/rbac#who-sees-which-request-logs).
+
+## Read the settings
+
+Any role on the project may read them.
+
+```bash
+curl -s https://control.example.com/api/v1/projects/$PROJECT_ID/settings \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+```json
+{ "payload_min_role": "member" }
+```
+
+## Change them
+
+Changing a project's settings takes the **admin** role on the project (or on
+its team or org). The body names every setting; an unknown field is rejected.
+
+```bash
+curl -s -X PUT https://control.example.com/api/v1/projects/$PROJECT_ID/settings \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"payload_min_role": "viewer"}'
+```
+
+The response echoes the stored settings. The change is recorded in the audit
+log as `project.settings.update`, with the value it was set to.
+
+| status | when                                           |
+| ------ | ---------------------------------------------- |
+| `200`  | saved                                          |
+| `400`  | `payload_min_role` is not `member` or `viewer` |
+| `401`  | no valid session or admin token                |
+| `403`  | the caller is not an admin of the project      |
+| `404`  | no such project                                |
+
+In the dashboard the same switch is **Viewers can read captured payloads**,
+under the gear next to the project in the scope switcher.

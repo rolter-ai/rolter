@@ -24,7 +24,9 @@ use uuid::Uuid;
 
 use rolter_auth::Role;
 use rolter_store::postgres::models::{AccessProfilePolicy, EffectiveGrant};
-use rolter_store::postgres::repo::{AccessProfileRepo, CustomRoleRepo, MembershipRepo};
+use rolter_store::postgres::repo::{
+    AccessProfileRepo, CustomRoleRepo, MembershipRepo, ProjectRepo,
+};
 
 use crate::access_control::{merge_policies, MergedPolicy};
 use crate::crud::{pool, ApiResult};
@@ -158,6 +160,17 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: ADMIN,
     },
+    // a project's own settings, apart from the project row (#1820). Today that
+    // is who may read the bodies payload capture stored for its traffic, which
+    // decides who reads its prompts, so changing it is a project admin's
+    Capability {
+        resource: "project_settings",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: ADMIN,
+        delete: NA,
+    },
     Capability {
         resource: "provider",
         scope: "org",
@@ -181,6 +194,16 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+    },
+    // provider uptime, MTTR and failure timeline (#1820): whoever may read a
+    // provider may read how it has been behaving
+    Capability {
+        resource: "provider_health",
+        scope: "org",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
     },
     Capability {
         // a label on a provider, provider group or route. its own capability
@@ -227,6 +250,29 @@ const CAPABILITIES: &[Capability] = &[
         scope: "project",
         read: NA,
         create: MEMBER,
+        update: NA,
+        delete: NA,
+    },
+    // request logs and the usage, spend and attribution rollups over them
+    // (#1820). A user reads the rows of the orgs, teams and projects they hold
+    // a role in and nothing else — never the deployment as a whole
+    Capability {
+        resource: "analytics",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
+    // the request and response bodies payload capture stored with those rows
+    // (#1820): the most sensitive thing the logs hold, so a member's by
+    // default. A project admin may lower the bar to viewer for their own
+    // project through `project_settings`
+    Capability {
+        resource: "request_payload",
+        scope: "project",
+        read: MEMBER,
+        create: NA,
         update: NA,
         delete: NA,
     },
@@ -965,10 +1011,25 @@ async fn get_effective(
         }
     };
     let role = best_role(from_memberships, custom_base_role(&grants, chain));
+    let mut allowed = allowed_for(superadmin, role, &grants, chain);
+    // the matrix states the default `request_payload` floor; a project admin
+    // may lower it to viewer for their own project (#1820). Any role at all is
+    // at least a viewer's, so holding one there is enough
+    if let (false, Some(project), Some(_)) = (superadmin, chain.project, role) {
+        let pair = format!("request_payload:{}", action_key(Action::Read));
+        if !allowed.contains(&pair)
+            && ProjectRepo(pool(&state))
+                .payload_min_role(project)
+                .await
+                .is_ok_and(|min| min == "viewer")
+        {
+            allowed.push(pair);
+        }
+    }
     Ok(Json(EffectiveView {
         superadmin,
         role,
-        allowed: allowed_for(superadmin, role, &grants, chain),
+        allowed,
         custom_roles: held_roles(&grants, chain),
         model_policy: merged_policy(&policies),
     }))
@@ -1082,6 +1143,9 @@ mod tests {
             extra,
             vec![
                 "my_virtual_key:create",
+                // the bodies behind their own project's request logs, which a
+                // viewer sees only where a project admin allows it (#1820)
+                "request_payload:read",
                 "mcp_oauth_grant:create",
                 "mcp_oauth_session:create",
                 "mcp_oauth_session:update",
@@ -1180,6 +1244,7 @@ mod tests {
         ),
         ("alerting.rs", include_str!("alerting.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
+        ("analytics_access.rs", include_str!("analytics_access.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
         ("cluster.rs", include_str!("cluster.rs")),

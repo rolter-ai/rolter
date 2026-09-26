@@ -16,6 +16,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::analytics_access::{AnalyticsAccess, PAYLOAD_VISIBLE, ROW_VISIBLE};
+
 /// Minimal ClickHouse HTTP read client.
 #[derive(Clone)]
 pub struct ClickHouseClient {
@@ -191,6 +193,16 @@ pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
     ]
 }
 
+/// `params` plus the caller's scope filter, which every analytics and health
+/// query binds (#1820).
+pub(crate) fn with_access(
+    mut params: Vec<(String, String)>,
+    access: &AnalyticsAccess,
+) -> Vec<(String, String)> {
+    params.extend(access.params());
+    params
+}
+
 /// The shared `where` clause. Empty since/until fall back to a default range so
 /// callers can omit either bound.
 ///
@@ -340,6 +352,7 @@ pub(crate) fn query_failed(
 /// `unpriced_models` are what let a caller present a partial total as partial
 /// rather than as final (#969).
 async fn summary(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
 ) -> Response {
@@ -357,13 +370,16 @@ async fn summary(
                 uniqIf(model, unpriced = 1) as unpriced_models, \
                 countIf(status >= 400) as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
-         from request_logs where {WHERE_WINDOW} format JSON"
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} format JSON"
     );
-    run(ch.query(&sql, &window_params(&q)).await)
+    run(ch
+        .query(&sql, &with_access(window_params(&q), &access))
+        .await)
 }
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
 ) -> Response {
@@ -384,14 +400,17 @@ async fn timeseries(
                 count() as requests, \
                 sum(total_tokens) as tokens, \
                 round(sum(cost_usd), 6) as cost_usd \
-         from request_logs where {WHERE_WINDOW} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by bucket order by bucket format JSON"
     );
-    run(ch.query(&sql, &window_params(&q)).await)
+    run(ch
+        .query(&sql, &with_access(window_params(&q), &access))
+        .await)
 }
 
 /// Per-model aggregates: requests, tokens, cost, error rate, latency percentiles.
 async fn by_model(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
 ) -> Response {
@@ -408,10 +427,12 @@ async fn by_model(
                 countIf(status >= 400) as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
-         from request_logs where {WHERE_WINDOW} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by model order by cost_usd desc format JSON"
     );
-    run(ch.query(&sql, &window_params(&q)).await)
+    run(ch
+        .query(&sql, &with_access(window_params(&q), &access))
+        .await)
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -431,6 +452,7 @@ pub struct AttributionQuery {
 /// unattributed are excluded unless `include_unattributed=true`, so a
 /// business-unit chargeback report is not skewed by an empty bucket.
 async fn by_attribution(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<AttributionQuery>,
 ) -> Response {
@@ -459,19 +481,15 @@ async fn by_attribution(
                 sum(completion_tokens) as completion_tokens, \
                 round(sum(cost_usd), 6) as cost_usd, \
                 countIf(status >= 400) as errors \
-         from request_logs where {WHERE_WINDOW} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by id having {attributed} order by cost_usd desc format JSON"
     );
-    run(ch
-        .query(
-            &sql,
-            &window_params(&WindowQuery {
-                since: q.since.clone(),
-                until: q.until.clone(),
-                bucket: None,
-            }),
-        )
-        .await)
+    let window = window_params(&WindowQuery {
+        since: q.since.clone(),
+        until: q.until.clone(),
+        bucket: None,
+    });
+    run(ch.query(&sql, &with_access(window, &access)).await)
 }
 
 /// Query params for the per-invocation log list: the shared time window plus
@@ -522,6 +540,13 @@ pub struct InvocationsQuery {
 /// while the dashboard reads `request_payload` / `response_payload` and would
 /// otherwise always fall back to "payload logging is off" (#1177).
 ///
+/// Rows are filtered to the caller's tenancy and the bodies are masked in the
+/// database, never after the fact: a caller below the `request_payload` floor
+/// at a row's scope gets both bodies blanked and `payload_withheld` set, so a
+/// prompt they may not read never leaves ClickHouse (#1820). The flag is what
+/// lets the dashboard say "hidden for your role" instead of "payload logging is
+/// off", which is what an empty body used to mean.
+///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
@@ -547,7 +572,11 @@ fn invocations_sql(status_expr: &str) -> String {
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                payload.request_payload as request_payload, payload.response_payload as response_payload \
+                if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
+                if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
+                toUInt8(not {PAYLOAD_VISIBLE} \
+                        and (notEmpty(payload.request_payload) or notEmpty(payload.response_payload))) \
+                    as payload_withheld \
          from request_logs \
          left join ( \
              select request_id, argMax(request_payload, ts) as request_payload, \
@@ -555,6 +584,7 @@ fn invocations_sql(status_expr: &str) -> String {
              from request_payloads group by request_id \
          ) as payload using (request_id) \
          where {WHERE_WINDOW} \
+           and {ROW_VISIBLE} \
            and ({{model:String}} = '' or model = {{model:String}}) \
            and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \
            and ({{business_unit:String}} = '' \
@@ -576,6 +606,7 @@ fn invocations_sql(status_expr: &str) -> String {
 /// the list without an offset, so rows the gateway writes while an operator
 /// reads cannot shift the window under them.
 async fn invocations(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<InvocationsQuery>,
 ) -> Response {
@@ -624,7 +655,7 @@ async fn invocations(
     params.push(("param_cursor_ts".to_string(), cursor_ts));
     params.push(("param_cursor_id".to_string(), cursor_id));
     params.push(("param_limit".to_string(), limit.to_string()));
-    match ch.query(&sql, &params).await {
+    match ch.query(&sql, &with_access(params, &access)).await {
         Ok(data) => {
             let next_cursor = next_keyset_cursor(&data, "request_id");
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
@@ -690,8 +721,42 @@ mod tests {
         // an unaliased qualified column is named `payload.request_payload` in
         // clickhouse's JSON output, which the dashboard never reads (#1177)
         assert!(!sql.contains("payload.request_payload, payload.response_payload"));
-        assert!(sql.contains("payload.request_payload as request_payload"));
-        assert!(sql.contains("payload.response_payload as response_payload"));
+        assert!(sql.contains("payload.request_payload, '') as request_payload"));
+        assert!(sql.contains("payload.response_payload, '') as response_payload"));
+    }
+
+    #[test]
+    fn invocations_sql_filters_rows_and_masks_bodies_the_caller_may_not_read() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // every row is narrowed to the caller's tenancy, and each body is blanked
+        // unless the payload floor is met at the row's own scope (#1820)
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")));
+        assert!(sql.contains(&format!(
+            "if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload"
+        )));
+        assert!(sql.contains(&format!(
+            "if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload"
+        )));
+        assert!(sql.contains("as payload_withheld"));
+    }
+
+    #[test]
+    fn every_request_log_rollup_is_filtered_to_the_caller() {
+        // the rollups build their sql inline, so the guard reads the source: a
+        // new rollup over request_logs that forgets the filter would answer
+        // every tenant's traffic to anyone signed in (#1820)
+        let source = include_str!("analytics.rs");
+        let table = "request_logs";
+        let rollups = source
+            .matches(&format!("from {table} where {{WHERE_WINDOW}}"))
+            .count();
+        let filtered = source
+            .matches(&format!(
+                "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}}"
+            ))
+            .count();
+        assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
+        assert_eq!(filtered, rollups);
     }
 
     #[test]

@@ -240,8 +240,16 @@ export default function Logs() {
       {selected.error && (
         <DrawerBlock label={t("pages.logs.error")} content={selected.error} language="log" />
       )}
-      <PayloadBlock label={t("pages.logs.request")} raw={selected.request_payload} />
-      <PayloadBlock label={t("pages.logs.response")} raw={selected.response_payload} />
+      <PayloadBlock
+        label={t("pages.logs.request")}
+        raw={selected.request_payload}
+        withheld={Number(selected.payload_withheld ?? 0) === 1}
+      />
+      <PayloadBlock
+        label={t("pages.logs.response")}
+        raw={selected.response_payload}
+        withheld={Number(selected.payload_withheld ?? 0) === 1}
+      />
     </>
   );
 
@@ -584,8 +592,21 @@ export default function Logs() {
  * everyone else the answer would be a 403, so the screen does not ask. Either
  * way the text says where the setting lives instead of leaving the reader to
  * hunt for it.
+ *
+ * The fourth reason is the caller's own role (#1820): the server blanks a body
+ * a viewer may not read and says so with `payload_withheld`, and that one is
+ * certain rather than a guess, so it is stated plainly and points at the
+ * project's settings rather than the deployment's log settings.
  */
-function PayloadBlock({ label, raw }: { label: string; raw: string | undefined }) {
+function PayloadBlock({
+  label,
+  raw,
+  withheld = false,
+}: {
+  label: string;
+  raw: string | undefined;
+  withheld?: boolean;
+}) {
   const { t } = useTranslation();
   const isSuperadmin = useIsSuperadmin();
   const body = pretty(raw);
@@ -594,7 +615,7 @@ function PayloadBlock({ label, raw }: { label: string; raw: string | undefined }
     queryFn: fetchLoggingSettings,
     // only asked when the answer is readable, and a failure is not worth
     // surfacing: the generic explanation below is still true
-    enabled: isSuperadmin === true && body === null,
+    enabled: isSuperadmin === true && body === null && !withheld,
     retry: false,
     staleTime: 60_000,
   });
@@ -604,8 +625,9 @@ function PayloadBlock({ label, raw }: { label: string; raw: string | undefined }
   }
 
   const captureOff = settings.data ? !settings.data.payload_capture_enabled : undefined;
-  const reason =
-    captureOff === true
+  const reason = withheld
+    ? t("pages.logs.payloadWithheld")
+    : captureOff === true
       ? t("pages.logs.payloadCaptureOff")
       : captureOff === false
         ? t("pages.logs.payloadCaptureOnButAbsent", {
@@ -620,12 +642,16 @@ function PayloadBlock({ label, raw }: { label: string; raw: string | undefined }
       </div>
       <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
         <p className="text-xs leading-relaxed text-muted-foreground">{reason}</p>
-        <a
-          href="/logs-settings"
-          className="mt-2 inline-block text-xs font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {t("pages.logs.payloadSettingsLink")}
-        </a>
+        {/* the deployment's log settings cannot change a role, so a withheld
+            body has nowhere there to point */}
+        {!withheld && (
+          <a
+            href="/logs-settings"
+            className="mt-2 inline-block text-xs font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {t("pages.logs.payloadSettingsLink")}
+          </a>
+        )}
       </div>
     </div>
   );

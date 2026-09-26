@@ -1453,6 +1453,179 @@ async fn admin_token_guards_crud_and_snapshot() {
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
 
+/// Every GET the served OpenAPI document does not mark public refuses an
+/// anonymous or forged caller once an admin token is configured (#1820).
+///
+/// The analytics and health routes answered anyone for months: they were merged
+/// onto the open router, the document said they needed a bearer, and nothing
+/// compared the two. This walks the document the control plane actually serves,
+/// so a route added later without a guard fails here rather than in a
+/// deployment — and so does a route that is open by design but was never marked
+/// `.public()`, which keeps the document honest about what an anonymous caller
+/// can ask. Only a 401 passes: before the fix these routes answered 503 in a
+/// test app with no ClickHouse, so "anything but 200" would have passed too.
+#[tokio::test]
+async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app =
+        rolter_control::test_app_with_admin_token(db.pool().clone(), Some("sweep".to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let spec: Value = client
+        .get(format!("http://{addr}/openapi.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // authenticated downstream rather than here: the playground proxy hands the
+    // caller's virtual key to the gateway, and the gateway is what checks it
+    const CHECKED_DOWNSTREAM: &[&str] = &["/gw/{path}"];
+    let nil = uuid::Uuid::nil().to_string();
+    let mut answered = Vec::new();
+    let mut walked = 0;
+    for (path, item) in spec["paths"].as_object().expect("the document has paths") {
+        let Some(op) = item.get("get") else {
+            continue;
+        };
+        if op.get("security") == Some(&json!([])) || CHECKED_DOWNSTREAM.contains(&path.as_str()) {
+            continue;
+        }
+        // every path parameter becomes the nil uuid: a guarded route has to
+        // refuse the caller before it looks anything up
+        let mut concrete = String::with_capacity(path.len());
+        let mut rest = path.as_str();
+        while let Some(open) = rest.find('{') {
+            let close = rest[open..].find('}').expect("closed parameter") + open;
+            concrete.push_str(&rest[..open]);
+            concrete.push_str(&nil);
+            rest = &rest[close + 1..];
+        }
+        concrete.push_str(rest);
+        for bearer in [None, Some("forged")] {
+            let mut request = client.get(format!("http://{addr}{concrete}"));
+            if let Some(bearer) = bearer {
+                request = request.bearer_auth(bearer);
+            }
+            let status = request.send().await.unwrap().status();
+            if status != 401 {
+                let who = if bearer.is_some() {
+                    "forged bearer"
+                } else {
+                    "anonymous"
+                };
+                answered.push(format!("{path} ({who}) -> {status}"));
+            }
+        }
+        walked += 1;
+    }
+    assert!(walked > 50, "the sweep only reached {walked} routes");
+    assert!(
+        answered.is_empty(),
+        "routes that did not refuse a caller without credentials: {answered:#?}"
+    );
+}
+
+/// Only a project admin changes who reads a project's captured bodies, only to
+/// a role the column admits, and the change is audited (#1820).
+#[tokio::test]
+async fn project_settings_are_read_by_viewers_and_changed_by_project_admins() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("settings".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'app') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut tokens = std::collections::HashMap::new();
+    for role in ["viewer", "member", "admin"] {
+        let user = seed_user(&pool, &format!("{role}@settings.test"), false).await;
+        seed_membership(&pool, user, None, None, Some(project), role).await;
+        tokens.insert(
+            role,
+            seed_session(&pool, user, &format!("settings_{role}")).await,
+        );
+    }
+    let settings = format!("{base}/api/v1/projects/{project}/settings");
+    let read = |role: &'static str| client.get(&settings).bearer_auth(&tokens[role]).send();
+    let write = |role: &'static str, value: &'static str| {
+        client
+            .put(&settings)
+            .bearer_auth(&tokens[role])
+            .json(&json!({"payload_min_role": value}))
+            .send()
+    };
+
+    // members by default, and any role on the project may read the setting
+    let current: Value = read("viewer").await.unwrap().json().await.unwrap();
+    assert_eq!(current, json!({"payload_min_role": "member"}));
+
+    // a member cannot lower the bar for everyone else
+    assert_eq!(write("member", "viewer").await.unwrap().status(), 403);
+    // and an admin cannot set a role the column does not admit
+    assert_eq!(write("admin", "admin").await.unwrap().status(), 400);
+
+    let changed = write("admin", "viewer").await.unwrap();
+    assert_eq!(changed.status(), 200);
+    let current: Value = read("viewer").await.unwrap().json().await.unwrap();
+    assert_eq!(current, json!({"payload_min_role": "viewer"}));
+
+    // the viewer's effective permissions at the project now include the bodies
+    let effective: Value = client
+        .get(format!(
+            "{base}/api/v1/rbac/effective?org_id={org}&team_id={team}&project_id={project}"
+        ))
+        .bearer_auth(&tokens["viewer"])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(allowed.contains(&"request_payload:read"), "{allowed:?}");
+
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'project.settings.update' \
+         and target_id = $1 and detail->>'payload_min_role' = 'viewer'",
+    )
+    .bind(project)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+}
+
 /// `GET /api/v1/config/export` hands back the deployment as an importable
 /// `rolter.toml` (#1082). The route is superadmin-only, the body is a TOML
 /// document rather than JSON, and — the part worth an end-to-end test — the

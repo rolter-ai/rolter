@@ -154,6 +154,7 @@
               "api/ui-events",
               "api/version",
               "api/org-projects",
+              "api/project-settings",
               "api/control-plane-openapi"
             ]
           }
