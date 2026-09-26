@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    MembershipRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
+    MembershipRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -438,8 +438,9 @@ async fn replace_user(
                 .unwrap_or(&identity.display_name),
         )
         .await?;
+    let mut detail = json!({"user_name": identity.user_name});
     if let Some(active) = body.active {
-        deactivate(&state, user.id, !active).await?;
+        detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
     }
     audit_scim(
         &state,
@@ -447,7 +448,7 @@ async fn replace_user(
         "scim.user.update",
         "user",
         user.id,
-        json!({"user_name": identity.user_name}),
+        detail,
     )
     .await;
     let user = UserRepo(pool).get(user.id).await?;
@@ -489,13 +490,14 @@ async fn patch_user(
     }
     let (user, identity) = resolve(&state, &principal, &id).await?;
     let mut applied = false;
+    let mut personal_keys = 0;
     for op in &body.operations {
         let verb = op.op.to_ascii_lowercase();
         if verb != "replace" && verb != "add" {
             return Err(ScimError::invalid(format!("unsupported op '{}'", op.op)));
         }
         let active = active_from_op(op)?;
-        deactivate(&state, user.id, !active).await?;
+        personal_keys = deactivate(&state, user.id, !active).await?;
         applied = true;
     }
     if !applied {
@@ -507,7 +509,7 @@ async fn patch_user(
         "scim.user.update",
         "user",
         user.id,
-        json!({"user_name": identity.user_name}),
+        json!({"user_name": identity.user_name, "personal_keys": personal_keys}),
     )
     .await;
     let user = UserRepo(pool(&state)).get(user.id).await?;
@@ -544,13 +546,17 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 /// Deactivating drops the account's live sessions in the same step: an IdP
 /// disabling a leaver expects them logged out, not merely unable to log in
 /// again.
-async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<()> {
+///
+/// The gateways stop serving the keys the account minted for itself, and
+/// serve them again on reactivation (#1841). Returns how many there are, for
+/// the audit row.
+async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
     UserRepo(pool).set_deactivated(user_id, deactivated).await?;
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
     }
-    Ok(())
+    Ok(VirtualKeyRepo(pool).count_personal(user_id).await?)
 }
 
 /// SCIM `DELETE` deprovisions: the account is deactivated and its sessions
@@ -564,7 +570,7 @@ async fn delete_user(
     Path(id): Path<String>,
 ) -> ScimResult<StatusCode> {
     let (user, identity) = resolve(&state, &principal, &id).await?;
-    deactivate(&state, user.id, true).await?;
+    let personal_keys = deactivate(&state, user.id, true).await?;
     // before the identity goes: the group-granted roles must go with it, or a
     // deprovisioned account would keep admin on a team nobody can see it on
     crate::scim_groups::forget_user(&state, principal.org_id, user.id).await?;
@@ -577,7 +583,7 @@ async fn delete_user(
         "scim.user.deprovision",
         "user",
         user.id,
-        json!({"user_name": identity.user_name}),
+        json!({"user_name": identity.user_name, "personal_keys": personal_keys}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)

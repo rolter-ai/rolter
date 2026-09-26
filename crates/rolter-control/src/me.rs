@@ -144,7 +144,7 @@ async fn mint_my_key(
     SafeJson(body): SafeJson<MintKey>,
 ) -> ApiResult<Json<MintedKey>> {
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
-    let principal = Principal::User(current.user.clone());
+    let principal = Principal::for_user(current.user.clone());
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
     let (name, expires_at) = validated_name_and_expiry(&body.name, body.expires_in_days)?;
@@ -201,7 +201,7 @@ async fn mint_playground_key(
     Path(project_id): Path<Uuid>,
 ) -> ApiResult<Json<MintedKey>> {
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
-    let principal = Principal::User(current.user.clone());
+    let principal = Principal::for_user(current.user.clone());
     // the same capability the self-service mint needs: this is a key the caller
     // mints for themselves, with strictly less reach than one they could mint
     // by hand, so it cannot be the thing that lets a viewer create credentials

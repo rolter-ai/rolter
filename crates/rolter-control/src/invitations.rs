@@ -32,7 +32,7 @@ use crate::auth::{generate_session_token, session_pepper};
 use crate::crud::{
     hash_password, log_audit, pool, validate_email, validate_role, ApiError, ApiResult, SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize, reaches_org, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
 
@@ -152,14 +152,33 @@ async fn list_invitations(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Invitation>>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("invitation", Read),
-    )
-    .await?;
-    Ok(Json(InvitationRepo(pool(&state)).list(org_id).await?))
+    let invitations = InvitationRepo(pool(&state)).list(org_id).await?;
+    let filter = ScopeFilter::load(&state, &principal, cap!("invitation", Read)).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(Json(invitations));
+    }
+    // below the org: the invitations into the teams and projects the caller
+    // administers, so a team admin can see and revoke what they sent (#1850)
+    if !reaches_org(&filter.reach(pool(&state)).await?, org_id) {
+        return Err(ApiError::Forbidden);
+    }
+    let mut visible = Vec::new();
+    for invitation in invitations {
+        if filter.allows(invitation_chain(&state, &invitation).await?) {
+            visible.push(invitation);
+        }
+    }
+    Ok(Json(visible))
+}
+
+/// The scope an invitation grants a role at: its project, else its team, else
+/// its org.
+async fn invitation_chain(state: &ControlState, invitation: &Invitation) -> ApiResult<ScopeChain> {
+    match (invitation.project_id, invitation.team_id) {
+        (Some(project), _) => ScopeChain::from_project(pool(state), project).await,
+        (None, Some(team)) => ScopeChain::from_team(pool(state), team).await,
+        (None, None) => Ok(ScopeChain::org(invitation.org_id)),
+    }
 }
 
 async fn revoke(
@@ -168,10 +187,12 @@ async fn revoke(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Invitation>> {
     let existing = InvitationRepo(pool(&state)).get(id).await?;
+    // at the scope the invitation grants, the way `create_invitation` is
+    // authorized, so the team admin who sent it can take it back (#1850)
     authorize(
         &state,
         &principal,
-        ScopeChain::org(existing.org_id),
+        invitation_chain(&state, &existing).await?,
         cap!("invitation", Delete),
     )
     .await?;

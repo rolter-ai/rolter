@@ -195,6 +195,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         }
     }
 

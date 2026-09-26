@@ -120,6 +120,7 @@ fn backpressure_config(model: &str, upstream: SocketAddr) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config.queue = QueueConfig {
         enabled: true,
