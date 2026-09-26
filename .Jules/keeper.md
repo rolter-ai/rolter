@@ -13,3 +13,8 @@
 
 **Learning:** Configuration fields on `ServerConfig` in `crates/rolter-core/src/config.rs` (`max_body_bytes`, `require_auth`) can quietly drift from `docs/user-docs/configuration/config-file.mdx`.
 **Action:** Guard `ServerConfig` documentation completeness using `all_server_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-09-26 - Runtime environment variables read via std::env::var drifting from reference docs
+
+**Learning:** Environment variables read directly via `std::env::var` across workspace crates (such as `ROLTER_PUBLIC_URL` or `ROLTER_SESSION_PEPPER`) can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guards only inspect `clap` `env = "..."` attributes.
+**Action:** Ensure `all_binary_cli_env_vars_are_documented_in_reference` in `crates/rolter/tests/env_var_names.rs` scans all non-test `prefixed_names()` across `crates/*/src` to assert completeness in reference documentation.
