@@ -3344,4 +3344,118 @@ mod tests {
         let store = PostgresConfigStore::new(pool);
         assert!(store.save(GatewayConfig::default()).await.is_err());
     }
+
+    /// The write path refuses a route target or a group member on another
+    /// org's provider, but a row written before that guard existed is still in
+    /// the table, and the loader is all that keeps it from spending the other
+    /// org's credential (#1844). Every other test creates rows through the
+    /// guarded API, so this one writes the cross-org rows with plain SQL.
+    #[tokio::test]
+    async fn the_loader_drops_targets_and_members_on_another_orgs_provider() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        // two orgs, each with one project and one provider
+        let mut tenants = Vec::new();
+        for org in ["org-a", "org-b"] {
+            let org_id: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(org)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let team_id: Uuid = sqlx::query_scalar(
+                "insert into teams (org_id, name) values ($1, 'core') returning id",
+            )
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let project_id: Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, 'api') returning id",
+            )
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let provider_id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://example.com') returning id",
+            )
+            .bind(org_id)
+            .bind(format!("{org}-edge"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            tenants.push((org_id, project_id, provider_id));
+        }
+        let (org_a, project_a, own) = tenants[0];
+        let foreign = tenants[1].2;
+
+        let route_id: Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy)
+             values ($1, 'gpt-4o', 'round_robin') returning id",
+        )
+        .bind(project_a)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let group_id: Uuid = sqlx::query_scalar(
+            "insert into provider_groups (org_id, name, slug, strategy)
+             values ($1, 'pool', 'pool', 'round_robin') returning id",
+        )
+        .bind(org_a)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for (position, provider_id) in [own, foreign].into_iter().enumerate() {
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)",
+            )
+            .bind(route_id)
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into provider_group_members (group_id, provider_id, weight, position)
+                 values ($1, $2, 1, $3)",
+            )
+            .bind(group_id)
+            .bind(provider_id)
+            .bind(position as i32)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let store = PostgresConfigStore::new(pool);
+        let routes = store.load_routes().await.unwrap();
+        let route = routes
+            .iter()
+            .find(|r| r.model == "gpt-4o")
+            .expect("the route itself still loads");
+        let targets: Vec<&str> = route.targets.iter().map(|t| t.provider.as_str()).collect();
+        assert_eq!(
+            targets,
+            ["org-a-edge"],
+            "a cross-org target survived the load"
+        );
+
+        let groups = store.load_provider_groups().await.unwrap();
+        let group = groups
+            .iter()
+            .find(|g| g.slug.as_deref() == Some("pool"))
+            .expect("the group itself still loads");
+        let members: Vec<&str> = group.members.iter().map(|m| m.provider.as_str()).collect();
+        assert_eq!(
+            members,
+            ["org-a-edge"],
+            "a cross-org member survived the load"
+        );
+    }
 }
