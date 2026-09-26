@@ -1729,27 +1729,23 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // request to the model shares (#1851); a shape it cannot read keeps the
     // raw body, as before
     let affinity = crate::prompt_affinity::affinity(path, &parsed);
-    let prompt = affinity
-        .as_ref()
-        .map(|a| a.text.as_str())
-        .or_else(|| std::str::from_utf8(&body).ok());
     let token_ids = parse_vllm_token_ids(&headers);
-    let ctx = RouteContext {
+    // the affinity text is only the prompt's leading bytes; route_context also
+    // hands over the whole prompt's length and digest, which the predictor's
+    // token estimate and consistent_hash need
+    let ctx = crate::prompt_affinity::route_context(
+        affinity.as_ref(),
+        &body,
         session_key,
-        prompt,
-        // the affinity text is only the prompt's leading bytes; the predictor's
-        // token estimate and consistent_hash need the whole of it
-        prompt_len: affinity.as_ref().map(|a| a.len),
-        prompt_digest: affinity.as_ref().map(|a| a.digest),
-        token_ids: token_ids.as_deref(),
+        token_ids.as_deref(),
         // adapter identity only exists when the request addresses something
         // other than the route's own model — i.e. a passthrough provider-group
         // route, which is how vLLM addresses LoRA adapters over shared base
         // weights. On a single-model route the two are equal and this stays
         // None, which keeps adapter scoring inert: treating one model as an
         // adapter would pin the whole route to whichever target served first
-        adapter: (model != effective_model).then_some(model.as_str()),
-    };
+        (model != effective_model).then_some(model.as_str()),
+    );
     // trace context plus any client headers the operator allowlisted (#564).
     //
     // this is the *fallback* set, used when no OTLP pipeline is installed: it
