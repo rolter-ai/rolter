@@ -84,9 +84,9 @@ pub struct SubsystemStability {
     /// `ui/src/lib/nav.tsx`.
     ///
     /// Carried here rather than rebuilt in the dashboard so the mapping has one
-    /// owner. Empty is meaningful and common: a gateway-only surface, or a
-    /// cross-cutting concept such as labels, has no nav entry of its own and is
-    /// surfaced through the docs alone.
+    /// owner. Empty is meaningful and common: a gateway surface such as
+    /// `/v1/realtime`, or a cross-cutting concept such as labels, has no nav
+    /// entry of its own and is surfaced through the docs alone.
     pub nav_keys: &'static [&'static str],
 }
 
@@ -134,6 +134,15 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
                own, so the dispatch contract cannot change without silently \
                breaking every endpoint already written against it",
         nav_keys: &["plugins"],
+    },
+    SubsystemStability {
+        id: "realtime",
+        stability: Stability::Experimental,
+        note: "guardrails, the PII sanitizer and plugins do not run on \
+               /v1/realtime session events: a session meets budgets and rate \
+               limits and its usage is recorded, but what it carries reaches \
+               the provider without a content check (#1880)",
+        nav_keys: &[],
     },
     SubsystemStability {
         id: "skills_repository",

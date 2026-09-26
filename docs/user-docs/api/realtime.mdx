@@ -4,6 +4,15 @@ sidebarTitle: "Realtime"
 description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and how a session is admitted, metered and closed by budgets and rate limits."
 ---
 
+<Warning>
+  **Experimental.** `/v1/realtime` carries the `realtime`
+  [stability marker](/api/stability) and may change shape in a minor release.
+  Budgets, rate limits and usage recording apply to a session, but guardrails,
+  PII redaction and plugins do not run on its events yet, so content a
+  guardrail would stop on `/v1/chat/completions` reaches the provider
+  unchecked ([#1880](https://github.com/rolter-ai/rolter/issues/1880)).
+</Warning>
+
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
 Rolter authenticates the request and selects an upstream before accepting the
 client's WebSocket upgrade, then pins that upstream and its provider key for

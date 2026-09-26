@@ -86,6 +86,7 @@ impression.
 | `mcp_settings`      | MCP → MCP Settings                                                   | The screen stores organization defaults for transport, timeout intent, retries, failure policy and undeclared tools, and the HTTP proxy does not read them. Since [#952](https://github.com/rolter-ai/rolter/issues/952) it does read a _per-server_ override; a server without one falls back to the deployment-level transport timeouts rather than to these org defaults.                            |
 | `mcp_tool_groups`   | MCP → Tool Groups                                                    | Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary. Access is still decided by virtual-key owner, server, the server's configured credential — a static one, or a live OAuth session and its required scopes — and nothing about which tools a group names. Stated in [MCP OAuth](../architecture/mcp-oauth.md). |
 | `plugins`           | Plugins                                                              | The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it. `PluginRequest` in [`plugin_dispatch.rs`](../../crates/rolter-core/src/plugin_dispatch.rs) is the shape in question.                                                                                                   |
+| `realtime`          | _(no screen; reachable from the Playground)_                         | Guardrails, the PII sanitizer and plugins do not run on `/v1/realtime` session events. A session is admitted against budgets and rate limits and metered per response turn ([Realtime metering](../architecture/realtime-metering.md)), but what it carries reaches the provider without a content check. Tracked in [#1880](https://github.com/rolter-ai/rolter/issues/1880).                          |
 | `skills_repository` | Skills Repository                                                    | A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled. Nothing outside the dashboard depends on the current shape yet.                                                                                                                                                                                     |
 
 A subsystem not in that table is stable. The table is short deliberately: a
@@ -135,8 +136,7 @@ request that closes the last gap the note names — not in a tidy-up sweep.
 Per endpoint is more precise and rots faster: a route rename silently drops the
 marker, and a subsystem's surface is usually several routes plus a screen plus a
 config block that all move together. Per dashboard screen cannot express
-anything without a screen, such as `labels` above or `/v1/realtime` before it
-graduated.
+anything without a screen, such as `labels` and `realtime` above.
 
 Per subsystem is the same unit ADR-0031 uses for capability and enablement, so
 all three axes answer for the same thing. `nav_keys` then carries the mapping
