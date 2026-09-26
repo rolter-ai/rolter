@@ -9693,12 +9693,7 @@ async fn seed_bound_member(
 }
 
 /// Sign in with a password and return whatever the exchange answered.
-async fn password_login(
-    client: &reqwest::Client,
-    base: &str,
-    email: &str,
-    password: &str,
-) -> Value {
+async fn login_as(client: &reqwest::Client, base: &str, email: &str, password: &str) -> Value {
     let response = client
         .post(format!("{base}/api/v1/auth/login"))
         .json(&json!({"email": email, "password": password}))
@@ -9737,7 +9732,7 @@ async fn a_required_policy_sends_an_unenrolled_account_through_enrolment() {
     )
     .await;
 
-    let challenge = password_login(&client, &base, "unenrolled@example.com", &password).await;
+    let challenge = login_as(&client, &base, "unenrolled@example.com", &password).await;
     assert_eq!(challenge["mfa_enrolment_required"], true, "{challenge}");
     assert!(
         challenge["token"].is_null(),
@@ -9909,7 +9904,7 @@ async fn a_required_policy_sends_an_unenrolled_account_through_enrolment() {
 
     // the factor is armed now, so the next sign-in is an ordinary step-up --
     // and that step-up token does not open the enrolment routes either
-    let step_up: Value = password_login(&client, &base, "unenrolled@example.com", &password).await;
+    let step_up: Value = login_as(&client, &base, "unenrolled@example.com", &password).await;
     assert_eq!(step_up["mfa_required"], true, "{step_up}");
     let reenrol = client
         .post(format!("{base}/api/v1/auth/mfa/enroll"))
@@ -9940,7 +9935,7 @@ async fn an_enrolment_challenge_expires_and_is_spent_by_wrong_codes() {
     seed_bound_member(&pool, "late@example.com", &password, "required_all", "null").await;
 
     // expiry: a challenge left sitting is dead to both routes
-    let stale = password_login(&client, &base, "late@example.com", &password).await;
+    let stale = login_as(&client, &base, "late@example.com", &password).await;
     let stale_token = stale["enrolment_token"]
         .as_str()
         .expect("token")
@@ -9970,7 +9965,7 @@ async fn an_enrolment_challenge_expires_and_is_spent_by_wrong_codes() {
     }
 
     // budget: five wrong codes spend a fresh challenge
-    let fresh = password_login(&client, &base, "late@example.com", &password).await;
+    let fresh = login_as(&client, &base, "late@example.com", &password).await;
     let token = fresh["enrolment_token"]
         .as_str()
         .expect("token")
@@ -10049,7 +10044,7 @@ async fn a_grace_window_lets_an_unenrolled_member_in_until_it_passes() {
         .unwrap();
     assert!(policy["mfa_enforce_after"].is_string(), "{policy}");
 
-    let signed_in = password_login(&client, &base, "grace@example.com", &password).await;
+    let signed_in = login_as(&client, &base, "grace@example.com", &password).await;
     let session = signed_in["token"]
         .as_str()
         .expect("inside the window the password is enough")
@@ -10075,7 +10070,7 @@ async fn a_grace_window_lets_an_unenrolled_member_in_until_it_passes() {
         .execute(&pool)
         .await
         .unwrap();
-    let after = password_login(&client, &base, "grace@example.com", &password).await;
+    let after = login_as(&client, &base, "grace@example.com", &password).await;
     assert_eq!(after["mfa_enrolment_required"], true, "{after}");
 
     // relaxing the policy drops the window with it, rather than leaving it to
@@ -10095,7 +10090,7 @@ async fn a_grace_window_lets_an_unenrolled_member_in_until_it_passes() {
         .await
         .unwrap();
     assert!(relaxed["mfa_enforce_after"].is_null(), "{relaxed}");
-    let plain = password_login(&client, &base, "grace@example.com", &password).await;
+    let plain = login_as(&client, &base, "grace@example.com", &password).await;
     assert!(plain["token"].is_string(), "{plain}");
     assert!(
         plain.get("mfa_enrol_by").is_none(),
