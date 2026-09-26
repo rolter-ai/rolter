@@ -276,9 +276,9 @@ reconstructed from a counter after the fact.
 
 And one counter, for the endpoint an unauthenticated attacker can reach (#1079):
 
-| Metric                          | Meaning                                 | Attributes                                                           |
-| ------------------------------- | --------------------------------------- | -------------------------------------------------------------------- |
-| `rolter_control_login_attempts` | resolved control-plane sign-in attempts | `outcome` (`success` / `invalid` / `throttled` / `locked` / `error`) |
+| Metric                          | Meaning                                 | Attributes                                                                                                                                |
+| ------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `rolter_control_login_attempts` | resolved control-plane sign-in attempts | `outcome` (`success` / `invalid` / `throttled` / `locked` / `error` / `mfa_challenge` / `mfa_invalid` / `mfa_enrolment` / `mfa_required`) |
 
 A counter rather than a histogram: the question it answers — "is somebody
 running a credential-stuffing run against this deployment" — is a rate, not a
