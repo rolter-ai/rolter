@@ -90,8 +90,13 @@ Over the API, `POST /api/v1/auth/login` answers with a challenge instead of a
 session:
 
 ```json
-{ "mfa_required": true, "mfa_token": "rolter_mfa_...", "expires_at": "..." }
+{ "mfa_required": true, "mfa_token": "rolter_mfa_...", "expires_at": "...", "expires_in": 300 }
 ```
+
+`expires_in` is the same deadline in seconds from the response. Time a prompt
+from it rather than comparing `expires_at` with the local clock: a client
+whose clock runs a few minutes fast would otherwise expire the prompt the
+moment it appeared.
 
 Present that token with a code to get the session:
 
@@ -126,14 +131,21 @@ setting one up, and you get a session once the factor is on:
    **Continue to the dashboard**. The codes are shown exactly once, so the way
    in stays shut until you acknowledge them.
 
-The setup prompt lives ten minutes and accepts five codes. If either runs out,
-or you press **Sign in as someone else**, the card goes back to the password
-step and a fresh sign-in starts a fresh setup.
+The setup prompt lives ten minutes and accepts five codes, and a wrong code
+says how many are left. If either runs out, or you press **Sign in as someone
+else**, the card goes back to the password step and a fresh sign-in starts a
+fresh setup with a new secret. Delete the entry your app saved from the old
+one: its codes will never be accepted.
 
 Over the API, the login answers with an enrolment challenge:
 
 ```json
-{ "mfa_enrolment_required": true, "enrolment_token": "rolter_enrol_...", "expires_at": "..." }
+{
+  "mfa_enrolment_required": true,
+  "enrolment_token": "rolter_enrol_...",
+  "expires_at": "...",
+  "expires_in": 600
+}
 ```
 
 The token is good for exactly two calls, and neither takes it as a bearer
@@ -152,19 +164,24 @@ curl -sS -X POST https://rolter.example.com/api/v1/auth/mfa/confirm \
 ```
 
 The confirm answers `{ "token", "expires_at", "user", "recovery_codes" }`. A
-wrong code is a 400 and leaves the challenge usable. An expired or spent
-token, or one whose account armed a factor some other way in the meantime, is
-a 401 `invalid_credentials`, and the way on is signing in with the password
-again. The token does not authenticate anything else: presented as a bearer
-it is refused everywhere, and `/auth/mfa/verify` does not accept it either.
+wrong code is a 400 and uses up one of the five. An expired or spent token is
+a 401 `invalid_credentials`, and so is one whose account armed a factor some
+other way in the meantime, or whose secret another sign-in replaced after the
+code was checked. Either way, sign in with the password again. The token does
+not authenticate anything else: presented as a bearer it is refused
+everywhere, and `/auth/mfa/verify` does not accept it either.
 
 <Warning>
 Until a member has enrolled, their password is the only thing between an
 attacker and the account, exactly as with the policy off. Whoever signs in
 first is the one who enrols. That is the trade every enrol-at-sign-in flow
 makes. The grace window below lets members enrol from their own session
-before the requirement applies, every enrolment at sign-in is audited, and a
-factor someone else armed is cleared with the break-glass reset.
+before the requirement applies. Every enrolment at sign-in is audited, and the
+audit entry says when the password step came straight after a lockout. A
+factor someone else armed is cleared with the [break-glass
+reset](#break-glass-a-lost-device) **and a new password**: whoever armed it
+knew the password, and the reset alone would let their next sign-in enrol
+again.
 </Warning>
 
 ## Recovery codes
@@ -197,10 +214,16 @@ switches, and takes one of four values:
 
 In the dashboard it is the **Second factor** control on **Single sign-on →
 Sign-in policy**, beside the password and SSO switches. Choosing either
-`required_*` value confirms before it saves: the confirmation says how many
-members the organization has, that anyone without an authenticator app sets
-one up at their next sign-in before they get a session, and links this page's
-break-glass procedure. Relaxing the policy saves without a confirmation.
+`required_*` value confirms before it saves, and so does pulling an announced
+start date earlier. The confirmation says how many members the organization
+has, that anyone without an authenticator app is asked to set one up at their
+next password sign-in, and links this page's break-glass procedure. Relaxing
+the policy saves without a confirmation.
+
+A control plane with no `ROLTER_KEK` cannot seal a secret, so nobody on it can
+enrol. It refuses a `required_*` value with a 409 that names the key, rather
+than saving a policy that would lock out everyone it binds, the admin saving
+it included. `off` and `optional` still save.
 
 Over the API:
 
@@ -213,12 +236,18 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
 A user in several orgs gets the strictest policy across all of them — a
 relaxed membership never softens a hardened one.
 
-Under a `required_*` policy, an account with no armed factor never gets a
-session without one: the sign-in hands it an enrolment challenge instead (see
-[Setting one up at sign-in](#setting-one-up-at-sign-in)). The one exception is
-a control plane with no `ROLTER_KEK`, which cannot seal a new secret; there
-the sign-in is refused with a 403 `mfa_enrolment_required` that names the
-missing key, since the fix is the operator's.
+Under a `required_*` policy, a password sign-in never issues a session to an
+account with no armed factor: it hands out an enrolment challenge instead (see
+[Setting one up at sign-in](#setting-one-up-at-sign-in)). On a control plane
+with no `ROLTER_KEK`, which cannot seal a new secret, the sign-in is refused
+with a 403 `mfa_enrolment_required` that names the missing key instead, since
+the fix is the operator's.
+
+<Note>
+Accepting an invitation does not go through this decision yet: it issues a
+session straight away, without consulting the policy. Tracked in
+[#1935](https://github.com/rolter-ai/rolter/issues/1935).
+</Note>
 
 ### Announcing the requirement first
 
@@ -240,10 +269,11 @@ a notice on the way in, and **Account → Two-factor authentication** shows it
 too, so members can enrol at their own pace. After it, the next sign-in walks
 them through enrolment as above.
 
-`mfa_enforce_after` travels with `mfa_policy`: it is read whenever
-`mfa_policy` is in the body (absent or `null` means at once) and kept as it
-is whenever `mfa_policy` is not. It is dropped under `off` and `optional`,
-where there is nothing to postpone. A member bound by several orgs is held to
+`mfa_enforce_after` travels with `mfa_policy` and is only read when
+`mfa_policy` is in the body. There, `null` means at once, and leaving the key
+out keeps the stored date, so a client written before the field existed cannot
+cancel an announced window by re-sending the policy. It is dropped under `off`
+and `optional`, where there is nothing to postpone. A member bound by several orgs is held to
 the earliest start among them, and a window never lets anyone remove a factor
 they already have.
 
@@ -268,11 +298,17 @@ rolter mfa reset \
   --reason "lost phone, ticket 4211"
 ```
 
-This clears the factor and its recovery codes, and revokes every live session
-for the account — the reason to run it is that the account is in unknown
-hands, so leaving a week-long session alive would leave the factor bypassed
-anyway. The account can then sign in with its password and enrol again; under
-a `required_*` policy that sign-in walks it straight through enrolment.
+This clears the factor and its recovery codes, revokes every live session for
+the account, and drops every sign-in challenge in flight — the reason to run it
+is that the account is in unknown hands, so leaving a week-long session or a
+live setup prompt around would leave the factor bypassed anyway. The account
+can then sign in with its password and enrol again; under a `required_*`
+policy that sign-in walks it straight through enrolment.
+
+If the factor being cleared was armed by someone other than the account's
+owner, set a new password as well. Whoever armed it knew the password, and
+under a `required_*` policy their next sign-in would enrol again. Setting a
+password or deactivating the account also drops the challenges in flight.
 
 `--reason` is required, not optional: a break-glass with no stated reason is
 indistinguishable from an attack when it is read back six months later. It is
@@ -283,18 +319,18 @@ second factor is a second factor that anyone holding a session can clear.
 
 ## What is audited
 
-| Action                                | When                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------ |
-| `auth.mfa_enabled`                    | an enrolment is confirmed; `at_sign_in` when it came through the sign-in             |
-| `auth.mfa_disabled`                   | a user removes their own factor                                                      |
-| `auth.mfa_confirm_failed`             | a wrong code during enrolment                                                        |
-| `auth.mfa_disable_failed`             | a wrong code when removing a factor                                                  |
-| `auth.mfa_failed`                     | a wrong code at sign-in, with the attempt number                                     |
-| `auth.mfa_recovery_code_used`         | a recovery code is spent, with the count left                                        |
-| `auth.mfa_recovery_codes_regenerated` | a batch is replaced                                                                  |
-| `auth.mfa_enrolment_challenge`        | a policy sent an unenrolled account to enrol at sign-in                              |
-| `auth.mfa_enrolment_required`         | a policy refused an unenrolled account because the control plane has no `ROLTER_KEK` |
-| `auth.mfa_break_glass_reset`          | `rolter mfa reset`, with the stated reason                                           |
+| Action                                | When                                                                                                                    |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `auth.mfa_enabled`                    | an enrolment is confirmed; `at_sign_in` when it came through the sign-in                                                |
+| `auth.mfa_disabled`                   | a user removes their own factor                                                                                         |
+| `auth.mfa_confirm_failed`             | a wrong code during enrolment                                                                                           |
+| `auth.mfa_disable_failed`             | a wrong code when removing a factor                                                                                     |
+| `auth.mfa_failed`                     | a wrong code at sign-in, with the attempt number                                                                        |
+| `auth.mfa_recovery_code_used`         | a recovery code is spent, with the count left                                                                           |
+| `auth.mfa_recovery_codes_regenerated` | a batch is replaced                                                                                                     |
+| `auth.mfa_enrolment_challenge`        | a policy sent an unenrolled account to enrol at sign-in; `after_lock` says whether the password step followed a lockout |
+| `auth.mfa_enrolment_required`         | a policy refused an unenrolled account because the control plane has no `ROLTER_KEK`                                    |
+| `auth.mfa_break_glass_reset`          | `rolter mfa reset`, with the stated reason                                                                              |
 
 ## Not covered
 
