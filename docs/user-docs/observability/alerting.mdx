@@ -100,6 +100,10 @@ pass and reports only if the result differs from the stored state.
 When an evaluation fails (no ClickHouse, or a query error), the rule keeps its
 previous state and `last_value`. The scheduled pass logs
 `alert rule evaluation failed` at warn level and moves on to the next rule.
+`last_error` is not filled in yet
+([#1871](https://github.com/rolter-ai/rolter/issues/1871)), so a
+`last_evaluated_at` that stops moving is the sign that a rule has stopped
+evaluating.
 
 Every control-plane process runs its own evaluator. With more than one
 control-plane replica, two passes that read the same state at the same moment
@@ -123,7 +127,7 @@ A channel is a named webhook endpoint. `webhook` is the only kind.
 
 | Field            | Meaning                                                                                                                  |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `name`           | Unique, 1 to 128 visible characters.                                                                                     |
+| `name`           | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                                          |
 | `kind`           | Always `webhook`, set by the server.                                                                                     |
 | `endpoint`       | An `http` or `https` URL with a host. A URL carrying `user:password@` is rejected; put a credential in `managed_secret`. |
 | `enabled`        | A disabled channel records its rules' transitions as `skipped`. Defaults to `false` in the API.                          |
@@ -148,15 +152,16 @@ The sealed column is covered by `rolter kek verify` and listed in
 
 ### Deleting a channel
 
-Rules pointing at a deleted channel stay in place with no channel, and their
-next transitions are recorded as `skipped`. History rows that named the channel
-keep their other fields.
+Rules pointing at a deleted channel stay in place with their `channel_id`
+cleared, so their next transitions are recorded as `skipped` with
+`no channel configured`. History rows that named the channel keep their other
+fields.
 
 ## Rules
 
 | Field         | Meaning                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------ |
-| `name`        | Unique, 1 to 128 visible characters.                                                             |
+| `name`        | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                  |
 | `signal`      | One of the [signals](#signals) above.                                                            |
 | `threshold`   | A finite number, `0` or above, in the signal's own unit. The rule fires at `value >= threshold`. |
 | `window_secs` | Trailing window in seconds, from `60` to `86400` (one minute to one day).                        |
@@ -213,11 +218,11 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 **Alerting → History** lists the 200 most recent rows, newest first, with the
 time, rule, state (`firing` or `resolved`), delivery status and detail.
 
-| Delivery status | Detail                                                                                   |
-| --------------- | ---------------------------------------------------------------------------------------- |
-| `skipped`       | `no channel configured`, `channel disabled` or `channel deleted`                         |
-| `delivered`     | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871)) |
-| `failed`        | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871)) |
+| Delivery status | Detail                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------ |
+| `skipped`       | `no channel configured`, `channel disabled`, or `channel deleted` when the channel is deleted mid-evaluation |
+| `delivered`     | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871))                     |
+| `failed`        | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871))                     |
 
 The history is append-only: the API has no update or delete for it. Deleting a
 rule deletes that rule's rows along with it.
