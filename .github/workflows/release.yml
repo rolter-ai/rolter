@@ -400,6 +400,7 @@ jobs:
 
       # the digest artifact is a single empty file named after the digest
       - name: run the image and check its version
+        id: version
         env:
           REF: ${{ inputs.tag || github.ref_name }}
           PLATFORM: linux/${{ matrix.arch }}
@@ -424,6 +425,23 @@ jobs:
             *"$VERSION"*) echo "version matches $VERSION" ;;
             *) echo "::error::version mismatch: expected $VERSION, got '$got'"; exit 1 ;;
           esac
+          echo "image=$image" >>"$GITHUB_OUTPUT"
+
+      # `--version` proves the binary runs, not that anything can reach it: the
+      # image once bound its container's loopback, so `docker run -p` answered
+      # nothing from the host while this job stayed green (#1891). only the
+      # smoke script is checked out, and from the workflow's own commit rather
+      # than the dispatched tag, so an older tag is held to the current contract
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: docker/smoke
+
+      - name: run the image with published ports and curl both planes
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: bash docker/smoke/image-smoke.sh "$IMAGE" "$PLATFORM"
 
   # ── publish docker images (stage 3: GHCR + optional Docker Hub) ─────────────
   # assembles the multi-arch tag manifests from the digests stage 1 pushed. this

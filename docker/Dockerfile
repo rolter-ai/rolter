@@ -58,8 +58,17 @@ COPY --from=rust-builder /out/rolter-gateway /usr/local/bin/rolter-gateway
 COPY --from=rust-builder /out/rolter-control /usr/local/bin/rolter-control
 COPY --from=ui-builder /ui/dist /app/ui/dist
 COPY rolter.example.toml /app/rolter.toml
+# bind every interface: a published port (`docker run -p 4000:4000`) forwards to
+# the container's own network interface, never to its loopback, so a loopback
+# bind answers nothing from the host (#1891). ROLTER_HOST covers `easy-up` (the
+# default command) and `rolter-gateway`; ROLTER_CONTROL_HOST covers a bare
+# `rolter-control`. this does not reopen #970: with no ROLTER_ADMIN_TOKEN both
+# `easy-up` and the control plane still refuse a non-loopback bind unless
+# ROLTER_ALLOW_OPEN_MODE=1 acknowledges it
 ENV ROLTER_CONFIG=/app/rolter.toml \
     ROLTER_UI_DIR=/app/ui/dist \
+    ROLTER_HOST=0.0.0.0 \
+    ROLTER_CONTROL_HOST=0.0.0.0 \
     RUST_LOG=info
 EXPOSE 4000 4001
 CMD ["/usr/local/bin/rolter", "easy-up", "--config", "/app/rolter.toml", "--ui-dir", "/app/ui/dist"]

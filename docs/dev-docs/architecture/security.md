@@ -190,6 +190,13 @@ This is why `ROLTER_CONTROL_HOST` defaults to `127.0.0.1` rather than
 `0.0.0.0`: containers and clusters set it explicitly, and by then they have a
 reason to have set a token too.
 
+The published image is one of those containers. It sets `ROLTER_HOST` and
+`ROLTER_CONTROL_HOST` to `0.0.0.0`, since a published port cannot reach a
+container's loopback (#1891), and leaves the refusal above in charge: a bare
+`docker run` of the image with no token exits rather than serving.
+`rolter easy-up`, the image's default command, applies the same rule to its
+`--host`/`ROLTER_HOST` before it writes, seeds or binds anything.
+
 ## Control↔data-plane trust boundary
 
 `GET /internal/snapshot` returns provider `api_key`s **decrypted**. That is by

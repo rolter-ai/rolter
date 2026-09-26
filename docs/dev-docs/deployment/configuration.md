@@ -408,7 +408,7 @@ keys are rejected.
 
 ## Environment variables
 
-- `ROLTER_CONFIG`, `ROLTER_HOST`, `ROLTER_PORT` — gateway
+- `ROLTER_CONFIG`, `ROLTER_HOST`, `ROLTER_PORT` — gateway. `rolter easy-up` binds both of its planes to `ROLTER_HOST` too (loopback when unset); the published image sets it to `0.0.0.0`
 - `ROLTER_CONTROL_HOST`, `ROLTER_CONTROL_PORT`, `ROLTER_UI_DIR` — control plane
 - `ROLTER_KEK` — AES-256-GCM KEK for provider-secret encryption
 - `ROLTER_PUBLIC_URL` — the control plane's externally reachable base URL (default `http://localhost:4001`). The OIDC redirect URI is derived from it, so single sign-on needs it set correctly behind a proxy; see [Single sign-on](../architecture/sso.md). Read once at startup, so a change needs a restart

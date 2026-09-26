@@ -23,10 +23,16 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     Start the zero-config local stack.
 
     ```bash
-    docker run --rm -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest
+    docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+      -e ROLTER_ALLOW_OPEN_MODE=1 \
+      ghcr.io/rolter-ai/rolter:latest
     ```
 
     The default single-container command is `rolter easy-up`: gateway on port 4000 and the dashboard on port 4001. It also includes the deterministic `fake-llm` route, so no provider credential or config file is needed for the first request.
+
+    <Note>
+      The image binds every interface inside the container so that the published ports reach it. With no `ROLTER_ADMIN_TOKEN` the dashboard and management API accept every request as superadmin, so the container refuses to start until `-e ROLTER_ALLOW_OPEN_MODE=1` acknowledges that. The `127.0.0.1:` prefix on each `-p` keeps both ports on your own machine. To serve other hosts, drop the acknowledgement and pass `-e ROLTER_ADMIN_TOKEN=$(openssl rand -hex 32)` instead.
+    </Note>
 
   </Step>
   <Step title="Use a real provider (optional)">
@@ -34,7 +40,8 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
 
     ```bash
     cp rolter.example.toml rolter.toml
-    docker run --rm -p 4000:4000 -p 4001:4001 \
+    docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+      -e ROLTER_ALLOW_OPEN_MODE=1 \
       -e OPENAI_API_KEY \
       -v "$PWD/rolter.toml:/app/rolter.toml" \
       ghcr.io/rolter-ai/rolter:latest

@@ -83,23 +83,46 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
   </Step>
 </Steps>
 
+## Run the single image
+
+The published image runs `rolter easy-up` by default: the gateway, the control plane and the dashboard in one container, answering on the built-in `fake-llm` model with no config file and no database.
+
+```bash
+docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+  -e ROLTER_ALLOW_OPEN_MODE=1 \
+  ghcr.io/rolter-ai/rolter:latest
+```
+
+The image sets `ROLTER_HOST=0.0.0.0` and `ROLTER_CONTROL_HOST=0.0.0.0`. Inside a container that is required: a published port forwards to the container's network interface, never to its loopback, so a loopback bind answers nothing from the host.
+
+Binding every interface with no `ROLTER_ADMIN_TOKEN` would serve the management API to anyone who can reach it, so the container refuses to start in that state until it is acknowledged:
+
+| You pass                         | What happens                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| nothing                          | Refuses to start and says why.                                                                                                 |
+| `-e ROLTER_ALLOW_OPEN_MODE=1`    | Starts with an unauthenticated control plane and a warning banner. Keep the ports on loopback with `-p 127.0.0.1:…`, as above. |
+| `-e ROLTER_ADMIN_TOKEN=<secret>` | Starts with the management API closed behind the token. Use this for anything other hosts can reach.                           |
+
+Generate a token with `openssl rand -hex 32`.
+
 ## Run just the gateway
 
-If you want to run only the gateway — without the control plane or any backing stores — you can use the published image directly with a `rolter.toml` config file. This is useful for quick tests or for edge deployments where you manage external databases separately.
+If you want to run only the gateway, without the control plane or any backing stores, override the command and mount a `rolter.toml`. This is useful for quick tests or for edge deployments where you manage external databases separately.
 
 ```bash
 docker run --rm -p 4000:4000 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   -v "$PWD/rolter.toml:/app/rolter.toml" \
-  ghcr.io/rolter-ai/rolter:latest
+  ghcr.io/rolter-ai/rolter:latest rolter-gateway --config /app/rolter.toml
 ```
 
-Mount your local `rolter.toml` into the container at `/app/rolter.toml`. The gateway reads provider credentials from the environment variables you inject, keeping secrets out of the config file.
+Mount your local `rolter.toml` into the container at `/app/rolter.toml`. The gateway reads provider credentials from the environment variables you inject, keeping secrets out of the config file. Its clients authenticate with the virtual keys in that file.
 
-To run the control plane instead of the gateway, override the entrypoint:
+To run the control plane instead of the gateway, override the command with `rolter-control`. It follows the same rule as the single image, so give it an admin token:
 
 ```bash
 docker run --rm -p 4001:4001 \
+  -e ROLTER_ADMIN_TOKEN=$ROLTER_ADMIN_TOKEN \
   ghcr.io/rolter-ai/rolter:latest rolter-control
 ```
 
@@ -113,10 +136,9 @@ Both binaries and the compiled dashboard UI are packaged into a single slim Debi
 docker build -f docker/Dockerfile -t rolter:dev .
 ```
 
-```bash Run (gateway)
-docker run --rm -p 4000:4000 \
-  -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -v "$PWD/rolter.toml:/app/rolter.toml" \
+```bash Run (single image)
+docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+  -e ROLTER_ALLOW_OPEN_MODE=1 \
   rolter:dev
 ```
 

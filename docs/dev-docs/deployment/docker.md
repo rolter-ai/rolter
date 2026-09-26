@@ -41,8 +41,23 @@ easy-up`, so one image serves the gateway and dashboard with the built-in
 
 ```bash
 docker build -f docker/Dockerfile -t rolter:dev .
-docker run --rm -p 4000:4000 -p 4001:4001 rolter:dev
+docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+  -e ROLTER_ALLOW_OPEN_MODE=1 rolter:dev
 ```
+
+The image sets `ROLTER_HOST=0.0.0.0` (read by `easy-up` and `rolter-gateway`)
+and `ROLTER_CONTROL_HOST=0.0.0.0` (read by `rolter-control`). A published port
+forwards to the container's own interface and never to its loopback, so the
+binaries' loopback defaults would answer nothing from the host (#1891).
+
+That bind does not reopen #970. With no `ROLTER_ADMIN_TOKEN`, `easy-up` refuses
+a non-loopback host before it starts anything, and the control plane refuses it
+again on its own, unless `ROLTER_ALLOW_OPEN_MODE=1` acknowledges it. The
+`127.0.0.1:` prefix keeps an acknowledged open container on the developer's
+machine; anything other hosts reach gets `-e ROLTER_ADMIN_TOKEN=...` instead.
+`docker/smoke/image-smoke.sh` checks all three states through published ports:
+it runs in the `compose smoke` job on every PR and in the release workflow's
+`smoke image` job against each built architecture.
 
 Then open http://localhost:4001 and verify the data plane with:
 
@@ -57,7 +72,7 @@ Override the command to run just the gateway or control plane:
 
 ```bash
 docker run --rm -p 4000:4000 rolter:dev rolter-gateway --config /app/rolter.toml
-docker run --rm -p 4001:4001 rolter:dev rolter-control
+docker run --rm -p 4001:4001 -e ROLTER_ADMIN_TOKEN=... rolter:dev rolter-control
 ```
 
 ## Published images

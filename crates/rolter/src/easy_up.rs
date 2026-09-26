@@ -38,8 +38,14 @@ pub struct EasyUpArgs {
     /// default: `easy-up` is the zero-credential local path, and the control
     /// plane it starts is unauthenticated unless `--admin-token` is set, which
     /// must not reach a public interface by omission (#970). Pass
-    /// `--host 0.0.0.0` with an admin token to serve a network
-    #[arg(long, default_value = "127.0.0.1")]
+    /// `--host 0.0.0.0` with an admin token to serve a network.
+    ///
+    /// Read from `ROLTER_HOST` when the flag is absent, the same variable the
+    /// gateway binds from. The published image sets it to `0.0.0.0`, because a
+    /// container's loopback is unreachable through a published port (#1891);
+    /// a non-loopback host with no admin token still refuses to start unless
+    /// `ROLTER_ALLOW_OPEN_MODE` acknowledges it
+    #[arg(long, env = "ROLTER_HOST", default_value = "127.0.0.1")]
     pub host: String,
     /// gateway (data-plane) port
     #[arg(long, env = "ROLTER_PORT", default_value_t = 4000)]
@@ -214,10 +220,49 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+/// Refuse the one bind the control plane would refuse anyway: a host that is
+/// not loopback, no admin token, and no acknowledgement (#970).
+///
+/// The control plane enforces this itself. Checking it here as well stops
+/// `easy-up` before it writes a config, seeds a database or prints a `try it`
+/// command that cannot work, and lets the refusal name the container remedy.
+/// The published image binds `0.0.0.0` (#1891), and there "bind loopback", the
+/// control plane's own advice, is what makes the container unreachable.
+fn refuse_unacknowledged_open_mode(args: &EasyUpArgs) -> anyhow::Result<()> {
+    let token_set = args
+        .admin_token
+        .as_deref()
+        .is_some_and(|token| !token.trim().is_empty());
+    if token_set || args.allow_open_mode {
+        return Ok(());
+    }
+    // a host that is not an ip literal is left for the listeners to reject
+    // with their own error; there is nothing to decide about it here
+    let Ok(ip) = args.host.parse::<std::net::IpAddr>() else {
+        return Ok(());
+    };
+    if ip.is_loopback() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to start: easy-up is set to bind {host}, which is not a loopback address, \
+         and no ROLTER_ADMIN_TOKEN is set, so the management API on port {control} would \
+         accept every request from off this machine as superadmin. Set ROLTER_ADMIN_TOKEN to \
+         close it. For a local-only container, acknowledge the open control plane with \
+         `-e ROLTER_ALLOW_OPEN_MODE=1` and publish the ports on loopback only \
+         (`-p 127.0.0.1:{gateway}:{gateway} -p 127.0.0.1:{control}:{control}`). Outside a \
+         container, unset ROLTER_HOST or pass --host 127.0.0.1",
+        host = args.host,
+        gateway = args.gateway_port,
+        control = args.control_port,
+    )
+}
+
 /// Run `easy-up` to completion: bootstrap config, optionally migrate+seed the
 /// database, print a startup summary, then supervise the control plane and
 /// gateway together.
 pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
+    refuse_unacknowledged_open_mode(&args)?;
     let created = ensure_config(&args.config)?;
     if created {
         tracing::info!(config = %args.config.display(), "created config from bundled example");
@@ -556,9 +601,53 @@ models = ["fake-llm"]
 
     #[test]
     fn gateway_polls_snapshot_only_in_db_mode() {
-        let args = EasyUpArgs {
+        let args = args_on("127.0.0.1");
+        assert!(gateway_args(&args, false).snapshot_url.is_none());
+        assert_eq!(
+            gateway_args(&args, true).snapshot_url.as_deref(),
+            Some("http://127.0.0.1:4001/internal/snapshot")
+        );
+    }
+
+    /// Sets or clears one environment variable for the life of the guard and
+    /// puts the previous value back on drop, panic included. Hold
+    /// [`env_lock`] around it: the variable is process-wide.
+    struct EnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVar {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var_os(key);
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        easy_up: EasyUpArgs,
+    }
+
+    /// Args as `easy-up` would parse them with no environment, bound to `host`.
+    fn args_on(host: &str) -> EasyUpArgs {
+        EasyUpArgs {
             config: PathBuf::from("rolter.toml"),
-            host: "127.0.0.1".to_string(),
+            host: host.to_string(),
             gateway_port: 4000,
             control_port: 4001,
             ui_dir: PathBuf::from("ui/dist"),
@@ -574,26 +663,20 @@ models = ["fake-llm"]
             admin_password: None,
             #[cfg(feature = "postgres")]
             import: None,
-        };
-        assert!(gateway_args(&args, false).snapshot_url.is_none());
-        assert_eq!(
-            gateway_args(&args, true).snapshot_url.as_deref(),
-            Some("http://127.0.0.1:4001/internal/snapshot")
-        );
+        }
     }
 
     #[test]
     fn easy_up_binds_loopback_by_default() {
         // easy-up runs with no admin token, so its default bind is the only
         // thing keeping an unauthenticated management api off the network
-        // (#970). clap owns the default, so assert it through the parser
+        // (#970). clap owns the default, so assert it through the parser —
+        // with the variables it falls back to cleared, since a developer who
+        // sourced .env.example has ROLTER_HOST=0.0.0.0 exported
         use clap::Parser;
-
-        #[derive(Parser)]
-        struct Cli {
-            #[command(flatten)]
-            easy_up: EasyUpArgs,
-        }
+        let _guard = env_lock();
+        let _host = EnvVar::set("ROLTER_HOST", None);
+        let _open = EnvVar::set("ROLTER_ALLOW_OPEN_MODE", None);
 
         let cli = Cli::parse_from(["rolter"]);
         assert_eq!(cli.easy_up.host, "127.0.0.1");
@@ -604,31 +687,70 @@ models = ["fake-llm"]
     }
 
     #[test]
+    fn the_host_falls_back_to_rolter_host_and_the_flag_wins_over_it() {
+        // the published image binds every interface through ROLTER_HOST, since
+        // a container's loopback is unreachable through a published port
+        // (#1891). an explicit --host still overrides the image's default
+        use clap::Parser;
+        let _guard = env_lock();
+        let _host = EnvVar::set("ROLTER_HOST", Some("0.0.0.0"));
+
+        let cli = Cli::parse_from(["rolter"]);
+        assert_eq!(cli.easy_up.host, "0.0.0.0");
+        let cli = Cli::parse_from(["rolter", "--host", "127.0.0.1"]);
+        assert_eq!(cli.easy_up.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn an_open_control_plane_off_loopback_is_refused_before_anything_starts() {
+        // the image sets ROLTER_HOST=0.0.0.0, so this is what a bare
+        // `docker run -p ...` meets: it must still refuse rather than serve a
+        // superadmin api to the network (#970), and say how to proceed
+        let err = refuse_unacknowledged_open_mode(&args_on("0.0.0.0"))
+            .expect_err("no token and no acknowledgement on 0.0.0.0");
+        let message = err.to_string();
+        assert!(message.contains("ROLTER_ADMIN_TOKEN"), "{message}");
+        assert!(message.contains("ROLTER_ALLOW_OPEN_MODE=1"), "{message}");
+        assert!(message.contains("-p 127.0.0.1:4001:4001"), "{message}");
+
+        for host in ["10.0.0.5", "::"] {
+            assert!(
+                refuse_unacknowledged_open_mode(&args_on(host)).is_err(),
+                "{host}"
+            );
+        }
+        // a blank token is no token, exactly as the control plane reads it
+        let mut blank = args_on("0.0.0.0");
+        blank.admin_token = Some("  ".to_string());
+        assert!(refuse_unacknowledged_open_mode(&blank).is_err());
+    }
+
+    #[test]
+    fn a_token_an_acknowledgement_or_loopback_lets_easy_up_start() {
+        for host in ["127.0.0.1", "::1"] {
+            assert!(
+                refuse_unacknowledged_open_mode(&args_on(host)).is_ok(),
+                "{host}"
+            );
+        }
+        let mut closed = args_on("0.0.0.0");
+        closed.admin_token = Some("secret".to_string());
+        assert!(refuse_unacknowledged_open_mode(&closed).is_ok());
+
+        let mut acknowledged = args_on("0.0.0.0");
+        acknowledged.allow_open_mode = true;
+        assert!(refuse_unacknowledged_open_mode(&acknowledged).is_ok());
+    }
+
+    #[test]
     fn the_open_mode_acknowledgement_reaches_the_control_plane() {
         // control_args reads the pool keys out of the environment, so this must
         // not run beside the test that installs one of them
         let _guard = env_lock();
         // easy-up builds control args by hand, so a flag that is parsed but not
         // forwarded would silently refuse to start on --host 0.0.0.0
-        let mut args = EasyUpArgs {
-            config: PathBuf::from("rolter.toml"),
-            host: "0.0.0.0".to_string(),
-            gateway_port: 4000,
-            control_port: 4001,
-            ui_dir: PathBuf::from("ui/dist"),
-            redis_url: None,
-            admin_token: None,
-            allow_open_mode: true,
-            clickhouse_url: None,
-            #[cfg(feature = "postgres")]
-            database_url: None,
-            #[cfg(feature = "postgres")]
-            admin_email: None,
-            #[cfg(feature = "postgres")]
-            admin_password: None,
-            #[cfg(feature = "postgres")]
-            import: None,
-        };
+        let mut args = args_on("0.0.0.0");
+        args.allow_open_mode = true;
         assert!(control_args(&args, None).allow_open_mode);
         args.allow_open_mode = false;
         assert!(!control_args(&args, None).allow_open_mode);
@@ -663,12 +785,6 @@ models = ["fake-llm"]
         // an unwired field is silently ignored rather than failing to compile
         // once a default exists. this is the #805 failure mode, for #1052.
         use clap::Parser;
-
-        #[derive(Parser)]
-        struct Cli {
-            #[command(flatten)]
-            easy_up: EasyUpArgs,
-        }
 
         let key = "ROLTER_DB_MAX_CONNECTIONS";
         std::env::set_var(key, "37");
