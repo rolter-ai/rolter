@@ -6,6 +6,7 @@ import {
   Harness,
   Toasted,
   clickWhenEnabled,
+  expectAllowed,
   expectClosesWithoutPrompting,
   expectRefused,
   expectSheetClosed,
@@ -14,10 +15,12 @@ import {
   json,
   pickOption,
   pending,
+  recording,
   routes,
   scoped,
   sheet,
   answerDiscardPrompt,
+  type Recorder,
 } from "./story-harness";
 import type { BudgetRow, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -324,6 +327,138 @@ export const CreatesARateLimit: Story = {
   },
 };
 
+/**
+ * The edits #1285 exists for. Each answers a PATCH with the row it would have
+ * written and records what left, so a story can assert the *body*: an edit
+ * that sent every field, or that went out as a delete and a create, would
+ * pass any assertion about the card that comes back.
+ */
+function editable(): Recorder {
+  return recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PATCH" && url.includes("/budgets/")) {
+        return json({ ...BUDGETS[0], limit_usd: "750.0000" });
+      }
+      if (init?.method === "PATCH") return json({ ...RATE_LIMITS[0], rpm: null });
+      if (url.includes("/virtual-keys")) return json(KEYS);
+      if (url.includes("/budgets")) return json(BUDGETS);
+      return json(RATE_LIMITS);
+    }),
+  );
+}
+
+let budgetEdit: Recorder;
+export const EditsABudgetInPlace: Story = {
+  render: () => {
+    budgetEdit = editable();
+    return (
+      <Harness fetchStub={budgetEdit.stub}>
+        <Toasted>
+          <Limits />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit the 30d budget/);
+    const form = sheet();
+    await expect(within(form).getByRole("heading", { name: "Edit budget" })).toBeVisible();
+    // the form opens on the row as it stands, not on the create defaults
+    await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(500);
+    await expect(within(form).getByLabelText("Period")).toHaveValue("30d");
+    // the workaround the sheet used to advertise is gone
+    await expect(within(form).queryByText(/delete and recreate/i)).toBeNull();
+    // nothing moved yet, so there is nothing to save
+    await expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+
+    const limit = within(form).getByLabelText("Limit (USD)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "750");
+    await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    // only the field that moved goes on the wire, to the row's own id
+    await expect(await budgetEdit.expectSentBody("PATCH", "/budgets/budget-1")).toEqual({
+      limit_usd: "750",
+    });
+    await expectToast(canvasElement, /budget updated/i);
+    await expectSheetClosed();
+    budgetEdit.expectNotSent("DELETE", "/budgets/");
+    budgetEdit.expectNotSent("POST", "/budgets");
+  },
+};
+
+let overrideCleared: Recorder;
+/**
+ * Dropping an override is an edit of its own: the budget goes back to
+ * inheriting the deployment setting, which the API spells `null`. An editor
+ * that omitted the field instead would leave the override in force.
+ */
+export const ClearingAnUnpricedOverrideSendsNull: Story = {
+  render: () => {
+    overrideCleared = editable();
+    return (
+      <Harness fetchStub={overrideCleared.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit the 1d budget/);
+    const picker = within(sheet()).getByLabelText("Unpriced traffic");
+    await expect(picker).toHaveValue("Refuse");
+    await pickOption(picker, "Inherit deployment setting");
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Save" }));
+
+    await expect(await overrideCleared.expectSentBody("PATCH", "/budgets/budget-2")).toEqual({
+      unpriced_policy: null,
+    });
+  },
+};
+
+export const AnUntouchedBudgetEditClosesWithoutPrompting: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit the 30d budget/);
+    await expectClosesWithoutPrompting();
+  },
+};
+
+let rateLimitEdit: Recorder;
+/**
+ * Blanking a cap lifts it. The field is blank for "uncapped" on both forms, so
+ * on an edit a cap that was set and is now blank has to leave as `null`, while
+ * the cap nobody touched stays out of the body.
+ */
+export const EditsARateLimitInPlace: Story = {
+  render: () => {
+    rateLimitEdit = editable();
+    return (
+      <Harness fetchStub={rateLimitEdit.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    const form = sheet();
+    await expect(within(form).getByRole("heading", { name: "Edit rate limit" })).toBeVisible();
+    const rpm = within(form).getByLabelText("Requests per minute (optional)");
+    await expect(rpm).toHaveValue(600);
+    await userEvent.clear(rpm);
+    await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await expect(await rateLimitEdit.expectSentBody("PATCH", "/rate-limits/rl-1")).toEqual({
+      rpm: null,
+    });
+    await expectSheetClosed();
+  },
+};
+
 // the toolbars and budget headers wrap instead of pushing the page sideways (#1242)
 export const Mobile: Story = {
   ...atMobile,
@@ -353,6 +488,21 @@ export const RefusedToAViewer: Story = {
     await expectRefused(canvasElement, "Add rate limit");
     await expectRefused(canvasElement, /Delete the 30d budget/);
     await expectRefused(canvasElement, /Delete the 600 rpm · 150000 tpm rate limit/);
+    // editing in place is `update`, a capability of its own (#1285)
+    await expectRefused(canvasElement, /Edit the 30d budget/);
+    await expectRefused(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+  },
+};
+
+export const EditableByAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="admin">
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, /Edit the 30d budget/);
+    await expectAllowed(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
   },
 };
 
@@ -365,5 +515,6 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add budget");
     await expectRefused(canvasElement, "Add rate limit");
+    await expectRefused(canvasElement, /Edit the 30d budget/);
   },
 };
