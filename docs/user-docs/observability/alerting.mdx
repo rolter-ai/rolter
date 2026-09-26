@@ -145,6 +145,10 @@ transition the endpoint refused looks like this, with `rule` left out:
 }
 ```
 
+In the dashboard, the toast after **Evaluate now** says what became of a
+transition: delivered with the endpoint's status, failed with the reason, or
+recorded without delivery. A failed delivery turns the toast red.
+
 A failed evaluation sets the rule to `error` and comes back as an error toast
 carrying the same reason as `last_error`, which makes this the quickest way to
 check that ClickHouse is reachable from the control plane.
@@ -266,9 +270,11 @@ The server also returns `state`, `last_value`, `last_evaluated_at` and
 
 The **Add rule** sheet starts from `error_rate`, a threshold of `0.05` and a
 300-second window, with the first channel selected; pick **none (record only)**
-for a rule without one. The rule is created enabled. Each rule card shows its
+for a rule without one. It will not save a window outside 60 to 86400 seconds.
+The rule is created enabled. Each rule card shows its
 state, signal, threshold, window, last value, when it was last evaluated and
-its channel, with an enable switch, **Evaluate now** and a delete button.
+its channel, with an enable switch, **Evaluate now** and a delete button. A
+rule in `error` shows its `last_error` under the figures.
 
 Some starting points:
 

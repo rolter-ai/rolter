@@ -44,15 +44,32 @@ import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // `[label, tint]`: the label colour is the -text half of the hue, because a
-// state pill is a glyph on a tint rather than a shape (#1181)
+// state pill is a glyph on a tint rather than a shape (#1181). a rule is
+// `unknown`, `ok`, `firing` or `error` (its evaluation failed); a history row
+// is `firing` or `resolved`
 const STATE_TONE: Record<string, [string, string]> = {
   ok: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
+  resolved: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
   firing: ["var(--status-danger-text)", "var(--red-tint)"],
-  pending: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
+  error: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
   unknown: ["var(--text-secondary)", "var(--surface-subtle)"],
 };
 
 const stateTone = (state: string) => STATE_TONE[state] ?? STATE_TONE.unknown;
+
+// a `failed` delivery is an alert nobody received, so it reads as danger; a
+// `skipped` one is a rule with no live channel, which is a choice, not a fault
+const DELIVERY_TONE: Record<string, string> = {
+  delivered: "var(--status-success-text)",
+  failed: "var(--status-danger-text)",
+  skipped: "var(--text-secondary)",
+};
+
+const deliveryTone = (status: string) => DELIVERY_TONE[status] ?? DELIVERY_TONE.skipped;
+
+// the bounds `validate_rule` enforces on `window_secs`
+const WINDOW_MIN_SECS = 60;
+const WINDOW_MAX_SECS = 86_400;
 
 // ---------------------------------------------------------------------------
 // channels: webhook destinations alerts are delivered to
@@ -113,7 +130,7 @@ function AlertChannelsScreen() {
           className="ml-auto"
           onClick={() => setAddOpen(true)}
         >
-          + Add channel
+          + {t("pages.alerting.channels.add")}
         </GatedButton>
       </Toolbar>
 
@@ -286,14 +303,14 @@ function AddChannelDialog({
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.channels.fieldName")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-slack" />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-webhook" />
         </Field>
         <Field label={t("pages.alerting.channels.fieldEndpoint")}>
           <Input
             className="font-mono"
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
-            placeholder="https://hooks.slack.com/services/…"
+            placeholder="https://alerts.example.com/rolter"
           />
         </Field>
         <Field label={t("pages.alerting.channels.fieldSecret")}>
@@ -355,11 +372,24 @@ function AlertRulesScreen() {
   });
   const evaluate = useMutation({
     mutationFn: evaluateAlertRule,
-    onSuccess: (_result, id) => {
+    onSuccess: (result, id) => {
       invalidate();
+      // an evaluation that was a transition wrote a history row
+      void queryClient.invalidateQueries({ queryKey: ["alert-history"] });
+      // a transition says what became of it: a delivery that failed is an
+      // alert nobody received, which a green "evaluated" toast would hide
+      const n = result.notification;
+      const vars = { state: n?.state, detail: n?.detail ?? "—" };
       toast.push({
-        tone: "success",
+        tone: n?.delivery_status === "failed" ? "error" : "success",
         title: t("pages.alerting.rules.evaluated", { name: ruleName(id) }),
+        detail: !n
+          ? undefined
+          : n.delivery_status === "delivered"
+            ? t("pages.alerting.rules.reportedDelivered", vars)
+            : n.delivery_status === "failed"
+              ? t("pages.alerting.rules.reportedFailed", vars)
+              : t("pages.alerting.rules.reportedSkipped", vars),
       });
     },
     onError: (error, id) => {
@@ -391,7 +421,7 @@ function AlertRulesScreen() {
           className="ml-auto"
           onClick={() => setAddOpen(true)}
         >
-          + Add rule
+          + {t("pages.alerting.rules.add")}
         </GatedButton>
       </Toolbar>
 
@@ -592,7 +622,7 @@ function AddRuleDialog({
         name,
         signal,
         threshold: Number(threshold),
-        window_secs: Number(windowSecs) || 300,
+        window_secs: Number(windowSecs),
         channel_id: channelId || null,
         enabled: true,
       }),
@@ -610,6 +640,18 @@ function AddRuleDialog({
         detail: errorDetail(error),
       });
     },
+  });
+
+  // the same bounds the API checks, so a window the form accepts is never a 400
+  const windowNumber = Number(windowSecs);
+  const windowValid =
+    windowSecs.trim() !== "" &&
+    Number.isInteger(windowNumber) &&
+    windowNumber >= WINDOW_MIN_SECS &&
+    windowNumber <= WINDOW_MAX_SECS;
+  const windowRange = t("pages.alerting.rules.windowRange", {
+    min: WINDOW_MIN_SECS,
+    max: WINDOW_MAX_SECS,
   });
 
   // the draft is seeded with defaults rather than blanks, so "dirty" is a diff
@@ -631,7 +673,7 @@ function AddRuleDialog({
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       saveLabel={t("common.create")}
-      canSave={Boolean(name.trim() && threshold.trim())}
+      canSave={Boolean(name.trim() && threshold.trim() && windowValid)}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
@@ -659,10 +701,16 @@ function AddRuleDialog({
               onChange={(e) => setThreshold(e.target.value)}
             />
           </Field>
-          <Field label={t("pages.alerting.rules.fieldWindow")}>
+          <Field
+            label={t("pages.alerting.rules.fieldWindow")}
+            hint={windowValid ? windowRange : undefined}
+            error={windowValid ? undefined : windowRange}
+          >
             <Input
               type="number"
-              min={30}
+              min={WINDOW_MIN_SECS}
+              max={WINDOW_MAX_SECS}
+              step={1}
               value={windowSecs}
               onChange={(e) => setWindowSecs(e.target.value)}
             />
@@ -684,7 +732,7 @@ function AddRuleDialog({
 }
 
 // ---------------------------------------------------------------------------
-// history: every notification the evaluator delivered (or failed to)
+// history: every state change a rule recorded, with what became of its delivery
 
 const HISTORY_GRID = "150px 1.4fr 110px 130px 2fr";
 
@@ -754,14 +802,7 @@ function AlertHistoryScreen() {
                 <Pill color={tone[0]} tint={tone[1]}>
                   {n.state}
                 </Pill>
-                <Pill
-                  color={
-                    n.delivery_status === "delivered"
-                      ? "var(--status-success)"
-                      : "var(--status-warning)"
-                  }
-                  tint="var(--surface-subtle)"
-                >
+                <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
                   {n.delivery_status}
                 </Pill>
                 <span className="truncate text-xs text-muted-foreground">{n.detail ?? "—"}</span>

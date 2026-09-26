@@ -1051,7 +1051,7 @@
     "alerting": {
       "channels": {
         "emptyTitle": "No channels yet",
-        "emptyBody": "Add a webhook destination — Slack, PagerDuty, email or a custom endpoint — so rules have somewhere to deliver.",
+        "emptyBody": "Add a webhook endpoint so rules have somewhere to deliver. Each time a rule fires or resolves, Rolter POSTs it there as JSON.",
         "add": "Add channel",
         "toggleAria": "Enable {{name}}",
         "deleteAria": "Delete channel {{name}}",
@@ -1065,12 +1065,15 @@
       },
       "rules": {
         "emptyTitle": "No alert rules",
-        "emptyBody": "Add a threshold or anomaly rule and Rolter evaluates it against gateway analytics every minute.",
+        "emptyBody": "Add a threshold rule and Rolter evaluates it against gateway analytics every minute, firing when the signal reaches the threshold.",
         "emptyBodyNoChannel": "Add a channel first, then a rule that delivers to it. Rules without a channel evaluate but never notify.",
         "add": "Add rule",
         "toggleAria": "Enable {{name}}",
         "evaluated": "Rule {{name}} evaluated",
         "evaluateFailed": "Could not evaluate {{name}}",
+        "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
+        "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}.",
+        "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
         "deleteAria": "Delete rule {{name}}",
         "evaluateAria": "Evaluate rule {{name}} now",
         "statSignal": "Signal",
@@ -1082,20 +1085,21 @@
         "statNever": "never",
         "evaluateNow": "Evaluate now",
         "sheetTitle": "Add rule",
-        "sheetSubtitle": "Fires when the signal crosses the threshold within the window.",
+        "sheetSubtitle": "Fires when the signal reaches the threshold over the window.",
         "fieldName": "Name",
         "fieldSignal": "Signal",
         "fieldThreshold": "Threshold",
         "fieldWindow": "Window (seconds)",
+        "windowRange": "From {{min}} to {{max}} seconds.",
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
         "namePlaceholder": "high error rate"
       },
       "history": {
-        "emptyTitle": "No alerts delivered yet",
-        "emptyBody": "Every notification a rule sends to a channel is recorded here, newest first.",
+        "emptyTitle": "No alert transitions yet",
+        "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. Newest first.",
         "emptyAction": "Open alert rules",
-        "colSent": "Sent",
+        "colSent": "Recorded",
         "colRule": "Rule",
         "colState": "State",
         "colDelivery": "Delivery",
@@ -1106,15 +1110,15 @@
         "channelBody": "Alerts routed to this webhook stop being delivered, and every rule pointing at it loses its destination.",
         "channelConfirm": "Delete channel",
         "ruleTitle": "Delete rule {{name}}?",
-        "ruleBody": "The gateway stops evaluating this rule, so the condition it watches goes unwatched.",
+        "ruleBody": "The control plane stops evaluating this rule, and its alert history is deleted with it.",
         "ruleConfirm": "Delete rule"
       },
       "channelSummary_one": "{{count}} channel · webhook destinations for alert delivery",
       "channelSummary_other": "{{count}} channels · webhook destinations for alert delivery",
       "ruleSummary_one": "{{count}} rule · evaluated every 60s against gateway analytics",
       "ruleSummary_other": "{{count}} rules · evaluated every 60s against gateway analytics",
-      "historySummary_one": "{{count}} notification · newest first",
-      "historySummary_other": "{{count}} notifications · newest first"
+      "historySummary_one": "{{count}} transition · newest first",
+      "historySummary_other": "{{count}} transitions · newest first"
     },
     "connectors": {
       "collectorConfig": {
@@ -2852,15 +2856,15 @@
     },
     "alerting-channels": {
       "title": "Channels",
-      "subtitle": "Slack, PagerDuty, email, and webhook destinations."
+      "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
       "title": "Rules",
-      "subtitle": "Threshold and anomaly rules that fire alerts."
+      "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {
       "title": "Alert History",
-      "subtitle": "Every alert Rolter has delivered."
+      "subtitle": "Every alert state change, and whether it reached its channel."
     },
     "governance": {
       "title": "Governance",
