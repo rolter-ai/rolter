@@ -459,6 +459,61 @@ export const EditsARateLimitInPlace: Story = {
   },
 };
 
+let refusedEdit: Recorder;
+/**
+ * The control plane refuses an edit. An edit meets refusals a create never did,
+ * a cap below 1 among them, and every other edit story answers the PATCH with a
+ * 200. So this one pins the other path: the sheet stays open on the draft with
+ * the server's own reason, the failure is announced, and nothing claims the
+ * limit was updated.
+ */
+export const ARefusedEditKeepsTheSheetOpen: Story = {
+  render: () => {
+    refusedEdit = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "PATCH") {
+          return json(
+            { error: { message: "config error: tpm must be at least 1, or null to lift the cap" } },
+            400,
+          );
+        }
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={refusedEdit.stub}>
+        <Toasted>
+          <Limits />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    const form = sheet();
+    const rpm = within(form).getByLabelText("Requests per minute (optional)");
+    const tpm = within(form).getByLabelText("Tokens per minute (optional)");
+    await userEvent.clear(rpm);
+    await userEvent.clear(tpm);
+    await userEvent.type(tpm, "0");
+    await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await expect(await refusedEdit.expectSentBody("PATCH", "/rate-limits/rl-1")).toEqual({
+      rpm: null,
+      tpm: 0,
+    });
+    // the reason is shown in the sheet, which still holds the draft
+    await waitFor(() => expect(within(form).getByText(/tpm must be at least 1/)).toBeVisible());
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(tpm).toHaveValue(0);
+    await expectToast(canvasElement, /could not save the rate limit/i, "error");
+    await expect(within(canvasElement).queryByText(/rate limit updated/i)).toBeNull();
+  },
+};
+
 // the toolbars and budget headers wrap instead of pushing the page sideways (#1242)
 export const Mobile: Story = {
   ...atMobile,

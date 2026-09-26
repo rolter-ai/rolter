@@ -653,9 +653,11 @@ function BudgetSheet({
     >
       <div className="space-y-3">
         <Field label={t("pages.limits.budgetLimitLabel")}>
+          {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
             min={0}
+            max={99_999_999.99}
             step="0.01"
             value={limitUsd}
             onChange={(e) => setLimitUsd(e.target.value)}
@@ -782,9 +784,11 @@ function RateLimitSheet({
     >
       <div className="space-y-3">
         <Field label={t("pages.limits.rpmLabel")}>
+          {/* the gateway reads a cap below 1 as none, so the server refuses one */}
           <Input
             type="number"
-            min={0}
+            min={1}
+            step={1}
             value={rpm}
             onChange={(e) => setRpm(e.target.value)}
             placeholder={t("pages.limits.uncapped")}
@@ -793,7 +797,8 @@ function RateLimitSheet({
         <Field label={t("pages.limits.tpmLabel")}>
           <Input
             type="number"
-            min={0}
+            min={1}
+            step={1}
             value={tpm}
             onChange={(e) => setTpm(e.target.value)}
             placeholder={t("pages.limits.uncapped")}
