@@ -210,7 +210,7 @@ export const RemovesAParam: Story = {
   render: () => <EditHarness />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click((await canvas.findAllByRole("button", { name: "Remove param" }))[0]);
+    await userEvent.click((await canvas.findAllByRole("button", { name: /remove param/i }))[0]);
     await expect(canvas.getAllByLabelText("Param name")).toHaveLength(2);
     await userEvent.click(canvas.getByRole("button", { name: "Save params" }));
     await waitFor(() => expect(canvas.getByTestId("saved")).not.toHaveTextContent("temperature"));

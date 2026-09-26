@@ -3269,6 +3269,7 @@
     "lockedToggle": "Locked — callers can't override; click to allow",
     "overridableToggle": "Overridable — callers may override; click to lock",
     "removeParam": "Remove param",
+    "removeParamNamed": "Remove param {{name}}",
     "addParam": "Add param",
     "unknownKeys": "Not a standard OpenAI/Anthropic param: {{keys}}. Saved as-is — check the spelling if unintended.",
     "policyTitle": "Override policy",
