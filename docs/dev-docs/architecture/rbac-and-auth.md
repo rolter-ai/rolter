@@ -158,6 +158,19 @@ rather than one a retry can clear. Both the Virtual Keys screen and the account'
 own key list label a `purpose = 'playground'` row, so a half-hour expiry reads as
 the design rather than as somebody's mistake.
 
+The mint answers as soon as the row is written, but a gateway only learns about
+the key on its next snapshot poll (`ROLTER_SNAPSHOT_POLL_SECS`, 5 by default),
+so the Playground's first `GET /gw/v1/models` with a fresh key answers `401`
+(#1853). The dashboard waits that out rather than treating it as a verdict:
+`awaitingMintedKey` in `ui/src/lib/gateway.ts` retries a minted key's `401`
+with doubling backoff for about two poll intervals (10 s), and only then falls
+back to the control plane's route list. A pasted key gets one attempt, and any
+status other than `401` falls back at once, since neither is something waiting
+can fix. The fallback drops the routes `/api/v1/config/problems` reports as
+omitted from the snapshot, and nothing is preselected from it until that list
+has answered, so the chat column cannot open on a route the gateway never
+received.
+
 Override either default with `server.require_auth`:
 
 | value           | behaviour on an empty key set               |

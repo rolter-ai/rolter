@@ -477,6 +477,29 @@ export function fetchConfigProblems(): Promise<string[]> {
   return getJson<{ problems: string[] }>("/api/v1/config/problems").then((r) => r.problems);
 }
 
+// the one line `RolterConfig::sanitize_for_snapshot` (crates/rolter-core/src/
+// config.rs) writes for a route it prunes. greedy, so a model name that itself
+// contains a quote still comes out whole
+const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot:/;
+
+/**
+ * The routes `/api/v1/config/problems` reports as left out of the gateway's
+ * snapshot, and so not served (#1853).
+ *
+ * The endpoint reports sentences rather than records, so this reads the one
+ * shape written for a pruned route and ignores every other line. A provider
+ * dropped for its own defect needs no line of its own here: a route left with
+ * no target on a known provider is pruned after it, and reported as such.
+ */
+export function unservedRoutes(problems: readonly string[] | undefined): Set<string> {
+  const routes = new Set<string>();
+  for (const problem of problems ?? []) {
+    const match = OMITTED_ROUTE.exec(problem);
+    if (match) routes.add(match[1]);
+  }
+  return routes;
+}
+
 /**
  * The whole deployment's configuration as an importable `rolter.toml` (#1082).
  *

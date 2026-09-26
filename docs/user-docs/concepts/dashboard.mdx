@@ -127,6 +127,10 @@ The Playground authenticates to the gateway like any other client, with a virtua
 - It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
 - It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
 
+A new key takes a few seconds to reach the gateway, which learns about keys on its next config poll (every 5 seconds by default, `ROLTER_SNAPSHOT_POLL_SECS`). Until then the model picker says it is waiting and keeps the built-in `fake-llm` selected, asking again with a growing pause for about ten seconds. Once the gateway accepts the key, the picker lists what the gateway serves and selects the first route in it.
+
+If the gateway never accepts the key, the picker falls back to the configured routes and says so. That list leaves out routes the control plane is not sending to the gateway (the **Providers** screen lists them as config entries not being served to gateways), says how many it left out, and opens on a route that is served. When rolter cannot tell which routes those are, it keeps `fake-llm` selected rather than guess.
+
 A project with no routes cannot mint one: there would be nothing for the key to address, so the screen says so instead. Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
 
 To test one particular key on purpose — a customer's, or one you are about to rotate — open **Use a specific key** and paste it. A pasted key is used exactly as given, with no expiry of rolter's choosing, until you replace it or renew the session key.
