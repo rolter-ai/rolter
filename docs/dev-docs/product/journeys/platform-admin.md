@@ -20,12 +20,19 @@ version reaching the gateway after each change.
 
 The first fork, decided by one question: **who will use it, and from where?**
 
-| branch | when                                             | shape                                                                                           |
-| ------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| A0-a   | "I want to see it work" — one person, one laptop | `rolter easy-up`: no database, no keys, loopback only                                           |
-| A0-b   | a team on one host                               | `docker compose -f docker/docker-compose.yml up -d`: Postgres, Redis, ClickHouse, both planes   |
-| A0-c   | production                                       | Helm (`charts/rolter`), managed Postgres/Redis/ClickHouse, TLS in front, secrets from a manager |
-| A0-d   | no internet at all                               | A0-b or A0-c from mirrors ([air-gapped](../../deployment/air-gapped.md))                        |
+| branch | when                                             | shape                                                                                                                     |
+| ------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| A0-a   | "I want to see it work" — one person, one laptop | `rolter easy-up`: no database, no keys, loopback only                                                                     |
+| A0-b   | a team on one host                               | `docker compose -f docker/docker-compose.yml up -d`: Postgres, Redis, ClickHouse, both planes (open by design, see below) |
+| A0-c   | production                                       | Helm (`charts/rolter`), managed Postgres/Redis/ClickHouse, TLS in front, secrets from a manager                           |
+| A0-d   | no internet at all                               | A0-b or A0-c from mirrors ([air-gapped](../../deployment/air-gapped.md))                                                  |
+
+`docker/docker-compose.yml` is the local stack and is open on purpose: the
+control plane binds every interface with `ROLTER_ALLOW_OPEN_MODE=1`, 4001 is
+published, no admin token is set, the file reads none of the A0.5 secrets, and
+its gateway serves the bundled `rolter.toml` instead of polling the control
+plane. So A0-b is a single-person trial until a compose shape for a shared host
+exists (#1890); a team goes to A0-c.
 
 ### A0-a — five minutes, no credentials
 
@@ -38,14 +45,14 @@ The first fork, decided by one question: **who will use it, and from where?**
 
 ### A0-b / A0-c — a real deployment
 
-| #     | step                                       | where                                                                              | expect                                                                        | status                                                   |
-| ----- | ------------------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------- |
-| A0.5  | generate the deployment secrets            | `rolter init` ([preflight](../../deployment/preflight-validation.md))              | admin token, KEK and both peppers written somewhere they outlive a restart    | works                                                    |
-| A0.6  | bring the stack up                         | `docker compose … up -d`, or `helm install`                                        | Postgres, Redis, ClickHouse healthy; migrations applied on control-plane boot | verified (compose); partial on constrained hosts — #1819 |
-| A0.7  | check the configuration before trusting it | `rolter check`                                                                     | no open mode on a non-loopback bind, KEK present, pepper present              | works                                                    |
-| A0.8  | create the first account                   | `rolter-seed --admin-email … --admin-password …`                                   | a superadmin that can sign in; the org, team and project `default` exist      | verified                                                 |
-| A0.9  | sign in and enrol a second factor          | dashboard sign-in, then **Settings → My Virtual Keys → Two-factor authentication** | TOTP enrolled, ten recovery codes shown once                                  | works                                                    |
-| A0.10 | confirm the planes agree                   | **Cluster Config**                                                                 | every gateway node live and converged on the current config version           | verified                                                 |
+| #     | step                                       | where                                                                              | expect                                                                                                                     | status                                                                                                                       |
+| ----- | ------------------------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| A0.5  | generate the deployment secrets            | `rolter init` ([preflight](../../deployment/preflight-validation.md))              | admin token, internal token, KEK and key pepper written somewhere they outlive a restart; the session pepper added by hand | partial — #1889 (no session pepper)                                                                                          |
+| A0.6  | bring the stack up                         | `docker compose … up -d`, or `helm install`                                        | Postgres, Redis, ClickHouse healthy; migrations applied on control-plane boot                                              | verified (compose datastores); partial on constrained hosts — #1819; the compose planes do not take the A0.5 secrets — #1890 |
+| A0.7  | check the configuration before trusting it | `rolter check`                                                                     | admin token, KEK and database URL present; a warning for a missing key pepper or a control plane on every interface        | partial — #1889 (the session pepper is not checked)                                                                          |
+| A0.8  | create the first account                   | `rolter-seed --admin-email … --admin-password …`                                   | a superadmin that can sign in; the org, team and project `default` exist                                                   | partial — #1897 (verified from a checkout; not in the image or package)                                                      |
+| A0.9  | sign in and enrol a second factor          | dashboard sign-in, then **Settings → My Virtual Keys → Two-factor authentication** | TOTP enrolled, ten recovery codes shown once                                                                               | works                                                                                                                        |
+| A0.10 | confirm the planes agree                   | **Cluster Config**                                                                 | every gateway node live and converged on the current config version                                                        | verified                                                                                                                     |
 
 ## A1 — decide how people sign in
 

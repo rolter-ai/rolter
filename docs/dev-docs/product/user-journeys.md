@@ -46,10 +46,12 @@ the first gap.
 Most people only ever need one of these. Every longer script is a branch off one
 of them.
 
-1. **Five minutes, no credentials.** `rolter easy-up`, open the dashboard, send a
-   Playground message to the built-in `fake-llm` model, open **LLM Logs** and see
-   the row. Proves the gateway, the dashboard and the log pipeline before a
-   single provider key exists. ([platform-admin A0-a](journeys/platform-admin.md#a0--choose-the-install-shape))
+1. **Five minutes, no credentials.** `rolter easy-up`, open the dashboard and
+   send a Playground message to the built-in `fake-llm` model. Proves the gateway
+   and the dashboard before a single provider key exists. Add
+   `--clickhouse-url` pointing at a ClickHouse that has rolter's schema
+   (`clickhouse/*.sql`) and **LLM Logs** shows the row too, which proves the log
+   pipeline. ([platform-admin A0-a](journeys/platform-admin.md#a0--choose-the-install-shape))
 2. **One hour to a team deployment.** Install with Postgres, Redis and ClickHouse,
    sign in as the seeded admin, follow the dashboard's **Getting started** card —
    connect a provider, add a route, mint a key — and hand people either an
@@ -192,50 +194,54 @@ Add a row per run. The full walk of every script is the #1789 pass.
 Every step marked **partial**, **gap** or **bug**, in one place. Milestones and
 priorities live on the issues.
 
-| issue | what is missing                                                                      | blocks                                         |
-| ----- | ------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| #1846 | team- and project-scoped members cannot select their own scope in the dashboard      | E1–E3, T1, V1, V4: every persona below the org |
-| #1844 | a route with no visibility list is served to virtual keys of every org               | A3, A4 on any multi-org deployment             |
-| #1845 | a same-named route in a second project freezes config for every gateway              | A3, T3                                         |
-| #1847 | a superadmin with no membership cannot open the Playground or mint a personal key    | A3.4                                           |
-| #1853 | the Playground asks for models before its key is live, then defaults to a dead route | A3.4, E3.1                                     |
-| #1851 | `cache_aware` sends every request to one replica and never checks load               | A3-d, P2.4, P5                                 |
-| #1850 | a team admin cannot list their own team's members                                    | T2, T6                                         |
-| #1852 | no second-factor enrolment at sign-in when an org requires one                       | A1a.4, S2.1                                    |
-| #1854 | sign-in and second-factor audit rows are written with no org, so nothing reads them  | S2, S6                                         |
-| #1856 | a flag stored on but unavailable blocks every feature-flag change                    | D3.3                                           |
-| #1848 | the Dashboard's setup checklist shows an access error to everyone below admin        | E1, V1, F1                                     |
-| #1849 | no lookup by the `x-request-id` a client received                                    | E5.2                                           |
-| #1395 | requests refused before routing (401, 402, 403, 429) never reach LLM Logs            | E5, P5.4                                       |
-| #1855 | no per-provider queue depth or in-flight metric                                      | D2.4, D3.1                                     |
-| #1815 | the provider queue serialises every provider to one in-flight request                | P5, D3 — any concurrent traffic                |
-| #1822 | self-service account area (epic)                                                     | E10, V2, V3, V5                                |
-| #1823 | display name and bio, editable by the account itself                                 | V2, E10                                        |
-| #1824 | preferences and defaults stored server-side                                          | V3, E10                                        |
-| #1825 | saved filter presets on LLM Logs and the Dashboard                                   | V5, F2                                         |
-| #1831 | members cannot read their own MCP tool-call logs                                     | E6                                             |
-| #1841 | a deprovisioned person's own virtual keys keep working                               | T6, S2                                         |
-| #1840 | anonymous `/api/v1/config` still describes the upstream topology                     | S1.3                                           |
-| #1133 | a database-backed provider cannot opt out of the hosted host pin                     | A3-e                                           |
-| #1826 | LDAP is implemented but not reachable from sign-in                                   | A1-c                                           |
-| #1827 | no SAML single sign-on                                                               | A1-b (SAML-only IdPs)                          |
-| #1828 | invitations are links an admin passes on by hand                                     | A1-a, T2                                       |
-| #1829 | alert rules are superadmin-only and deployment-wide                                  | A5, T5, F4                                     |
-| #337  | no warning before a budget blocks                                                    | A5, T4, F4                                     |
-| #1830 | no budget per person across their keys                                               | T4, F3, E9                                     |
-| #1833 | project members cannot see the health of their own routes' providers                 | E5, T5                                         |
-| #1834 | no operator or security-auditor role short of superadmin                             | D0, S0                                         |
-| #1835 | payload redaction matches key names, not secrets inside text; no preview             | S3                                             |
-| #1085 | one subject's logs and captured payloads cannot be erased on request                 | S3.6                                           |
-| #1836 | no scoped control-plane token for automation                                         | P4, D6                                         |
-| #1837 | shared project keys cannot be rotated in place                                       | P3                                             |
-| #1838 | no CSV export of spend or logs                                                       | F5                                             |
-| #1816 | a request abandoned while waiting on its upstream is logged with no provider         | D4, E5                                         |
-| #1817 | the dogfood fleet's adaptive route never engages                                     | A3-d (adaptive), D2                            |
-| #1818 | `rolter-seed --import` is silent about sections it skips                             | A3-d                                           |
-| #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                          | A0-b on constrained hosts                      |
-| #1832 | raw MCP traffic inspection for local servers (mcp-snoop)                             | E7                                             |
-| #1839 | a member cannot route their own local model through rolter (idea)                    | E8                                             |
+| issue | what is missing                                                                        | blocks                                         |
+| ----- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| #1846 | team- and project-scoped members cannot select their own scope in the dashboard        | E1–E3, T1, V1, V4: every persona below the org |
+| #1844 | a route with no visibility list is served to virtual keys of every org                 | A3, A4 on any multi-org deployment             |
+| #1845 | a same-named route in a second project freezes config for every gateway                | A3, T3                                         |
+| #1847 | a superadmin with no membership cannot open the Playground or mint a personal key      | A3.4                                           |
+| #1853 | the Playground asks for models before its key is live, then defaults to a dead route   | A3.4, E3.1                                     |
+| #1851 | `cache_aware` sends every request to one replica and never checks load                 | A3-d, P2.4, P5                                 |
+| #1850 | a team admin cannot list their own team's members                                      | T2, T6                                         |
+| #1852 | no second-factor enrolment at sign-in when an org requires one                         | A1a.4, S2.1                                    |
+| #1854 | sign-in and second-factor audit rows are written with no org, so nothing reads them    | S2, S6                                         |
+| #1856 | a flag stored on but unavailable blocks every feature-flag change                      | D3.3                                           |
+| #1848 | the Dashboard's setup checklist shows an access error to everyone below admin          | E1, V1, F1                                     |
+| #1861 | LLM Logs cannot look a request up by the `x-request-id` a client received (API: #1863) | E5.2                                           |
+| #1395 | requests refused before routing (401, 402, 403, 404, 429) never reach LLM Logs         | E5, P5.4                                       |
+| #1855 | no per-provider queue depth or in-flight metric                                        | D2.4, D3.1                                     |
+| #1815 | the provider queue serialises every provider to one in-flight request                  | P5, D3 — any concurrent traffic                |
+| #1822 | self-service account area (epic)                                                       | E10, V2, V3, V5                                |
+| #1823 | display name and bio, editable by the account itself                                   | V2, E10                                        |
+| #1824 | preferences and defaults stored server-side                                            | V3, E10                                        |
+| #1825 | saved filter presets on LLM Logs and the Dashboard                                     | V5, F2                                         |
+| #1831 | members cannot read their own MCP tool-call logs                                       | E6                                             |
+| #1841 | a deprovisioned person's own virtual keys keep working                                 | T6, S2                                         |
+| #1840 | anonymous `/api/v1/config` still describes the upstream topology                       | S1.3                                           |
+| #1133 | a database-backed provider cannot opt out of the hosted host pin                       | A3-e                                           |
+| #1826 | LDAP is implemented but not reachable from sign-in                                     | A1-c                                           |
+| #1827 | no SAML single sign-on                                                                 | A1-b (SAML-only IdPs)                          |
+| #1828 | invitations are links an admin passes on by hand                                       | A1-a, T2                                       |
+| #1829 | alert rules are superadmin-only and deployment-wide                                    | A5, T5, F4                                     |
+| #337  | no warning before a budget blocks                                                      | A5, T4, F4                                     |
+| #1830 | no budget per person across their keys                                                 | T4, F3, E9                                     |
+| #1833 | project members cannot see the health of their own routes' providers                   | E5, T5                                         |
+| #1834 | no operator or security-auditor role short of superadmin                               | D0, S0                                         |
+| #1835 | payload redaction matches key names, not secrets inside text; no preview               | S3                                             |
+| #1085 | one subject's logs and captured payloads cannot be erased on request                   | S3.6                                           |
+| #1836 | no scoped control-plane token for automation                                           | P4, D6                                         |
+| #1837 | shared project keys cannot be rotated in place                                         | P3                                             |
+| #1838 | no CSV export of spend or logs                                                         | F5                                             |
+| #1816 | a request abandoned while waiting on its upstream is logged with no provider           | D4, E5                                         |
+| #1817 | the dogfood fleet's adaptive route never engages                                       | A3-d (adaptive), D2                            |
+| #1818 | `rolter-seed --import` is silent about sections it skips                               | A3-d                                           |
+| #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                            | A0-b on constrained hosts                      |
+| #1890 | the compose stack takes no secrets and its gateway ignores the control plane           | A0-b, A0.6                                     |
+| #1889 | `rolter init` and `rolter check` leave out `ROLTER_SESSION_PEPPER`                     | A0.5, A0.7                                     |
+| #1897 | `rolter-seed` ships in no image or package                                             | A0.8                                           |
+| #1891 | the published image binds loopback, so `docker run -p` reaches nothing                 | the quickstart's `docker run`                  |
+| #1832 | raw MCP traffic inspection for local servers (mcp-snoop)                               | E7                                             |
+| #1839 | a member cannot route their own local model through rolter (idea)                      | E8                                             |
 
 ## Public guides
 

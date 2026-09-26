@@ -7,29 +7,55 @@ description: "From an empty host to a team calling models through Rolter: instal
 This guide takes a deployment from nothing to "our people and our applications call our models through Rolter, inside limits we chose, and we can see what they did." Each step links the page that covers it in depth; follow the links only when you need more than the step says.
 
 <Tip>
-  Just want to see it work first? `rolter easy-up` (or `docker run -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest`) starts everything with no database and no provider key, and the built-in `fake-llm` model answers straight away. See the [quickstart](/quickstart). Come back here when you are ready to run it for a team.
+  Just want to see it work first? `rolter easy-up` starts everything on your own machine with no database and no provider key, and the built-in `fake-llm` model answers straight away. See the [quickstart](/quickstart). Come back here when you are ready to run it for a team.
 </Tip>
 
 <Steps>
+  <Step title="Generate the deployment secrets">
+    Do this before the control plane is reachable from anywhere but your own machine. `rolter init` writes a production `rolter.toml` and a `.env` holding four generated values:
+
+    - `ROLTER_ADMIN_TOKEN` turns on role-based access control and protects the management API. Without it the control plane runs **open**: everyone who reaches it is a superadmin, whatever accounts exist in the database.
+    - `ROLTER_INTERNAL_TOKEN` is what the gateways present to fetch their configuration from the control plane.
+    - `ROLTER_KEK` seals provider keys at rest.
+    - `ROLTER_KEY_PEPPER` peppers the stored digests of virtual keys.
+
+    `rolter init` does not generate `ROLTER_SESSION_PEPPER` yet ([#1889](https://github.com/rolter-ai/rolter/issues/1889)). It peppers the stored digests of sign-in sessions, so add it yourself:
+
+    ```bash
+    rolter init --profile production \
+                --database-url postgres://rolter@db.internal:5432/rolter \
+                --redis-url redis://cache.internal:6379 \
+                --clickhouse-url http://clickhouse.internal:8123
+    echo "ROLTER_SESSION_PEPPER=$(openssl rand -hex 32)" >> .env
+    ```
+
+    Keep `.env` out of version control and somewhere it outlives a restart: a new KEK strands every stored provider key, and a new pepper invalidates every virtual key or session issued under the old one. Then run `rolter check` with that environment loaded. It fails on a missing KEK, admin token or database URL, and warns on a missing key pepper or a control plane bound to every interface. It does not check the session pepper yet. See [Production](/deployment/production), [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
+
+  </Step>
   <Step title="Install the stack">
-    Docker Compose brings up the gateway, the control plane and dashboard, Postgres, Redis and ClickHouse together. Postgres is what makes the dashboard's create, edit and delete screens exist; Redis keeps budgets and rate limits accurate across gateway replicas; ClickHouse holds the request logs.
+    A team deployment runs the gateway, the control plane and dashboard, Postgres, Redis and ClickHouse. Postgres is what makes the dashboard's create, edit and delete screens exist; Redis keeps budgets and rate limits accurate across gateway replicas; ClickHouse holds the request logs.
+
+    For a team, install the Helm chart (`charts/rolter`) with the values from the previous step as its secret environment. It points every gateway at the control plane and runs `rolter check` before the control plane starts. See [Production](/deployment/production) and [Cluster deployment](/deployment/cluster).
+
+    To try the whole stack on one machine first, Docker Compose brings it up:
 
     ```bash
     docker compose -f docker/docker-compose.yml up -d
     ```
 
-    See [Installation](/installation) and, for Kubernetes, [Production](/deployment/production).
+    <Warning>
+      `docker/docker-compose.yml` is the local stack, and it is open on purpose. It binds the control plane to every interface (`ROLTER_CONTROL_HOST=0.0.0.0`), acknowledges open mode (`ROLTER_ALLOW_OPEN_MODE=1`), publishes port 4001 and sets no `ROLTER_ADMIN_TOKEN`, so anyone who can reach port 4001 is a superadmin. It does not read the values from the previous step, and its gateway serves the bundled `rolter.toml` rather than what you configure in the dashboard. Run it only where nobody else can reach port 4001. Before anyone else can, the control plane needs `ROLTER_ADMIN_TOKEN`, which today means editing the file; a compose setup for a shared host is tracked in [#1890](https://github.com/rolter-ai/rolter/issues/1890).
+    </Warning>
 
-  </Step>
-  <Step title="Set the deployment secrets before anyone else can reach it">
-    Four values protect a real deployment: `ROLTER_ADMIN_TOKEN` (turns on role-based access control and protects the management API), `ROLTER_KEK` (seals provider keys at rest), and the key and session peppers. Without an admin token the control plane runs **open** — everyone who reaches it is an administrator — so in that state it refuses to listen on anything but loopback unless you explicitly allow it.
-
-    Generate them once and keep them where they outlive a restart; `rolter check` reports anything missing or unsafe. See [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
+    See [Installation](/installation).
 
   </Step>
   <Step title="Create the first administrator and sign in">
+    `rolter-seed` creates the account. It does not ship in the image or the Python package yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository with `ROLTER_DATABASE_URL` pointing at the deployment's database:
+
     ```bash
-    rolter-seed --admin-email you@example.com --admin-password '<a long password>'
+    cargo run -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email you@example.com --admin-password '<a long password>'
     ```
 
     Open the dashboard (port 4001), sign in, then protect the account with a second factor under **Settings → My Virtual Keys → Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
