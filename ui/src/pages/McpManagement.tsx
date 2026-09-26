@@ -542,47 +542,6 @@ function ConnectButton({ server }: { server: McpServerRow }) {
   );
 }
 
-function ConfirmDelete({
-  server,
-  pending,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  server: McpServerRow;
-  pending: boolean;
-  error: Error | null;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <Dialog open onClose={onClose}>
-      <DialogHeader>
-        <DialogTitle>
-          {t("pages.mcpCatalog.confirmDelete.title", { name: server.name })}
-        </DialogTitle>
-        <DialogDescription>{t("pages.mcpCatalog.confirmDelete.body")}</DialogDescription>
-      </DialogHeader>
-      {error && (
-        <p role="alert" className="text-sm text-[color:var(--danger-text)]">
-          {error.message}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="ghost" onClick={onClose}>
-          {t("common.cancel")}
-        </Button>
-        <Button variant="destructive" disabled={pending} onClick={onConfirm}>
-          {pending
-            ? t("pages.mcpCatalog.confirmDelete.pending")
-            : t("pages.mcpCatalog.confirmDelete.confirm")}
-        </Button>
-      </DialogFooter>
-    </Dialog>
-  );
-}
-
 export function McpCatalog() {
   const { t } = useTranslation();
   const { orgId } = useScope();
@@ -780,15 +739,24 @@ export function McpCatalog() {
           onSave={(draft) => save.mutate({ initial: editing, draft })}
         />
       )}
-      {deleting && (
-        <ConfirmDelete
-          server={deleting}
-          pending={remove.isPending}
-          error={remove.error}
-          onClose={() => setDeleting(null)}
-          onConfirm={() => remove.mutate(deleting.id)}
-        />
-      )}
+      {/* mounted whether or not a server is picked: the dialog reads how the
+          delete ended on its own closing edge, which an unmount never has */}
+      <ConfirmDialog
+        name="mcp-server-delete"
+        open={!!deleting}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleting(null);
+          // a refusal for this server must not greet the next one opened
+          remove.reset();
+        }}
+        title={t("pages.mcpCatalog.confirm.deleteTitle", { name: deleting?.name ?? "" })}
+        description={t("pages.mcpCatalog.confirm.deleteBody")}
+        confirmLabel={t("pages.mcpCatalog.confirm.deleteConfirm")}
+        pending={remove.isPending}
+        error={remove.error}
+        onConfirm={() => deleting && remove.mutate(deleting.id)}
+      />
     </PageBody>
   );
 }

@@ -2,14 +2,21 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ScopeSwitcher } from "./ScopeSwitcher";
+import { UxScreenProvider } from "@/lib/ux-react";
 import {
   Harness,
   ORG,
   PROJECT,
   TEAM,
+  cancelConfirmation,
+  confirmDestructive,
   confirmation,
+  expectNoUxEvent,
+  expectSheetClosed,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
   recording,
   type FetchStub,
 } from "@/pages/story-harness";
@@ -157,7 +164,10 @@ export const CreatesATeam: Story = {
   },
 };
 
-/** Deleting names the thing first: an org takes everything under it with it. */
+/**
+ * Deleting names the thing first, through the shared `ConfirmDialog` (#1760):
+ * the title names the org, and the body says it takes everything under it.
+ */
 export const DeleteNamesWhatItTakes: Story = {
   render: () => {
     const recorder = recording(chain());
@@ -171,30 +181,53 @@ export const DeleteNamesWhatItTakes: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Delete org" }));
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText(ORG.name)).toBeVisible();
-    await expect(dialog.getByText(/everything under it/)).toBeVisible();
-    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    await expect(
+      await within(await confirmation()).findByRole("heading", {
+        name: `Delete org ${ORG.name}?`,
+      }),
+    ).toBeVisible();
+    await confirmDestructive(/everything under it/i, "Delete org");
     await calls.expectSent("DELETE", `/orgs/${ORG.id}`);
+    await expectSheetClosed();
   },
 };
 
-/** Backing out of the confirmation sends nothing. */
+/**
+ * Backing out of the confirmation sends nothing, and is filed as an abandon of
+ * the level that was asked about.
+ *
+ * The app shell mounts the switcher in the user menu, outside any screen, and a
+ * form rendered there is silent rather than mislabelled
+ * (`docs/dev-docs/development/ux-telemetry.md`). The screen key here is only so
+ * the story can read *which* form the cancel is filed under: the target row is
+ * gone by the closing edge, and a key that followed it would name another level.
+ */
 export const DeleteCanBeCancelled: Story = {
+  beforeEach: recordUxEvents,
   render: () => {
     const recorder = recording(chain());
     calls = recorder;
     return (
       <Harness fetchStub={recorder.stub}>
-        <ScopeSwitcher />
+        <UxScreenProvider screen="providers">
+          <ScopeSwitcher />
+        </UxScreenProvider>
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Delete team" }));
-    const dialog = within(await confirmation());
-    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await expect(
+      await within(await confirmation()).findByRole("heading", {
+        name: `Delete team ${TEAM.name}?`,
+      }),
+    ).toBeVisible();
+    await cancelConfirmation();
     calls.expectNotSent("DELETE", `/teams/${TEAM.id}`);
+    const abandon = await expectUxEvent("form_abandon", "team-delete");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "team-delete");
+    expectNoUxEvent("form_abandon", "project-delete");
   },
 };

@@ -15,6 +15,7 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Field } from "@/components/ui/field";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Input } from "@/components/ui/input";
@@ -457,7 +459,11 @@ export default function SkillsRepository() {
         skill={selected}
         pending={remove.isPending}
         error={remove.error as Error | null}
-        onOpenChange={setDeleteOpen}
+        onOpenChange={(next) => {
+          setDeleteOpen(next);
+          // a refusal for this skill must not greet the next one opened
+          if (!next) remove.reset();
+        }}
         onConfirm={() => remove.mutate()}
       />
     </div>
@@ -488,41 +494,33 @@ function DeleteSkillDialog({
   // immutable version, so make the operator retype the slug first
   const matches = confirmation.trim() === skill?.slug;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>{t("pages.skillsRepo.deleteTitle", { name: skill?.name ?? "" })}</DialogTitle>
-        <DialogDescription>
+    <ConfirmDialog
+      name="skill-delete"
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t("pages.skillsRepo.confirm.deleteTitle", { name: skill?.name ?? "" })}
+      description={
+        <>
           {skill?.published_version
-            ? t("pages.skillsRepo.deletePublished", { version: skill.published_version })
-            : t("pages.skillsRepo.deleteUnpublished")}{" "}
-          {t("pages.skillsRepo.deleteConsequence")}
-        </DialogDescription>
-      </DialogHeader>
-      <label className="block text-xs font-medium">
-        {t("pages.skillsRepo.deleteConfirmLabel", { slug: skill?.slug ?? "" })}
+            ? t("pages.skillsRepo.confirm.deletePublished", { version: skill.published_version })
+            : t("pages.skillsRepo.confirm.deleteUnpublished")}{" "}
+          {t("pages.skillsRepo.confirm.deleteConsequence")}
+        </>
+      }
+      confirmLabel={t("pages.skillsRepo.confirm.deleteConfirm")}
+      pending={pending}
+      error={error}
+      confirmDisabled={!matches}
+      onConfirm={onConfirm}
+    >
+      <Field label={t("pages.skillsRepo.confirm.deleteSlugLabel", { slug: skill?.slug ?? "" })}>
         <Input
-          className="mt-1"
-          autoFocus
           value={confirmation}
           onChange={(event) => setConfirmation(event.target.value)}
           placeholder={skill?.slug}
         />
-      </label>
-      {error && (
-        <p role="alert" className="mt-2 text-xs text-[color:var(--status-danger-text)]">
-          {error.message}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          {t("pages.skillsRepo.cancel")}
-        </Button>
-        <Button variant="destructive" disabled={pending || !matches} onClick={onConfirm}>
-          <Trash2 className="h-4 w-4" />
-          {pending ? t("pages.skillsRepo.deleting") : t("pages.skillsRepo.deleteSubmit")}
-        </Button>
-      </DialogFooter>
-    </Dialog>
+      </Field>
+    </ConfirmDialog>
   );
 }
 

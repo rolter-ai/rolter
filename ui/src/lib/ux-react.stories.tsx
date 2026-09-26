@@ -90,6 +90,9 @@ function Screen({ screen = "providers" }: { screen?: string }) {
         <button type="button" onClick={() => form.current?.failed()}>
           fail the save
         </button>
+        <button type="button" onClick={() => form.current?.saved()}>
+          land the save
+        </button>
       </div>
       {screen ? <UxScreenProvider screen={screen}>{body}</UxScreenProvider> : body}
       <Queue />
@@ -251,5 +254,29 @@ export const ReportsARetryAfterAFailedSave: Story = {
       expect(lines(canvasElement).filter((l) => l.startsWith("form_submit"))).toHaveLength(3),
     );
     await expect(lines(canvasElement).filter((l) => l.startsWith("retry_submit"))).toHaveLength(1);
+  },
+};
+
+/**
+ * A caller that closes from its mutation's own `onSuccess` closes while the
+ * request is still pending, so the landing is reported a commit *after* the
+ * form went away. The clock has to survive that closing edge: before #1761 it
+ * stopped there, and every such `save_confirmed` went out with no duration,
+ * the one field the save-latency query in the observability docs reads.
+ */
+export const KeepsTheClockForASaveThatLandsAfterClosing: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "save" }));
+    await userEvent.click(canvas.getByRole("button", { name: "close the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "land the save" }));
+    await waitFor(() =>
+      expect(lines(canvasElement)).toContain("save_confirmed:providers:provider"),
+    );
+    const confirmed = pendingUxEvents().find((e) => e.action === "save_confirmed");
+    await expect(typeof confirmed?.duration_ms).toBe("number");
+    // a submitted form that closed is not an abandon on its way out
+    await expect(lines(canvasElement).filter((l) => l.startsWith("form_abandon"))).toHaveLength(0);
   },
 };

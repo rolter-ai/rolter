@@ -69,6 +69,23 @@ export const Pending: Story = {
   },
 };
 
+/**
+ * Escape, the scrim and the header's close button are refused mid-flight too,
+ * not only the cancel button: a dialog that vanished while the request was on
+ * the wire would leave nowhere to report how it ended.
+ */
+export const DismissalWaitsForTheRequest: Story = {
+  args: { pending: true },
+  play: async ({ args }) => {
+    const canvas = screen();
+    const dialog = await canvas.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await userEvent.keyboard("{Escape}");
+    await expect(args.onOpenChange).not.toHaveBeenCalled();
+    await expect(canvas.getByRole("dialog")).toBeVisible();
+  },
+};
+
 export const Failed: Story = {
   args: { error: new Error("channel is referenced by 2 alert rules") },
   play: async () => {
@@ -199,5 +216,153 @@ export const AFailedConfirmEmitsAnError: Story = {
         .map((e) => e.outcome);
       expect(outcomes).toEqual(["ok", "error"]);
     });
+  },
+};
+
+/**
+ * A refusal that lands in the tick the request started never commits
+ * `pending={true}`: react-query hands the pending and the error to one notify
+ * batch, which is what a stub answering a DELETE at once does. The dialog used
+ * to read the failure off the pending edge and so reported nothing but the
+ * press (#1761); it reads it off the press now.
+ */
+function RefusedAtOnce(args: React.ComponentProps<typeof ConfirmDialog>) {
+  const [error, setError] = React.useState<unknown>(undefined);
+  const refusals = React.useRef(0);
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <ConfirmDialog
+        {...args}
+        name={TARGET}
+        pending={false}
+        error={error}
+        onConfirm={() => {
+          refusals.current += 1;
+          // a fresh error each time, the way every failed request throws one
+          setError(new Error(`channel is referenced by 2 alert rules (${refusals.current})`));
+        }}
+      />
+    </UxScreenProvider>
+  );
+}
+
+export const ASameTickRefusalEmitsAnError: Story = {
+  render: (args) => <RefusedAtOnce {...args} />,
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "Delete channel" }));
+    await expect(await screen().findByRole("alert")).toHaveTextContent("(1)");
+    await waitFor(() => {
+      const outcomes = uxEvents()
+        .filter((e) => e.action === "form_submit" && e.target === TARGET)
+        .map((e) => e.outcome);
+      expect(outcomes).toEqual(["ok", "error"]);
+    });
+    expectNoUxEvent("save_confirmed", TARGET);
+  },
+};
+
+/**
+ * A retry refused the same way leaves `pending` false and an error standing on
+ * both sides of the press, so an effect keyed on "is there an error" never ran
+ * again. Keyed on the error's identity, the second refusal is a row of its own
+ * — and the press before it is a `retry_submit`, not a second first attempt.
+ */
+export const ARetryRefusedTheSameWayIsReportedAgain: Story = {
+  render: (args) => <RefusedAtOnce {...args} />,
+  play: async () => {
+    const confirm = screen().getByRole("button", { name: "Delete channel" });
+    await userEvent.click(confirm);
+    await expect(await screen().findByRole("alert")).toHaveTextContent("(1)");
+    await userEvent.click(confirm);
+    await waitFor(() => expect(screen().getByRole("alert")).toHaveTextContent("(2)"));
+    await waitFor(() => {
+      const outcomes = uxEvents()
+        .filter((e) => e.action === "form_submit" && e.target === TARGET)
+        .map((e) => e.outcome);
+      expect(outcomes).toEqual(["ok", "error", "error"]);
+    });
+    await expectUxEvent("retry_submit", TARGET);
+  },
+};
+
+/**
+ * A confirm that lands is a `save_confirmed`, the row the hand-rolled dialogs
+ * emitted before #1738 moved them here (#1761). The caller closes the dialog
+ * from its mutation's `onSuccess`, which for a hook-level callback runs while
+ * the request is still pending — so this closes first and settles a commit
+ * later, and the row still has to carry how long it took.
+ */
+function LandsAfterClosing(args: React.ComponentProps<typeof ConfirmDialog>) {
+  const [open, setOpen] = React.useState(true);
+  const [pending, setPending] = React.useState(false);
+  const [landed, setLanded] = React.useState(false);
+  React.useEffect(() => {
+    if (!pending) return;
+    // hook-level onSuccess: the dialog closes, the request is not settled yet
+    setOpen(false);
+    setLanded(true);
+  }, [pending]);
+  React.useEffect(() => {
+    if (landed) setPending(false);
+  }, [landed]);
+  return (
+    <UxScreenProvider screen={SCREEN}>
+      <ConfirmDialog
+        {...args}
+        name={TARGET}
+        open={open}
+        onOpenChange={setOpen}
+        pending={pending}
+        onConfirm={() => setPending(true)}
+      />
+    </UxScreenProvider>
+  );
+}
+
+export const ALandedConfirmEmitsSaveConfirmed: Story = {
+  render: (args) => <LandsAfterClosing {...args} />,
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "Delete channel" }));
+    await waitFor(() => expect(screen().queryByRole("dialog")).toBeNull());
+    const confirmed = await expectUxEvent("save_confirmed", TARGET);
+    await expect(confirmed.screen).toBe(SCREEN);
+    await expect(typeof confirmed.duration_ms).toBe("number");
+    // a landed confirm is neither a refusal nor an abandon on its way out
+    await expect(
+      uxEvents()
+        .filter((e) => e.action === "form_submit" && e.target === TARGET)
+        .map((e) => e.outcome),
+    ).toEqual(["ok"]);
+    expectNoUxEvent("form_abandon", TARGET);
+  },
+};
+
+/**
+ * A confirmation handed no `pending` runs no request — the discard prompt
+ * closes a sheet and is done — so closing it after the press is not a landing
+ * and reports none.
+ */
+export const AConfirmWithNoRequestConfirmsNothing: Story = {
+  render: (args) => {
+    const [open, setOpen] = React.useState(true);
+    return (
+      <UxScreenProvider screen={SCREEN}>
+        <ConfirmDialog
+          {...args}
+          name={TARGET}
+          open={open}
+          onOpenChange={setOpen}
+          pending={undefined}
+          onConfirm={() => setOpen(false)}
+        />
+      </UxScreenProvider>
+    );
+  },
+  play: async () => {
+    await userEvent.click(screen().getByRole("button", { name: "Delete channel" }));
+    await waitFor(() => expect(screen().queryByRole("dialog")).toBeNull());
+    await expectUxEvent("form_submit", TARGET);
+    expectNoUxEvent("save_confirmed", TARGET);
+    expectNoUxEvent("form_abandon", TARGET);
   },
 };

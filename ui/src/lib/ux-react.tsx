@@ -225,6 +225,11 @@ export function useFormTelemetry(
   // an abandon the cleanup below has deferred, still cancellable. a token
   // rather than a boolean so a stale timer can never silence a later one
   const deferred = React.useRef<{ cancelled: boolean } | null>(null);
+  // when a *submitted* form closed. a caller that closes from its mutation's
+  // own `onSuccess` does so while the request is still pending, so the outcome
+  // lands a commit after the closing edge has already stopped the clock, and
+  // `saved` would otherwise go out with no duration at all (#1761)
+  const settling = React.useRef<number>(0);
 
   React.useEffect(() => {
     // this effect running at all means the form is still mounted, so whatever
@@ -243,6 +248,7 @@ export function useFormTelemetry(
         openedAt.current = Date.now();
         submitted.current = false;
         failed.current = false;
+        settling.current = 0;
       }
       return () => {
         // the form went away while open. whether this is a real unmount or
@@ -274,10 +280,16 @@ export function useFormTelemetry(
     if (openedAt.current && !submitted.current && key) {
       trackFormAbandon(key, target, Date.now() - openedAt.current, dirty.current);
     }
+    // only on a real closing edge: a re-run while already closed (a screen key
+    // arriving late) must not wipe the start of a request still settling
+    if (openedAt.current) settling.current = submitted.current ? openedAt.current : 0;
     openedAt.current = 0;
   }, [open, key, target]);
 
-  const dwell = () => (openedAt.current ? Date.now() - openedAt.current : undefined);
+  const dwell = () => {
+    const since = openedAt.current || settling.current;
+    return since ? Date.now() - since : undefined;
+  };
 
   return React.useMemo<FormTelemetry>(
     () => ({
@@ -294,11 +306,13 @@ export function useFormTelemetry(
       },
       saved: () => {
         if (key) trackSaveConfirmed(key, target, dwell());
+        settling.current = 0;
       },
       failed: () => {
         submitted.current = true;
         failed.current = true;
         if (key) trackFormSubmit(key, target, "error", dwell());
+        settling.current = 0;
       },
       invalid: (rule: string) => {
         if (key) trackValidationError(key, rule);

@@ -1,7 +1,7 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Boxes, Lock, Tag } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -544,15 +544,9 @@ export default function Models() {
             setDeleteTarget(null);
           }
         }}
-        title={t("pages.models.deleteTitle")}
-        description={
-          <Trans
-            i18nKey="pages.models.deleteBody"
-            values={{ model: deleteTarget?.model }}
-            components={[<span key="model" className="font-mono" />]}
-          />
-        }
-        confirmLabel={t("common.delete")}
+        title={t("pages.models.confirm.deleteTitle", { model: deleteTarget?.model ?? "" })}
+        description={t("pages.models.confirm.deleteBody")}
+        confirmLabel={t("pages.models.confirm.deleteConfirm")}
         pending={removeModel.isPending}
         error={removeModel.error}
         onConfirm={() => {

@@ -19,12 +19,12 @@ into a screen is instrumentation that stops at whoever remembered it; a hook
 wired into the component every screen renders is instrumentation that cannot be
 forgotten.
 
-| Shared component | Hook               | What it records                                               |
-| ---------------- | ------------------ | ------------------------------------------------------------- |
-| `EmptyState`     | `useEmptyState`    | a zero-data placeholder was reached                           |
-| `LoadError`      | `useErrorState`    | an error placeholder was reached                              |
-| `EditorSheet`    | `useFormTelemetry` | a create/edit form was submitted, saved, refused or abandoned |
-| `ConfirmDialog`  | `useFormTelemetry` | a destructive action was confirmed or thought better of       |
+| Shared component | Hook               | What it records                                                          |
+| ---------------- | ------------------ | ------------------------------------------------------------------------ |
+| `EmptyState`     | `useEmptyState`    | a zero-data placeholder was reached                                      |
+| `LoadError`      | `useErrorState`    | an error placeholder was reached                                         |
+| `EditorSheet`    | `useFormTelemetry` | a create/edit form was submitted, saved, refused or abandoned            |
+| `ConfirmDialog`  | `useFormTelemetry` | a destructive action was confirmed, landed, refused or thought better of |
 
 `EditorSheet` backs thirteen screens and `ConfirmDialog` backs fifteen, so the
 two of them cover most of what the dashboard does. Both take a **required**

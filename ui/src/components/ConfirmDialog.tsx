@@ -44,6 +44,14 @@ export interface ConfirmDialogProps {
   confirmLabel: string;
   /** `danger` paints the confirm button destructive, `default` leaves it primary */
   tone?: "danger" | "default";
+  /**
+   * The request the confirm started is on the wire.
+   *
+   * Passing it at all is also what says the confirm *runs* a request, and so
+   * has a landing worth reporting as `save_confirmed` once the caller closes
+   * the dialog. Leave it unset only for a confirmation that finishes the moment
+   * it is pressed — the discard prompt closes a sheet and is done.
+   */
   pending?: boolean;
   /** the mutation's thrown value, rendered verbatim when the confirm failed */
   error?: unknown;
@@ -75,7 +83,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   tone = "danger",
-  pending = false,
+  pending,
   error,
   onConfirm,
   children,
@@ -90,28 +98,57 @@ export function ConfirmDialog({
   // or a decision.
   const ux = useFormTelemetry(name, open);
 
-  // the caller owns the mutation, so the only outcome visible from here is
-  // `error` arriving after `pending` — the dialog deliberately stays open on
-  // failure, which is what makes that observable at all
-  const wasPending = React.useRef(false);
-  const failed = error !== undefined && error !== null;
+  const busy = pending ?? false;
+  const runsRequest = pending !== undefined;
+
+  // the caller owns the mutation, so its outcome is read off the props that
+  // report it. the press arms the read rather than a `pending` edge (#1761): a
+  // request that settles in the tick it started hands react-query's pending
+  // and error to one notify batch, so `pending={true}` is never committed and
+  // an edge-triggered read saw no failure at all. the read is keyed on the
+  // error's identity rather than on whether there is one, so a retry refused
+  // the same way is a new error and is reported too. `pressed` holds the error
+  // standing at the press — a retry's, with the last refusal still on screen —
+  // since only a different one can be this press's answer
+  const pressed = React.useRef<{ error: unknown } | null>(null);
+  const wasOpen = React.useRef(open);
   React.useEffect(() => {
-    if (pending) {
-      wasPending.current = true;
-      return;
+    // a fresh opening owes nothing to a request left behind by the last one
+    if (open && !wasOpen.current) pressed.current = null;
+    wasOpen.current = open;
+    const press = pressed.current;
+    if (!press || busy) return;
+    const failed = error !== undefined && error !== null;
+    if (failed && error !== press.error) {
+      pressed.current = null;
+      ux.failed();
+    } else if (!open) {
+      // the caller closes the dialog from `onSuccess`, so closed with the
+      // request settled and nothing refused is how a landed confirm looks from
+      // here. the hand-rolled dialogs this replaced reported it as
+      // `save_confirmed`, and the save-latency query reads no other row
+      pressed.current = null;
+      if (runsRequest && !failed) ux.saved();
     }
-    if (!wasPending.current) return;
-    wasPending.current = false;
-    if (failed) ux.failed();
-  }, [pending, failed, ux]);
+  }, [open, busy, error, runsRequest, ux]);
 
   const confirm = () => {
+    pressed.current = { error };
     ux.submitted();
     onConfirm();
   };
 
+  // Escape, the scrim and the close button wait for the request for the same
+  // reason cancel is disabled: it is already on the wire. a dialog dismissed
+  // mid-flight also has its caller reset the mutation whose answer is still
+  // coming, and the read above would take that silence for a landing
+  const dismiss = (next: boolean) => {
+    if (!next && busy) return;
+    onOpenChange(next);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={dismiss}>
       <DialogHeader>
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>
@@ -124,18 +161,19 @@ export function ConfirmDialog({
           {error instanceof Error ? error.message : String(error)}
         </p>
       )}
+      {/* ui-primitives-allow: this is the one confirmation every other screen is sent to */}
       <DialogFooter>
         {/* cancel is disabled mid-flight too: the request is already on the
             wire, so a button that looks like it calls it back would lie */}
-        <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+        <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
           {t("common.cancel")}
         </Button>
         <Button
           variant={tone === "danger" ? "destructive" : "default"}
-          disabled={pending || confirmDisabled}
+          disabled={busy || confirmDisabled}
           onClick={confirm}
         >
-          {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {confirmLabel}
         </Button>
       </DialogFooter>
