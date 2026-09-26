@@ -262,6 +262,12 @@ dogfood:
         | sed 's/^/[gateway] /' ) &
     sleep 6
     just dogfood-key >/dev/null 2>&1 || true
+    # the adaptive strategy only routes once the deployment-wide kill switch is
+    # on, and it ships off. nothing else here turns it on (`rolter-seed
+    # --import` does not write it, #1818), so without this `deepseek-r1` serves
+    # its fallback stack all session (#1817). non-fatal like the rest: a stack
+    # with the switch off still works, and the script says how to retry
+    ./"$d"/adaptive-routing.sh on || true
     # non-fatal: a SigNoz that already has a different account is a thing to
     # report, not a reason to tear down a working stack
     ./"$d"/provision-signoz.sh || true
@@ -305,6 +311,10 @@ dogfood-key:
       | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])' \
       > integration/dogfood/.virtual-key
     cat integration/dogfood/.virtual-key
+
+# turn the adaptive-routing kill switch on or off (`just dogfood` turns it on)
+dogfood-adaptive state="on":
+    ./integration/dogfood/adaptive-routing.sh {{state}}
 
 # seed the full 15-provider fleet instead of adding it by hand
 dogfood-seed:

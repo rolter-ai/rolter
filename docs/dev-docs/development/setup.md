@@ -39,6 +39,27 @@ cd ui && bun install && bun run dev  # http://localhost:3000 (proxies /api -> :4
 docker compose -f docker/docker-compose.yml up -d                 # postgres, redis, clickhouse, gateway, control
 ```
 
+ClickHouse asks for 262144 open files, its production recommendation. A
+container runtime cannot grant more than its own hard limit, and rootless
+Docker or Podman, sandboxed CI runners and locked-down VMs often have less. There
+the ClickHouse container is never created:
+
+```text
+OCI runtime create failed: runc create failed: unable to start container process:
+error during container init: error setting rlimits for ready process:
+error setting rlimit type 7: operation not permitted
+```
+
+Lower the limit with `CLICKHOUSE_NOFILE` in the environment `docker compose` (or
+`just dogfood`) runs in. `20000` is plenty for a dev stack (#1819):
+
+```bash
+CLICKHOUSE_NOFILE=20000 docker compose -f docker/docker-compose.yml up -d
+```
+
+The same variable covers SigNoz's ClickHouse in `docker/docker-compose.signoz.yml`
+and the e2e stack's.
+
 ## Handy tasks
 
 `just` wraps the common commands:

@@ -14,6 +14,13 @@ docker compose -f docker/docker-compose.yml logs -f gateway
 - Control + UI: http://localhost:4001
 - Postgres `5432`, Redis `6379`, ClickHouse `8123/9000`
 
+ClickHouse runs with `nofile` at `${CLICKHOUSE_NOFILE:-262144}`. Where the
+container runtime cannot grant that much (rootless Docker or Podman, sandboxed
+runners), creating the container fails with
+`error setting rlimit type 7: operation not permitted`. Set `CLICKHOUSE_NOFILE`
+lower, e.g. `20000`, and rerun (#1819). The development setup page has the full
+error text.
+
 DB schemas auto-apply on first start, by two different routes. The Postgres
 schema is owned by `sqlx::migrate!`, which `rolter-control` and `rolter-seed`
 both run on startup; Compose deliberately does _not_ mount `migrations/` into
