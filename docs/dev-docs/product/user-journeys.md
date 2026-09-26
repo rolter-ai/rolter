@@ -55,7 +55,7 @@ of them.
 2. **One hour to a team deployment.** Install with Postgres, Redis and ClickHouse,
    sign in as the seeded admin, follow the dashboard's **Getting started** card —
    connect a provider, add a route, mint a key — and hand people either an
-   invitation or single sign-on. ([platform-admin A0-b to A4](journeys/platform-admin.md))
+   invitation or single sign-on. ([platform-admin A0-c to A4](journeys/platform-admin.md))
 3. **Configuration as code.** Keep providers, groups, routes, prices and prompt
    templates in a `rolter.toml`, apply it with `rolter-seed --import` (desired
    state), and read the live state back with `rolter config export`. What the
@@ -237,6 +237,7 @@ priorities live on the issues.
 | #1818 | `rolter-seed --import` is silent about sections it skips                               | A3-d                                           |
 | #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                            | A0-b on constrained hosts                      |
 | #1890 | the compose stack takes no secrets and its gateway ignores the control plane           | A0-b, A0.6                                     |
+| #1939 | a default Helm install fails its own strict preflight                                  | A0-c, A0.6                                     |
 | #1889 | `rolter init` and `rolter check` leave out `ROLTER_SESSION_PEPPER`                     | A0.5, A0.7                                     |
 | #1897 | `rolter-seed` ships in no image or package                                             | A0.8                                           |
 | #1891 | the published image binds loopback, so `docker run -p` reaches nothing                 | the quickstart's `docker run`                  |

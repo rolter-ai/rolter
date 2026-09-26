@@ -69,12 +69,15 @@ Walk it in this order — each step narrows where the problem is:
 1. **Read the error you got.** When Rolter itself refuses a call, the body is OpenAI-style JSON on both dialects, and its `type` and `code` name the cause:
    - HTTP 401, type `authentication_error`: the key is missing, wrong or no longer valid.
    - HTTP 403, type `permission_error`, code `model_not_allowed`, `route_not_allowed` or `provider_not_allowed`: the model exists, but your key's allow-list, or its owner's access profile, does not reach it or its providers.
+   - HTTP 403, code `required_header_missing`: the route requires a header your call did not send; the message names it.
+   - HTTP 400 (or 403 for a withheld response), code `guardrail_blocked` or `plugin_blocked`: a policy on the route refused the content.
    - HTTP 404, code `model_not_found`: there is no route by that name.
    - HTTP 402, code `insufficient_quota`: a budget is spent.
    - HTTP 429, code `rate_limit_exceeded`: a rate limit. Wait the `Retry-After` seconds.
    - HTTP 429, code `queue_full` or `queue_timeout`, or HTTP 503, code `queue_dropped`: the route's queue is saturated. Back off and retry; these carry no `Retry-After`.
-   - Another 5xx: the upstream failed.
-2. **Find the request.** Every response carries an `x-request-id`; keep it. `GET /api/v1/analytics/invocations?request_id=<x-request-id>` with your dashboard session returns that request's row when it belongs to a project you are a member of. In the dashboard, open **Observability → LLM Logs**, set the status filter to error and narrow by model; looking a row up there by its request id is coming with [#1861](https://github.com/rolter-ai/rolter/issues/1861). The row shows the target and provider that served it, the error text, retries, latency and cost, plus the request and response bodies when your deployment captures them. A call Rolter refuses before routing it (a 401, 402, 403, 404 or rate-limit 429) leaves no row ([#1395](https://github.com/rolter-ai/rolter/issues/1395)), so for those the error body from step 1 is all there is.
+   - HTTP 502, code `pii_sanitizer_unavailable`: the route's PII sanitizer could not be reached, so the call was stopped rather than sent unredacted.
+   - Another 5xx: the route had no target it could send to, or the upstream failed.
+2. **Find the request.** Every response carries an `x-request-id`; keep it. `GET /api/v1/analytics/invocations?request_id=<x-request-id>` with your dashboard session returns the rows logged under that id in projects you are a member of. The id is the client's own `x-request-id` when it sent one, so a client that reuses ids gets more than one row back. In the dashboard, open **Observability → LLM Logs**, set the status filter to error and narrow by model; looking a row up there by its request id is coming with [#1861](https://github.com/rolter-ai/rolter/issues/1861). The row shows the target and provider that served it, the error text, retries, latency and cost, plus the request and response bodies when your deployment captures them. A call Rolter refuses before routing it (a 401, 402, 403, 404 or rate-limit 429) leaves no row ([#1395](https://github.com/rolter-ai/rolter/issues/1395)), so for those the error body from step 1 is all there is.
 3. **Follow it into a trace.** Send a W3C `traceparent` and Rolter joins your distributed trace; look the row's trace id up in your tracing backend to see where the time went. See [Tracing](/observability/tracing).
 
 ## Keep an eye on it
