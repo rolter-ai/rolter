@@ -18,8 +18,10 @@ ClickHouse runs with `nofile` at `${CLICKHOUSE_NOFILE:-262144}`. Where the
 container runtime cannot grant that much (rootless Docker or Podman, sandboxed
 runners), creating the container fails with
 `error setting rlimit type 7: operation not permitted`. Set `CLICKHOUSE_NOFILE`
-lower, e.g. `20000`, and rerun (#1819). The development setup page has the full
-error text.
+lower, e.g. `20000`, in `docker/.env` and rerun (#1819). Compose reads that file
+because the project directory is the first `-f` file's directory; a
+repository-root `.env` is not read for interpolation unless you pass
+`--env-file .env`. The development setup page has the full error text.
 
 DB schemas auto-apply on first start, by two different routes. The Postgres
 schema is owned by `sqlx::migrate!`, which `rolter-control` and `rolter-seed`

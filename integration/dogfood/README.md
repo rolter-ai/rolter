@@ -41,13 +41,15 @@ that was never seeded serves capture off (#1911).
 
 `dogfood.toml` is desired state for `rolter-seed --import` (`just dogfood-seed`),
 and no running process reads it. The importer writes its providers, provider
-groups and routes, plus `[logging.payload_capture]` into the `logging_settings`
-row the snapshot is built from. It accepts every other `rolter.toml` section and
-writes none of them: `[server]` and `[logging].clickhouse_url` are there so the
-file reads as a complete config, and `[adaptive_routing]`, `[retry]` or
-`[[budgets]]` added here would change nothing (#1818). Those live behind the
-control plane's API; `adaptive-routing.sh` is how this stack sets the one it
-needs.
+groups and routes, `[[model_prices]]` and the templates under
+`[prompt_templates]`, plus `[logging.payload_capture]` and `[logging].ui_events`
+into the `logging_settings` row the snapshot is built from. The two logging keys
+are written only when the file spells them out, so leaving one out keeps
+whatever the dashboard set. It accepts every other `rolter.toml` section and writes none
+of them: `[server]` and `[logging].clickhouse_url` are there so the file reads
+as a complete config, and `[adaptive_routing]`, `[retry]` or `[[budgets]]`
+added here would change nothing (#1818). Those live behind the control plane's
+API; `adaptive-routing.sh` is how this stack sets the one it needs.
 
 A setting for the gateway process goes in `gateway.toml`, and a fleet or policy
 row goes in `dogfood.toml`. Both files declare `[logging.payload_capture]`, for
@@ -79,8 +81,11 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.signoz.yml 
 
 If both ClickHouse containers fail to start with
 `error setting rlimit type 7: operation not permitted`, the container runtime
-cannot grant them 262144 open files. Set `CLICKHOUSE_NOFILE=20000` (or
-whatever the runtime allows) and rerun (#1819).
+cannot grant them 262144 open files. Add `CLICKHOUSE_NOFILE=20000` (or whatever
+the runtime allows) to `docker/.env` and rerun (#1819). Compose reads that file
+on every call against these compose files, `just` recipes included; a `.env` at
+the repository root is not read, and a one-off prefix on a single command is
+undone by the next compose call without it.
 
 Start the fleet, then seed the database from the same config:
 

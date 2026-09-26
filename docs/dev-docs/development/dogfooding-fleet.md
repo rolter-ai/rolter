@@ -135,7 +135,11 @@ chart on their own defaults.
   Rootless Docker or Podman and sandboxed runners often cap `nofile` lower. There
   both ClickHouse containers fail with
   `error setting rlimit type 7: operation not permitted` and everything
-  downstream (request logs, `ui_events`, SigNoz) is missing. Run `CLICKHOUSE_NOFILE=20000 just dogfood` there (#1819).
+  downstream (request logs, `ui_events`, SigNoz) is missing. Put
+  `CLICKHOUSE_NOFILE=20000` in `docker/.env` there, not in a repository-root
+  `.env`, which compose does not read for these files (#1819). A one-off
+  `CLICKHOUSE_NOFILE=20000 just dogfood` works for that run, but the next compose
+  call without it, `just signoz-reset` included, recreates ClickHouse at 262144.
 - **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
   control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).

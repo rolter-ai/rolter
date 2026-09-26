@@ -37,7 +37,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     Docker Compose starts the services in dependency order: PostgreSQL, Redis, and ClickHouse come up first, then the control plane, then the gateway. On first boot, database schemas are applied automatically from the migration files — no manual SQL is required.
 
     <Note>
-      ClickHouse asks for 262144 open files. If the ClickHouse container fails to start with `error setting rlimit type 7: operation not permitted`, the container runtime (often rootless Docker or Podman) cannot grant that many. Set a lower limit and start again, for example `CLICKHOUSE_NOFILE=20000 docker compose -f docker/docker-compose.yml up -d`.
+      ClickHouse asks for 262144 open files. If the ClickHouse container fails to start with `error setting rlimit type 7: operation not permitted`, the container runtime (often rootless Docker or Podman) cannot grant that many. Set a lower limit in `docker/.env` and start again: run `echo CLICKHOUSE_NOFILE=20000 >> docker/.env`, then `docker compose -f docker/docker-compose.yml up -d`. Compose reads `docker/.env` because it sits beside the first `-f` file; a `.env` at the repository root does not set this value.
     </Note>
 
   </Step>
