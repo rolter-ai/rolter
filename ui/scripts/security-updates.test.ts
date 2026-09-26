@@ -243,6 +243,16 @@ describe("renderSummary", () => {
     // an unescaped `||` from the range would add two more
     expect(row?.replace(/\\\|/g, "").split("|")).toHaveLength(5);
   });
+
+  it("escapes a backslash before the pipe it precedes", () => {
+    // `a\|b` escaped pipe-only would read as an escaped backslash and then a
+    // bare pipe, which splits the cell all the same
+    const plan = planUpdates([alert("odd", "1.0.5")], { dependencies: { odd: "a\\|b" } });
+    const row = renderSummary(plan)
+      .split("\n")
+      .find((line) => line.startsWith("| `odd`"));
+    expect(row).toContain("`a\\\\\\|b`");
+  });
 });
 
 describe("renderCommitMessage", () => {

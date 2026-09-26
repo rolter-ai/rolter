@@ -201,9 +201,11 @@ export function applyPlan(manifestText: string, plan: Plan): string {
 }
 
 // a table cell ends at the first bare `|`, and ranges such as `1.x || 2.x`
-// carry one, so every value that goes into a cell is escaped
+// carry one, so every value that goes into a cell is escaped. backslashes go
+// first: with a `\` already in front of a pipe, escaping the pipe alone would
+// leave an escaped backslash followed by a bare pipe
 function cell(text: string): string {
-  return text.replace(/\|/g, "\\|");
+  return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
 
 function alertLinks(alerts: AlertRef[]): string {
