@@ -1214,6 +1214,22 @@ pub async fn test_app_with_clickhouse_and_admin_token(
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] started with `bootstrap` as its config file, so the write
+/// paths see the readonly rows it declares.
+///
+/// Only the ownership set is taken from the file: the store stays the database
+/// alone, which is all a test of the write-time guards needs.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_bootstrap(
+    pool: sqlx::PgPool,
+    bootstrap: &GatewayConfig,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.config_owned = Arc::new(ConfigOwned::from_config(bootstrap));
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]

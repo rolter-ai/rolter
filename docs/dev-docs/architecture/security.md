@@ -239,14 +239,24 @@ prompt through their own row, which the mask passed because it judges the row,
 not the body. `PayloadLog` copies its log row's `ts` through the same
 serializer, so the pair names one request.
 
+The pair is not a perfect key. Two requests that share an `x-request-id` and
+were logged in the same millisecond (`ts` is `DateTime64(3)`) still get one
+body between them, which takes a client sending predictable or constant ids.
+Keying the join on something the caller cannot choose is #1937. The pair also
+drops bodies written by gateways from v0.1.0 or earlier, which let ClickHouse
+stamp the log row and the payload row separately: after the control plane is
+upgraded those bodies stop showing until payload retention removes them. The
+user docs' upgrade page says to upgrade gateways first for that reason.
+
 Two limits are known and tracked:
 
 - **Provider health matches by name.** `provider_health_events` carries the
   provider's display name and no org, and names are unique per org only. A
   name that another org used and then deleted brings its history (uptime,
   latency, error kinds, `target_id`) to whichever org creates it next, until
-  the 90-day TTL drops it. A live duplicate across orgs is the separate
-  config-freeze problem of #1845; recording the org in the rows is #1908.
+  the 90-day TTL drops it. Provider names are unique across the deployment,
+  so two orgs never hold one at the same time. Recording the org in the rows
+  is #1908.
 - **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
   no store has no sessions, so the admin token is the only credential these
   routes accept, and the dashboard's e-mail-only sign-in cannot present it. The
@@ -282,7 +292,10 @@ must name a provider in the same org. Names the gateway indexes
 deployment-wide (route and provider names, and the one slug namespace
 providers and groups share) are unique across orgs, and so is a route name
 that would sit on another org's `slug/model` address. A collision is refused
-with a `409` that does not say which org holds the name. An admin can also
+with a `409` that does not say which org holds the name. The route-name check
+runs one way: a slug created after another org's `slug/…` route is accepted,
+and keys that carry no org then reach that route rather than the new address
+(the ADR-0017 addendum explains why). An admin can also
 narrow a route to its own project (`project_only`), which narrows that route
 but not the `slug/model` address of the provider behind it (#1919).
 The contract, the table of which keys admit which rows, and the write-time

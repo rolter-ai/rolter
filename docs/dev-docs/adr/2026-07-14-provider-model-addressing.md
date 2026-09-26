@@ -276,10 +276,17 @@ Until per-org namespaces land (#1857), one slug namespace spans the whole deploy
 providers and groups of every org plus the bootstrap file's readonly rows. The control
 plane refuses a provider or group slug that any of them holds, and a route name that is
 the `slug/…` address of another org's or a readonly provider or group, or the builtin.
-Keys from a config file carry no org, so for them every row is in scope. The write-time
-refusal is what keeps another org's route off the address those keys meant. The gateway
-indexes slugs first-wins in file order, bootstrap rows before database rows, so a slug
-two rows still share from before the guard resolves the same way on every build.
+Keys from a config file carry no org, so for them every row is in scope, and the same
+holds for anonymous callers when `require_auth` is off. The refusal runs in one direction
+only: it keeps a new route off an address that already exists, but a provider or group
+created later with the slug of another org's existing `slug/…` route is accepted. Callers
+in the new row's org get their own address, since the other org's route is out of their
+tenancy; org-less callers resolve the named route first and reach the other org's route
+and its upstream. Refusing that slug instead would let any org reserve slugs by naming
+routes after them. The gateway indexes provider slugs first-wins in file order,
+bootstrap rows before database rows, and then group slugs, skipping any a provider
+already holds. A slug two rows still share from before the guard therefore resolves the
+same way on every build, and a legacy database provider keeps a readonly group's slug.
 
 ## Proposed follow-up implementation issues
 
