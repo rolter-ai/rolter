@@ -2095,6 +2095,263 @@ async fn a_rate_limit_is_edited_in_place() {
     );
 }
 
+/// #1903: creating a budget or rate limit refuses the caps the gateway would
+/// ignore or misread, with the same 400s an edit already got. Each refused body
+/// writes nothing, so neither the version nor the scope's rows move.
+#[tokio::test]
+async fn creating_a_cap_refuses_what_the_gateway_would_ignore() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Guarded", "slug": "guarded"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    async fn refused(client: &reqwest::Client, url: String, body: Value) -> String {
+        let response = client.post(&url).json(&body).send().await.unwrap();
+        let status = response.status();
+        let error: Value = response.json().await.unwrap_or(Value::Null);
+        assert_eq!(status, 400, "{body} should be refused, got {error}");
+        error["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    let before = config_version(&pool).await;
+    let budgets = format!("{base}/api/v1/budgets");
+    // NaN parses as a float and is a legal numeric but reaches the gateway as
+    // no cap; inf and 1e9 overflow numeric(12,4); a negative cap refuses
+    // everything as already spent
+    for limit in ["NaN", "inf", "-1", "100000000", "1e9", "lots"] {
+        let message = refused(
+            &client,
+            budgets.clone(),
+            json!({"scope_type": "org", "scope_id": org_id, "limit_usd": limit}),
+        )
+        .await;
+        assert!(message.contains("limit_usd"), "{limit}: {message}");
+    }
+    let rate_limits = format!("{base}/api/v1/rate-limits");
+    for (caps, field) in [
+        (json!({"rpm": 0}), "rpm"),
+        (json!({"tpm": -5}), "tpm"),
+        (json!({"rpm": 60, "tpm": 0}), "tpm"),
+        // neither cap, however it is spelt, is a limit that admits everything
+        (json!({}), "rpm cap, a tpm cap"),
+        (json!({"rpm": null, "tpm": null}), "rpm cap, a tpm cap"),
+    ] {
+        let mut body = json!({"scope_type": "org", "scope_id": org_id});
+        body.as_object_mut()
+            .unwrap()
+            .extend(caps.as_object().unwrap().clone());
+        let message = refused(&client, rate_limits.clone(), body).await;
+        assert!(message.contains(field), "{caps}: {message}");
+    }
+    assert_eq!(
+        config_version(&pool).await,
+        before,
+        "a refused create must not wake the fleet"
+    );
+    let (budget_rows, limit_rows): (i64, i64) =
+        sqlx::query_as("select (select count(*) from budgets), (select count(*) from rate_limits)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((budget_rows, limit_rows), (0, 0));
+
+    // the values an edit accepts are accepted here too, zero freezing a scope
+    for body in [
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "0"}),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": " 99999999.9999 "}),
+    ] {
+        let response = client.post(&budgets).json(&body).send().await.unwrap();
+        assert!(response.status().is_success(), "{body}");
+    }
+    let response = client
+        .post(&rate_limits)
+        .json(&json!({"scope_type": "org", "scope_id": org_id, "tpm": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+}
+
+/// #1902: the gateway has no rolling windows, and used to read every period it
+/// did not know as monthly, so a `7d` budget was a calendar-month cap. A period
+/// outside what it recognises is now a 400 on create and on edit, naming the
+/// accepted spellings. A row stored before the check keeps being enforced as
+/// it was, and `GET /api/v1/config/problems` says so.
+#[tokio::test]
+async fn a_budget_period_is_one_the_gateway_recognises() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: String,
+        body: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let resp = client
+            .request(method, &url)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    let (_, org) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Windows", "slug": "windows"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+    let budgets = format!("{base}/api/v1/budgets");
+
+    for period in ["7d", "weekly", "dialy", "  "] {
+        let (status, error) = send(
+            &client,
+            reqwest::Method::POST,
+            budgets.clone(),
+            json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10", "period": period}),
+        )
+        .await;
+        assert_eq!(status, 400, "{period:?} should be refused, got {error}");
+        let message = error["error"]["message"].as_str().unwrap_or_default();
+        for accepted in ["daily", "monthly", "total", "30d"] {
+            assert!(
+                message.contains(accepted),
+                "{message} should name {accepted}"
+            );
+        }
+    }
+
+    // every spelling the gateway reads is accepted, stored as sent
+    let (status, created) = send(
+        &client,
+        reqwest::Method::POST,
+        budgets.clone(),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10", "period": " Daily "}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {created}");
+    assert_eq!(created["period"], "Daily");
+    let (status, defaulted) = send(
+        &client,
+        reqwest::Method::POST,
+        budgets.clone(),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10"}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {defaulted}");
+    assert_eq!(defaulted["period"], "30d", "the default is unchanged");
+
+    let url = format!("{base}/api/v1/budgets/{}", created["id"].as_str().unwrap());
+    let before = config_version(&pool).await;
+    let (status, error) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"period": "7d"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{error}");
+    assert_eq!(config_version(&pool).await, before);
+    let (status, edited) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url,
+        json!({"period": "total"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(edited["period"], "total");
+
+    // nothing the API accepts is reported
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(problems["problems"], json!([]), "{problems}");
+
+    // a row written before the check, which no migration rewrites
+    let legacy: uuid::Uuid = sqlx::query_scalar(
+        "insert into budgets (scope_type, scope_id, limit_usd, period)
+         values ('org', $1, 25, '7d') returning id",
+    )
+    .bind(org_id.parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines = problems["problems"].as_array().expect("problems");
+    assert_eq!(lines.len(), 1, "{problems}");
+    let line = lines[0].as_str().unwrap();
+    assert!(line.contains(&legacy.to_string()), "{line}");
+    assert!(line.contains("'7d'"), "{line}");
+    assert!(line.contains("monthly"), "{line}");
+
+    // still served, as the monthly cap it always was
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let periods: Vec<&str> = snap["config"]["budgets"]
+        .as_array()
+        .expect("budgets")
+        .iter()
+        .filter_map(|b| b["period"].as_str())
+        .collect();
+    assert_eq!(periods, ["total", "monthly", "monthly"], "{snap}");
+}
+
 /// Editing a budget or rate limit takes `update` on it, which the matrix
 /// grants to an admin of the scope and not to a viewer (#1285). Both reach the
 /// row's own scope chain, so the check is against where the cap already lives.

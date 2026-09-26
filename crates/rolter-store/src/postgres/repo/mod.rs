@@ -2811,6 +2811,13 @@ impl RateLimitRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
+    /// Store a new rate limit.
+    ///
+    /// Refused with [`Error::Config`] unless at least one cap is positive: the
+    /// snapshot loader reads a cap of zero or below as none, so a limit
+    /// without a positive one admits every request while looking like a hard
+    /// stop (#1903). The same rule [`update`](Self::update) applies to what an
+    /// edit leaves behind.
     pub async fn create(
         &self,
         scope_type: &str,
@@ -2818,6 +2825,11 @@ impl RateLimitRepo<'_> {
         rpm: Option<i32>,
         tpm: Option<i32>,
     ) -> Result<RateLimit> {
+        if !keeps_a_cap(rpm, tpm) {
+            return Err(Error::Config(
+                "a rate limit needs an rpm cap, a tpm cap or both, each at least 1".into(),
+            ));
+        }
         sqlx::query_as(
             "insert into rate_limits (scope_type, scope_id, rpm, tpm)
              values ($1, $2, $3, $4)
@@ -4852,6 +4864,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limit.rpm, Some(60));
+        // a limit with no positive cap admits everything, so it is never
+        // stored, whichever way the caps are missing (#1903)
+        for (rpm, tpm) in [
+            (None, None),
+            (Some(0), None),
+            (None, Some(-5)),
+            (Some(0), Some(0)),
+        ] {
+            assert!(
+                matches!(
+                    limits.create("project", project.id, rpm, tpm).await,
+                    Err(Error::Config(_))
+                ),
+                "{rpm:?} / {tpm:?} should be refused"
+            );
+        }
+        assert_eq!(
+            limits
+                .list_for_scope("project", project.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         let prices = ModelPriceRepo(&pool);
         let price = prices

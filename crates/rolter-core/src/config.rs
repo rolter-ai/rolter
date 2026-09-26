@@ -1797,6 +1797,39 @@ pub enum BudgetPeriod {
 }
 
 impl BudgetPeriod {
+    /// Every spelling of a period a stored budget may carry, with the window
+    /// each one means.
+    ///
+    /// The named forms are the ones `rolter.toml` takes. The shorthands are
+    /// what budgets stored through the control plane have always used, `30d`
+    /// above all since it is the column default, and they keep their meaning:
+    /// `30d` is the calendar month, not a rolling thirty days. There are no
+    /// rolling windows, so `7d` is not here (#1902).
+    pub const SPELLINGS: [(&'static str, BudgetPeriod); 8] = [
+        ("daily", BudgetPeriod::Daily),
+        ("1d", BudgetPeriod::Daily),
+        ("24h", BudgetPeriod::Daily),
+        ("monthly", BudgetPeriod::Monthly),
+        ("30d", BudgetPeriod::Monthly),
+        ("total", BudgetPeriod::Total),
+        ("lifetime", BudgetPeriod::Total),
+        ("all", BudgetPeriod::Total),
+    ];
+
+    /// Read a stored period, ignoring case and surrounding whitespace.
+    ///
+    /// `None` for anything outside [`SPELLINGS`](Self::SPELLINGS). The control
+    /// plane refuses such a value on write, and the snapshot loader, which has
+    /// to produce a config whatever an older row says, falls back to monthly
+    /// and reports the row as a config problem.
+    pub fn parse(value: &str) -> Option<BudgetPeriod> {
+        let value = value.trim();
+        Self::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| spelling.eq_ignore_ascii_case(value))
+            .map(|(_, period)| *period)
+    }
+
     /// Identifier of the current window at `now`; part of the Redis spend key so
     /// a new window starts with a zero counter.
     pub fn bucket(&self, now: DateTime<Utc>) -> String {
@@ -5135,6 +5168,39 @@ mod tests {
         assert!(json["rates"]["EUR"].is_number(), "{json}");
         let parsed: crate::CurrencyConfig = serde_json::from_value(json).expect("round trips");
         assert_eq!(parsed.rates.get("EUR"), Some(&d("1.10")));
+    }
+
+    /// #1902: a stored period is read strictly. `7d` used to fall through to
+    /// monthly without a word, so it has to come back as unrecognised rather
+    /// than as any window at all.
+    #[test]
+    fn a_budget_period_is_read_strictly() {
+        for (spelling, period) in [
+            ("daily", BudgetPeriod::Daily),
+            ("1d", BudgetPeriod::Daily),
+            (" 24H ", BudgetPeriod::Daily),
+            ("Monthly", BudgetPeriod::Monthly),
+            ("30d", BudgetPeriod::Monthly),
+            ("total", BudgetPeriod::Total),
+            ("LIFETIME", BudgetPeriod::Total),
+            ("all", BudgetPeriod::Total),
+        ] {
+            assert_eq!(BudgetPeriod::parse(spelling), Some(period), "{spelling}");
+        }
+        for unknown in ["7d", "weekly", "dialy", "", "  ", "30 d", "month"] {
+            assert_eq!(BudgetPeriod::parse(unknown), None, "{unknown:?}");
+        }
+        // every named form is the one serde writes for that window, so a
+        // period read from the database and one read from rolter.toml agree
+        for period in [
+            BudgetPeriod::Daily,
+            BudgetPeriod::Monthly,
+            BudgetPeriod::Total,
+        ] {
+            let named = serde_json::to_value(period).expect("serializes");
+            let named = named.as_str().expect("a string");
+            assert_eq!(BudgetPeriod::parse(named), Some(period), "{named}");
+        }
     }
 
     /// A budget limit is compared, not reported, so the boundary has to be a

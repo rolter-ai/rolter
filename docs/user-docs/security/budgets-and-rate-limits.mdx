@@ -282,6 +282,14 @@ card opens the same form used to create one, filled in with the current values.
 Only the fields you change are sent. On a rate limit, clearing a field lifts
 that cap, and at least one of the two has to stay.
 
+The period is picked from **Daily**, **Monthly** and **Total**, the windows the
+gateway has. They follow the calendar in UTC, so there is no rolling seven-day
+budget. A budget stored with a period the gateway does not recognise, such as
+`7d` from an older release, is enforced as monthly. Its card says so, the
+Providers screen lists it among the config problems, and picking a period in
+its edit form fixes it. The API accepts a few more spellings of the same three
+windows; see [Periods](/api/budgets-and-rate-limits#periods).
+
 Over the API the same edit is `PATCH /api/v1/budgets/{id}` or
 `PATCH /api/v1/rate-limits/{id}`. See
 [Budgets & rate limits API](/api/budgets-and-rate-limits) for the body and its

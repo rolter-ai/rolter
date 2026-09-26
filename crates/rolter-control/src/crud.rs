@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::{AdvancedModelConfig, Error};
+use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
     AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
@@ -4154,18 +4154,17 @@ async fn create_budget(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("budget", Create)).await?;
-    if body.limit_usd.trim().parse::<f64>().is_err() {
-        return Err(ApiError::Core(Error::Config(
-            "limit_usd must be numeric".into(),
-        )));
-    }
+    // the same checks an edit gets (#1903): a cap the gateway would read as
+    // no cap, or as already spent, is refused here rather than stored
+    validate_limit_usd(&body.limit_usd)?;
+    validate_period(&body.period)?;
     validate_unpriced_policy(body.unpriced_policy.as_deref())?;
     let row = BudgetRepo(pool(&state))
         .create(
             &body.scope_type,
             body.scope_id,
-            &body.limit_usd,
-            &body.period,
+            body.limit_usd.trim(),
+            body.period.trim(),
             body.unpriced_policy.as_deref(),
         )
         .await?;
@@ -4214,11 +4213,11 @@ struct UpdateBudget {
 /// cost is a sliver just below the boundary that parses to the same float.
 const LIMIT_USD_CEILING: f64 = 99_999_999.999_95;
 
-/// Validate a budget cap on the update path.
+/// Validate a budget cap, on create and on update.
 ///
-/// Stricter than the bare `f64` parse `create_budget` does: `NaN` parses as a
-/// float and is a valid `numeric`, but the gateway reads it back as no cap at
-/// all, and a negative cap refuses every request as already exhausted. A cap
+/// Stricter than a bare `f64` parse: `NaN` parses as a float and is a valid
+/// `numeric`, but the gateway reads it back as no cap at all, and a negative
+/// cap refuses every request as already exhausted. A cap
 /// too large for the column would pass a parse and then fail in the store as
 /// a 500 carrying the database's own message, so it is refused here as a 400
 /// naming the range. A cap of zero stays legal, since it is how a scope is
@@ -4231,6 +4230,27 @@ fn validate_limit_usd(value: &str) -> ApiResult<()> {
             "limit_usd must be a finite number from 0 to 99999999.9999".into(),
         ))),
     }
+}
+
+/// Validate a budget period, on create and on update (#1902).
+///
+/// The column is free text, and the snapshot loader reads anything it does not
+/// recognise as monthly, so a `7d` budget, which the dashboard itself used to
+/// suggest, was enforced as a calendar-month cap without a word. Refusing the
+/// value here, with every spelling the gateway does recognise, is what stops a
+/// new row from being misread. Rows stored before this check are reported by
+/// `GET /api/v1/config/problems` instead of being rewritten.
+fn validate_period(value: &str) -> ApiResult<()> {
+    if BudgetPeriod::parse(value).is_some() {
+        return Ok(());
+    }
+    let accepted: Vec<&str> = BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect();
+    Err(ApiError::Core(Error::Config(format!(
+        "period must be one of {accepted:?}; there are no rolling windows such as 7d"
+    ))))
 }
 
 /// What an edit actually moved, field by field, for the audit row.
@@ -4285,7 +4305,7 @@ async fn update_budget(
         validate_limit_usd(limit)?;
     }
     if let Some(period) = &body.period {
-        require_non_empty(period, "period")?;
+        validate_period(period)?;
     }
     validate_unpriced_policy(body.unpriced_policy.as_ref().and_then(|p| p.as_deref()))?;
     if body.limit_usd.is_none() && body.period.is_none() && body.unpriced_policy.is_none() {
@@ -4383,6 +4403,9 @@ async fn create_rate_limit(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("rate_limit", Create)).await?;
+    // each cap sent has to limit something, and the store refuses a limit
+    // left with none, as it does for an edit (#1903)
+    validate_rate_limit_caps(body.rpm, body.tpm)?;
     let row = RateLimitRepo(pool(&state))
         .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
         .await?;
@@ -4411,18 +4434,20 @@ struct UpdateRateLimit {
     tpm: Option<Option<i32>>,
 }
 
-/// Check each cap a rate-limit edit sets.
+/// Check each cap a rate-limit create or edit sets.
 ///
-/// A cap the patch sets has to be at least 1: the snapshot loader reads zero
-/// and below as "no cap", so storing one would look like a limit while
-/// admitting everything. Whether the caps left behind still limit anything
-/// depends on the row as it stands when the edit lands, so that half is
-/// [`RateLimitRepo::update`]'s to check, under its row lock.
-fn validate_rate_limit_caps(patch: &UpdateRateLimit) -> ApiResult<()> {
-    for (field, value) in [("rpm", patch.rpm), ("tpm", patch.tpm)] {
-        if matches!(value, Some(Some(cap)) if cap < 1) {
+/// `None` is a cap that is not being set: absent or null on a create, absent or
+/// lifted on an edit. A cap that is set has to be at least 1, since the
+/// snapshot loader reads zero and below as "no cap", so storing one would look
+/// like a limit while admitting everything. Whether any cap is left at all is
+/// the store's to check: on an edit that depends on the row as it stands when
+/// the edit lands, so [`RateLimitRepo::update`] checks it under its row lock,
+/// and [`RateLimitRepo::create`] applies the same rule to a new row.
+fn validate_rate_limit_caps(rpm: Option<i32>, tpm: Option<i32>) -> ApiResult<()> {
+    for (field, value) in [("rpm", rpm), ("tpm", tpm)] {
+        if matches!(value, Some(cap) if cap < 1) {
             return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be at least 1, or null to lift the cap"
+                "{field} must be at least 1, or null for no cap"
             ))));
         }
     }
@@ -4447,7 +4472,7 @@ async fn update_rate_limit(
         // nothing asked for, so nothing written, bumped or audited
         return Ok(Json(existing));
     }
-    validate_rate_limit_caps(&body)?;
+    validate_rate_limit_caps(body.rpm.flatten(), body.tpm.flatten())?;
     let edit = RateLimitRepo(pool(&state))
         .update(id, body.rpm, body.tpm)
         .await?;
@@ -5489,22 +5514,78 @@ mod cap_edit_tests {
         let patch = |body: serde_json::Value| -> UpdateRateLimit {
             serde_json::from_value(body).expect("patch body")
         };
+        let check = |patch: UpdateRateLimit| {
+            validate_rate_limit_caps(patch.rpm.flatten(), patch.tpm.flatten())
+        };
         for ok in [
             serde_json::json!({}),
             serde_json::json!({"rpm": 1}),
             serde_json::json!({"rpm": null, "tpm": 10}),
         ] {
-            assert!(validate_rate_limit_caps(&patch(ok.clone())).is_ok(), "{ok}");
+            assert!(check(patch(ok.clone())).is_ok(), "{ok}");
         }
         for bad in [
             serde_json::json!({"rpm": 0}),
             serde_json::json!({"tpm": -5}),
             serde_json::json!({"rpm": 10, "tpm": 0}),
         ] {
-            assert!(
-                refused(validate_rate_limit_caps(&patch(bad.clone()))),
-                "{bad}"
-            );
+            assert!(refused(check(patch(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1903: a create is held to the per-cap rule an edit already was. The
+    /// "at least one cap" half is the store's, and is covered there.
+    #[test]
+    fn a_cap_a_create_sets_has_to_be_positive() {
+        let body = |caps: serde_json::Value| -> CreateRateLimit {
+            let mut body = serde_json::json!({
+                "scope_type": "org",
+                "scope_id": "00000000-0000-0000-0000-000000000001",
+            });
+            body.as_object_mut()
+                .expect("object")
+                .extend(caps.as_object().expect("object").clone());
+            serde_json::from_value(body).expect("create body")
+        };
+        let check = |create: CreateRateLimit| validate_rate_limit_caps(create.rpm, create.tpm);
+        for ok in [
+            serde_json::json!({"rpm": 1}),
+            serde_json::json!({"tpm": 1000}),
+            serde_json::json!({"rpm": null, "tpm": 10}),
+        ] {
+            assert!(check(body(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!({"rpm": 0}),
+            serde_json::json!({"tpm": -5}),
+            serde_json::json!({"rpm": 60, "tpm": 0}),
+        ] {
+            assert!(refused(check(body(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1902: `7d` used to be stored and enforced as monthly. A period is
+    /// accepted only when the gateway reads it as the window it names, and the
+    /// refusal lists every spelling that would have been accepted.
+    #[test]
+    fn a_period_is_one_the_gateway_recognises() {
+        for ok in [
+            "daily", "1d", "24h", "monthly", "30d", "total", "lifetime", "all", " Daily ",
+        ] {
+            assert!(validate_period(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in ["7d", "weekly", "dialy", "", "  ", "1w", "month"] {
+            match validate_period(bad) {
+                Err(ApiError::Core(Error::Config(message))) => {
+                    for (spelling, _) in BudgetPeriod::SPELLINGS {
+                        assert!(
+                            message.contains(spelling),
+                            "{message} should name {spelling}"
+                        );
+                    }
+                }
+                other => panic!("{bad:?} should be refused, got {other:?}"),
+            }
         }
     }
 
