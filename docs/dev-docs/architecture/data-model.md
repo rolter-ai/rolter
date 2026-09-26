@@ -36,6 +36,8 @@ erDiagram
 - `budgets` — spend caps per scope and period; enforced before forwarding and refreshed from spend aggregates. `unpriced_policy` is an optional per-budget override of the deployment-wide unpriced-traffic policy (`ignore` | `warn` | `block`, null inherits); the gateway resolves most-restrictive-wins across the scope chain, so a budget can tighten it but never loosen it (#996).
 - `rate_limits` — RPM/TPM per scope; counters live in Redis for multi-instance correctness.
 
+Both cap tables are edited in place (#1285). `PATCH /api/v1/budgets/{id}` and `PATCH /api/v1/rate-limits/{id}` go through `BudgetRepo::update` and `RateLimitRepo::update`, each a single `update` statement, so the statement-level trigger from `0004_config_version_pricing_limits.sql` bumps `config_version` once per edit. Deleting and recreating a row instead would bump twice with no cap in between, and a gateway that polled in that gap would load a scope with nothing on it. The row keeps its id and `created_at`, and the scope is not editable. Redis spend counters are keyed by scope, scope id and period window rather than by budget row (`rolter:budget:<scope>:<id>:<window>`), so raising or lowering a limit keeps the spend already counted this period, while a changed `period` reads the new window's counter. The handlers also publish the new version on `CONFIG_CHANNEL`, the same as every other snapshot input, so a Redis-subscribed gateway refetches at once instead of at its next poll.
+
 ## Config versioning
 
 `config_version` holds a single monotonic counter the gateways watch for reload-free updates ([config-and-hot-reload.md](config-and-hot-reload.md)). `audit_log` records who changed what.
