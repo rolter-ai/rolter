@@ -1277,6 +1277,7 @@ def self_test(root: Path) -> int:
         parse("jobs:\n  a: {}\n  a: {}\n")
         problems.append("a duplicate job id parsed without an error")
     except yaml.YAMLError:
+        # the refusal is the expected outcome, so there is nothing to record
         pass
 
     # and end to end: a broken tree on disk is a failing run
