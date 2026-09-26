@@ -31,8 +31,21 @@ use trie::Trie;
 pub struct RouteContext<'a> {
     /// stable session/user identifier extracted from headers or body
     pub session_key: Option<&'a str>,
-    /// request prompt used for prefix/cache affinity scoring
+    /// request prompt used for prefix/cache affinity scoring. The gateway may
+    /// hand over only the leading bytes of a long prompt, since those are what
+    /// decide prefix affinity; `prompt_len` and `prompt_digest` then describe
+    /// the whole of it
     pub prompt: Option<&'a str>,
+    /// Byte length of the whole prompt `prompt` was taken from, for a reader
+    /// that needs the prompt's size rather than its leading bytes (the latency
+    /// predictor's token estimate). `None` means `prompt` is the whole prompt.
+    pub prompt_len: Option<usize>,
+    /// A 64-bit digest of the whole prompt `prompt` was taken from, for a
+    /// reader that keys on the prompt's identity (`consistent_hash` without a
+    /// session). Hashing a bounded prefix instead would send every request
+    /// that shares a long system prompt to one target. `None` means the reader
+    /// hashes `prompt` itself.
+    pub prompt_digest: Option<u64>,
     /// token ids used for exact vLLM block-prefix matching when supplied
     pub token_ids: Option<&'a [u32]>,
     /// LoRA adapter this request needs, when the route serves adapters over a
@@ -52,6 +65,27 @@ pub trait LoadBalancer: Send + Sync {
     /// load snapshot (`loads[i]` is the in-flight count for target `i`). When no
     /// load is known the slice may be empty.
     fn pick(&self, ctx: &RouteContext, loads: &[u64]) -> Option<usize>;
+
+    /// Pick as [`LoadBalancer::pick`] does, told which targets the caller can
+    /// use for this attempt: `eligible(i)` is `false` for a target that is
+    /// already tried, parked on a cooldown, unhealthy, breaker-open or refused
+    /// to the caller's key.
+    ///
+    /// The default ignores `eligible` and calls `pick`, since the caller skips
+    /// an ineligible pick itself. A strategy whose decision weighs targets
+    /// against each other overrides it, so a target that takes no traffic
+    /// cannot shape the comparison: `cache_aware`'s load guard would otherwise
+    /// read a dead replica's empty queue as the pool's least-loaded target.
+    /// When no target is eligible an override behaves as `pick`.
+    fn pick_eligible(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        let _ = eligible;
+        self.pick(ctx, loads)
+    }
 
     /// Record that `target` served the given context. Strategies that learn from
     /// traffic (cache aware) override this; others ignore it.
@@ -458,7 +492,12 @@ impl ConsistentHash {
     }
 
     fn pick_key(&self, key: &str) -> usize {
-        let h = self.hasher.hash_one(key);
+        self.pick_hash(self.hasher.hash_one(key))
+    }
+
+    /// The target owning ring position `h`: the first virtual node at or past
+    /// it, wrapping to the start of the ring.
+    fn pick_hash(&self, h: u64) -> usize {
         match self.ring.binary_search_by_key(&h, |(hh, _)| *hh) {
             Ok(idx) => self.ring[idx].1,
             Err(idx) => {
@@ -480,6 +519,12 @@ impl LoadBalancer for ConsistentHash {
         if let Some(key) = ctx.session_key {
             return Some(self.pick_key(key));
         }
+        // the whole prompt's digest before `prompt`, which may be only its
+        // leading bytes: prompts that share a long system prompt and differ
+        // after it must not all hash to one target
+        if let Some(digest) = ctx.prompt_digest {
+            return Some(self.pick_hash(self.hasher.hash_one(digest)));
+        }
         if let Some(prompt) = ctx.prompt {
             return Some(self.pick_key(prompt));
         }
@@ -487,12 +532,6 @@ impl LoadBalancer for ConsistentHash {
     }
 }
 
-/// Approximate cache-aware routing.
-///
-/// Each target keeps a byte trie of prompts it has served. Incoming prompts are
-/// scored by the fraction of their leading bytes already present on each target;
-/// when the best match clears `threshold` the request is pinned there to reuse
-/// the upstream KV cache, otherwise it spreads to the least-warmed target.
 /// Balance margins for [`CacheAware`], after SGLang's cache-aware router:
 /// prefix affinity wins until the warm target is busier than the least-loaded
 /// one by **both** margins, and then the request spreads. The absolute margin
@@ -503,15 +542,36 @@ impl LoadBalancer for ConsistentHash {
 const BALANCE_ABS_THRESHOLD: u64 = 2;
 const BALANCE_REL_THRESHOLD: f64 = 1.5;
 
-/// Whether `target` is busier than the least-loaded target by both balance
-/// margins. With no load known there is nothing to balance against.
-fn overloaded(target: usize, loads: &[u64]) -> bool {
-    let (Some(&load), Some(&min)) = (loads.get(target), loads.iter().min()) else {
+/// Whether `target` is busier than the least-loaded usable target by both
+/// balance margins. Only targets `usable` admits count towards the minimum: a
+/// replica that takes no traffic drains to an empty queue, and reading that as
+/// the pool's least-loaded target would call every warm replica overloaded.
+/// With no load known there is nothing to balance against.
+fn overloaded(target: usize, loads: &[u64], usable: &dyn Fn(usize) -> bool) -> bool {
+    let Some(&load) = loads.get(target) else {
         return false;
     };
-    load > min + BALANCE_ABS_THRESHOLD && load as f64 > min as f64 * BALANCE_REL_THRESHOLD
+    let Some(min) = (0..loads.len())
+        .filter(|&i| usable(i))
+        .map(|i| loads[i])
+        .min()
+    else {
+        return false;
+    };
+    load > min.saturating_add(BALANCE_ABS_THRESHOLD)
+        && load as f64 > min as f64 * BALANCE_REL_THRESHOLD
 }
 
+/// Approximate cache-aware routing.
+///
+/// Each target keeps a byte trie of prompts it has served. Incoming prompts are
+/// scored by the fraction of their leading bytes already present on each target.
+/// When the best match clears `threshold` the request is pinned there to reuse
+/// the upstream KV cache, unless that target is busier than the least-loaded
+/// one by both balance margins. Otherwise it spreads to the least-loaded target,
+/// or to the least-warmed one when no load is known. Given the caller's
+/// eligibility ([`LoadBalancer::pick_eligible`]), every one of those
+/// comparisons runs over the targets the caller can use.
 pub struct CacheAware {
     n: usize,
     threshold: f32,
@@ -546,53 +606,61 @@ impl LoadBalancer for CacheAware {
     }
 
     fn pick(&self, ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
+        self.pick_eligible(ctx, loads, &|_| true)
+    }
+
+    fn pick_eligible(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
         if self.n == 0 {
             return None;
         }
+        // asked once per target, since the caller's answer may take locks;
+        // with nothing eligible the caller fails open over every target, so
+        // weigh them all, as a plain pick does
+        let mut mask: Vec<bool> = (0..self.n).map(eligible).collect();
+        if !mask.contains(&true) {
+            mask.fill(true);
+        }
+        let usable = |i: usize| mask.get(i).copied().unwrap_or(false);
         if let Some(prompt) = ctx.prompt {
             if !prompt.is_empty() {
-                let mut best = 0usize;
-                let mut best_ratio = 0f32;
-                for i in 0..self.n {
+                let mut best: Option<(usize, f32)> = None;
+                for i in (0..self.n).filter(|&i| usable(i)) {
                     let matched = self.tries[i].lock().longest_prefix(prompt);
                     let ratio = matched as f32 / prompt.len() as f32;
-                    if ratio > best_ratio {
-                        best_ratio = ratio;
-                        best = i;
+                    if best.is_none_or(|(_, best_ratio)| ratio > best_ratio) {
+                        best = Some((i, ratio));
                     }
                 }
                 // affinity, unless the warm target is the one queueing
-                if best_ratio >= self.threshold
-                    && !(loads.len() == self.n && overloaded(best, loads))
-                {
-                    return Some(best);
+                if let Some((best, ratio)) = best {
+                    if ratio >= self.threshold
+                        && !(loads.len() == self.n && overloaded(best, loads, &usable))
+                    {
+                        return Some(best);
+                    }
                 }
             }
         }
         // not enough cache affinity: prefer the least loaded target when known
         if loads.len() == self.n {
-            let mut idx = 0;
-            let mut min = loads[0];
-            for (i, &l) in loads.iter().enumerate().skip(1) {
-                if l < min {
-                    min = l;
-                    idx = i;
-                }
-            }
-            return Some(idx);
+            return (0..self.n).filter(|&i| usable(i)).min_by_key(|&i| loads[i]);
         }
-        // otherwise spread to the target with the smallest learned tree
-        let mut idx = 0;
-        let mut min = self.sizes[0].load(Relaxed);
-        for i in 1..self.n {
-            let s = self.sizes[i].load(Relaxed);
-            if s < min {
-                min = s;
-                idx = i;
-            }
-        }
+        // otherwise spread to the target with the smallest learned tree, and
+        // round-robin while none has learned anything
+        let (idx, min) = (0..self.n)
+            .filter(|&i| usable(i))
+            .map(|i| (i, self.sizes[i].load(Relaxed)))
+            .min_by_key(|&(_, size)| size)?;
         if min == 0 {
-            idx = self.rr.fetch_add(1, Relaxed) % self.n;
+            let start = self.rr.fetch_add(1, Relaxed) % self.n;
+            return (0..self.n)
+                .map(|k| (start + k) % self.n)
+                .find(|&i| usable(i));
         }
         Some(idx)
     }
@@ -663,6 +731,7 @@ mod tests {
             prompt: None,
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         let a = lb.pick(&ctx, &[]).unwrap();
         let b = lb.pick(&ctx, &[]).unwrap();
@@ -692,6 +761,7 @@ mod tests {
             prompt: Some("a long shared system prompt followed by a question"),
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         let first = lb.pick(&ctx, &[]).unwrap();
         lb.observe(first, &ctx);
@@ -762,6 +832,104 @@ mod tests {
             served.push(target);
         }
         assert!(served.windows(2).all(|w| w[0] == w[1]), "{served:?}");
+    }
+
+    /// A replica that takes no traffic (unhealthy, parked, breaker-open)
+    /// drains to an empty queue. Its zero must not make the warm replica look
+    /// overloaded, or the spill lands on the dead replica and the gateway then
+    /// swaps in whichever target comes first.
+    #[test]
+    fn cache_aware_balances_only_against_eligible_targets() {
+        let lb = CacheAware::new(3, 0.5);
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        lb.observe(1, &ctx);
+        let alive = |i: usize| i != 2;
+        // counted against the dead replica, three in flight reads as overloaded
+        assert_eq!(lb.pick(&ctx, &[10, 3, 0]), Some(2));
+        // against the live pool the warm replica is the least loaded
+        assert_eq!(lb.pick_eligible(&ctx, &[10, 3, 0], &alive), Some(1));
+        // and a real imbalance among live replicas still spreads
+        assert_eq!(lb.pick_eligible(&ctx, &[1, 9, 0], &alive), Some(0));
+        // the least-loaded fallback skips the dead replica too
+        let cold = RouteContext {
+            prompt: Some("user: something nobody asked before\n"),
+            ..Default::default()
+        };
+        assert_eq!(lb.pick_eligible(&cold, &[4, 3, 0], &alive), Some(1));
+        // a warm replica that is itself ineligible leaves the affinity
+        assert_eq!(lb.pick_eligible(&ctx, &[0, 0, 0], &|i| i != 1), Some(0));
+    }
+
+    #[test]
+    fn cache_aware_with_nothing_eligible_picks_as_before() {
+        let lb = CacheAware::new(3, 0.5);
+        let ctx = RouteContext {
+            prompt: Some("system: be brief\nuser: hi\n"),
+            ..Default::default()
+        };
+        lb.observe(1, &ctx);
+        let none = |_: usize| false;
+        for loads in [[0, 0, 0], [10, 3, 0], [0, 9, 4]] {
+            assert_eq!(
+                lb.pick_eligible(&ctx, &loads, &none),
+                lb.pick(&ctx, &loads),
+                "{loads:?}"
+            );
+        }
+        // with no load known either, the untrained fallback still answers
+        let fresh = CacheAware::new(2, 0.5);
+        assert!(fresh.pick_eligible(&ctx, &[], &none).is_some());
+    }
+
+    #[test]
+    fn the_balance_margin_cannot_overflow() {
+        let all = |_: usize| true;
+        assert!(!overloaded(0, &[u64::MAX, u64::MAX], &all));
+        assert!(overloaded(0, &[u64::MAX, 0], &all));
+        // no usable target leaves nothing to balance against
+        assert!(!overloaded(0, &[9, 0], &|_| false));
+    }
+
+    #[test]
+    fn consistent_hash_keys_on_the_whole_prompt_digest() {
+        let lb = ConsistentHash::new(4);
+        // one bounded prefix, many whole prompts behind it: the digest decides
+        let targets: std::collections::HashSet<usize> = (0..64u64)
+            .map(|digest| {
+                let ctx = RouteContext {
+                    prompt: Some("system: a long shared prefix"),
+                    prompt_digest: Some(digest.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+                    ..Default::default()
+                };
+                lb.pick(&ctx, &[]).unwrap()
+            })
+            .collect();
+        assert!(targets.len() > 1, "{targets:?}");
+        // the same whole prompt keeps its target whatever prefix it carries
+        let a = RouteContext {
+            prompt: Some("one prefix"),
+            prompt_digest: Some(42),
+            ..Default::default()
+        };
+        let b = RouteContext {
+            prompt: Some("another prefix"),
+            prompt_digest: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(lb.pick(&a, &[]), lb.pick(&b, &[]));
+        // a session still wins over the prompt
+        let session = RouteContext {
+            session_key: Some("user-1"),
+            ..a.clone()
+        };
+        let plain = RouteContext {
+            session_key: Some("user-1"),
+            ..Default::default()
+        };
+        assert_eq!(lb.pick(&session, &[]), lb.pick(&plain, &[]));
     }
 
     #[test]

@@ -2776,9 +2776,7 @@ async fn create_provider(
     if providers.name_in_use(&body.name).await? {
         return Err(taken_in_deployment("provider name", &body.name));
     }
-    if providers.slug_in_use(&slug, None).await? {
-        return Err(taken_in_deployment("provider slug", &slug));
-    }
+    require_address_slug_free(&state, "provider slug", &slug, None).await?;
     // seal before touching the database so a missing KEK leaves no row behind
     let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
@@ -2873,12 +2871,7 @@ async fn update_provider(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        if ProviderRepo(pool(&state))
-            .slug_in_use(slug, Some(id))
-            .await?
-        {
-            return Err(taken_in_deployment("provider slug", slug));
-        }
+        require_address_slug_free(&state, "provider slug", slug, Some(id)).await?;
     }
     // seal before writing anything so a missing KEK changes nothing
     let sealed = match body.api_key.as_deref().map(str::trim) {
@@ -2981,6 +2974,73 @@ fn taken_in_deployment(what: &str, name: &str) -> ApiError {
     ApiError::Conflict(format!(
         "{what} '{name}' is already in use in this deployment; choose another"
     ))
+}
+
+/// Refuse a provider or group slug that already answers an address.
+///
+/// Providers and provider groups share one slug namespace at the gateway
+/// (`provider-slug/model`, `group-slug/model`), across every org and the
+/// bootstrap file, and a second holder silently takes the address from the
+/// first: a group whose slug a provider holds is dropped from routing
+/// entirely. `except` is the row being renamed, so it does not collide with
+/// itself.
+async fn require_address_slug_free(
+    state: &ControlState,
+    what: &str,
+    slug: &str,
+    except: Option<Uuid>,
+) -> ApiResult<()> {
+    if state.config_owned.holds_slug(slug)
+        || ProviderRepo(pool(state))
+            .address_slug_in_use(slug, except)
+            .await?
+    {
+        return Err(taken_in_deployment(what, slug));
+    }
+    Ok(())
+}
+
+/// Refuse a route name the gateway already answers for someone else.
+///
+/// A name is taken when another route has it, when it is the builtin
+/// `fake-llm` every org can call, or when it has the `slug/model` shape and
+/// the slug belongs to a provider or group of another org or of the bootstrap
+/// file. The gateway already treats a route outside the caller's org as
+/// absent, so such a route could only shadow the address for the operator's
+/// own keys, which carry no org and see every row; refusing it keeps those
+/// keys on the address they meant. A slug the route's own org holds is that
+/// org's choice. A name with `/` is otherwise fine: `Qwen/Qwen2.5-7B` is not
+/// a slug address, since a slug is lower-case. Neither refusal says who holds
+/// the name (#1845).
+///
+/// Only the API refuses `fake-llm`. A tenant must not take the builtin away,
+/// but an operator may replace it: a route of that name in the bootstrap file,
+/// a `[[models.default]]` or a `rolter-seed --import` still shadows it.
+async fn require_route_name_free(
+    state: &ControlState,
+    org_id: Option<Uuid>,
+    model: &str,
+) -> ApiResult<()> {
+    if model == rolter_core::FAKE_LLM_MODEL {
+        return Err(ApiError::Conflict(format!(
+            "'{model}' is the gateway's built-in model and cannot be a route name; choose another"
+        )));
+    }
+    let routes = RouteRepo(pool(state));
+    if routes.model_in_use(model).await? {
+        return Err(taken_in_deployment("route name", model));
+    }
+    if let Some(slug) = rolter_core::slug::address_slug(model) {
+        if state.config_owned.holds_slug(slug)
+            || routes.name_takes_address_outside_org(model, org_id).await?
+        {
+            return Err(ApiError::Conflict(format!(
+                "route name '{model}' is a provider or provider group address in this \
+                 deployment ('{slug}/…'); choose another"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse any provider that is not in `org_id`.
@@ -3090,9 +3150,7 @@ async fn create_provider_group(
     // a readonly config group with this slug shadows any DB row — refuse early
     require_group_not_config_owned(&state, &slug)?;
     let repo = ProviderGroupRepo(pool(&state));
-    if repo.slug_in_use(&slug, None).await? {
-        return Err(taken_in_deployment("provider group slug", &slug));
-    }
+    require_address_slug_free(&state, "provider group slug", &slug, None).await?;
     let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
     require_providers_in_org(&state, org_id, &member_providers).await?;
     let group = repo
@@ -3151,9 +3209,7 @@ async fn update_provider_group(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        if repo.slug_in_use(slug, Some(id)).await? {
-            return Err(taken_in_deployment("provider group slug", slug));
-        }
+        require_address_slug_free(&state, "provider group slug", slug, Some(id)).await?;
     }
     if let Some(members) = &body.members {
         let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
@@ -3283,9 +3339,7 @@ async fn create_route(
             "strategy must be one of {STRATEGIES:?}"
         ))));
     }
-    if RouteRepo(pool(&state)).model_in_use(&body.model).await? {
-        return Err(taken_in_deployment("route name", &body.model));
-    }
+    require_route_name_free(&state, org_id, &body.model).await?;
     let row = RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
         .await?;

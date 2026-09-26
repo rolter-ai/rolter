@@ -84,7 +84,7 @@ model = "meta-llama/Llama-3.1-8B-Instruct"
 </Accordion>
 
 <Accordion title="consistent_hash — sticky sessions via hash ring">
-  Rolter places targets on a 160-vnode hash ring and hashes the incoming `x-session-id` header (falling back to the prompt text) to select a target. The same session or prompt always lands on the same target, giving the upstream engine the best chance of serving it from a warm KV cache. If a target is removed, only the keys that mapped to it are reshuffled.
+  Rolter places targets on a 160-vnode hash ring and hashes the incoming `x-session-id` header (falling back to the whole conversation text, so requests that share a long system prompt but ask different questions still spread) to select a target. The same session or prompt always lands on the same target, giving the upstream engine the best chance of serving it from a warm KV cache. If a target is removed, only the keys that mapped to it are reshuffled.
 
 ```toml rolter.toml
 [[routes]]

@@ -20,7 +20,10 @@ A provider is an upstream AI service that Rolter can forward requests to. Each p
 | `egress_proxy` | —        | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
 
 <Note>
-  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Route names, provider names and slugs, and provider group slugs are unique across the whole deployment for now, so a name another organization already uses is refused with `409 Conflict`, without saying which organization holds it. Providers and routes declared in `rolter.toml` belong to the whole deployment.
+  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Route names and provider names are unique across the whole deployment for now, and provider slugs and provider group slugs share one namespace, so a provider cannot take a slug a group already has and the other way round. A name another organization already uses is refused with `409 Conflict`, without saying which organization holds it. A route name may contain `/`, as in `Qwen/Qwen2.5-7B`, but not as another organization's `provider-slug/…` or `group-slug/…` address, and `fake-llm` is reserved for the built-in model.
+
+Only the readonly rows of a file a process loads directly are deployment-wide: a gateway's `--config`, and the control plane's bootstrap `--config` (flat `[[providers]]`, `[[routes]]`, `[[provider_groups]]` and the `*.readonly` tiers). Entries under `[[providers.default]]`, `[[provider_groups.default]]` and `[[models.default]]` are seeded into the `default` organization, skipping any whose name another organization already uses, and `rolter-seed --import` writes into the organization it imports into (`default` unless you name another). Like dashboard-created rows, only that organization's keys can use them.
+
 </Note>
 
 ### Provider kinds
@@ -154,20 +157,29 @@ sections of a model's sheet, and saving the sheet writes them back to the route.
 | `visibility.project_only`                                              | `true` serves the model only to keys minted in the route's own project. Omitted (the default), every key in the organization may use it |
 | `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                        |
 
-A route is only ever served to keys of the organization it belongs to — a key
-from another organization gets `403` with code `model_not_allowed`, and does not
-see the model in `GET /v1/models`. Within the organization, the sheet's
+A route is only ever served to keys of the organization it belongs to. For a
+key from another organization the route does not exist: the key gets `404` with
+code `model_not_found`, as for a model nobody configured, and does not see it in
+`GET /v1/models`. The route does not hide anything of that key's own either, so
+the key's own `edge` provider still answers `edge/gpt-4o` when another
+organization has a route by that name. Within the organization, the sheet's
 **Access & permissions → Visibility** control narrows it further:
 
 - **Whole organization** (the default) — any key in the organization.
 - **This project** — only keys minted in the project the route lives in
-  (`visibility.project_only`).
+  (`visibility.project_only`). This narrows the route, not the provider behind
+  it: a key in another project of the organization can still call the provider
+  directly as `provider-slug/model`. To keep a provider to one project, set the
+  other projects' keys' **Providers** allow-list
+  ([#1919](https://github.com/rolter-ai/rolter/issues/1919)).
 - **Restricted** — only the teams, virtual keys and users you list.
 
 The gateway enforces the organization boundary, `project_only`,
 `allowed_team_ids` and `allowed_key_ids` on every endpoint that names a model,
-including audio uploads and Realtime sessions; a key outside them gets `403`
-with code `model_not_allowed`. `allowed_user_ids` and `minimum_role` apply in the
+including audio uploads and Realtime sessions. A key outside the organization
+or outside a **This project** route gets `404` with code `model_not_found`; a
+key the allowed teams or keys leave out gets `403` with code
+`model_not_allowed`. `allowed_user_ids` and `minimum_role` apply in the
 dashboard, since a virtual key carries no user. Keys defined in the gateway's
 own config file belong to the operator rather than to an organization and are
 not narrowed. See

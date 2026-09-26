@@ -155,8 +155,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
+    // the builtin is shadowed only by a route the caller could resolve: another
+    // org's route of that name must not take it away from this one
     let builtin = std::iter::once(fake_llm::MODEL_NAME)
-        .filter(|m| !snap.routes.contains_key(*m))
+        .filter(|m| snap.named_route_for(m, vk.as_ref()).is_none())
         .map(str::to_string);
     // bare route ids (and the builtin) are owned_by "rolter"
     let mut data: Vec<Value> = snap
@@ -405,23 +407,14 @@ pub(crate) fn authorize_route(
 /// request path. User restrictions remain a control-plane authorization
 /// concern because a virtual key intentionally carries no user identity.
 pub(crate) fn model_visible_to(key: Option<&KeyMeta>, entry: &crate::state::RouteEntry) -> bool {
-    let route = &entry.route;
     // another org's route is never served, whatever its lists say: its targets
-    // spend that org's provider credentials (#1844)
-    if !rolter_core::Tenancy::admits(route.tenancy.as_ref(), key.map_or("", |key| &key.org_id)) {
+    // spend that org's provider credentials (#1844). nor is a route its admin
+    // narrowed to another project. resolution already skips both, so this only
+    // guards a caller that holds an entry it did not resolve for this key
+    if !entry.in_tenancy_of(key) {
         return false;
     }
-    let visibility = &route.advanced.visibility;
-    // narrowed by its admin to the route's own project. A key with no org is
-    // the operator's, from the gateway's own config, and is not narrowed
-    if visibility.project_only {
-        let project = route.tenancy.as_ref().and_then(|t| t.project_id.as_deref());
-        if let (Some(key), Some(project)) = (key, project) {
-            if !key.org_id.is_empty() && key.project_id != project {
-                return false;
-            }
-        }
-    }
+    let visibility = &entry.route.advanced.visibility;
     if visibility.allowed_team_ids.is_empty()
         && visibility.allowed_key_ids.is_empty()
         && visibility.allowed_user_ids.is_empty()
@@ -631,17 +624,10 @@ fn authorize_lifecycle(
     route: &crate::response_registry::ResponseRoute,
 ) -> Result<(), AccessDenial> {
     authorize_model(key, &route.model)?;
-    let pinned = if snap.routes.contains_key(&route.route) {
-        None
-    } else {
-        snap.resolve_pinned(&route.route)
-    };
     let entry = snap
-        .routes
-        .get(&route.route)
-        .or(pinned.as_ref())
+        .resolve_for(&route.route, key)
         .ok_or(AccessDenial::RouteRemoved)?;
-    authorize_route(key, entry)?;
+    authorize_route(key, &entry)?;
     if key.is_some_and(|key| !key.provider_allowed(&route.provider)) {
         return Err(AccessDenial::ProviderNotAllowed);
     }
@@ -1221,7 +1207,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
-    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+    // for this caller; another org's route of that name does not
+    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
         return match path {
             "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
             "/v1/responses" => fake_llm::responses(&parsed),
@@ -1237,10 +1224,12 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         };
     }
 
-    // route-name-first: a named route always wins, even one whose name
-    // contains '/'. only on a miss do we try `provider-slug/model` addressing
-    // (ADR-0017), which pins a provider and forwards `model` as the upstream
-    // model through the same classic-pool machinery (owned entry held here).
+    // route-name-first: a named route wins, even one whose name contains '/'.
+    // only on a miss do we try `provider-slug/model` addressing (ADR-0017),
+    // which pins a provider and forwards `model` as the upstream model through
+    // the same classic-pool machinery (owned entry held here). a route outside
+    // the caller's tenancy is a miss, so it shadows nothing and the caller
+    // gets the unknown-model answer rather than learning it exists
     //
     // route resolution through the key's access checks is one attributable
     // stage; `strategy` and `candidates` are recorded once the route is known
@@ -1250,12 +1239,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         strategy = tracing::field::Empty,
         candidates = tracing::field::Empty
     );
-    let pinned = if snap.routes.contains_key(&model) {
-        None
-    } else {
-        snap.resolve_pinned(&model)
-    };
-    let mut entry = match snap.routes.get(&model).or(pinned.as_ref()) {
+    let resolved = snap.resolve_for(&model, vk.as_ref());
+    let mut entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -1743,14 +1728,19 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // prefix affinity reads the conversation, not the JSON envelope every
     // request to the model shares (#1851); a shape it cannot read keeps the
     // raw body, as before
-    let affinity = crate::prompt_affinity::affinity_text(path, &parsed);
+    let affinity = crate::prompt_affinity::affinity(path, &parsed);
     let prompt = affinity
-        .as_deref()
+        .as_ref()
+        .map(|a| a.text.as_str())
         .or_else(|| std::str::from_utf8(&body).ok());
     let token_ids = parse_vllm_token_ids(&headers);
     let ctx = RouteContext {
         session_key,
         prompt,
+        // the affinity text is only the prompt's leading bytes; the predictor's
+        // token estimate and consistent_hash need the whole of it
+        prompt_len: affinity.as_ref().map(|a| a.len),
+        prompt_digest: affinity.as_ref().map(|a| a.digest),
         token_ids: token_ids.as_deref(),
         // adapter identity only exists when the request addresses something
         // other than the route's own model — i.e. a passthrough provider-group
@@ -2633,20 +2623,15 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
-    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+    // for this caller; another org's route of that name does not
+    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
         return fake_llm::transcription(response_format.as_deref());
     }
 
-    // route-name-first: a named route always wins, even one whose name
-    // contains '/'. only on a miss do we try `provider-slug/model` addressing
-    // (ADR-0017), which pins a provider and forwards `model` as the upstream
-    // model through the same classic-pool machinery (owned entry held here).
-    let pinned = if snap.routes.contains_key(&model) {
-        None
-    } else {
-        snap.resolve_pinned(&model)
-    };
-    let entry = match snap.routes.get(&model).or(pinned.as_ref()) {
+    // the same resolution as the JSON pipeline: a named route in the caller's
+    // tenancy first, then `provider-slug/model` addressing (ADR-0017)
+    let resolved = snap.resolve_for(&model, vk.as_ref());
+    let entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -2700,6 +2685,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let ctx = RouteContext {
         session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
         prompt: None,
+        prompt_len: None,
+        prompt_digest: None,
         token_ids: token_ids.as_deref(),
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
@@ -3056,7 +3043,8 @@ pub(crate) fn key_pool_key(provider: &str) -> String {
 
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
-/// pool), then the remaining targets follow in declared order so the fallback
+/// pool, and told which targets are `eligible` as the classic pool's balancer
+/// is), then the remaining targets follow in declared order so the fallback
 /// tail stays deterministic. A route without variant balancers (or a pick out
 /// of range) degrades to plain declared order.
 fn variant_target_order(
@@ -3065,11 +3053,12 @@ fn variant_target_order(
     vi: usize,
     n: usize,
     loads: &[u64],
+    eligible: &dyn Fn(usize) -> bool,
 ) -> Vec<usize> {
     let lead = entry
         .variant_balancers
         .get(vi)
-        .and_then(|b| b.pick(ctx, loads))
+        .and_then(|b| b.pick_eligible(ctx, loads, eligible))
         .filter(|&i| i < n);
     let mut order = Vec::with_capacity(n);
     if let Some(i) = lead {
@@ -3122,7 +3111,17 @@ async fn forward_variants(
                     *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
                 }
             }
-            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads) {
+            // the same skip rules the attempt loop below applies, so the
+            // variant's balancer weighs only targets it can lead with
+            let eligible = |ti: usize| {
+                v.targets.get(ti).is_some_and(|target| {
+                    key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+                        && !(cd_enabled && state.cooldowns.is_parked(&key, ti))
+                        && state.health.is_healthy(&target.provider)
+                        && state.breaker.allows(&key, ti)
+                })
+            };
+            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
                 if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
                     candidates.push((vi, ti));
                 }
@@ -3378,11 +3377,18 @@ pub(crate) fn pick_untried(
             || !breaker.allows(model, i)
     };
     let n = entry.route.targets.len();
+    // the balancer weighs only the targets this attempt can use, so a dead
+    // replica's empty queue never reads as the least-loaded target (#1851)
+    let usable = |i: usize| i < n && !tried.contains(&i) && !skip(i);
     // a pick past the target list is treated as no pick rather than indexed:
     // a balancer shared across per-request pools (#1655) can be sized from a
     // different list than the one it is picking over, and `skip` indexes
     // `targets` directly (#1714)
-    if let Some(i) = entry.balancer.pick(ctx, loads).filter(|&i| i < n) {
+    if let Some(i) = entry
+        .balancer
+        .pick_eligible(ctx, loads, &usable)
+        .filter(|&i| i < n)
+    {
         if !tried.contains(&i) && !skip(i) {
             return Some(i);
         }
@@ -4860,7 +4866,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(1))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![1, 0]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![1, 0]
+        );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4868,7 +4877,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(9))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4876,7 +4888,10 @@ mod tests {
             variant_balancers: Vec::new(),
             route,
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
     }
 
     #[test]
@@ -5101,6 +5116,61 @@ mod tests {
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
         assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+    }
+
+    /// #1851's load guard against a pool with a dead replica: its load stays
+    /// at 0, and counting it made every warm replica with three requests in
+    /// flight look overloaded, so the spill went to the dead replica and then
+    /// on to target 0 by index, cache or no cache.
+    #[test]
+    fn cache_aware_balances_against_live_targets_only() {
+        let target = |provider: &str| Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::CacheAware,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![target("a"), target("b"), target("c")],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        entry.balancer.observe(1, &ctx);
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::new();
+        let bb = crate::breaker::Breaker::default();
+        hh.set("c", false);
+        let loads = [10, 3, 0];
+        // the warm replica is the least loaded of the live ones: it keeps the
+        // request rather than losing it to busy target 0
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(1)
+        );
+        // once it was tried, the spill goes to the other live replica
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[1], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(0)
+        );
+        // with every replica down the pick fails open, as before
+        hh.set("a", false);
+        hh.set("b", false);
+        assert!(pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None).is_some());
     }
 
     #[test]
@@ -5443,6 +5513,124 @@ mod tests {
                 "{address}"
             );
         }
+    }
+
+    /// A route another org owns is, for this caller, a route that does not
+    /// exist: it must not shadow this org's own provider or group address, nor
+    /// the builtin, and the answer must be the unknown-model one.
+    #[test]
+    fn another_orgs_route_shadows_nothing_for_this_org() {
+        let mut config = config_with_keys();
+        let pinned_to = |provider: &str| {
+            vec![Target {
+                provider: provider.to_string(),
+                model: None,
+                weight: 1,
+            }]
+        };
+        for (name, org) in [("edge", "org-b"), ("squatter", "org-a")] {
+            config.providers.push(rolter_core::ProviderConfig {
+                name: name.to_string(),
+                slug: Some(name.to_string()),
+                api_base: "http://127.0.0.1:9".to_string(),
+                tenancy: owned_by(org, None),
+                ..Default::default()
+            });
+        }
+        config
+            .provider_groups
+            .push(rolter_core::ProviderGroupConfig {
+                name: "pool".to_string(),
+                slug: Some("pool".to_string()),
+                strategy: BalancingStrategy::RoundRobin,
+                members: vec![rolter_core::GroupMember {
+                    provider: "edge".to_string(),
+                    model: None,
+                    weight: 1,
+                }],
+                tenancy: owned_by("org-b", None),
+            });
+        // org-a squats org-b's addresses and the builtin with named routes
+        for model in ["edge/gpt-4o", "pool/gpt-4o", fake_llm::MODEL_NAME] {
+            config.routes.push(ModelRoute {
+                model: model.to_string(),
+                strategy: BalancingStrategy::RoundRobin,
+                params: Default::default(),
+                param_policy: Default::default(),
+                advanced: Default::default(),
+                cache: None,
+                variants: Default::default(),
+                targets: pinned_to("squatter"),
+                tenancy: owned_by("org-a", Some("proj-a1")),
+            });
+        }
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let org_a = key_in("org-a", "proj-a1");
+        let org_b = key_in("org-b", "proj-b1");
+        let org_c = key_in("org-c", "proj-c1");
+
+        for address in ["edge/gpt-4o", "pool/gpt-4o"] {
+            // org-b reaches its own provider and group, not org-a's route
+            let entry = snapshot.resolve_for(address, Some(&org_b)).unwrap();
+            assert!(
+                matches!(entry, crate::state::ResolvedRoute::Pinned(_)),
+                "{address}"
+            );
+            assert!(
+                entry.route.targets.iter().all(|t| t.provider == "edge"),
+                "{address}"
+            );
+            assert!(authorize_route(Some(&org_b), &entry).is_ok(), "{address}");
+            // org-a keeps the route it named
+            let entry = snapshot.resolve_for(address, Some(&org_a)).unwrap();
+            assert!(
+                matches!(entry, crate::state::ResolvedRoute::Named(_)),
+                "{address}"
+            );
+            // a third org gets the unknown-model answer for both, never a
+            // refusal that would confirm either exists
+            assert!(
+                snapshot.resolve_for(address, Some(&org_c)).is_none(),
+                "{address}"
+            );
+        }
+        // org-a's `fake-llm` route shadows the builtin for org-a alone
+        assert!(snapshot
+            .named_route_for(fake_llm::MODEL_NAME, Some(&org_a))
+            .is_some());
+        assert!(snapshot
+            .named_route_for(fake_llm::MODEL_NAME, Some(&org_b))
+            .is_none());
+        // the operator's own key (no org) sees every row, as it always did
+        assert!(snapshot
+            .named_route_for("edge/gpt-4o", Some(&key_in("", "")))
+            .is_some());
+    }
+
+    /// A project-only route of another project is a miss too, so the org's own
+    /// pinned address behind it still answers.
+    #[test]
+    fn a_project_only_route_shadows_nothing_for_another_project() {
+        let mut config = config_with_keys();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "edge".to_string(),
+            slug: Some("edge".to_string()),
+            api_base: "http://127.0.0.1:9".to_string(),
+            tenancy: owned_by("org-a", None),
+            ..Default::default()
+        });
+        config.routes[0].model = "edge/gpt-4o".to_string();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        config.routes[0].advanced.visibility.project_only = true;
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        assert!(matches!(
+            snapshot.resolve_for("edge/gpt-4o", Some(&key_in("org-a", "proj-a1"))),
+            Some(crate::state::ResolvedRoute::Named(_))
+        ));
+        assert!(matches!(
+            snapshot.resolve_for("edge/gpt-4o", Some(&key_in("org-a", "proj-a2"))),
+            Some(crate::state::ResolvedRoute::Pinned(_))
+        ));
     }
 
     #[test]

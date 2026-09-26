@@ -28,7 +28,7 @@ Rolter's `cache_aware` strategy maintains a **per-target byte trie** of the prom
 3. If no target clears the threshold, or the pinned target is overloaded, Rolter routes to the **least-loaded target** (the least-warmed one when no load is known).
 4. After forwarding, Rolter records the served prompt in the winning target's trie, keeping the affinity map up to date.
 
-A warm target counts as overloaded when it has more than 2 requests in flight beyond the least-loaded target **and** more than 1.5 times its load. A short queue on the replica that holds the cache is worth waiting in; a long one is not, so a burst of requests sharing one system prompt spreads across the fleet instead of queueing on the first replica that served it, while each conversation's turns keep landing where their prefix is cached.
+A warm target counts as overloaded when it has more than 2 requests in flight beyond the least-loaded target **and** more than 1.5 times its load. Only targets that can take the request are compared: an unhealthy, cooling-down or circuit-broken replica is left out, so its empty queue does not make every other replica look busy. A short queue on the replica that holds the cache is worth waiting in; a long one is not, so a burst of requests sharing one system prompt spreads across the fleet instead of queueing on the first replica that served it, while each conversation's turns keep landing where their prefix is cached.
 
 The trie is capped at a node ceiling (default 1 million nodes) with LRU eviction: when the cap is reached, the least-recently-inserted prompt is pruned, but shared prefix nodes that are still referenced by other prompts survive.
 

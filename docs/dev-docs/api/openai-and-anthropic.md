@@ -150,7 +150,7 @@ them all:
 
 | Id                    | `owned_by`          | Where it comes from                                                                                              |
 | --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route shadows it                                   |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                   |
 | `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
 | `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
 

@@ -462,7 +462,7 @@ async fn import_config(
                 // another org already holds the name; writing it would make the
                 // snapshot refuse for the whole fleet (#1845)
                 if providers.name_in_use(&p.name).await?
-                    || providers.slug_in_use(&slug, None).await?
+                    || providers.address_slug_in_use(&slug, None).await?
                 {
                     return Err(taken_elsewhere("provider", &p.name));
                 }
@@ -510,6 +510,18 @@ async fn import_config(
             None => {
                 if routes.model_in_use(&r.model).await? {
                     return Err(taken_elsewhere("route", &r.model));
+                }
+                // `slug/model` is another org's provider or group address; the
+                // route would take it from the operator's own keys
+                if routes
+                    .name_takes_address_outside_org(&r.model, Some(org_id))
+                    .await?
+                {
+                    return Err(anyhow::anyhow!(
+                        "route '{}' is a provider or provider group address another \
+                         organization answers; rename it in the file",
+                        r.model
+                    ));
                 }
                 let created = routes.create(project_id, &r.model, strategy).await?;
                 tracing::info!(model = %r.model, "created route");
@@ -623,7 +635,8 @@ async fn import_provider_groups(
                 updated
             }
             None => {
-                if groups.slug_in_use(&slug, None).await? {
+                // groups share the provider slug namespace at the gateway
+                if ProviderRepo(pool).address_slug_in_use(&slug, None).await? {
                     return Err(taken_elsewhere("provider group", &g.name));
                 }
                 let created = groups.create(org_id, &g.name, &slug, strategy).await?;
