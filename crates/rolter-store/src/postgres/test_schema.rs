@@ -74,6 +74,16 @@ const POOL_SIZE_ENV: &str = "ROLTER_TEST_POOL_MAX_CONNECTIONS";
 /// SQLSTATE `too_many_connections`: the server has no connection slot left.
 const TOO_MANY_CONNECTIONS: &str = "53300";
 
+/// SQLSTATE `cannot_connect_now`: the server is still starting up.
+const CANNOT_CONNECT_NOW: &str = "57P03";
+
+/// First and longest wait between two attempts of [`connect_riding_out`].
+/// The first is short because a slot usually frees within milliseconds, as
+/// another test's guard finishes its cleanup; the cap keeps the last attempts
+/// close together so a slot that frees late is still taken promptly.
+const RETRY_BACKOFF_START: std::time::Duration = std::time::Duration::from_millis(10);
+const RETRY_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(1);
+
 static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
 static SWEPT: AtomicBool = AtomicBool::new(false);
 
@@ -112,6 +122,45 @@ fn is_too_many_connections(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if db.code().as_deref() == Some(TOO_MANY_CONNECTIONS))
 }
 
+/// Whether a failed connect clears up on its own: the server has no slot free
+/// right now, or is still starting. The same two codes sqlx's pool retries
+/// while it connects, so a direct connection is no less patient than a pool.
+fn is_transient_connect_error(err: &sqlx::Error) -> bool {
+    matches!(
+        err,
+        sqlx::Error::Database(db)
+            if matches!(db.code().as_deref(), Some(TOO_MANY_CONNECTIONS | CANNOT_CONNECT_NOW))
+    )
+}
+
+/// Open one direct connection, riding out a transient refusal for up to
+/// `window` with capped exponential backoff, as a pool would during its
+/// acquire timeout. A server at `max_connections` for a moment, which is what
+/// several suites on one server produce, then costs a short wait rather than
+/// a failed test. Any other error, a refused TCP connection included, is
+/// returned at once: retrying a server that is not there only delays the
+/// message that says so.
+async fn connect_riding_out(
+    options: &PgConnectOptions,
+    window: std::time::Duration,
+) -> Result<PgConnection, sqlx::Error> {
+    let deadline = tokio::time::Instant::now() + window;
+    let mut backoff = RETRY_BACKOFF_START;
+    loop {
+        match PgConnection::connect_with(options).await {
+            Err(err) if is_transient_connect_error(&err) => {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return Err(err);
+                }
+                tokio::time::sleep(backoff.min(left)).await;
+                backoff = (backoff * 2).min(RETRY_BACKOFF_MAX);
+            }
+            result => return result,
+        }
+    }
+}
+
 /// What a test prints when the server has no connection slot left.
 fn exhaustion_message(server: &str) -> String {
     format!(
@@ -138,11 +187,7 @@ async fn connection_usage(conn: &mut PgConnection) -> Option<(i64, i64)> {
 
 /// Why a direct connection to `url` failed, phrased for whoever reads the test
 /// output. `pool_error` is what the pool reported first, when there was one.
-fn describe_direct_failure(
-    url: &str,
-    err: &sqlx::Error,
-    pool_error: Option<&dyn std::fmt::Display>,
-) -> String {
+fn describe_direct_failure(url: &str, err: &sqlx::Error, pool_error: Option<&str>) -> String {
     let server = server_label(url);
     if is_too_many_connections(err) {
         return exhaustion_message(&server);
@@ -169,7 +214,7 @@ fn describe_direct_failure(
 /// acquire timeout, then reports a bare `PoolTimedOut` that reads like a slow
 /// query. A single direct connection is not retried, so it surfaces the
 /// server's own answer, which is what this reports.
-async fn explain_pool_failure(url: &str, pool_error: &dyn std::fmt::Display) -> String {
+async fn explain_pool_failure(url: &str, pool_error: &str) -> String {
     let server = server_label(url);
     match PgConnection::connect(url).await {
         Err(err) => describe_direct_failure(url, &err, Some(pool_error)),
@@ -218,9 +263,22 @@ async fn exhaustion_note(url: &str) -> Option<String> {
 
 /// A direct connection for the few statements a guard runs outside the test's
 /// schema, with the failure explained.
+///
+/// It waits out a server with no free slot for the test pool's acquire
+/// timeout, the time the pool it replaces gave it, and only then reports the
+/// exhaustion.
 async fn admin_connection(url: &str) -> PgConnection {
-    match PgConnection::connect(url).await {
+    let window = test_pool_config().acquire_timeout;
+    let connected = match url.parse::<PgConnectOptions>() {
+        Ok(options) => connect_riding_out(&options, window).await,
+        Err(err) => Err(err),
+    };
+    match connected {
         Ok(conn) => conn,
+        Err(err) if is_transient_connect_error(&err) => panic!(
+            "{} (still refused after retrying for {window:?})",
+            describe_direct_failure(url, &err, None)
+        ),
         Err(err) => panic!("{}", describe_direct_failure(url, &err, None)),
     }
 }
@@ -257,13 +315,15 @@ impl TestSchema {
     /// are *not* applied — use [`TestSchema::migrated`] for that, or apply
     /// them through whatever the test is exercising.
     pub async fn create(url: &str) -> Self {
+        // connect before the sweep, so a server that cannot be reached is
+        // reported as such and the once-per-process sweep is not spent on it
+        let mut admin = admin_connection(url).await;
         sweep_once(url).await;
 
         // (re)create the isolated schema over a default-search_path connection.
         // the defensive drop matters because the operating system recycles
         // pids: a previous run holding our pid may have left this exact name
         let schema = unique_schema();
-        let mut admin = admin_connection(url).await;
         admin
             .execute(format!("drop schema if exists {schema} cascade").as_str())
             .await
@@ -276,7 +336,7 @@ impl TestSchema {
 
         let pool = match connect_with(&with_search_path(url, &schema), test_pool_config()).await {
             Ok(pool) => pool,
-            Err(err) => panic!("{}", explain_pool_failure(url, &err).await),
+            Err(err) => panic!("{}", explain_pool_failure(url, &err.to_string()).await),
         };
         Self {
             schema,
@@ -612,16 +672,32 @@ mod tests {
         }
     }
 
-    /// A server that is down used to cost the full acquire timeout and then a
-    /// bare `PoolTimedOut`; a direct connection answers at once and says so.
-    #[tokio::test]
-    async fn a_server_that_is_not_listening_is_named_as_such() {
+    /// A url naming a local port nothing listens on.
+    fn url_with_no_server() -> (String, u16) {
         // bind and release a port so nothing is listening on it
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
             .expect("a free port")
             .port();
-        let url = format!("postgres://u:p@127.0.0.1:{port}/rolter_test");
+        (format!("postgres://u:p@127.0.0.1:{port}/rolter_test"), port)
+    }
+
+    /// The text a panic carried, for a test that asserts on what a failing
+    /// test would print.
+    fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(text) => *text,
+            Err(payload) => payload
+                .downcast_ref::<&str>()
+                .map_or_else(|| "a non-text panic".to_string(), |s| s.to_string()),
+        }
+    }
+
+    /// A server that is down used to cost the full acquire timeout and then a
+    /// bare `PoolTimedOut`; a direct connection answers at once and says so.
+    #[tokio::test]
+    async fn a_server_that_is_not_listening_is_named_as_such() {
+        let (url, port) = url_with_no_server();
         let err = PgConnection::connect(&url)
             .await
             .expect_err("nothing listens there");
@@ -631,6 +707,126 @@ mod tests {
                 && message.contains(&format!("127.0.0.1:{port}")),
             "{message}"
         );
+    }
+
+    /// The same, through the guard every postgres test builds: its setup
+    /// fails at once with the explanation rather than after the acquire
+    /// timeout with a bare `connect` expectation.
+    #[tokio::test]
+    async fn a_guard_for_a_server_that_is_not_listening_says_so_at_once() {
+        let (url, port) = url_with_no_server();
+        let started = std::time::Instant::now();
+        let payload = tokio::spawn(async move {
+            let _guard = TestSchema::create(&url).await;
+        })
+        .await
+        .expect_err("a guard needs a server")
+        .into_panic();
+        let took = started.elapsed();
+        let message = panic_text(payload);
+        assert!(
+            message.contains("nothing is accepting connections")
+                && message.contains(&format!("127.0.0.1:{port}")),
+            "{message}"
+        );
+        assert!(
+            took < test_pool_config().acquire_timeout / 2,
+            "a refused connection was retried for {took:?}"
+        );
+    }
+
+    /// `url` with `role` and `password` in place of its credentials.
+    fn url_as(url: &str, role: &str, password: &str) -> String {
+        let options = url
+            .parse::<PgConnectOptions>()
+            .expect("the test url parses");
+        let host = options.get_host();
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        format!(
+            "postgres://{role}:{password}@{host}:{}/{}",
+            options.get_port(),
+            options.get_database().unwrap_or("postgres")
+        )
+    }
+
+    /// Postgres refuses a role over its `connection limit` with the same
+    /// SQLSTATE 53300 a server at `max_connections` sends, so a role limited to
+    /// no connections at all is exhaustion on demand, without filling the
+    /// server every other suite shares. Against it this checks that the
+    /// classification matches what a real server sends, that a direct
+    /// connection waits a refusal out for its whole window rather than failing
+    /// on the first, and that a guard's setup connects once a slot frees.
+    #[tokio::test]
+    async fn a_server_out_of_slots_is_waited_out_and_then_named() {
+        let Some(url) = database_url().await else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let role = format!("rolter_{}", unique_schema());
+        let password = "slotless";
+        let mut admin = PgConnection::connect(&url).await.expect("connect");
+        admin
+            .execute(
+                format!("create role {role} login password '{password}' connection limit 0")
+                    .as_str(),
+            )
+            .await
+            .expect("create a role with no connection slots");
+        let slotless = url_as(&url, &role, password);
+
+        // assertions run in a task of their own so the role is dropped even
+        // when one of them fails
+        let checks = tokio::spawn({
+            let url = url.clone();
+            let role = role.clone();
+            async move {
+                let err = PgConnection::connect(&slotless)
+                    .await
+                    .expect_err("a role with no slots is refused");
+                assert!(is_too_many_connections(&err), "not classified: {err}");
+                let message = describe_direct_failure(&slotless, &err, None);
+                assert!(message.contains("no connection slots left"), "{message}");
+
+                let options = slotless.parse::<PgConnectOptions>().expect("parses");
+                let window = std::time::Duration::from_millis(300);
+                let started = std::time::Instant::now();
+                let err = connect_riding_out(&options, window)
+                    .await
+                    .expect_err("the role still has no slots");
+                assert!(is_too_many_connections(&err), "{err}");
+                assert!(
+                    started.elapsed() >= window,
+                    "gave up after {:?} instead of retrying for {window:?}",
+                    started.elapsed()
+                );
+
+                // the connection a guard opens for its setup, started while
+                // the role has no slot and given one a moment later
+                let waiting = tokio::spawn(async move { admin_connection(&slotless).await });
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let mut other = PgConnection::connect(&url).await.expect("connect");
+                other
+                    .execute(format!("alter role {role} connection limit -1").as_str())
+                    .await
+                    .expect("free a slot");
+                let _ = other.close().await;
+                let conn = waiting.await.expect("connects once a slot frees");
+                let _ = conn.close().await;
+            }
+        })
+        .await;
+
+        let _ = admin
+            .execute(format!("drop role if exists {role}").as_str())
+            .await;
+        let _ = admin.close().await;
+        if let Err(err) = checks {
+            std::panic::resume_unwind(err.into_panic());
+        }
     }
 
     #[tokio::test]

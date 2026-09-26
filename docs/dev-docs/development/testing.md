@@ -136,7 +136,7 @@ Two things that used to be true stop being true:
 
 The worktree's path is stored as the database's comment, and both ways a
 database is reclaimed go through it. Removing the worktree with `wt remove` runs
-the `pre-remove` hook in [`.config/wt.toml`](../../.config/wt.toml), which drops
+the `pre-remove` hook in [`.config/wt.toml`](../../../.config/wt.toml), which drops
 the databases carrying that worktree's path on the `just test-pg` server
 straight away. Independently of any hook, the next test run in any worktree drops
 every `rolter_test_wt_*` database whose recorded directory no longer exists, so a
@@ -183,7 +183,7 @@ connection per test thread plus a handful for the harness. The pool size barely
 moves the peak; the number of tests running at once does. That is why the stock
 limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
 24-thread workstation. Under `cargo nextest` the `serial-db` group in
-[`.config/nextest.toml`](../../.config/nextest.toml) runs one postgres test at a
+[`.config/nextest.toml`](../../../.config/nextest.toml) runs one postgres test at a
 time per worktree, so a worktree holds only a few connections there; the numbers
 above are the case for `cargo test`, and for nextest too if that group goes
 (#1429).
@@ -207,9 +207,11 @@ A test that cannot connect says which budget ran out, since the pool on its
 own does not: it retries `too many clients` until its 30-second acquire timeout
 and then reports a bare `pool timed out while waiting for an open connection`,
 which reads like a slow query or a regression. `TestSchema` connects directly
-for its own setup and panics with the server's answer (`has no connection slots
-left (SQLSTATE 53300 ...)`, or `nothing is accepting connections` when the server
-is down). A test that fails while the server is at or within a tenth of its limit
+for its own setup. It waits out a server at its limit for the same 30 seconds,
+with backoff, since a slot usually frees within milliseconds as another test's
+guard finishes its cleanup, and only then panics with the server's answer (`has
+no connection slots left (SQLSTATE 53300 ...)`). A server that is down is
+reported at once instead, as `nothing is accepting connections`. A test that fails while the server is at or within a tenth of its limit
 gets the same note printed after its panic, and one that fails with its own pool
 fully checked out is told that instead. `just test-pg-status` shows how many
 connections are in use; `cargo test -- --test-threads=<n>` lowers a worktree's
