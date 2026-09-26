@@ -15,12 +15,21 @@ name: project-automation
 # a fine-grained PAT stored as the secret ADD_TO_PROJECT_PAT (org: projects
 # read/write, repo: contents/issues/pull-requests read). pull_request_target is
 # required so PRs from forks can still see the secret.
+#
+# github meters a PAT against the account that owns it, not against the token,
+# so this job shares one graphql budget with everything else that account runs.
+# every call goes through gh_graphql below, which waits out a rate limit or a
+# transient server error instead of failing on the first one, and names the
+# cause when it does give up: an exhausted budget, throttling or an outage says
+# "nothing is misconfigured", a bad or under-scoped token says so (#1718). see
+# docs/dev-docs/development/issue-tracking.md.
 on:
   issues:
     types: [opened]
   # pull_request_target is required so PRs from forks can read the org PAT; this
-  # workflow never checks out PR head and passes only the project id and literal
-  # field names to run:, so the usual injection risk does not apply.
+  # workflow never checks out PR head and passes only the project id, the
+  # item's node id and url, and literal field names to run: (all through env),
+  # so the usual injection risk does not apply.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened]
 
@@ -31,29 +40,158 @@ jobs:
   add-to-board:
     name: add to project board
     runs-on: ubuntu-latest
+    # backstop only: RETRY_WINDOW below bounds the waiting, so this fires on a
+    # hang, never on a rate limit
+    timeout-minutes: 25
     steps:
-      - name: add item to project
-        id: add
-        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
-        with:
-          project-url: https://github.com/orgs/rolter-ai/projects/1
-          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
-
-      - name: seed default Status and Priority
-        if: steps.add.outputs.itemId != ''
+      - name: add item to project and seed default Status and Priority
         env:
           GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
-          ITEM_ID: ${{ steps.add.outputs.itemId }}
           PROJECT_ID: PVT_kwDOEjWga84Bdezc
+          CONTENT_ID: ${{ github.event.issue.node_id || github.event.pull_request.node_id }}
+          CONTENT_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
           IS_PR: ${{ github.event_name == 'pull_request_target' }}
+          # seconds this run may spend waiting on rate limits and outages. long
+          # enough to ride out throttling and a budget that refills soon, short
+          # enough that a burst of opened PRs cannot park runners for an hour
+          RETRY_WINDOW: "900"
         run: |
           set -euo pipefail
+
+          DEADLINE=$(( $(date +%s) + RETRY_WINDOW ))
+          RERUN="rerun the failed job (gh run rerun $GITHUB_RUN_ID --failed) or add the item by hand (gh project item-add 1 --owner rolter-ai --url $CONTENT_URL)"
+          GH_ERR=$(mktemp)
+
+          # what a failed call said, matched case-insensitively against both
+          # of gh's streams. order matters: a secondary limit also says "rate
+          # limit", and a throttled call also carries an http 403
+          RE_SECONDARY='secondary rate limit|abuse detection'
+          RE_PRIMARY='rate limit|RATE_LIMITED'
+          # "Content already exists" is two writers adding the same item at
+          # once; the retry gets the existing item back, since
+          # addProjectV2ItemById returns it rather than failing
+          RE_TRANSIENT='HTTP 5[0-9][0-9]|No server is currently available|Something went wrong|timed out|timeout|connection reset|unexpected EOF|Content already exists in this project'
+          RE_CONFIG='Bad credentials|HTTP 401|HTTP 403|HTTP 404|Resource not accessible|INSUFFICIENT_SCOPES|NOT_FOUND|FORBIDDEN|Could not resolve to'
+
+          # one annotation per failure, on stderr, because callers read
+          # gh_graphql's stdout as the response body
+          fail() {
+            local message=$2
+            message=${message//'%'/%25}
+            message=${message//$'\r'/}
+            message=${message//$'\n'/ }
+            echo "::error title=$1::$message" >&2
+          }
+
+          # `gh api graphql "$@"`, retried until DEADLINE on a rate limit, a
+          # secondary rate limit or a transient server error. anything else
+          # fails at once. prints the response body on success
+          gh_graphql() {
+            local attempt=0 secondary=0 rc out msg kind now wait
+            local limits remaining reset limit
+            while :; do
+              attempt=$((attempt + 1))
+              rc=0
+              out=$(gh api graphql "$@" 2>"$GH_ERR") || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              # gh names the error on stderr and prints the response body,
+              # graphql `errors` included, on stdout
+              msg=$(<"$GH_ERR")
+              if [ -n "$out" ]; then msg="$msg $out"; fi
+              now=$(date +%s)
+
+              shopt -s nocasematch
+              if [[ $msg =~ $RE_SECONDARY ]]; then kind=secondary
+              elif [[ $msg =~ $RE_PRIMARY ]]; then kind=primary
+              elif [[ $msg =~ $RE_TRANSIENT ]]; then kind=transient
+              elif [[ $msg =~ $RE_CONFIG ]]; then kind=config
+              else kind=other
+              fi
+              shopt -u nocasematch
+
+              case $kind in
+                primary)
+                  # GET /rate_limit is free: it does not count against the
+                  # budget it reports
+                  limits=$(gh api rate_limit --jq '.resources.graphql | "\(.remaining) \(.reset) \(.limit)"' 2>/dev/null) || limits=""
+                  read -r remaining reset limit <<<"$limits" || true
+                  if [ "${remaining:-}" = "0" ] && [[ ${reset:-} =~ ^[0-9]+$ ]]; then
+                    wait=$(( reset - now + 5 ))
+                    if (( now + wait > DEADLINE )); then
+                      fail "GitHub API budget exhausted" "the account behind ADD_TO_PROJECT_PAT has spent its ${limit:-5000} GraphQL points for the hour and gets them back at $(date -u -d "@$reset" '+%H:%M UTC'), after this run stops waiting. nothing is misconfigured: once the budget is back, $RERUN"
+                      return 1
+                    fi
+                    echo "graphql budget spent; it refills at $(date -u -d "@$reset" '+%H:%M:%S UTC'), waiting ${wait}s" >&2
+                  else
+                    # refilled between the call and this check, or the
+                    # endpoint did not answer: back off briefly and retry
+                    wait=$(( 5 * 2 ** (attempt - 1) ))
+                    if (( attempt >= 6 || now + wait > DEADLINE )); then
+                      fail "GitHub API rate limit" "GitHub kept answering with a rate limit after $attempt attempts: $msg. nothing is misconfigured: $RERUN"
+                      return 1
+                    fi
+                  fi
+                  ;;
+                secondary)
+                  # github asks for at least a minute, growing exponentially
+                  secondary=$((secondary + 1))
+                  wait=$(( 60 * 2 ** (secondary - 1) ))
+                  if (( now + wait > DEADLINE )); then
+                    fail "GitHub API secondary rate limit" "GitHub was still throttling the account behind ADD_TO_PROJECT_PAT for too many requests in a short window when this run stopped waiting. nothing is misconfigured: $RERUN"
+                    return 1
+                  fi
+                  ;;
+                transient)
+                  wait=$(( 5 * 2 ** (attempt - 1) ))
+                  if (( attempt >= 6 || now + wait > DEADLINE )); then
+                    fail "GitHub API unavailable" "GitHub kept failing after $attempt attempts: $msg. nothing is misconfigured: $RERUN"
+                    return 1
+                  fi
+                  ;;
+                config)
+                  fail "project board token misconfigured" "$msg. this is not a rate limit: check that the ADD_TO_PROJECT_PAT secret is set, has not expired, and grants org Projects read/write plus repository contents, issues and pull requests read"
+                  return 1
+                  ;;
+                *)
+                  fail "GitHub API request failed" "$msg"
+                  return 1
+                  ;;
+              esac
+              echo "attempt $attempt failed ($kind); retrying in ${wait}s" >&2
+              sleep "$wait"
+            done
+          }
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            fail "project board token missing" "the ADD_TO_PROJECT_PAT secret is empty or not visible to this run. this is not a rate limit: an org admin has to set it (org: projects read/write, repo: contents, issues and pull requests read)"
+            exit 1
+          fi
+
+          # addProjectV2ItemById hands back the existing item when the content
+          # is already on the board, so a rerun is harmless
+          # shellcheck disable=SC2016
+          ADDED=$(gh_graphql -f query='
+            mutation($project:ID!,$content:ID!){
+              addProjectV2ItemById(input:{projectId:$project,contentId:$content}){
+                item { id }
+              }
+            }' -f project="$PROJECT_ID" -f content="$CONTENT_ID")
+          ITEM_ID=$(jq -r '.data.addProjectV2ItemById.item.id // empty' <<<"$ADDED")
+          if [ -z "$ITEM_ID" ]; then
+            fail "project board add returned no item" "addProjectV2ItemById answered without an item id for $CONTENT_URL"
+            echo "$ADDED" >&2
+            exit 1
+          fi
+          echo "on the board as $ITEM_ID: $CONTENT_URL"
 
           # one query for every single-select field and its options, so the
           # names below are resolved against whatever the board looks like today.
           # $-prefixed names in the query are graphql variables, not shell vars
           # shellcheck disable=SC2016
-          FIELDS=$(gh api graphql -f query='
+          FIELDS=$(gh_graphql -f query='
             query($project:ID!){
               node(id:$project){
                 ... on ProjectV2 {
@@ -73,7 +211,7 @@ jobs:
           # this is a read-then-write and NOT atomic. see the initialization
           # contract in docs/dev-docs/development/issue-tracking.md (#1469)
           # shellcheck disable=SC2016
-          EXISTING=$(gh api graphql -f query='
+          EXISTING=$(gh_graphql -f query='
             query($item:ID!){
               node(id:$item){
                 ... on ProjectV2Item {
@@ -137,7 +275,7 @@ jobs:
             fi
 
             # shellcheck disable=SC2016
-            gh api graphql -f query='
+            gh_graphql -f query='
               mutation($project:ID!,$item:ID!,$field:ID!,$opt:String!){
                 updateProjectV2ItemFieldValue(input:{
                   projectId:$project,itemId:$item,fieldId:$field,

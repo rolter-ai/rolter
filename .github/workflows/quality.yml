@@ -215,12 +215,15 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo "$GITLEAKS_IMAGE" \
             dir . --config .github/config/gitleaks.toml --redact --exit-code 1
       # history for this branch: catches a secret added and then removed within
-      # the same PR, which a working-tree scan cannot see
+      # the same PR, which a working-tree scan cannot see. on a merge-queue run
+      # the range is what the queue is about to write to master, every entry
+      # batched ahead of this one included. the payload names both ends, so
+      # this needs no token and quality.yml stays secret-free (#734, #1722)
       - name: gitleaks (branch history)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           # the container runs as root over a runner-owned checkout, which git
           # rejects as dubious ownership unless /repo is marked safe
