@@ -281,6 +281,30 @@ fn check_key_pepper(env: &dyn Env, out: &mut Vec<Finding>) {
     }
 }
 
+/// The session pepper, the control plane's counterpart to the key pepper.
+///
+/// A warning like the key pepper's rather than an error. Session, invitation
+/// and SCIM tokens are 256 bits from the CSPRNG and recovery codes 80, all far
+/// past brute force, so an unpeppered digest still cannot be inverted and the
+/// deployment works. What goes is the defence in depth.
+/// Without a pepper, someone who can write to the database can plant a session
+/// for a token they chose, and the failed-login throttle's Redis keys carry no
+/// deployment salt, so two unpeppered deployments sharing one Redis share
+/// each other's lockouts.
+fn check_session_pepper(env: &dyn Env, out: &mut Vec<Finding>) {
+    if env.get("ROLTER_SESSION_PEPPER").is_none() {
+        out.push(Finding::warn(
+            "ROLTER_SESSION_PEPPER is unset",
+            "sign-in sessions, invitation links, SCIM tokens and MFA recovery codes are stored \
+             as unpeppered digests, so anyone who can write to the database can plant a session \
+             for a token of their choosing. Set the same value on every control-plane replica. \
+             Setting or changing it signs everyone out and voids open invitations, SCIM tokens \
+             and recovery codes, so do it before the deployment has users or in a maintenance \
+             window. `rolter init` generates one.",
+        ));
+    }
+}
+
 /// CORS. The dashboard is a same-origin SPA served by the control plane, so a
 /// wildcard origin buys nothing and hands any page on the internet the
 /// authenticated management API through a logged-in operator's browser.
@@ -443,6 +467,7 @@ pub(crate) fn run_checks(env: &dyn Env) -> Vec<Finding> {
     check_example_values(env, &mut out);
     check_exposure(env, &mut out);
     check_key_pepper(env, &mut out);
+    check_session_pepper(env, &mut out);
     check_cors(env, &mut out);
     check_analytics_destination(env, &mut out);
     out
@@ -650,6 +675,7 @@ mod tests {
                 .with("ROLTER_REDIS_URL", "redis://redis:6379")
                 .with("ROLTER_CONTROL_HOST", "127.0.0.1")
                 .with("ROLTER_KEY_PEPPER", "a-deployment-wide-pepper")
+                .with("ROLTER_SESSION_PEPPER", "a-control-plane-session-pepper")
                 .with("CLICKHOUSE_URL", "http://clickhouse:8123")
         }
     }
@@ -1130,6 +1156,35 @@ mod tests {
         let findings = run_checks(&env);
         assert_eq!(titles(&findings), ["ROLTER_KEY_PEPPER is unset"]);
         assert!(!findings[0].fatal, "an unpeppered deployment still works");
+    }
+
+    #[test]
+    fn a_missing_session_pepper_warns() {
+        let mut env = FakeEnv::healthy();
+        env.0.remove("ROLTER_SESSION_PEPPER");
+        let findings = run_checks(&env);
+        assert_eq!(titles(&findings), ["ROLTER_SESSION_PEPPER is unset"]);
+        // same severity as the key pepper: the deployment works, it has only
+        // lost the defence in depth, and --strict is what makes it block
+        assert!(!findings[0].fatal, "an unpeppered deployment still works");
+        let (_, failed) = report(&findings, false);
+        assert!(!failed, "a warning alone must not fail a plain check");
+        let (_, failed) = report(&findings, true);
+        assert!(failed, "--strict must fail on it");
+        // the operator adding it to a live deployment needs to know what it
+        // costs before they do it
+        assert!(
+            findings[0].detail.contains("signs everyone out"),
+            "{}",
+            findings[0].detail
+        );
+    }
+
+    #[test]
+    fn a_blank_session_pepper_counts_as_unset() {
+        // `ROLTER_SESSION_PEPPER=` is what an un-filled .env.example carries
+        let findings = run_checks(&FakeEnv::healthy().with("ROLTER_SESSION_PEPPER", " "));
+        assert_eq!(titles(&findings), ["ROLTER_SESSION_PEPPER is unset"]);
     }
 
     #[test]
