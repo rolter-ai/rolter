@@ -74,6 +74,8 @@ integration/dogfood/.kek
 # one would be the pepper of every developer's stack at once
 integration/dogfood/.tokens.env
 integration/dogfood/.virtual-key
+# results and screenshots of `just dogfood-journeys`: local to the run
+integration/dogfood/.journeys/
 
 # test-run leftovers — #1300 committed seven playwright/storybook recordings
 # and a dev-server log (#1317). playwright's own output goes to

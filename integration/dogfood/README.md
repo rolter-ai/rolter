@@ -22,6 +22,8 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 | `dogfood.toml`  | the matching rolter config — fifteen providers, three provider groups, eleven routes |
 | `keys.env`      | the API keys the fleet expects (fake, loopback-only, checked in on purpose)          |
 | `ux-capture.sh` | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)    |
+| `personas.sh`   | one account per user-journey persona, each at the role and scope its script assumes  |
+| `journeys/`     | the user-journey scripts as a headless runner (`just dogfood-journeys`)              |
 
 ## The fleet
 
@@ -148,8 +150,8 @@ changes it everywhere. The dashboard and SigNoz share one login:
 
 | Service                 | User               | Password                    |
 | ----------------------- | ------------------ | --------------------------- |
-| rolter dashboard        | `dev@rolter.local` | `rolter-dev-2026`           |
-| SigNoz                  | `dev@rolter.local` | `rolter-dev-2026`           |
+| rolter dashboard        | `dev@rolter.local` | `Rolter-dev-2026`           |
+| SigNoz                  | `dev@rolter.local` | `Rolter-dev-2026`           |
 | postgres                | `rolter`           | `rolter`                    |
 | redis, ClickHouse, OTLP | —                  | unauthenticated on loopback |
 

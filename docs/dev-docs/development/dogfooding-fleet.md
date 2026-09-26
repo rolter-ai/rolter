@@ -178,3 +178,37 @@ The board conventions are in [issue tracking](issue-tracking.md).
 
 If an operator action produces no useful span in SigNoz, that is an
 observability gap and worth its own issue too.
+
+### Walking it as someone else
+
+"Do operator work" has a script now: the [user journeys](../product/user-journeys.md)
+walk each kind of person — org admin, team lead, engineer, service, FinOps,
+SecOps, DevOps, viewer — through their goal, step by step, with the status of
+every step and the issue behind every gap. They sign in as persona accounts,
+which one command creates on this stack:
+
+```bash
+just dogfood-personas        # or ./integration/dogfood/personas.sh
+```
+
+It is idempotent and prints the roster: one account per persona, each holding
+exactly the role and scope its script assumes, all sharing the dogfood password
+from `creds.env`.
+
+The scripts also run unattended. `integration/dogfood/journeys/` holds one
+TypeScript file per persona that walks its steps against this stack. Dashboard
+steps run in headless Chromium, signed in through the real login form. The rest
+call the API as the persona or with the keys the script mints, and each script
+cleans up what it made:
+
+```bash
+just dogfood-journeys              # every script; `just dogfood-journeys lead app` for some
+just dogfood-screens               # every persona account against every dashboard screen
+```
+
+Results, one screenshot per step and a summary table land in
+`integration/dogfood/.journeys/`. The runner uses the dashboard's own
+`playwright-core` (`cd ui && bun install` first), and `CHROMIUM_PATH` points it
+at a system Chromium when Playwright's is not installed. The CLI steps (`kek
+verify`, `mfa reset`, `config export`) need `cargo build -p rolter --features
+postgres` and are skipped without it.
