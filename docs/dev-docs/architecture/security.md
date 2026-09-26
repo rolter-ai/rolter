@@ -204,12 +204,12 @@ Every handler in both modules now takes an `AnalyticsAccess`
 CRUD API does and turns what the caller holds into a filter each query binds as
 ClickHouse parameters — never spliced SQL:
 
-| caller                                                         | request-log rows                                           | captured bodies                                                                | provider health                                     |
-| -------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------- |
-| admin token, superadmin session, open mode                     | all, including rows logged with no org                     | all                                                                            | all                                                 |
-| a user with memberships or custom roles                        | rows whose org, team or project any of their roles reaches | where their role at the row's scope meets the `request_payload` floor (member) | providers of orgs where they hold an org-level role |
-| the same user, on a project set to `payload_min_role = viewer` | unchanged                                                  | also where they hold only viewer there                                         | unchanged                                           |
-| no credentials, or a bearer that is neither token nor session  | `401`                                                      | `401`                                                                          | `401`                                               |
+| caller                                                         | request-log rows                                           | captured bodies                                                                | provider health                                               |
+| -------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| admin token, superadmin session, open mode                     | all, including rows logged with no org                     | all                                                                            | all                                                           |
+| a user with memberships or custom roles                        | rows whose org, team or project any of their roles reaches | where their role at the row's scope meets the `request_payload` floor (member) | provider names used in orgs where they hold an org-level role |
+| the same user, on a project set to `payload_min_role = viewer` | unchanged                                                  | also where they hold only viewer there                                         | unchanged                                                     |
+| no credentials, or a bearer that is neither token nor session  | `401`                                                      | `401`                                                                          | `401`                                                         |
 
 Two details carry the design:
 
@@ -226,7 +226,32 @@ Two details carry the design:
   `cap!`, so `GET /api/v1/rbac/matrix` publishes the rule the filter applies.
   The per-project exception is `project_settings:update` (admin), stored in
   `projects.payload_min_role`; `GET /api/v1/rbac/effective` folds it in when the
-  scope it is asked about names a project.
+  scope it is asked about names a project and the caller holds a role on that
+  project's own chain, read from the project row rather than from the query
+  string, so naming another org's project beside one's own org reads nothing
+  back.
+
+A captured body is joined to its log row on `(request_id, ts)`, never on the
+id alone. The gateway keeps whatever `x-request-id` the caller sent, so two
+tenants' requests can share an id; an id-only join let a caller log a bodiless
+request under an id seen on another project's rows and read that project's
+prompt through their own row, which the mask passed because it judges the row,
+not the body. `PayloadLog` copies its log row's `ts` through the same
+serializer, so the pair names one request.
+
+Two limits are known and tracked:
+
+- **Provider health matches by name.** `provider_health_events` carries the
+  provider's display name and no org, and names are unique per org only. A
+  name that another org used and then deleted brings its history (uptime,
+  latency, error kinds, `target_id`) to whichever org creates it next, until
+  the 90-day TTL drops it. A live duplicate across orgs is the separate
+  config-freeze problem of #1845; recording the org in the rows is #1908.
+- **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
+  no store has no sessions, so the admin token is the only credential these
+  routes accept, and the dashboard's e-mail-only sign-in cannot present it. The
+  routes stay closed on purpose; letting the dashboard take the token is
+  #1909.
 
 What keeps this from regressing is
 `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller` in
