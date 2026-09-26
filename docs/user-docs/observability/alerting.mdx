@@ -6,23 +6,13 @@ description: "Threshold rules over error rate, latency, spend, traffic and provi
 
 Alerting is a control-plane feature. A **rule** watches one signal from the
 request log, compares it with a threshold every minute, and moves between `ok`
-and `firing`. A **channel** is the webhook a rule reports to. The **history**
-records each time a rule changes state.
+and `firing`. A **channel** is the webhook a rule reports to: each change of
+state is POSTed to it as JSON. The **history** records each change and whether
+it was delivered.
 
 In the dashboard it is the **Alerting** group, with one screen for each:
 **Channels**, **Rules** and **History**. The API is `/api/v1/alert-channels`,
 `/api/v1/alert-rules` and `/api/v1/alert-notifications`.
-
-<Warning>
-  **Webhook delivery is not wired up in this release.** Rules evaluate and
-  change state, and the history records transitions for rules that have no
-  channel or a disabled one. A transition on a rule whose channel is enabled
-  does not reach the endpoint: the control plane never sends the request, the
-  history write for it fails, and **Evaluate now** reports an error. Until
-  [#1871](https://github.com/rolter-ai/rolter/issues/1871) lands, read rule
-  state from the **Rules** screen or `GET /api/v1/alert-rules` instead of
-  relying on the webhook.
-</Warning>
 
 ## Requirements
 
@@ -33,7 +23,10 @@ In the dashboard it is the **Alerting** group, with one screen for each:
   Every signal is a query over the `request_logs` or `provider_health_events`
   table; without ClickHouse, evaluation fails with
   `alert evaluation requires CLICKHOUSE_URL`.
-- `ROLTER_KEK`, only if a channel stores a secret.
+- `ROLTER_KEK`, only if a channel stores a secret. The same key is needed at
+  delivery time to unseal it.
+- A route from the control plane to each channel endpoint that the
+  [egress policy](#endpoints-and-the-egress-policy) permits.
 - A superadmin account or the deployment admin token. Alerting is
   deployment-wide, so no organization role reaches it (see
   [Permissions](#permissions-and-audit)).
@@ -79,47 +72,82 @@ An empty window reads `0` for every signal.
 
 ### States and transitions
 
-A new rule starts as `unknown`. Its first evaluation sets `ok` or `firing`
-without recording anything, so a rule created or enabled while its condition
-already holds turns `firing` silently. It reports the next change.
+A new rule starts as `unknown`. Each evaluation compares the reading with what
+the rule last reported, which is the state of its newest history row, and
+records a row when the two differ:
 
-After that, a rule records one history row per change of state:
+| Reading    | Last reported              | History row and delivery |
+| ---------- | -------------------------- | ------------------------ |
+| at or over | nothing yet, or `resolved` | `firing`                 |
+| under      | `firing`                   | `resolved`               |
+| at or over | `firing`                   | nothing                  |
+| under      | nothing yet, or `resolved` | nothing                  |
 
-| Change               | History row      |
-| -------------------- | ---------------- |
-| `ok` → `firing`      | state `firing`   |
-| `firing` → `ok`      | state `resolved` |
-| same state as before | nothing          |
-
-A rule that stays `firing` for an hour produces one row, not sixty.
+So a rule created or enabled while its condition already holds reports
+`firing` on its first evaluation, and a rule whose first reading is under the
+threshold records nothing until it first fires. A rule that stays `firing` for
+an hour produces one row and one delivery, not sixty.
 
 Disabling a rule stops the scheduled evaluation and keeps its state as it was.
 Editing a rule keeps its state too, so a new threshold takes effect on the next
-pass and reports only if the result differs from the stored state.
+pass and reports only if the result differs from what the rule last reported.
 
-When an evaluation fails (no ClickHouse, or a query error), the rule keeps its
-previous state and `last_value`. The scheduled pass logs
-`alert rule evaluation failed` at warn level and moves on to the next rule.
-`last_error` is not filled in yet
-([#1871](https://github.com/rolter-ai/rolter/issues/1871)), so a
-`last_evaluated_at` that stops moving is the sign that a rule has stopped
-evaluating.
+When an evaluation fails, the rule's state becomes `error` and `last_error`
+says why:
 
-Every control-plane process runs its own evaluator. With more than one
-control-plane replica, two passes that read the same state at the same moment
-can both record the same transition.
+| `last_error`                                      | Cause                                                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `alert evaluation requires CLICKHOUSE_URL`        | The control plane has no ClickHouse configured.                                                  |
+| `could not connect to ClickHouse`                 | ClickHouse did not accept the connection.                                                        |
+| `analytics query timed out after 30s`             | The query ran past the 30-second bound.                                                          |
+| `clickhouse query failed (<status>): <exception>` | ClickHouse answered with an error, for example a missing `request_logs` table. Cut at 512 bytes. |
+| `ClickHouse returned a response that is not JSON` | Something other than ClickHouse answered at `CLICKHOUSE_URL`.                                    |
+
+An error never carries the ClickHouse URL, which can hold a password; the full
+error is in the control-plane log under `alert signal query failed`.
+`last_value` and `last_evaluated_at` keep the last successful reading, and an
+error writes no history row and sends nothing. The next successful evaluation
+clears `last_error` and compares with the last reported state as usual, so a
+rule that was `firing` before the error is not reported again, and one whose
+condition cleared during it still reports `resolved`.
+
+Every control-plane process runs its own evaluator, so with more than one
+replica each rule is evaluated by several of them. An evaluation holds the
+rule's row lock while it decides, delivers and writes the history, and the
+scheduled pass skips a rule another replica is holding, so one replica delivers
+and records each change of state.
 
 ### Evaluate now
 
 Each rule card has an **Evaluate now** button, backed by
 `POST /api/v1/alert-rules/{id}/evaluate`. It runs one evaluation immediately,
-whether or not the rule is enabled, and can record a transition exactly as the
-scheduled pass would. The response is the updated rule plus `notified`, which
-is `true` only when a notification was handed to a channel.
+whether or not the rule is enabled, and can record and deliver a transition
+exactly as the scheduled pass would. If a scheduled pass is evaluating the same
+rule at that moment, it waits for it to finish first.
 
-A failed evaluation comes back as an error toast carrying the reason, which
-makes this the quickest way to check that ClickHouse is reachable from the
-control plane.
+The response has three fields: `rule`, the updated rule; `notified`, which is
+`true` only when a transition was delivered; and `notification`, the history
+row the evaluation wrote, or `null` when the reading was not a transition. A
+transition the endpoint refused looks like this, with `rule` left out:
+
+```json
+{
+  "notified": false,
+  "notification": {
+    "id": "0d9c7a52-5f1e-4a8b-9d0e-3c2b1a0f9e8d",
+    "rule_id": "5b1f0c2e-7a44-4f0e-8d1c-9e3a6b2d4c10",
+    "channel_id": "3f6c2a4e-8d1b-4c1e-9a57-2b0d6e9f1c23",
+    "state": "firing",
+    "delivery_status": "failed",
+    "detail": "HTTP 401",
+    "sent_at": "2026-09-27T10:15:02.184Z"
+  }
+}
+```
+
+A failed evaluation sets the rule to `error` and comes back as an error toast
+carrying the same reason as `last_error`, which makes this the quickest way to
+check that ClickHouse is reachable from the control plane.
 
 ## Channels
 
@@ -130,13 +158,72 @@ A channel is a named webhook endpoint. `webhook` is the only kind.
 | `name`           | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                                          |
 | `kind`           | Always `webhook`, set by the server.                                                                                     |
 | `endpoint`       | An `http` or `https` URL with a host. A URL carrying `user:password@` is rejected; put a credential in `managed_secret`. |
-| `enabled`        | A disabled channel records its rules' transitions as `skipped`. Defaults to `false` in the API.                          |
+| `enabled`        | A disabled channel receives nothing; its rules' transitions are recorded as `skipped`. Defaults to `false` in the API.   |
 | `managed_secret` | Optional bearer secret. Write-only, sealed before storage.                                                               |
 
 The **Add channel** sheet asks for a name, the endpoint URL and the optional
 secret, and creates the channel enabled. Each channel card shows its kind, a
 **secret set** badge when a secret is stored, an enable switch and a delete
 button.
+
+### Delivery
+
+When a rule's state changes and its channel is enabled, the control plane sends
+one `POST` to the endpoint with a JSON body:
+
+```json
+{
+  "id": "0d9c7a52-5f1e-4a8b-9d0e-3c2b1a0f9e8d",
+  "state": "firing",
+  "rule": { "id": "5b1f0c2e-7a44-4f0e-8d1c-9e3a6b2d4c10", "name": "high error rate" },
+  "signal": "error_rate",
+  "value": 0.07,
+  "threshold": 0.05,
+  "window_secs": 300,
+  "evaluated_at": "2026-09-27T10:15:02.113Z",
+  "text": "high error rate is firing: error_rate is 0.07, threshold 0.05, 300s window"
+}
+```
+
+| Field          | Meaning                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `id`           | The history row this delivery is recorded as, so a request can be matched to the History screen. |
+| `state`        | `firing` or `resolved`.                                                                          |
+| `rule`         | The rule's `id` and `name`.                                                                      |
+| `signal`       | The [signal](#signals) the rule reads.                                                           |
+| `value`        | The reading that caused the change, in the signal's unit.                                        |
+| `threshold`    | The rule's threshold. `firing` means `value >= threshold`.                                       |
+| `window_secs`  | The trailing window the value was read over.                                                     |
+| `evaluated_at` | When the evaluation that took the reading ran, RFC 3339 in UTC.                                  |
+| `text`         | The same facts as one line, for a relay or a chat tool to display as-is.                         |
+
+The request carries `Content-Type: application/json`, a `User-Agent` of
+`rolter/<version>`, and, when the channel stores a secret,
+`Authorization: Bearer <secret>`. The body has the same shape whichever
+service receives it, so a destination that wants its own format, such as a
+paging or chat service, needs a small relay in front of it that reads this
+body and posts its own.
+
+A delivery succeeds on any `2xx` response. It is bounded to 10 seconds
+including a 5-second connect, and redirects are not followed, so a `3xx`
+counts as a failure. The response body is never read or stored.
+
+A failed delivery is recorded as `failed` and is not retried: the rule has
+already moved to its new state, and the next delivery is the next change. Check
+the **History** screen, or `GET /api/v1/alert-notifications`, for `failed`
+rows after changing an endpoint or its secret.
+
+### Endpoints and the egress policy
+
+A channel endpoint is a URL the control plane will POST to, so it goes through
+the deployment's egress policy (the `[egress]` table of the bootstrap config)
+when the channel is saved and again before every delivery. The default policy
+denies link-local addresses, which is where cloud instance metadata lives, and
+can be tightened to deny loopback or private ranges too. A channel whose
+endpoint the policy denies is rejected with `400` when saved, and a delivery to
+an endpoint the policy has come to deny since is recorded as `failed` without a
+request being sent. The check classifies IP literals; a hostname is not
+resolved at save time.
 
 ### The secret is write-only
 
@@ -146,6 +233,12 @@ Postgres. With `ROLTER_KEK` unset, storing one fails with
 `secret_configured`, a boolean. An update that leaves `managed_secret` out
 keeps the stored secret, so flipping the enable switch cannot drop it. There is
 no way to clear a stored secret short of deleting the channel.
+
+The secret is unsealed only to build the `Authorization` header of a delivery.
+If it cannot be unsealed, because `ROLTER_KEK` is unset or differs from the key
+it was sealed with, the delivery is recorded as `failed` and nothing is sent:
+the control plane never sends a request without a credential the channel was
+configured with.
 
 The sealed column is covered by `rolter kek verify` and listed in
 [Backup and restore](/deployment/backup-and-restore).
@@ -165,7 +258,7 @@ fields.
 | `signal`      | One of the [signals](#signals) above.                                                            |
 | `threshold`   | A finite number, `0` or above, in the signal's own unit. The rule fires at `value >= threshold`. |
 | `window_secs` | Trailing window in seconds, from `60` to `86400` (one minute to one day).                        |
-| `channel_id`  | The channel to report to, or `null` to record transitions without a channel.                     |
+| `channel_id`  | The channel to deliver to, or `null` to record transitions without delivering them.              |
 | `enabled`     | Only enabled rules are evaluated on schedule. Defaults to `false` in the API.                    |
 
 The server also returns `state`, `last_value`, `last_evaluated_at` and
@@ -216,13 +309,18 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 ## History
 
 **Alerting → History** lists the 200 most recent rows, newest first, with the
-time, rule, state (`firing` or `resolved`), delivery status and detail.
+time, rule, state (`firing` or `resolved`), delivery status and detail. Every
+change of state has a row, including those of rules with no channel.
 
-| Delivery status | Detail                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------ |
-| `skipped`       | `no channel configured`, `channel disabled`, or `channel deleted` when the channel is deleted mid-evaluation |
-| `delivered`     | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871))                     |
-| `failed`        | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871))                     |
+| Delivery status | Detail                                                                                                                                                                                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `delivered`     | The endpoint's status, for example `HTTP 200`.                                                                                                                                                                                                                                                              |
+| `failed`        | The endpoint's status when it answered outside `2xx` (`HTTP 401`, `HTTP 503`, `HTTP 302`), or what stopped the request: `timed out after 10s`, `could not connect to the endpoint`, `delivery failed`, `endpoint denied by the egress policy`, or `channel secret could not be unsealed; check ROLTER_KEK`. |
+| `skipped`       | `no channel configured`, `channel disabled`, or `channel deleted` when the channel is deleted mid-evaluation.                                                                                                                                                                                               |
+
+A detail never contains the endpoint's response body, which can echo the
+credential it rejected. `sent_at` is when the row was written, just after the
+delivery attempt finished.
 
 The history is append-only: the API has no update or delete for it. Deleting a
 rule deletes that rule's rows along with it.

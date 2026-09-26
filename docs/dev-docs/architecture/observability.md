@@ -602,6 +602,62 @@ delivery adapter — widening `KINDS` in `connectors.rs` and the `kind` check
 constraint in migration `0062` is the only rolter-side change; everything else
 is collector configuration.
 
+## Alert evaluation and delivery (#1871)
+
+`crates/rolter-control/src/alerting.rs` owns alerting end to end: channels,
+rules, a 60-second evaluator started by every control-plane process that has a
+database, and the `alert_notification_history` table (migration `0025`). The
+user-facing behaviour is in `docs/user-docs/observability/alerting.mdx`; this
+section is the reasoning behind it.
+
+**One evaluation is one transaction around the rule's row lock.** The
+ClickHouse read runs first, unlocked and bounded to 30 seconds, because it is
+the slow part. Then the evaluation takes `select … for update` on the rule,
+decides whether the reading is a transition, POSTs it, writes the rule and the
+history row, and commits. The scheduled pass takes the lock with `skip locked`
+and `and enabled`, so a rule another replica is evaluating is left to that
+replica and a rule disabled mid-pass is skipped; **Evaluate now** waits for
+the lock instead. That is what keeps `control.replicaCount > 1` from reporting
+each transition once per replica. An edit that lands between the read and the
+lock and changes the signal or window discards the reading, since it measures a
+query the rule no longer asks for.
+
+**A transition is decided against the history, not the `state` column.**
+`state` also holds `unknown` and `error`, and neither says what an operator was
+last told. The newest history row does: `firing` is reported when the reading
+is high and the last row is not `firing`, `resolved` when the reading is low
+and the last row is `firing`. That makes three cases fall out without special
+handling: a rule enabled while its condition holds fires on its first pass; an
+evaluation error between two high readings does not fire twice; and a
+condition that cleared while evaluation was failing still resolves. It also
+makes a crash between the rule update and the history insert self-healing,
+since the next pass sees no row and reports again. The history insert uses
+`clock_timestamp()` rather than the column's `now()` default, because `now()`
+is the transaction's start and a transaction that waited on the lock started
+before the one it waited for.
+
+**Delivery never fails an evaluation.** Every way a POST can go wrong becomes a
+`failed` row with a short detail (the HTTP status, or `timed out`, `could not
+connect`, `endpoint denied by the egress policy`, `channel secret could not be
+unsealed`), and the rule's state still moves. There is no retry: a dead
+endpoint would otherwise write a row a minute. The response body is never read,
+since a receiver's error body can echo the bearer secret it just rejected.
+
+The delivery client is a dedicated `reqwest::Client` with redirects off, a
+5-second connect and a 10-second total timeout. Redirects are off for the same
+reason as MCP OAuth discovery: a `3xx` is how a host that passed the egress
+check hands the request to one that would not have. The endpoint is checked
+with `EgressPolicy::check_url` at save time and again before each POST, which
+matches connectors. Neither classifies what a hostname resolves to at connect
+time; that gap is shared by every control-plane outbound client and tracked in
+#1949.
+
+A failed evaluation writes `state = 'error'` and a `last_error` that is safe to
+show: a transport error is reduced to its class (`reqwest`'s message carries
+the URL, and `CLICKHOUSE_URL` can hold a password), while a ClickHouse error
+response keeps its status and exception text, cut at 512 bytes. The raw error
+goes to the log as `alert signal query failed`.
+
 ## Request & cost logs
 
 - Every proxied request is logged to **ClickHouse** (`request_logs`): identifiers, model, provider/target, status, token counts, `cost_usd`, latency, TTFT, cache flag, error.

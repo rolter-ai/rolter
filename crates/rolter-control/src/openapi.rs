@@ -1552,7 +1552,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/alert-notifications",
                 "listAlertNotifications",
-                "Page delivered alert notifications",
+                "Page alert transitions and their delivery",
             )
             .query(ALERT_HISTORY_QUERY),
         ],
