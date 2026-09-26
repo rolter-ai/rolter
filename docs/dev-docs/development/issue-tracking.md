@@ -171,6 +171,43 @@ automation land, then set fields. Setting fields as part of creation is not
 wrong — it is simply the ordering with a window. Reading the board back after
 triage is cheap and settles it either way.
 
+## When the board add fails
+
+The job authenticates with `ADD_TO_PROJECT_PAT`, and GitHub meters a personal
+access token against the account that owns it rather than against the token.
+So the workflow draws from the same 5,000-points-an-hour GraphQL budget as every
+agent session and script running as that account, and a busy hour can spend it
+before a PR is opened. The job is not in `ci-ok`'s `needs:`, so a failure blocks
+nothing; the item just never reaches the board, and nobody notices until a
+milestone audit (#1718).
+
+Every GraphQL call in the job goes through one wrapper that tells the transient
+failures from the permanent ones and retries only the first kind, for at most
+`RETRY_WINDOW` seconds (15 minutes) per run:
+
+| What GitHub answered                                                    | What the job does                                                                     | Annotation title when it gives up   |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------- |
+| primary rate limit, budget refills inside the window                    | reads the reset time from `GET /rate_limit` (free, not metered) and sleeps until then | none; it retries after the refill   |
+| primary rate limit, budget refills after the window                     | fails at once and names the reset time                                                | `GitHub API budget exhausted`       |
+| primary rate limit, but `/rate_limit` shows points left                 | backs off 5s, 10s, 20s… for up to six attempts                                        | `GitHub API rate limit`             |
+| secondary rate limit (too many requests in a short window)              | backs off 60s, 120s, 240s… until the window closes                                    | `GitHub API secondary rate limit`   |
+| HTTP 5xx, timeout, or a concurrent add of the same item                 | backs off 5s, 10s, 20s… for up to six attempts                                        | `GitHub API unavailable`            |
+| bad credentials, HTTP 401/403/404, insufficient scopes, unresolved node | fails at once, without retrying                                                       | `project board token misconfigured` |
+| an empty `ADD_TO_PROJECT_PAT`                                           | fails before calling anything                                                         | `project board token missing`       |
+
+Every rate-limit and outage message says "nothing is misconfigured" and ends
+with the two ways to recover: `gh run rerun <run-id> --failed` once the budget
+is back, or `gh project item-add 1 --owner rolter-ai --url <item-url>` by hand.
+A rerun is safe: `addProjectV2ItemById` returns the existing item when the
+content is already on the board, and the seed never overwrites a field that
+already has a value. The two misconfiguration titles say "this is not a rate
+limit" and list the scopes the token needs.
+
+The job adds the item with a direct `addProjectV2ItemById` mutation rather than
+`actions/add-to-project`, because an action step can only be retried as a
+whole, and the add, the field read and the seed writes need the same retry
+policy.
+
 ## Editing the board's single-select options
 
 Projects v2 option ids are **not stable**. `updateProjectV2Field` replaces a

@@ -215,12 +215,13 @@ reuses an action name.
 
 ### What runs, and what is allowed to skip
 
-| Job                              | On `merge_group`       | Why                                                                                                                |
-| -------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `quality`, `codeql`, `gate-ok`   | run                    | the point of the run                                                                                               |
-| `session-urls` (pr body)         | runs                   | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
-| `dispatch-commit-urls` (commits) | runs, and must succeed | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
-| `pr-title`                       | skipped                | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
+| Job                              | On `merge_group`                | Why                                                                                                                |
+| -------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `quality`, `codeql`, `gate-ok`   | run                             | the point of the run                                                                                               |
+| `session-urls` (pr body)         | runs                            | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
+| `dispatch-commit-urls` (commits) | runs, and must succeed          | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
+| `pr-title`                       | skipped                         | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
+| `gitleaks` (branch history step) | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
 
 The two session-url jobs resolve their subject differently here, because a queue
 ref belongs to no pull request head and `--pr-for-ref` cannot match it:
@@ -245,7 +246,7 @@ Both of those jobs live in `ci.yml` rather than in `quality.yml`, because
 resolving a pull request needs a token and `quality.yml` deliberately takes none
 (#734).
 
-One job inside `quality.yml` did need adjusting. `migrations append-only` diffs
+Two places inside `quality.yml` did need adjusting. `migrations append-only` diffs
 against `origin/master`, and a merge-queue checkout is a synthetic ref with no
 `origin/master` fetched — the script's _no such ref; skipping_ branch would have
 turned the gate into a silent no-op on exactly the runs that matter. It now takes
@@ -254,6 +255,19 @@ which is an ancestor of the queue head, falling back to `origin/master`
 everywhere else. A called workflow sees the original event, so the expression
 resolves inside `quality.yml` without ci.yml having to pass anything in, and no
 secret is involved.
+
+The other is the `gitleaks` job's branch-history pass. On a pull request it reads
+`pull_request.base.sha..head.sha`, and a `merge_group` payload has no
+`pull_request` object, so until #1722 the step skipped itself and only the
+working-tree pass ran. The working-tree pass is the half that matters for the
+merge gate, since a secret that survives into the merged tree is caught either
+way. The history pass is the only one that reads commits, though, and on a queue
+run those are the commits `master` is about to receive: this entry's plus every
+entry batched ahead of it, which no single per-PR run ever scanned as one range.
+It now takes `merge_group.base_sha..merge_group.head_sha` from the payload, the
+same way `dispatch-commit-urls` does, so it needs no API call and no token. The
+job already checks out with `fetch-depth: 0`, which fetches `master` alongside
+the queue ref, so `base_sha` is present locally.
 
 ### Concurrency
 
