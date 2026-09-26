@@ -120,8 +120,9 @@ is by definition waiting on review — plus `Priority: Medium` on an issue.
 
 **Seeding is initialization, not policy.** A field that already carries a value
 was set deliberately, and the automation leaves it alone. It reads the item's
-current single-select values immediately before writing, and skips any field
-that is already populated, logging a `::notice::` naming the value it kept.
+current single-select values immediately before every write attempt, a retry
+included, and skips any field that is already populated, logging a `::notice::`
+naming the value it kept.
 
 Until #1469 this ran unconditionally, and the consequence was not hypothetical:
 #1461 was created and triaged to `Status: Backlog, Priority: High` through
@@ -160,6 +161,16 @@ about rather than rounding to "fixed":
   is lost — a few hundred milliseconds, and only for a field the user edits in
   that exact instant.
 
+The gap stays that small when GitHub throttles the job, which happens in busy
+hours, the same hours triage is most likely (#1718). A seed write that fails with
+a rate limit or a server error is retried after a backoff of up to 15 minutes,
+and the field is read again before each attempt rather than once before all of
+them. Reading once would make the window the whole backoff: an agent triaging a
+batch of new issues spends the same account's budget the workflow is waiting on,
+so its edits are likely to land during that wait, and the retry would write the
+default over them. A write whose answer was lost is covered by the same rule:
+the next read finds the value it already set and leaves it.
+
 If the API ever grows a conditional update, this is the place to use it. Until
 then, the honest description is "a much smaller race", and a test asserting the
 check is atomic would be asserting something untrue.
@@ -191,9 +202,14 @@ failures from the permanent ones and retries only the first kind, for at most
 | primary rate limit, budget refills after the window                     | fails at once and names the reset time                                                | `GitHub API budget exhausted`       |
 | primary rate limit, but `/rate_limit` shows points left                 | backs off 5s, 10s, 20s… for up to six attempts                                        | `GitHub API rate limit`             |
 | secondary rate limit (too many requests in a short window)              | backs off 60s, 120s, 240s… until the window closes                                    | `GitHub API secondary rate limit`   |
-| HTTP 5xx, timeout, or a concurrent add of the same item                 | backs off 5s, 10s, 20s… for up to six attempts                                        | `GitHub API unavailable`            |
+| HTTP 5xx, timeout, dropped connection, or a concurrent add of the item  | backs off 5s, 10s, 20s… for up to six attempts                                        | `GitHub API unavailable`            |
 | bad credentials, HTTP 401/403/404, insufficient scopes, unresolved node | fails at once, without retrying                                                       | `project board token misconfigured` |
 | an empty `ADD_TO_PROJECT_PAT`                                           | fails before calling anything                                                         | `project board token missing`       |
+| anything else                                                           | fails at once, quoting the error and the two ways to recover                          | `GitHub API request failed`         |
+
+The rows above describe one call. A seed write repeats the read before every
+attempt, so a long wait never turns into a stale write (see
+[the race section](#the-race-is-narrowed-not-closed--do-not-let-anyone-claim-otherwise)).
 
 Every rate-limit and outage message says "nothing is misconfigured" and ends
 with the two ways to recover: `gh run rerun <run-id> --failed` once the budget
@@ -207,6 +223,14 @@ The job adds the item with a direct `addProjectV2ItemById` mutation rather than
 `actions/add-to-project`, because an action step can only be retried as a
 whole, and the add, the field read and the seed writes need the same retry
 policy.
+
+That policy lives in the workflow's `run:` block, which only ever runs on
+`master` when something is opened, so `scripts/test-project-automation.sh`
+extracts the block and runs it against a fake `gh`, a fake clock and a fake
+board: every row of the table, the order the patterns are tried in, triage
+landing during a backoff, and a write whose answer was lost. It is the
+`board automation retry policy` job in `quality.yml` and a prek hook on the
+workflow file. Add a case there when you add a row here.
 
 ## Editing the board's single-select options
 

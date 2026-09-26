@@ -188,6 +188,14 @@ files = "^\\.github/workflows/release(-plz)?\\.yml$"
 pass_filenames = false
 
 [[repos.hooks]]
+id = "project-automation"
+name = "board automation retry policy"
+entry = "bash scripts/test-project-automation.sh"
+language = "system"
+files = "^(\\.github/workflows/project-automation\\.yml|scripts/test-project-automation\\.sh)$"
+pass_filenames = false
+
+[[repos.hooks]]
 id = "chart-appversion"
 name = "chart appVersion tracks the workspace version"
 entry = "python3 scripts/sync-chart-appversion.py"

@@ -296,6 +296,21 @@ jobs:
       - name: check the release handoff is wired
         run: bash scripts/check-release-handoff.sh
 
+  # ── board automation: the add-to-board retry policy ─────────────────────────
+  # project-automation.yml decides which GitHub API failures to wait out and
+  # which to report, and it only runs on master when an issue or PR is opened,
+  # where a regression shows up as items quietly missing from the board. this
+  # runs that step against a fake gh, a fake clock and a fake board (#1718)
+  project-automation:
+    name: board automation retry policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: run the add-to-board step against a fake gh
+        run: bash scripts/test-project-automation.sh
+
   # ── helm chart: lint and render ─────────────────────────────────────────────
   # the chart carries the same pre-boot validation the CLI does (#854), and a
   # chart is the one deployment path with no compiler behind it: a template that

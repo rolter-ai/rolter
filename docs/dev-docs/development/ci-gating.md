@@ -265,9 +265,9 @@ way. The history pass is the only one that reads commits, though, and on a queue
 run those are the commits `master` is about to receive: this entry's plus every
 entry batched ahead of it, which no single per-PR run ever scanned as one range.
 It now takes `merge_group.base_sha..merge_group.head_sha` from the payload, the
-same way `dispatch-commit-urls` does, so it needs no API call and no token. The
-job already checks out with `fetch-depth: 0`, which fetches `master` alongside
-the queue ref, so `base_sha` is present locally.
+same way `dispatch-commit-urls` does, so it needs no API call and no token.
+`base_sha` is an ancestor of the queue head, and the job checks out with
+`fetch-depth: 0`, so the commit is in the clone.
 
 ### Concurrency
 
