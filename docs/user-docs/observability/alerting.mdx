@@ -1,0 +1,259 @@
+---
+title: "Alerting: Channels, Rules and History"
+sidebarTitle: "Alerting"
+description: "Threshold rules over error rate, latency, spend, traffic and provider health, evaluated every minute from ClickHouse, with an optional webhook channel per rule and a history of every state change."
+---
+
+Alerting is a control-plane feature. A **rule** watches one signal from the
+request log, compares it with a threshold every minute, and moves between `ok`
+and `firing`. A **channel** is the webhook a rule reports to. The **history**
+records each time a rule changes state.
+
+In the dashboard it is the **Alerting** group, with one screen for each:
+**Channels**, **Rules** and **History**. The API is `/api/v1/alert-channels`,
+`/api/v1/alert-rules` and `/api/v1/alert-notifications`.
+
+<Warning>
+  **Webhook delivery is not wired up in this release.** Rules evaluate and
+  change state, and the history records transitions for rules that have no
+  channel or a disabled one. A transition on a rule whose channel is enabled
+  does not reach the endpoint: the control plane never sends the request, the
+  history write for it fails, and **Evaluate now** reports an error. Until
+  [#1871](https://github.com/rolter-ai/rolter/issues/1871) lands, read rule
+  state from the **Rules** screen or `GET /api/v1/alert-rules` instead of
+  relying on the webhook.
+</Warning>
+
+## Requirements
+
+- A control plane with a database. The alerting API and the evaluator are only
+  mounted when the control plane runs with `ROLTER_DATABASE_URL`.
+- ClickHouse on the control plane (`CLICKHOUSE_URL`), with the gateway
+  [writing request logs](/observability/logs-and-cost#enabling-logging) to it.
+  Every signal is a query over the `request_logs` or `provider_health_events`
+  table; without ClickHouse, evaluation fails with
+  `alert evaluation requires CLICKHOUSE_URL`.
+- `ROLTER_KEK`, only if a channel stores a secret.
+- A superadmin account or the deployment admin token. Alerting is
+  deployment-wide, so no organization role reaches it (see
+  [Permissions](#permissions-and-audit)).
+
+Rules read the request log, and the log can be sampled. With a
+[`sample_rate`](/observability/log-settings#sampling) below `1`,
+`request_volume` and `spend_velocity` count only the sampled rows and read low,
+while `error_rate` and `p95_latency_ms` become estimates from the sample.
+
+## How a rule is evaluated
+
+Every 60 seconds the control plane loads the enabled rules and evaluates each
+one. The first pass runs a minute after the control plane starts.
+
+An evaluation is one ClickHouse query over the trailing window, `window_secs`
+seconds back from now. The result is the rule's `last_value`. If it is greater
+than or equal to `threshold` the rule is `firing`, otherwise `ok`. Windows
+longer than a minute overlap from one pass to the next, so a 5-minute rule
+looks at a sliding 5 minutes each time.
+
+Two limits follow from that:
+
+- Every signal is deployment-wide. A rule cannot be narrowed to one provider,
+  model, route, virtual key or organization.
+- A rule only fires on a high value. There is no "below" comparison, so a rule
+  cannot catch traffic dropping to zero.
+
+For alerts that need either, use the gateway's Prometheus
+[metrics](/observability/metrics), which carry per-model and per-provider
+labels.
+
+### Signals
+
+| Signal                  | Value                                                                                                                                                                                           | Table                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `error_rate`            | Share of logged requests in the window with an HTTP status of 500 or above, from `0` to `1` (`0.05` is 5%). 4xx responses, `429` included, do not count.                                        | `request_logs`           |
+| `p95_latency_ms`        | 95th-percentile request latency in milliseconds, from ClickHouse's approximate `quantile`.                                                                                                      | `request_logs`           |
+| `spend_velocity`        | Spend in the window scaled to US dollars per hour: `sum(cost_usd) × 3600 / window_secs`.                                                                                                        | `request_logs`           |
+| `request_volume`        | Number of logged requests in the window.                                                                                                                                                        | `request_logs`           |
+| `provider_health_flaps` | Number of provider health observations in the window whose outcome was not `ok` (an error or a timeout), across every target and every source, active probes and passive request results alike. | `provider_health_events` |
+
+An empty window reads `0` for every signal.
+
+### States and transitions
+
+A new rule starts as `unknown`. Its first evaluation sets `ok` or `firing`
+without recording anything, so a rule created or enabled while its condition
+already holds turns `firing` silently. It reports the next change.
+
+After that, a rule records one history row per change of state:
+
+| Change               | History row      |
+| -------------------- | ---------------- |
+| `ok` → `firing`      | state `firing`   |
+| `firing` → `ok`      | state `resolved` |
+| same state as before | nothing          |
+
+A rule that stays `firing` for an hour produces one row, not sixty.
+
+Disabling a rule stops the scheduled evaluation and keeps its state as it was.
+Editing a rule keeps its state too, so a new threshold takes effect on the next
+pass and reports only if the result differs from the stored state.
+
+When an evaluation fails (no ClickHouse, or a query error), the rule keeps its
+previous state and `last_value`. The scheduled pass logs
+`alert rule evaluation failed` at warn level and moves on to the next rule.
+
+Every control-plane process runs its own evaluator. With more than one
+control-plane replica, two passes that read the same state at the same moment
+can both record the same transition.
+
+### Evaluate now
+
+Each rule card has an **Evaluate now** button, backed by
+`POST /api/v1/alert-rules/{id}/evaluate`. It runs one evaluation immediately,
+whether or not the rule is enabled, and can record a transition exactly as the
+scheduled pass would. The response is the updated rule plus `notified`, which
+is `true` only when a notification was handed to a channel.
+
+A failed evaluation comes back as an error toast carrying the reason, which
+makes this the quickest way to check that ClickHouse is reachable from the
+control plane.
+
+## Channels
+
+A channel is a named webhook endpoint. `webhook` is the only kind.
+
+| Field            | Meaning                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `name`           | Unique, 1 to 128 visible characters.                                                                                     |
+| `kind`           | Always `webhook`, set by the server.                                                                                     |
+| `endpoint`       | An `http` or `https` URL with a host. A URL carrying `user:password@` is rejected; put a credential in `managed_secret`. |
+| `enabled`        | A disabled channel records its rules' transitions as `skipped`. Defaults to `false` in the API.                          |
+| `managed_secret` | Optional bearer secret. Write-only, sealed before storage.                                                               |
+
+The **Add channel** sheet asks for a name, the endpoint URL and the optional
+secret, and creates the channel enabled. Each channel card shows its kind, a
+**secret set** badge when a secret is stored, an enable switch and a delete
+button.
+
+### The secret is write-only
+
+A `managed_secret` is encrypted with the deployment KEK before it reaches
+Postgres. With `ROLTER_KEK` unset, storing one fails with
+`storing channel credentials requires ROLTER_KEK`. It is never returned: responses carry
+`secret_configured`, a boolean. An update that leaves `managed_secret` out
+keeps the stored secret, so flipping the enable switch cannot drop it. There is
+no way to clear a stored secret short of deleting the channel.
+
+The sealed column is covered by `rolter kek verify` and listed in
+[Backup and restore](/deployment/backup-and-restore).
+
+### Deleting a channel
+
+Rules pointing at a deleted channel stay in place with no channel, and their
+next transitions are recorded as `skipped`. History rows that named the channel
+keep their other fields.
+
+## Rules
+
+| Field         | Meaning                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| `name`        | Unique, 1 to 128 visible characters.                                                             |
+| `signal`      | One of the [signals](#signals) above.                                                            |
+| `threshold`   | A finite number, `0` or above, in the signal's own unit. The rule fires at `value >= threshold`. |
+| `window_secs` | Trailing window in seconds, from `60` to `86400` (one minute to one day).                        |
+| `channel_id`  | The channel to report to, or `null` to record transitions without a channel.                     |
+| `enabled`     | Only enabled rules are evaluated on schedule. Defaults to `false` in the API.                    |
+
+The server also returns `state`, `last_value`, `last_evaluated_at` and
+`last_error`.
+
+The **Add rule** sheet starts from `error_rate`, a threshold of `0.05` and a
+300-second window, with the first channel selected; pick **none (record only)**
+for a rule without one. The rule is created enabled. Each rule card shows its
+state, signal, threshold, window, last value, when it was last evaluated and
+its channel, with an enable switch, **Evaluate now** and a delete button.
+
+Some starting points:
+
+| Signal                  | Threshold | Window | Fires when                                            |
+| ----------------------- | --------- | ------ | ----------------------------------------------------- |
+| `error_rate`            | `0.05`    | `300`  | 5% or more of the last five minutes' requests are 5xx |
+| `p95_latency_ms`        | `8000`    | `600`  | p95 latency over ten minutes reaches 8 seconds        |
+| `spend_velocity`        | `50`      | `3600` | the last hour spent 50 USD or more                    |
+| `provider_health_flaps` | `10`      | `300`  | ten or more failed health observations in 5 minutes   |
+
+### Changing a rule or channel
+
+The dashboard can enable, disable and delete, but not yet edit (tracked in
+[#1873](https://github.com/rolter-ai/rolter/issues/1873)). Change a threshold,
+window, signal, channel or endpoint through the API instead of deleting and
+recreating, because deleting a rule also deletes its history.
+
+`PUT` replaces the whole row, so send every field. A body without `enabled`
+turns the rule or channel off.
+
+```bash
+curl -X PUT https://control.example.com/api/v1/alert-rules/$RULE_ID \
+  -H "Authorization: Bearer $ROLTER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "name": "high error rate",
+        "signal": "error_rate",
+        "threshold": 0.02,
+        "window_secs": 300,
+        "channel_id": "3f6c2a4e-8d1b-4c1e-9a57-2b0d6e9f1c23",
+        "enabled": true
+      }'
+```
+
+A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
+`managed_secret`.
+
+## History
+
+**Alerting → History** lists the 200 most recent rows, newest first, with the
+time, rule, state (`firing` or `resolved`), delivery status and detail.
+
+| Delivery status | Detail                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `skipped`       | `no channel configured`, `channel disabled` or `channel deleted`                         |
+| `delivered`     | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871)) |
+| `failed`        | Reserved for webhook delivery ([#1871](https://github.com/rolter-ai/rolter/issues/1871)) |
+
+The history is append-only: the API has no update or delete for it. Deleting a
+rule deletes that rule's rows along with it.
+
+The API takes two optional query parameters:
+
+```bash
+curl -s "https://control.example.com/api/v1/alert-notifications?rule_id=$RULE_ID&limit=50" \
+  -H "Authorization: Bearer $ROLTER_TOKEN"
+```
+
+`limit` defaults to `100` and is clamped to `1`–`500`. Leave out `rule_id` for
+every rule.
+
+## Permissions and audit
+
+Alerting has no tenancy scope, so every operation is superadmin-only, the same
+as the other deployment-wide settings in [RBAC](/security/rbac). The dashboard
+hides the Alerting group from other roles.
+
+| Endpoint                                    | Capability                     |
+| ------------------------------------------- | ------------------------------ |
+| `GET`, `POST /api/v1/alert-channels`        | `alert_channel` read, create   |
+| `PUT`, `DELETE /api/v1/alert-channels/{id}` | `alert_channel` update, delete |
+| `GET`, `POST /api/v1/alert-rules`           | `alert_rule` read, create      |
+| `PUT`, `DELETE /api/v1/alert-rules/{id}`    | `alert_rule` update, delete    |
+| `POST /api/v1/alert-rules/{id}/evaluate`    | `alert_history` create         |
+| `GET /api/v1/alert-notifications`           | `alert_history` read           |
+
+Evaluating a rule by hand counts as creating history, because it can write a
+row.
+
+Every create, update and delete of a channel or rule writes an audit entry
+(`alert.channel.create`, `alert.rule.delete` and so on). Create and update
+entries carry the name, the enabled flag and, for a rule, the signal. A channel
+secret never appears in one.
+
+All of these operations are in the control plane's
+[OpenAPI document](/api/control-plane-openapi) under the `alerting` tag.
