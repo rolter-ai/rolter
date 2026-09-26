@@ -119,6 +119,8 @@ pub async fn realtime(
     let context = RouteContext {
         session_key,
         prompt: None,
+        prompt_len: None,
+        prompt_digest: None,
         token_ids: None,
         // realtime sessions are not adapter-addressed
         adapter: None,

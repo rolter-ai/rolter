@@ -108,6 +108,11 @@ rmpv = "1.3"
 # misc
 rand = "0.10"
 ahash = "0.8"
+# gateway: a streaming digest of a request's whole prompt text, so
+# `consistent_hash` keys on all of it while the text handed to the balancer is
+# bounded. xxh3's streamed digest equals its one-shot digest of the same bytes
+# and is the same on every platform; redis already brings the crate in
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 clap = { version = "4", features = ["derive", "env"] }
 subtle = "2"
 # unix signals, used only by the gateway SIGTERM-drain test

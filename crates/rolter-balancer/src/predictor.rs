@@ -226,13 +226,18 @@ impl LatencyPredictionSource for LatencyPredictor {
 /// The `/ 4` is the usual English rule of thumb. It is wrong for code and wrong
 /// for CJK, but the model learns a coefficient *over* whatever this returns, so
 /// a consistent bias is absorbed into `w2` — what matters is that the estimate
-/// scales with the real prompt, not that it is accurate.
+/// scales with the real prompt, not that it is accurate. That is why it reads
+/// [`RouteContext::prompt_len`] ahead of the prompt text: the gateway hands
+/// over only the leading bytes of a long prompt, and an estimate taken from
+/// those would stop growing at the cut.
 #[must_use]
 pub fn prompt_tokens(ctx: &RouteContext) -> usize {
     if let Some(ids) = ctx.token_ids {
         return ids.len();
     }
-    ctx.prompt.map_or(0, |p| p.len() / 4)
+    ctx.prompt_len
+        .or(ctx.prompt.map(str::len))
+        .map_or(0, |bytes| bytes / 4)
 }
 
 #[cfg(test)]
@@ -424,5 +429,13 @@ mod tests {
         assert_eq!(prompt_tokens(&ctx), 2);
 
         assert_eq!(prompt_tokens(&RouteContext::default()), 0);
+
+        // a bounded prompt is sized by the whole prompt it was cut from
+        let ctx = RouteContext {
+            prompt: Some("12345678"),
+            prompt_len: Some(200_000),
+            ..Default::default()
+        };
+        assert_eq!(prompt_tokens(&ctx), 50_000);
     }
 }
