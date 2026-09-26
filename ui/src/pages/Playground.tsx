@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery } from "@tanstack/react-query";
 import {
   GitCompare,
   ImageIcon,
@@ -30,13 +30,15 @@ import { StatusRow } from "@/components/ui/status-row";
 import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { fetchModels, mintPlaygroundKey } from "@/lib/api";
+import { fetchConfigProblems, fetchModels, mintPlaygroundKey, unservedRoutes } from "@/lib/api";
 import {
+  awaitingMintedKey,
   chatCompletion,
   embed,
   fetchGatewayModels,
   generateImages,
   getPlaygroundKeyState,
+  keyPropagationDelay,
   realtimeUrl,
   setPlaygroundKey,
   subscribePlaygroundKey,
@@ -54,6 +56,10 @@ import { useScreenReady } from "@/lib/ux-react";
 // default for every modality in local dev.
 const FAKE = "fake-llm";
 
+// the mint's mutation key, so the model catalog can tell "a key is on its way"
+// from "there is no key"
+const MINT_KEY = ["playground-key"];
+
 /** One selectable address, with whatever the gateway said owns it. */
 export interface ModelOption {
   id: string;
@@ -64,9 +70,26 @@ export interface ModelOption {
 /**
  * Where the picker's contents came from. The distinction matters because the
  * two sources do not list the same things, and quietly swapping one for the
- * other is what #946 is about.
+ * other is what #946 is about. `waiting` is the stretch between minting a key
+ * and the gateway accepting it, which is neither a gateway list nor a failure
+ * (#1853).
  */
-export type ModelSource = "gateway" | "no-key" | "unreachable";
+export type ModelSource = "gateway" | "waiting" | "no-key" | "unreachable";
+
+/** What the model pickers offer, and what the chat column should open on. */
+interface ModelCatalog {
+  options: ModelOption[];
+  source: ModelSource;
+  ready: boolean;
+  /**
+   * The model to select before the operator picks one, or `null` while the
+   * list could still change or could still hold a route the gateway does not
+   * serve.
+   */
+  preferred: string | null;
+  /** configured routes left out of a fallback list because they are not served */
+  hidden: number;
+}
 
 /**
  * Every id the gateway will actually accept.
@@ -81,35 +104,80 @@ export type ModelSource = "gateway" | "no-key" | "unreachable";
  * nobody, but the caller is told which source it got (#946). Silently
  * substituting a strictly smaller list was the bug: a provider group simply
  * vanished, with nothing on screen to say why.
+ *
+ * The route list is the store's, so it also holds routes the control plane
+ * prunes from the gateway's snapshot. Those are left out of the fallback, and
+ * nothing is preselected from it until `/api/v1/config/problems` has said
+ * which ones they are: opening on a route the gateway does not serve made the
+ * first message an operator sent fail with "no route" (#1853).
  */
-function useModelCatalog(): { options: ModelOption[]; source: ModelSource; ready: boolean } {
+function useModelCatalog(): ModelCatalog {
   // the key is read through the store rather than once at render, so the list
   // re-fetches the moment the screen mints one (#944)
-  const key = usePlaygroundKeyState().key;
+  const { key, minted } = usePlaygroundKeyState();
+  // a mint in flight is a key about to arrive, not a screen without one
+  const minting = useIsMutating({ mutationKey: MINT_KEY }) > 0;
   const routes = useQuery({ queryKey: ["models"], queryFn: fetchModels });
+  // the same query the Providers screen lists, so the two share one answer
+  const problems = useQuery({ queryKey: ["config-problems"], queryFn: fetchConfigProblems });
   const gateway = useQuery({
     queryKey: ["gateway-models", key],
     queryFn: ({ signal }) => fetchGatewayModels(signal),
     enabled: !!key,
-    retry: false,
+    // a key minted a moment ago answers 401 until the gateway's next snapshot
+    // poll picks it up, so that refusal is waited out, with backoff and a
+    // bound, before the screen falls back (#1853). a pasted key gets a single
+    // attempt: nothing about it is on its way
+    retry: minted ? awaitingMintedKey : false,
+    retryDelay: keyPropagationDelay,
   });
 
-  const source: ModelSource = gateway.data ? "gateway" : key ? "unreachable" : "no-key";
+  const source: ModelSource = gateway.data
+    ? "gateway"
+    : key
+      ? gateway.isPending
+        ? "waiting"
+        : "unreachable"
+      : minting
+        ? "waiting"
+        : "no-key";
+
+  // one entry per public name: several projects can route the same model
+  const configured = [...new Set((routes.data ?? []).map((m) => m.model))];
+  const unserved = unservedRoutes(problems.data);
+  const served = configured.filter((model) => !unserved.has(model));
 
   const options: ModelOption[] = gateway.data
     ? gateway.data.map((m) => ({ id: m.id, ownedBy: m.owned_by }))
-    : (routes.data ?? []).map((m) => ({ id: m.model }));
+    : served.map((model) => ({ id: model }));
 
   // the built-in always works, so it stays selectable whatever the source
   const withFake = options.some((o) => o.id === FAKE)
     ? options
     : [{ id: FAKE, ownedBy: "rolter" }, ...options];
+
+  // the gateway's own list is served by definition, and its first bare id is
+  // a route rather than a provider pin. the fallback only earns a pick once the
+  // problems are in, since until then any route in it may be a dead one
+  const preferred =
+    source === "gateway"
+      ? (options.find((o) => o.id !== FAKE && !o.id.includes("/"))?.id ?? null)
+      : source !== "waiting" && problems.isSuccess
+        ? (served.find((model) => model !== FAKE) ?? null)
+        : null;
+
   // the catalog is what the screen waits on before anything can be sent, so
   // it is the query `time_to_interactive` should be measured against. the
   // gateway probe only counts when there is a key to make it with — an
   // `enabled: false` query stays pending forever and would suppress the event
   const ready = !routes.isPending && (!key || !gateway.isPending);
-  return { options: withFake, source, ready };
+  return {
+    options: withFake,
+    source,
+    ready,
+    preferred,
+    hidden: gateway.data ? 0 : configured.length - served.length,
+  };
 }
 
 /** Routes have bare ids; pins and groups are addressed `owner/model`. */
@@ -163,18 +231,29 @@ function ModelSelect({
  * lists routes only, so provider pins and provider groups are missing from
  * it. Without this notice they just vanish, which reads as the group not
  * existing rather than as a list rolter could not fetch (#946).
+ *
+ * While a new key is on its way to the gateway the notice says that instead,
+ * so the few seconds of waiting do not read as a failure; and a fallback that
+ * left out routes the gateway does not serve says how many (#1853).
  */
-function ModelSourceNotice({ source }: { source: ModelSource }) {
+function ModelSourceNotice({ source, hidden }: { source: ModelSource; hidden: number }) {
   const { t } = useTranslation();
   if (source === "gateway") return null;
+  const message =
+    source === "waiting"
+      ? t("pages.playground.modelsWaiting")
+      : source === "no-key"
+        ? t("pages.playground.modelsNeedKey")
+        : t("pages.playground.modelsUnreachable");
   return (
     <p
       role="status"
       className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground"
     >
-      {source === "no-key"
-        ? t("pages.playground.modelsNeedKey")
-        : t("pages.playground.modelsUnreachable")}
+      {message}
+      {source !== "waiting" &&
+        hidden > 0 &&
+        ` ${t("pages.playground.unservedHidden", { count: hidden })}`}
     </p>
   );
 }
@@ -235,6 +314,7 @@ function SessionKeyBar() {
   const projectId = scope.projectId;
 
   const mint = useMutation({
+    mutationKey: MINT_KEY,
     mutationFn: () => mintPlaygroundKey(projectId as string),
     onSuccess: (minted) =>
       setPlaygroundKey(minted.key, { expiresAt: minted.expires_at ?? null, minted: true }),
@@ -606,19 +686,23 @@ function ChatColumn({
   );
 }
 
-function ChatMode({ models }: { models: ModelOption[] }) {
+function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
   const [cols, setCols] = React.useState<{ model: string }[]>([{ model: FAKE }]);
   const [multimodal, setMultimodal] = React.useState(false);
-  // the list arrives after the first render. until the operator picks
-  // something, the first real route beats the built-in placeholder: a
-  // deployment with models configured should not open on lorem ipsum
+  // the list arrives after the first render, and can be replaced once — the
+  // fallback first, then the gateway's own when a renewed or pasted key
+  // works. until the operator picks something, the column follows the
+  // catalog's choice: a deployment with models configured should not open on
+  // lorem ipsum, and an earlier pick must not outlive the list it came from
   const touched = React.useRef(false);
+  const auto = React.useRef(FAKE);
   React.useEffect(() => {
-    if (touched.current) return;
-    const real = models.find((m) => m.id !== FAKE && !m.id.includes("/"));
-    if (real) setCols((c) => (c.length === 1 && c[0].model === FAKE ? [{ model: real.id }] : c));
-  }, [models]);
+    if (touched.current || !preferred) return;
+    const previous = auto.current;
+    auto.current = preferred;
+    setCols((c) => (c.length === 1 && c[0].model === previous ? [{ model: preferred }] : c));
+  }, [preferred]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
@@ -1184,7 +1268,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
 export default function Playground() {
   const { t } = useTranslation();
   const [mode, setMode] = React.useState("chat");
-  const { options: models, source, ready } = useModelCatalog();
+  const { options: models, source, ready, preferred, hidden } = useModelCatalog();
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
   // Playground is the screen an evaluator spends the most time in, so its
@@ -1194,7 +1278,7 @@ export default function Playground() {
   return (
     <div className="flex flex-col gap-5 p-[22px]">
       <SessionKeyBar />
-      <ModelSourceNotice source={source} />
+      <ModelSourceNotice source={source} hidden={hidden} />
       <Tabs
         value={mode}
         onChange={setMode}
@@ -1206,7 +1290,7 @@ export default function Playground() {
           { value: "realtime", label: t("pages.playground.modes.realtime") },
         ]}
       />
-      {mode === "chat" && <ChatMode models={models} />}
+      {mode === "chat" && <ChatMode models={models} preferred={preferred} />}
       {mode === "embeddings" && <EmbeddingsMode models={models} />}
       {mode === "image" && <ImageMode models={models} />}
       {mode === "audio" && <AudioMode models={models} />}

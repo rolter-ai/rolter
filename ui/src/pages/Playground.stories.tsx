@@ -13,7 +13,7 @@ import {
   scopeResponse,
   type FetchStub,
 } from "./story-harness";
-import { setPlaygroundKey } from "@/lib/gateway";
+import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
@@ -30,6 +30,22 @@ const GATEWAY_MODELS = {
 
 /** What the control plane serves: bare route ids, nothing else. */
 const ROUTES = [{ id: "r-1", model: "minicpm5-1b", strategy: "round_robin" }];
+
+/**
+ * The dogfood stack from #1853: the store lists a route the snapshot prunes,
+ * and it sorts first, so a picker that trusts the store opens on it.
+ */
+const DOGFOOD_ROUTES = [
+  { model: "claude-sonnet-4", strategy: "round_robin", targets: 0, source: "db" },
+  { model: "minicpm5-1b", strategy: "round_robin", targets: 1, source: "db" },
+];
+
+/** What `/api/v1/config/problems` says about the route above. */
+const DOGFOOD_PROBLEMS = {
+  problems: [
+    "route 'claude-sonnet-4' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+  ],
+};
 
 const MINT_PATH = "/playground-key";
 
@@ -61,6 +77,19 @@ interface Sent {
   keys: string[];
 }
 
+/** What the rest of the control plane and the gateway answer, per story. */
+interface Upstream {
+  /** the store's route list, `GET /api/v1/models` */
+  routes?: unknown[];
+  /** `GET /api/v1/config/problems` */
+  problems?: () => Response;
+  /**
+   * The gateway's answer to its `n`th model-list call (from zero) made with a
+   * key, so a story can refuse a key the gateway has not polled yet.
+   */
+  gateway?: (n: number) => Response;
+}
+
 /**
  * The deployment the Playground normally opens against: a project in scope, a
  * mint endpoint that answers, and a gateway that serves its model list to the
@@ -72,7 +101,14 @@ function deployment(
   mint: () => Promise<Response>,
   sent: Sent = { keys: [] },
   projects: unknown[] = [{ id: "project-1", team_id: "team-1", name: "Gateway" }],
+  upstream: Upstream = {},
 ): FetchStub {
+  const {
+    routes = ROUTES,
+    problems = () => json({ problems: [] }),
+    gateway = () => json(GATEWAY_MODELS),
+  } = upstream;
+  let gatewayCalls = 0;
   return async (input, init) => {
     const url = String(input);
     const path = new URL(url, "http://localhost").pathname;
@@ -80,13 +116,27 @@ function deployment(
     const scope = scopeResponse(url);
     if (scope) return scope;
     if (url.includes(MINT_PATH)) return mint();
+    if (path === "/api/v1/config/problems") return problems();
     if (url.includes("/gw/v1/models")) {
       const auth = new Headers(init?.headers).get("Authorization");
-      if (auth) sent.keys.push(auth.replace("Bearer ", ""));
-      return auth ? json(GATEWAY_MODELS) : json({ error: { message: "missing key" } }, 401);
+      if (!auth) return json({ error: { message: "missing key" } }, 401);
+      sent.keys.push(auth.replace("Bearer ", ""));
+      return gateway(gatewayCalls++);
     }
-    return json(ROUTES);
+    return json(routes);
   };
+}
+
+/** The gateway's answer to a key that is not in its snapshot (yet). */
+const unknownKey = () => json({ error: { message: "invalid api key" } }, 401);
+
+/**
+ * Shortens the wait for a minted key to reach the gateway, for a story that
+ * has to see it run out. Ten real seconds would outlast every assertion.
+ */
+function shortKeyWait() {
+  setKeyPropagationForTests({ budgetMs: 300, firstDelayMs: 50, maxDelayMs: 100 });
+  return () => setKeyPropagationForTests(null);
 }
 
 /** Clears the in-memory key, so one story's key is never another's start state. */
@@ -325,6 +375,8 @@ export const NoProjectSaysWhatIsMissing: Story = {
  * "you have not set one", the other "the one you set did not work".
  */
 export const RejectedKeySaysSo: Story = {
+  // a minted key's 401 is waited out first (#1853); this one never clears
+  beforeEach: shortKeyWait,
   render: () => (
     <Screen
       fetchStub={async (input) => {
@@ -332,6 +384,7 @@ export const RejectedKeySaysSo: Story = {
         const scope = scopeResponse(url);
         if (scope) return scope;
         if (url.includes(MINT_PATH)) return json(minted("sk-rolter-stale"));
+        if (url.includes("/config/problems")) return json({ problems: [] });
         if (url.includes("/gw/v1/models")) return json({ error: { message: "invalid key" } }, 401);
         return json(ROUTES);
       }}
@@ -343,6 +396,122 @@ export const RejectedKeySaysSo: Story = {
       expect(canvas.getByText(/Could not read the gateway's model list/)).toBeVisible(),
     );
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
+  },
+};
+
+/**
+ * The race from #1853. The mint answers the moment the row is written, but the
+ * gateway only learns the key on its next snapshot poll, so the first calls
+ * made with it are refused. The screen says it is waiting, asks again, and
+ * lands on the gateway's own list — rather than falling back for good to a
+ * store list whose first entry is a route the gateway does not serve.
+ */
+const racing = { keys: [] as string[] };
+
+export const WaitsForTheMintedKeyToGoLive: Story = {
+  beforeEach: () => {
+    racing.keys = [];
+  },
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), racing, undefined, {
+        routes: DOGFOOD_ROUTES,
+        problems: () => json(DOGFOOD_PROBLEMS),
+        // three refusals keep the waiting state up for well over a second
+        gateway: (n) => (n < 3 ? unknownKey() : json(GATEWAY_MODELS)),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sent = racing;
+
+    // while the key is on its way the notice says so, not that the list failed
+    await canvas.findByText(/Asking the gateway which models this key can use/);
+    await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+
+    // the same key, asked again until the gateway took it
+    await waitFor(() => expect(sent.keys.length).toBe(4));
+    await expect(new Set(sent.keys)).toEqual(new Set(["sk-rolter-minted"]));
+
+    // the notice clears once the gateway's own list is in
+    await waitFor(() =>
+      expect(canvas.queryByText(/Asking the gateway which models this key can use/)).toBeNull(),
+    );
+    await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+
+    // and the chat column opens on a route the gateway serves, not on the
+    // unservable one the store sorts first
+    const picker = canvas.getByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toHaveValue("minicpm5-1b"));
+    await userEvent.click(picker);
+    const listbox = canvas.getByRole("listbox");
+    await expect(within(listbox).getByRole("option", { name: "abc/minicpm5-1b" })).toBeTruthy();
+    await expect(within(listbox).queryByRole("option", { name: "claude-sonnet-4" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+  },
+};
+
+/**
+ * A key the gateway never accepts ends in the fallback, after a bounded wait.
+ * The fallback is the store's route list with the routes the snapshot prunes
+ * left out, the notice counts them, and the column opens on one that is served.
+ */
+const neverLive = { keys: [] as string[] };
+
+export const FallbackLeavesOutUnservedRoutes: Story = {
+  beforeEach: () => {
+    neverLive.keys = [];
+    return shortKeyWait();
+  },
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), neverLive, undefined, {
+        routes: DOGFOOD_ROUTES,
+        problems: () => json(DOGFOOD_PROBLEMS),
+        gateway: unknownKey,
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/Could not read the gateway's model list/);
+    await expect(
+      canvas.getByText(/1 configured route is left out because the gateway does not serve it/),
+    ).toBeVisible();
+    // it did ask again before giving up, and it did give up
+    await expect(neverLive.keys.length).toBeGreaterThan(1);
+
+    const picker = canvas.getByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toHaveValue("minicpm5-1b"));
+    await userEvent.click(picker);
+    const listbox = canvas.getByRole("listbox");
+    await expect(within(listbox).getByRole("option", { name: "minicpm5-1b" })).toBeTruthy();
+    await expect(within(listbox).queryByRole("option", { name: "claude-sonnet-4" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+  },
+};
+
+/**
+ * With no word on which routes are pruned, any route in the fallback may be a
+ * dead one, so the column stays on the built-in rather than guessing.
+ */
+export const NoPickWithoutTheProblemList: Story = {
+  beforeEach: shortKeyWait,
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
+        routes: DOGFOOD_ROUTES,
+        problems: () => json({ error: { message: "store unavailable" } }, 503),
+        gateway: unknownKey,
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/Could not read the gateway's model list/);
+    await expect(canvas.getByRole("combobox", { name: "Model" })).toHaveValue("fake-llm");
+    await expect(canvas.getByText("Send a message to fake-llm.")).toBeVisible();
   },
 };
 
