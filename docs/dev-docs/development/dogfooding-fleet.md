@@ -121,9 +121,6 @@ chart on their own defaults.
   from the snapshot and the `claude-sonnet-4` route with it. The gateway says
   so on every reload and the dashboard shows it under config problems; it is
   expected until #1133 lands.
-- **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
-  control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
-  table (#929).
 - **Adaptive routing is switched on by `just dogfood`.** `deepseek-r1` is the
   fleet's `strategy = "adaptive"` route, and that strategy only routes once the
   deployment-wide kill switch is on. The switch ships off, and the importer
@@ -139,6 +136,9 @@ chart on their own defaults.
   both ClickHouse containers fail with
   `error setting rlimit type 7: operation not permitted` and everything
   downstream (request logs, `ui_events`, SigNoz) is missing. Run `CLICKHOUSE_NOFILE=20000 just dogfood` there (#1819).
+- **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
+  control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
+  table (#929).
 
 ## Before a week of capture: prove the UX stream
 
