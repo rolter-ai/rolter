@@ -365,8 +365,12 @@ dev-creds:
     signoz_rc=0
     ./"$d"/provision-signoz.sh || signoz_rc=$?
     ./"$d"/sheet.sh
+    # unlike `just dogfood` there is no running stack here for a failure to
+    # tear down, so hand the exit code on: `just dev-creds && ...` must not read
+    # a SigNoz with no dashboards as provisioned (#1792)
     if [ "$signoz_rc" -ne 0 ]; then
       echo "[dev-creds] SigNoz provisioning FAILED (exit $signoz_rc) — see the [signoz] lines above" >&2
+      exit "$signoz_rc"
     fi
 
 # provision SigNoz with the shared dev login and the checked-in dashboards

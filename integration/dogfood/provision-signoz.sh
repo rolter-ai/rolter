@@ -31,9 +31,12 @@
 # SigNoz's metadata database on purpose and starts clean. Traces are unaffected
 # either way — they live in ClickHouse, not in SigNoz's sqlite.
 #
-# Exit codes: 0 provisioned (or already was), 1 SigNoz unreachable, the account
-# does not match or a board failed to import, 2 a SigNoz whose API this script
-# does not know.
+# Exit codes: 0 provisioned (or already was), 1 SigNoz unreachable or failing,
+# the account does not match or a board failed to import, 2 a SigNoz whose API
+# this script does not know. Only SigNoz refusing the credential itself (a 4xx
+# json error from the sign-in route) counts as a mismatch: a route that moved,
+# or a token under a key this script does not read, is a 2 that names the
+# version, never the mismatch message and its `just signoz-reset` (#1792).
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,6 +91,8 @@ for path in sys.argv[1:]:
         break' "$@" 2>/dev/null
 }
 api_error() { body "$1" | jget error.message error; }
+# why RESPONSE: the api's error message, or a stand-in when it gave none
+why() { local e; e="$(api_error "$1")"; printf '%s' "${e:-no error message}"; }
 
 say "waiting for $BASE"
 for _ in $(seq 1 90); do
@@ -148,7 +153,13 @@ print(json.dumps(creds))' "$@"
 }
 
 # v0.136: the org id comes from the session context for the email, and the
-# token is `data.accessToken`
+# token is `data.accessToken`.
+#
+# once the context route answers, only SigNoz saying no to the credential is an
+# account mismatch. anything else (the SPA, a token under another key, a route
+# answering 404/405/501) means this release moved the api, and blaming the
+# account would send the operator to `just signoz-reset`, which deletes
+# SigNoz's users and dashboards and then fails the same way (#1792)
 if [ -z "$TOKEN" ]; then
   query="$(python3 -c 'import os,sys,urllib.parse as u
 print(u.urlencode({"email": os.environ["DEV_EMAIL"], "ref": sys.argv[1]}))' "$BASE")"
@@ -156,17 +167,33 @@ print(u.urlencode({"email": os.environ["DEV_EMAIL"], "ref": sys.argv[1]}))' "$BA
   if answered_ok "$out"; then
     ANSWERED=/api/v2/sessions/email_password
     org="$(body "$out" | jget data.orgs.0.id)"
-    if [ "$(body "$out" | jget data.exists)" != "True" ]; then
-      LOGIN_ERR="SigNoz has no account for $DEV_EMAIL"
-    elif [ -z "$org" ]; then
-      LOGIN_ERR="the session context for $DEV_EMAIL named no organisation"
-    else
+    case "$(body "$out" | jget data.exists)" in
+      True) ;;
+      False) LOGIN_ERR="SigNoz has no account for $DEV_EMAIL" ;;
+      *) unsupported "GET /api/v2/sessions/context answered without data.exists, so it
+  cannot say whether $DEV_EMAIL has an account. The credential was not changed." ;;
+    esac
+    if [ -z "$LOGIN_ERR" ]; then
+      [ -n "$org" ] || unsupported "GET /api/v2/sessions/context says $DEV_EMAIL exists but names no
+  organisation at data.orgs[0].id. The credential was not changed."
       out="$(call POST /api/v2/sessions/email_password "$(creds_json "$org")")"
+      is_json "$out" || unsupported "POST /api/v2/sessions/email_password answered with the SPA rather
+  than json. The credential was not changed."
       TOKEN="$(body "$out" | jget data.accessToken)"
+      code="$(status_of "$out")"; code="${code:-0}"
       if [ -n "$TOKEN" ]; then
         say "signed in via $ANSWERED"
+      elif [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+        unsupported "POST /api/v2/sessions/email_password answered $code with no
+  data.accessToken, so the session token moved. The credential was not changed."
+      elif [ "$code" = 404 ] || [ "$code" = 405 ] || [ "$code" = 501 ]; then
+        unsupported "POST /api/v2/sessions/email_password answered $code: $(why "$out").
+  The credential was not changed."
+      elif [ "$code" -ge 400 ] && [ "$code" -lt 500 ]; then
+        LOGIN_ERR="$(why "$out")"
       else
-        LOGIN_ERR="$(api_error "$out")"
+        die "sign-in failed: POST /api/v2/sessions/email_password answered $code: $(why "$out").
+  That is SigNoz $VERSION failing, not the account: check the signoz container's logs and rerun."
       fi
     fi
   fi
@@ -193,7 +220,7 @@ fi
 
 if [ -z "$TOKEN" ]; then
   cat >&2 <<EOF
-[signoz] could not sign in as $DEV_EMAIL${LOGIN_ERR:+ ($LOGIN_ERR)}
+[signoz] could not sign in to SigNoz $VERSION as $DEV_EMAIL${LOGIN_ERR:+ ($LOGIN_ERR)}
 
   This instance already has an account that is not the shared dev credential.
   Nothing was changed. Either sign in with the password you chose, or discard

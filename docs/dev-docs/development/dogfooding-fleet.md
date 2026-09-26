@@ -123,9 +123,11 @@ chart on their own defaults.
   moved sign-in to `/api/v2/sessions/email_password` and dashboard creation to
   `/api/v2/dashboards` (#1864). The boards are written in the v1 import format
   with `"version": "v5"`, which v0.136 converts on import. A SigNoz the script
-  cannot talk to makes it exit 2 naming the version, and `just dogfood` repeats
-  the failure after the sheet. Run `just signoz-provision` against a new release
-  before moving the pin.
+  cannot talk to makes it exit 2 naming the version, a sign-in route that moved
+  included: only a refused credential is reported as a different account and
+  pointed at `just signoz-reset`. `just dogfood` repeats the failure after the
+  sheet, and `just dev-creds` exits with it. Run `just signoz-provision` against
+  a new release before moving the pin.
 
 ## Before a week of capture: prove the UX stream
 

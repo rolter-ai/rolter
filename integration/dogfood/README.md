@@ -201,9 +201,14 @@ uses, which is why dashboards stopped importing when the pin moved to it
 The older spellings (`/api/v1/login`, `/api/v2/auth/login`, `/api/v1/auth/login`
 and `/api/v1/dashboards`) stay as fallbacks for a SigNoz from before v0.136, but
 only v0.136.0 is tested. A SigNoz that answers none of them makes the script
-exit 2 with its version in the message, and `just dogfood` repeats that after
-the sheet so it does not scroll away. Bumping the pin means running
-`just signoz-provision` against the new release before merging the bump.
+exit 2 with its version in the message. So does one that keeps the session
+context route but moves or reshapes the sign-in behind it (the SPA instead of
+json, a token under another key, a `404`/`405`/`501`): only SigNoz refusing the
+credential itself counts as a different account, so an API change never points
+you at `just signoz-reset`. `just dogfood` repeats a failure after the sheet so
+it does not scroll away, and `just dev-creds` exits with the script's code.
+Bumping the pin means running `just signoz-provision` against the new release
+before merging the bump.
 
 The boards stay in SigNoz's v1 import format (`title`, `widgets`, `layout`) and
 carry `"version": "v5"`. On v0.136 the create endpoint converts that shape to
