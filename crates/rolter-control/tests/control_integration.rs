@@ -660,6 +660,141 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     );
 }
 
+/// A readonly provider or group from the bootstrap file answers `slug/model`
+/// for every org, so no database provider or group may take its slug, on create
+/// or on rename, and no route may be named on its address (#1845).
+#[tokio::test]
+async fn a_bootstrap_slug_is_refused_to_every_database_row() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let mut bootstrap = rolter_core::GatewayConfig::default();
+    // a derived slug (`edge-cluster`) and an explicit group slug
+    bootstrap.providers.push(rolter_core::ProviderConfig {
+        name: "Edge Cluster".to_string(),
+        kind: rolter_core::ProviderKind::OpenaiCompatible,
+        api_base: "http://127.0.0.1:9".to_string(),
+        ..Default::default()
+    });
+    bootstrap
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "Shared".to_string(),
+            slug: Some("shared-pool".to_string()),
+            strategy: rolter_core::BalancingStrategy::RoundRobin,
+            members: vec![rolter_core::GroupMember {
+                provider: "Edge Cluster".to_string(),
+                model: None,
+                weight: 1,
+            }],
+            tenancy: None,
+        });
+    let app = rolter_control::test_app_with_bootstrap(db.pool().clone(), &bootstrap)
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let (_, org) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "tenant", "slug": "tenant"}),
+    )
+    .await;
+    let org = org["id"].as_str().unwrap().to_string();
+    let (_, team) = post(
+        format!("{base}/api/v1/orgs/{org}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let (_, project) = post(
+        format!(
+            "{base}/api/v1/teams/{}/projects",
+            team["id"].as_str().unwrap()
+        ),
+        json!({"name": "app"}),
+    )
+    .await;
+    let project = project["id"].as_str().unwrap().to_string();
+    let provider = |name: &str, slug: &str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "slug": slug, "kind": "openai_compatible",
+                   "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+
+    for slug in ["edge-cluster", "shared-pool"] {
+        let (status, body) = provider("mine", slug).await;
+        assert_eq!(status, 409, "provider on bootstrap slug {slug}: {body}");
+    }
+    let (status, own) = provider("mine", "mine").await;
+    assert_eq!(status, 200, "{own}");
+    // a readonly group's own slug meets the older config-owned guard first,
+    // which answers 400; a readonly provider's slug meets the namespace check
+    for (slug, refused) in [("edge-cluster", 409), ("shared-pool", 400)] {
+        let (status, body) = post(
+            format!("{base}/api/v1/orgs/{org}/provider-groups"),
+            json!({"name": format!("group-{slug}"), "slug": slug, "strategy": "round_robin",
+                   "members": [{"provider_id": own["id"]}]}),
+        )
+        .await;
+        assert_eq!(status, refused, "group on bootstrap slug {slug}: {body}");
+    }
+    let (status, group) = post(
+        format!("{base}/api/v1/orgs/{org}/provider-groups"),
+        json!({"name": "my-pool", "slug": "my-pool", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{group}");
+
+    // the same on a slug change
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
+        json!({"slug": "shared-pool", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "provider renamed onto a bootstrap slug: {body}"
+    );
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "edge-cluster", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "group renamed onto a bootstrap slug: {body}");
+
+    // and a route may not sit on either address
+    for model in ["edge-cluster/gpt-4o", "shared-pool/gpt-4o"] {
+        let (status, body) = post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": model, "strategy": "round_robin"}),
+        )
+        .await;
+        assert_eq!(status, 409, "{model}: {body}");
+    }
+}
+
 /// Listings answer a caller whose role sits below the org with what that
 /// caller reaches, instead of refusing the whole list (#1846, #1850). A project
 /// member can navigate to their own project, a team admin sees and manages
