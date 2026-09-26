@@ -1,0 +1,221 @@
+name: ui-security-updates
+
+# dependabot opens security-update pull requests for cargo and the workflow
+# actions, but not for ui/. that entry runs as `package-ecosystem: bun` (#1137),
+# and GitHub's supported-ecosystems table still lists bun as version updates
+# only (last checked 2026-09-26). the alerts keep firing on ui dependencies;
+# what went missing is the pull request that fixes them, and this workflow
+# raises it instead (#1148).
+#
+# every run rebuilds one branch from master. it lists the open dependabot
+# alerts, lets ui/scripts/security-updates.ts raise each vulnerable direct
+# dependency to its first patched release (semver-compatible bumps only),
+# refreshes bun.lock, and opens or updates a single pull request. an alert the
+# script will not fix on its own (no patched release yet, a transitive package,
+# a breaking bump) is listed in the run summary and the pull request body for a
+# hand bump. once no alert needs a bump, the standing pull request is closed.
+#
+# it all runs on the repo GITHUB_TOKEN: `vulnerability-alerts: read` is the
+# scope that lists dependabot alerts, and the repository already lets actions
+# open pull requests (release-plz relies on the same setting). a pull request
+# the token opens triggers no `pull_request` run, so ci.yml is dispatched
+# against the branch, the way release-plz.yml gates the release PR (#1025).
+on:
+  schedule:
+    # every day at 06:30 UTC, half an hour ahead of the cargo audit in audit.yml
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: write the plan to the run summary only; push nothing and touch no pull request
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# two runs at once would force-push the branch under each other
+concurrency:
+  group: ui-security-updates
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: raise ui security updates
+    runs-on: ubuntu-latest
+    permissions:
+      vulnerability-alerts: read # list the open dependabot alerts
+      contents: write # push the update branch
+      pull-requests: write # open, update or close its pull request
+      actions: write # dispatch ci.yml, since a token-opened pull request triggers nothing
+    env:
+      BRANCH: security/ui-dependencies
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry-run == true }}
+    steps:
+      # the branch is always cut from master, so a run that publishes has to
+      # start there too. a dry run may start anywhere, which is how a change to
+      # this workflow gets tried before it merges
+      - name: publish only from master
+        if: env.DRY_RUN != 'true' && github.ref != 'refs/heads/master'
+        run: |
+          echo "::error::only a dry run may start from a branch other than master"
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: list open dependabot alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # the script filters again on manifest path, so a looser listing here
+          # costs bytes, never a wrong bump
+          if ! gh api --paginate --slurp \
+            "repos/${REPO}/dependabot/alerts?state=open&ecosystem=npm&per_page=100" \
+            > "${RUNNER_TEMP}/pages.json"; then
+            # a failed listing must never read as "no alerts": that would close
+            # a standing pull request that is still needed
+            echo "::error::could not list dependabot alerts; the job needs 'vulnerability-alerts: read' and dependabot alerts enabled on the repository"
+            exit 1
+          fi
+          jq 'add // []' "${RUNNER_TEMP}/pages.json" > "${RUNNER_TEMP}/alerts.json"
+          echo "open npm alerts: $(jq length "${RUNNER_TEMP}/alerts.json")"
+
+      - name: plan the bumps
+        id: plan
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          bun scripts/security-updates.ts \
+            --alerts "${RUNNER_TEMP}/alerts.json" \
+            --summary "${RUNNER_TEMP}/summary.md" \
+            --commit-message "${RUNNER_TEMP}/commit.txt" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --write
+          cat "${RUNNER_TEMP}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: refresh bun.lock
+        if: steps.plan.outputs.bumps != '0'
+        working-directory: ui
+        # resolves the raised ranges into the lockfile and installs nothing.
+        # the gate's frozen install on the pull request proves the pair agrees
+        run: bun install --lockfile-only --ignore-scripts
+
+      - name: flag alerts left for a hand bump
+        if: steps.plan.outputs.skipped != '0'
+        env:
+          SKIPPED: ${{ steps.plan.outputs.skipped }}
+        run: echo "::warning::${SKIPPED} package(s) with a ui dependabot alert need a hand bump; the run summary says why"
+
+      - name: publish the branch and pull request
+        id: publish
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMPS: ${{ steps.plan.outputs.bumps }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          open_pr="$(gh pr list --repo "${REPO}" --head "${BRANCH}" --base master --state open \
+            --json number --jq '.[0].number // ""')"
+
+          if [ "${BUMPS}" = "0" ]; then
+            if [ -n "${open_pr}" ]; then
+              # the alerts it raised were fixed or dismissed some other way.
+              # the branch goes with it: it is this workflow's own, nothing is
+              # ever stacked on it, and leaving it would read as a pull request
+              # a human closed on purpose (see below)
+              gh pr close "${open_pr}" --repo "${REPO}" --delete-branch \
+                --comment "No open Dependabot alert on \`ui/\` needs a bump any more, so this pull request is not needed. Closed by \`.github/workflows/ui-security-updates.yml\`."
+            fi
+            echo "nothing to raise"
+            exit 0
+          fi
+
+          body="${RUNNER_TEMP}/body.md"
+          {
+            cat "${RUNNER_TEMP}/summary.md"
+            echo
+            echo "---"
+            echo
+            echo "Opened by \`.github/workflows/ui-security-updates.yml\`, which stands in for Dependabot security updates on \`ui/\`: the \`bun\` ecosystem does version updates only (#1148). The workflow rebuilds this branch from \`master\` on every run and dispatches \`ci.yml\` against it, since a pull request opened with the repository token triggers no \`pull_request\` run."
+          } > "${body}"
+
+          remote_sha="$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)"
+          same=false
+          if [ -n "${remote_sha}" ]; then
+            git fetch --no-tags --depth=1 origin "${remote_sha}"
+            if git diff --quiet "${remote_sha}" -- ui/package.json ui/bun.lock; then
+              same=true
+            fi
+          fi
+
+          if [ "${same}" = "true" ]; then
+            # the branch already carries exactly this change. re-pushing it
+            # would only re-run the whole gate every day for nothing
+            if [ -n "${open_pr}" ]; then
+              gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${body}"
+              echo "${BRANCH} is current; refreshed the body of #${open_pr}"
+            else
+              # the workflow deletes the branch whenever it closes the pull
+              # request itself, so a branch with no open pull request is one a
+              # human closed. respect that, as dependabot does
+              echo "::notice::${BRANCH} already carries this change and its pull request was closed by hand; not reopening it"
+            fi
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${BRANCH}"
+          git add ui/package.json ui/bun.lock
+          git commit --no-verify -F "${RUNNER_TEMP}/commit.txt"
+          # the lease pins the branch to the sha read above, or to absent, so a
+          # push that landed in between is never overwritten blind
+          git push --force-with-lease="refs/heads/${BRANCH}:${remote_sha}" \
+            origin "HEAD:refs/heads/${BRANCH}"
+
+          if [ -n "${open_pr}" ]; then
+            gh pr edit "${open_pr}" --repo "${REPO}" --body-file "${body}"
+            echo "updated #${open_pr}"
+          else
+            gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
+              --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${body}" \
+              --label dependencies --label javascript --label security --label ui-dashboard
+          fi
+          echo "pushed=true" >> "${GITHUB_OUTPUT}"
+
+      # a dispatch that silently produced no run would leave the pull request
+      # without ci-ok and this job green, so confirm the run exists
+      - name: dispatch ci.yml against the branch
+        if: steps.publish.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          started="$(date -u +%s)"
+          gh workflow run ci.yml --repo "${REPO}" --ref "${BRANCH}"
+          for _ in $(seq 1 20); do
+            # the query lives in the path: `gh api` switches to POST as soon as
+            # any -f/-F parameter is set, which 404s this GET-only endpoint (#1026)
+            runs="$(gh api \
+              "repos/${REPO}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=${BRANCH}&per_page=20" \
+              -q ".workflow_runs[] | select((.created_at | fromdateiso8601) >= (${started} - 120)) | .html_url" \
+              || true)"
+            if [ -n "${runs}" ]; then
+              {
+                echo
+                echo "### ci dispatched"
+                echo
+                while IFS= read -r url; do echo "- ${url}"; done <<< "${runs}"
+              } >> "${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::dispatched ci.yml for ${BRANCH} but no workflow run appeared within 5m"
+          exit 1

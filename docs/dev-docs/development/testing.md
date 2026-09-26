@@ -420,8 +420,71 @@ Dependabot has spoken bun since bun 1.1.39, so `/ui` now runs as
 `package-ecosystem: bun` and `package-lock.json` is gone. Dependabot writes
 `bun.lock` itself, so a stale lockfile fails on the PR that caused it and never
 reaches `master`. The trade is that the bun ecosystem does version updates but
-not security updates: alerts still fire on `ui` dependencies, but the security
-bump has to be raised by hand (#1148).
+not security updates. Alerts still fire on `ui` dependencies; the pull request
+that fixes them comes from the workflow below instead of from Dependabot.
+
+### UI security updates
+
+`.github/workflows/ui-security-updates.yml` stands in for the Dependabot
+security updates the `bun` ecosystem lacks (#1148). GitHub's
+[supported-ecosystems table](https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories)
+still marks bun as version updates only; once that changes, delete the workflow,
+its script and the `.github/actionlint.yaml` entry.
+
+It runs daily at 06:30 UTC and on demand. Each run:
+
+1. lists the open Dependabot alerts with the repository `GITHUB_TOKEN`, under
+   the `vulnerability-alerts: read` scope. A failed listing fails the run rather
+   than reading as "no alerts";
+2. hands them to `ui/scripts/security-updates.ts`, which raises each vulnerable
+   direct dependency in `ui/package.json` to its first patched release and keeps
+   the range operator (`^1.2.0` becomes `^1.2.7`);
+3. refreshes `bun.lock` with `bun install --lockfile-only`;
+4. rebuilds the `security/ui-dependencies` branch from `master` and opens or
+   updates one pull request, titled
+   `build(deps): raise vulnerable ui dependencies to patched releases`;
+5. dispatches `ci.yml` against that branch, since a pull request opened with
+   the repository token triggers no `pull_request` run. This is the same path
+   the release PR takes (see [ci-gating](ci-gating.md)).
+
+The script only raises what it can raise safely. It leaves these alerts for a
+hand bump and lists each one, with its reason, in the run summary and the pull
+request body:
+
+- no patched release has been published yet;
+- the package is not a direct dependency (the fix would be an `overrides` entry,
+  which changes what every other dependent resolves);
+- the range is not a plain `^`, `~` or exact version;
+- the first patched release is a breaking bump from the current floor (a new
+  major, or a new minor below 1.0).
+
+GitHub's dependency graph reads `ui/package.json` but not `bun.lock`, so today
+every `ui` alert is about a direct dependency. A transitive alert only appears
+if the graph learns to read the lockfile.
+
+When no alert needs a bump any more, the run closes the standing pull request and
+deletes its branch. A branch that still carries the same change with no open
+pull request was closed by a person, and the workflow does not reopen it.
+
+To try a change to the workflow before it merges, dispatch it with `dry-run`
+from the branch. A dry run writes the plan to the run summary and pushes
+nothing. A run that publishes refuses to start anywhere but `master`.
+
+```bash
+gh workflow run ui-security-updates.yml --ref <branch> -f dry-run=true
+```
+
+The planner runs locally against a saved alert listing:
+
+```bash
+gh api "repos/rolter-ai/rolter/dependabot/alerts?state=open&ecosystem=npm" > alerts.json
+cd ui && bun scripts/security-updates.ts --alerts ../alerts.json   # plan only
+```
+
+actionlint has no entry for `vulnerability-alerts` yet
+([rhysd/actionlint#713](https://github.com/rhysd/actionlint/issues/713)), so
+`.github/actionlint.yaml` ignores that one message in that one file. Any other
+permission typo in the workflow still fails the check.
 
 ### Secret scanning
 

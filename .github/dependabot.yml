@@ -19,9 +19,9 @@ updates:
   # master's lockfile stale and reded every other open PR (#1137).
   #
   # the trade: the bun ecosystem does version updates but not security updates.
-  # dependabot *alerts* still fire on ui dependencies; what is lost is the
-  # automatic security PR, which has to be raised by hand until bun security
-  # updates ship. tracked in #1148.
+  # dependabot *alerts* still fire on ui dependencies, and
+  # .github/workflows/ui-security-updates.yml raises the security PR dependabot
+  # would have opened (#1148). drop that workflow once bun security updates ship.
   - package-ecosystem: bun
     directory: /ui
     schedule:
