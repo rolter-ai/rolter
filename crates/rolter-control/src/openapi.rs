@@ -2154,6 +2154,9 @@ fn stability_schemas(p: &Prim) -> Value {
 
 fn error_schemas(p: &Prim) -> Value {
     let string = &p.string;
+    // `param` is null when a refusal has no single parameter to name, as the
+    // OpenAI envelope does for a query string that does not deserialize
+    let nullable_string = &p.nullable_string;
     json!({
         "Error": {
             "type": "object",
@@ -2164,7 +2167,7 @@ fn error_schemas(p: &Prim) -> Value {
                         "message": string,
                         "type": string,
                         "code": string,
-                        "param": string
+                        "param": nullable_string
                     }
                 }
             }
@@ -3005,6 +3008,13 @@ mod tests {
         assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
         assert!(doc["components"]["securitySchemes"]["bearerAuth"].is_object());
         assert!(doc["components"]["responses"]["Error"].is_object());
+        // `time_bounds` answers `param: null` for a query string with no one
+        // parameter to blame, so the schema has to admit it
+        assert_eq!(
+            doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["param"]
+                ["type"],
+            json!(["string", "null"])
+        );
         // a representative operation is fully described, path parameter included
         let create = &doc["paths"]["/api/v1/projects/{project_id}/routes"]["post"];
         assert_eq!(create["operationId"], "createRoute");
