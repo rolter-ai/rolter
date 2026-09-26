@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gauge, Plus, Wallet } from "lucide-react";
+import { Gauge, Pencil, Plus, Wallet } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -8,7 +8,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
-import { PageBody } from "@/components/screen";
+import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
@@ -28,9 +28,13 @@ import {
   fetchVirtualKeys,
   SCOPE_TYPES,
   UNPRICED_POLICIES,
+  updateBudget,
+  updateRateLimit,
   type BudgetRow,
   type UnpricedPolicy,
   type RateLimitRow,
+  type UpdateBudgetInput,
+  type UpdateRateLimitInput,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
@@ -139,6 +143,12 @@ export default function Limits() {
 
   const [addBudgetOpen, setAddBudgetOpen] = React.useState(false);
   const [addRateLimitOpen, setAddRateLimitOpen] = React.useState(false);
+  // the row being edited outlives its sheet closing, so the closing sheet keeps
+  // its own name and title rather than reading as the create form (#1285)
+  const [editingBudget, setEditingBudget] = React.useState<BudgetRow | null>(null);
+  const [editBudgetOpen, setEditBudgetOpen] = React.useState(false);
+  const [editingRateLimit, setEditingRateLimit] = React.useState<RateLimitRow | null>(null);
+  const [editRateLimitOpen, setEditRateLimitOpen] = React.useState(false);
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
@@ -295,6 +305,10 @@ export default function Limits() {
             <BudgetCard
               key={budget.id}
               budget={budget}
+              onEdit={() => {
+                setEditingBudget(budget);
+                setEditBudgetOpen(true);
+              }}
               onDelete={() => removeBudget.mutate(budget.id)}
               deleting={removeBudget.isPending}
             />
@@ -353,6 +367,10 @@ export default function Limits() {
             <RateLimitCard
               key={limit.id}
               limit={limit}
+              onEdit={() => {
+                setEditingRateLimit(limit);
+                setEditRateLimitOpen(true);
+              }}
               onDelete={() => removeRateLimit.mutate(limit.id)}
               deleting={removeRateLimit.isPending}
             />
@@ -360,30 +378,52 @@ export default function Limits() {
         </div>
       </div>
 
-      <AddBudgetDialog
+      <BudgetSheet
         open={addBudgetOpen}
         onOpenChange={setAddBudgetOpen}
         scopeType={scopeType}
         scopeId={scopeId}
         onDone={invalidateBudgets}
       />
-      <AddRateLimitDialog
+      {editingBudget && (
+        <BudgetSheet
+          open={editBudgetOpen}
+          onOpenChange={setEditBudgetOpen}
+          scopeType={editingBudget.scope_type}
+          scopeId={editingBudget.scope_id}
+          budget={editingBudget}
+          onDone={invalidateBudgets}
+        />
+      )}
+      <RateLimitSheet
         open={addRateLimitOpen}
         onOpenChange={setAddRateLimitOpen}
         scopeType={scopeType}
         scopeId={scopeId}
         onDone={invalidateRateLimits}
       />
+      {editingRateLimit && (
+        <RateLimitSheet
+          open={editRateLimitOpen}
+          onOpenChange={setEditRateLimitOpen}
+          scopeType={editingRateLimit.scope_type}
+          scopeId={editingRateLimit.scope_id}
+          limit={editingRateLimit}
+          onDone={invalidateRateLimits}
+        />
+      )}
     </PageBody>
   );
 }
 
 function BudgetCard({
   budget,
+  onEdit,
   onDelete,
   deleting,
 }: {
   budget: BudgetRow;
+  onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
 }) {
@@ -394,11 +434,13 @@ function BudgetCard({
   const currency = useCurrencyCode();
   // the label names the row: the grid is a wall of identical cards otherwise,
   // and "Delete budget" said three times tells a screen reader nothing (#1214)
-  const label = t("pages.limits.deleteBudgetAria", {
+  const names = {
     amount: fmt.currency(Number(budget.limit_usd), currency),
     period: budget.period,
     scope: budget.scope_id,
-  });
+  };
+  const label = t("pages.limits.deleteBudgetAria", names);
+  const editLabel = t("pages.limits.editBudgetAria", names);
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2.5">
@@ -416,14 +458,24 @@ function BudgetCard({
             })}
           </Badge>
         )}
-        <DeleteIconButton
-          gate="budget:delete"
-          control="budget-delete"
-          className="ml-auto"
-          label={label}
-          pending={deleting}
-          onClick={onDelete}
-        />
+        <div className="ml-auto flex items-center gap-1.5">
+          <RowIconButton
+            gate="budget:update"
+            control="budget-edit"
+            title={editLabel}
+            aria-label={editLabel}
+            onClick={onEdit}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </RowIconButton>
+          <DeleteIconButton
+            gate="budget:delete"
+            control="budget-delete"
+            label={label}
+            pending={deleting}
+            onClick={onDelete}
+          />
+        </div>
       </div>
       <div className="flex items-center gap-1.5">
         <Badge tone="neutral">{budget.scope_type}</Badge>
@@ -437,10 +489,12 @@ function BudgetCard({
 
 function RateLimitCard({
   limit,
+  onEdit,
   onDelete,
   deleting,
 }: {
   limit: RateLimitRow;
+  onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
 }) {
@@ -455,6 +509,10 @@ function RateLimitCard({
     limit: caps,
     scope: limit.scope_id,
   });
+  const editLabel = t("pages.limits.editRateLimitAria", {
+    limit: caps,
+    scope: limit.scope_id,
+  });
   return (
     <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -463,14 +521,24 @@ function RateLimitCard({
         {limit.rpm == null && limit.tpm == null && (
           <Badge tone="neutral">{t("pages.limits.noCaps")}</Badge>
         )}
-        <DeleteIconButton
-          gate="rate_limit:delete"
-          control="rate-limit-delete"
-          className="ml-auto"
-          label={label}
-          pending={deleting}
-          onClick={onDelete}
-        />
+        <div className="ml-auto flex items-center gap-1.5">
+          <RowIconButton
+            gate="rate_limit:update"
+            control="rate-limit-edit"
+            title={editLabel}
+            aria-label={editLabel}
+            onClick={onEdit}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </RowIconButton>
+          <DeleteIconButton
+            gate="rate_limit:delete"
+            control="rate-limit-delete"
+            label={label}
+            pending={deleting}
+            onClick={onDelete}
+          />
+        </div>
       </div>
       <div className="flex items-center gap-1.5">
         <Badge tone="neutral">{limit.scope_type}</Badge>
@@ -482,47 +550,81 @@ function RateLimitCard({
   );
 }
 
-function AddBudgetDialog({
+/**
+ * The budget form, for a new budget or, given `budget`, for that one in place
+ * (#1285).
+ *
+ * An edit sends only the fields that moved. That keeps the `budget.update`
+ * audit row to what the operator actually changed, and an untouched form has
+ * nothing to send, so it cannot be saved.
+ */
+function BudgetSheet({
   open,
   onOpenChange,
   scopeType,
   scopeId,
+  budget,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   scopeType: string;
   scopeId: string;
+  budget?: BudgetRow;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [limitUsd, setLimitUsd] = React.useState("100");
-  const [period, setPeriod] = React.useState("30d");
-  // "" is the inherit case, which is what the API means by a null override
-  const [unpriced, setUnpriced] = React.useState<UnpricedPolicy | "">("");
+  // a new budget opens on 100 / 30d; an edit opens on the row as it stands.
+  // `limit_usd` arrives in the column's `numeric(12,4)` spelling, which reads
+  // as 250.5 in a number field rather than 250.5000
+  const seed = React.useMemo(
+    () => ({
+      limitUsd: budget ? String(Number(budget.limit_usd)) : "100",
+      period: budget?.period ?? "30d",
+      // "" is the inherit case, which is what the API means by a null override
+      unpriced: (budget?.unpriced_policy ?? "") as UnpricedPolicy | "",
+    }),
+    [budget],
+  );
+  const [limitUsd, setLimitUsd] = React.useState(seed.limitUsd);
+  const [period, setPeriod] = React.useState(seed.period);
+  const [unpriced, setUnpriced] = React.useState<UnpricedPolicy | "">(seed.unpriced);
 
   React.useEffect(() => {
     if (open) {
-      setLimitUsd("100");
-      setPeriod("30d");
-      setUnpriced("");
+      setLimitUsd(seed.limitUsd);
+      setPeriod(seed.period);
+      setUnpriced(seed.unpriced);
     }
-  }, [open]);
+  }, [open, seed]);
 
-  const create = useMutation({
-    mutationFn: () =>
-      createBudget({
+  const dirty = limitUsd !== seed.limitUsd || period !== seed.period || unpriced !== seed.unpriced;
+
+  const save = useMutation({
+    mutationFn: () => {
+      if (budget) {
+        const patch: UpdateBudgetInput = {};
+        if (limitUsd !== seed.limitUsd) patch.limit_usd = limitUsd;
+        if (period !== seed.period) patch.period = period;
+        if (unpriced !== seed.unpriced) patch.unpriced_policy = unpriced === "" ? null : unpriced;
+        return updateBudget(budget.id, patch);
+      }
+      return createBudget({
         scope_type: scopeType,
         scope_id: scopeId,
         limit_usd: limitUsd,
         period,
         unpriced_policy: unpriced === "" ? null : unpriced,
-      }),
+      });
+    },
     onSuccess: () => {
-      // the dialog closes on success, so the outcome is announced somewhere
+      // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("pages.limits.budgetCreated") });
+      toast.push({
+        tone: "success",
+        title: t(budget ? "pages.limits.budgetUpdated" : "pages.limits.budgetCreated"),
+      });
       onDone();
       onOpenChange(false);
     },
@@ -537,23 +639,25 @@ function AddBudgetDialog({
 
   return (
     <EditorSheet
-      name="budget-create"
+      name={budget ? "budget-edit" : "budget-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.limits.budgetSheetTitle")}
+      title={t(budget ? "pages.limits.budgetEditTitle" : "pages.limits.budgetSheetTitle")}
       subtitle={t("pages.limits.budgetSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
-      dirty={limitUsd !== "100" || period !== "30d" || unpriced !== ""}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
-      canSave={Boolean(limitUsd.trim() && period.trim())}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      dirty={dirty}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={t(budget ? "common.save" : "common.create")}
+      canSave={Boolean(limitUsd.trim() && period.trim()) && (!budget || dirty)}
+      saving={save.isPending}
+      onSave={() => save.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.limits.budgetLimitLabel")}>
+          {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
             min={0}
+            max={99_999_999.99}
             step="0.01"
             value={limitUsd}
             onChange={(e) => setLimitUsd(e.target.value)}
@@ -588,43 +692,70 @@ function AddBudgetDialog({
   );
 }
 
-function AddRateLimitDialog({
+/**
+ * The rate-limit form, for a new limit or, given `limit`, for that one in place
+ * (#1285). A blank field is an uncapped one either way: on an edit, blanking a
+ * cap that was set sends `null`, which lifts it.
+ */
+function RateLimitSheet({
   open,
   onOpenChange,
   scopeType,
   scopeId,
+  limit,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   scopeType: string;
   scopeId: string;
+  limit?: RateLimitRow;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [rpm, setRpm] = React.useState("");
-  const [tpm, setTpm] = React.useState("");
+  const seed = React.useMemo(
+    () => ({
+      rpm: limit?.rpm != null ? String(limit.rpm) : "",
+      tpm: limit?.tpm != null ? String(limit.tpm) : "",
+    }),
+    [limit],
+  );
+  const [rpm, setRpm] = React.useState(seed.rpm);
+  const [tpm, setTpm] = React.useState(seed.tpm);
 
   React.useEffect(() => {
     if (open) {
-      setRpm("");
-      setTpm("");
+      setRpm(seed.rpm);
+      setTpm(seed.tpm);
     }
-  }, [open]);
+  }, [open, seed]);
 
-  const create = useMutation({
-    mutationFn: () =>
-      createRateLimit({
+  const dirty = rpm !== seed.rpm || tpm !== seed.tpm;
+  const cap = (value: string) => (value.trim() ? Number(value) : null);
+
+  const save = useMutation({
+    mutationFn: () => {
+      if (limit) {
+        const patch: UpdateRateLimitInput = {};
+        if (rpm !== seed.rpm) patch.rpm = cap(rpm);
+        if (tpm !== seed.tpm) patch.tpm = cap(tpm);
+        return updateRateLimit(limit.id, patch);
+      }
+      return createRateLimit({
         scope_type: scopeType,
         scope_id: scopeId,
-        rpm: rpm.trim() ? Number(rpm) : undefined,
-        tpm: tpm.trim() ? Number(tpm) : undefined,
-      }),
+        rpm: cap(rpm) ?? undefined,
+        tpm: cap(tpm) ?? undefined,
+      });
+    },
     onSuccess: () => {
-      // the dialog closes on success, so the outcome is announced somewhere
+      // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("pages.limits.rateLimitCreated") });
+      toast.push({
+        tone: "success",
+        title: t(limit ? "pages.limits.rateLimitUpdated" : "pages.limits.rateLimitCreated"),
+      });
       onDone();
       onOpenChange(false);
     },
@@ -639,23 +770,25 @@ function AddRateLimitDialog({
 
   return (
     <EditorSheet
-      name="rate-limit-create"
+      name={limit ? "rate-limit-edit" : "rate-limit-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.limits.rateLimitSheetTitle")}
+      title={t(limit ? "pages.limits.rateLimitEditTitle" : "pages.limits.rateLimitSheetTitle")}
       subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
-      dirty={Boolean(rpm || tpm)}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
-      canSave={Boolean(rpm.trim() || tpm.trim())}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      dirty={dirty}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={t(limit ? "common.save" : "common.create")}
+      canSave={Boolean(rpm.trim() || tpm.trim()) && (!limit || dirty)}
+      saving={save.isPending}
+      onSave={() => save.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.limits.rpmLabel")}>
+          {/* the gateway reads a cap below 1 as none, so the server refuses one */}
           <Input
             type="number"
-            min={0}
+            min={1}
+            step={1}
             value={rpm}
             onChange={(e) => setRpm(e.target.value)}
             placeholder={t("pages.limits.uncapped")}
@@ -664,7 +797,8 @@ function AddRateLimitDialog({
         <Field label={t("pages.limits.tpmLabel")}>
           <Input
             type="number"
-            min={0}
+            min={1}
+            step={1}
             value={tpm}
             onChange={(e) => setTpm(e.target.value)}
             placeholder={t("pages.limits.uncapped")}

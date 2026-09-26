@@ -9,7 +9,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{header::HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rand::Rng;
@@ -168,12 +168,18 @@ pub fn router() -> Router<ControlState> {
             put(set_virtual_key_attribution),
         )
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
-        .route("/api/v1/budgets/{id}", delete(delete_budget))
+        .route(
+            "/api/v1/budgets/{id}",
+            patch(update_budget).delete(delete_budget),
+        )
         .route(
             "/api/v1/rate-limits",
             get(list_rate_limits).post(create_rate_limit),
         )
-        .route("/api/v1/rate-limits/{id}", delete(delete_rate_limit))
+        .route(
+            "/api/v1/rate-limits/{id}",
+            patch(update_rate_limit).delete(delete_rate_limit),
+        )
         .route(
             "/api/v1/model-prices",
             get(list_model_prices).put(upsert_model_price),
@@ -375,6 +381,21 @@ where
             .map_err(|err| ApiError::Core(Error::Config(format!("invalid request body: {err}"))))?;
         Ok(Some(Self(parsed)))
     }
+}
+
+/// Deserialize a present-but-null field as `Some(None)` rather than `None`.
+///
+/// serde collapses both "absent" and "null" to `None` for an `Option<Option<T>>`,
+/// which for a PATCH silently turns "clear this override" into "leave it
+/// alone". The function only runs when the key is present, so wrapping in
+/// `Some` here is what makes the two distinguishable. Pair it with
+/// `#[serde(default)]` so an absent key still reads as `None`.
+pub(crate) fn explicit_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
 }
 
 /// Reject a required field that's empty after trimming.
@@ -3869,6 +3890,7 @@ async fn create_budget(
             body.unpriced_policy.as_deref(),
         )
         .await?;
+    publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
@@ -3889,6 +3911,140 @@ async fn create_budget(
     Ok(Json(row))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateBudget {
+    /// omit to leave the cap as it is
+    #[serde(default)]
+    limit_usd: Option<String>,
+    /// omit to leave the window as it is
+    #[serde(default)]
+    period: Option<String>,
+    // doubly optional so a PATCH can tell "leave the override alone" (absent)
+    // from "drop it and inherit the deployment setting again" (null)
+    #[serde(default, deserialize_with = "explicit_null")]
+    unpriced_policy: Option<Option<String>>,
+}
+
+/// The smallest `limit_usd` the `numeric(12,4)` column cannot hold.
+///
+/// The column tops out at 99999999.9999, and Postgres rounds a value to four
+/// places before it checks the precision, so everything from 99999999.99995
+/// up overflows. Parsing text to `f64` is monotonic, so refusing any value
+/// that parses to this float or above refuses every one of those. The only
+/// cost is a sliver just below the boundary that parses to the same float.
+const LIMIT_USD_CEILING: f64 = 99_999_999.999_95;
+
+/// Validate a budget cap on the update path.
+///
+/// Stricter than the bare `f64` parse `create_budget` does: `NaN` parses as a
+/// float and is a valid `numeric`, but the gateway reads it back as no cap at
+/// all, and a negative cap refuses every request as already exhausted. A cap
+/// too large for the column would pass a parse and then fail in the store as
+/// a 500 carrying the database's own message, so it is refused here as a 400
+/// naming the range. A cap of zero stays legal, since it is how a scope is
+/// frozen without deleting anything.
+fn validate_limit_usd(value: &str) -> ApiResult<()> {
+    match value.trim().parse::<f64>() {
+        // a range check refuses NaN and both infinities along with the rest
+        Ok(limit) if (0.0..LIMIT_USD_CEILING).contains(&limit) => Ok(()),
+        _ => Err(ApiError::Core(Error::Config(
+            "limit_usd must be a finite number from 0 to 99999999.9999".into(),
+        ))),
+    }
+}
+
+/// What an edit actually moved, field by field, for the audit row.
+///
+/// Read off the row before and the row the update returned rather than off
+/// the request, so a field sent with the value it already had is not reported
+/// as a change and `limit_usd` compares in the column's own `numeric(12,4)`
+/// spelling instead of whatever the caller typed.
+fn budget_changes(before: &Budget, after: &Budget) -> serde_json::Value {
+    let mut changes = serde_json::Map::new();
+    if before.limit_usd != after.limit_usd {
+        changes.insert(
+            "limit_usd".into(),
+            serde_json::json!({"from": before.limit_usd, "to": after.limit_usd}),
+        );
+    }
+    if before.period != after.period {
+        changes.insert(
+            "period".into(),
+            serde_json::json!({"from": before.period, "to": after.period}),
+        );
+    }
+    if before.unpriced_policy != after.unpriced_policy {
+        changes.insert(
+            "unpriced_policy".into(),
+            serde_json::json!({"from": before.unpriced_policy, "to": after.unpriced_policy}),
+        );
+    }
+    serde_json::Value::Object(changes)
+}
+
+/// Change a budget in place (#1285).
+///
+/// Deleting and recreating a budget to change it left the scope with no cap
+/// between the two calls, and each call bumped `config_version`, so a polling
+/// gateway could load exactly that gap. One update is one statement and one
+/// bump. The scope is not editable: a budget moved to another scope is a
+/// different budget, and the authorization below is checked against the scope
+/// it already has.
+async fn update_budget(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<UpdateBudget>,
+) -> ApiResult<Json<Budget>> {
+    let existing = BudgetRepo(pool(&state)).get(id).await?;
+    let chain =
+        ScopeChain::from_scope(pool(&state), &existing.scope_type, existing.scope_id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("budget", Update)).await?;
+    if let Some(limit) = &body.limit_usd {
+        validate_limit_usd(limit)?;
+    }
+    if let Some(period) = &body.period {
+        require_non_empty(period, "period")?;
+    }
+    validate_unpriced_policy(body.unpriced_policy.as_ref().and_then(|p| p.as_deref()))?;
+    if body.limit_usd.is_none() && body.period.is_none() && body.unpriced_policy.is_none() {
+        // an empty patch changes nothing, so it costs no write, no config bump
+        // and no audit row
+        return Ok(Json(existing));
+    }
+    let edit = BudgetRepo(pool(&state))
+        .update(
+            id,
+            body.limit_usd.as_deref().map(str::trim),
+            body.period.as_deref().map(str::trim),
+            body.unpriced_policy.as_ref().map(|p| p.as_deref()),
+        )
+        .await?;
+    if !edit.changed {
+        // every field sent already held that value, so the store wrote
+        // nothing and there is no bump to announce or edit to audit
+        return Ok(Json(edit.after));
+    }
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "budget.update",
+        "budget",
+        id,
+        serde_json::json!({
+            "scope_type": edit.after.scope_type,
+            "scope_id": edit.after.scope_id,
+            "changes": budget_changes(&edit.before, &edit.after),
+        }),
+    )
+    .await;
+    Ok(Json(edit.after))
+}
+
 async fn delete_budget(
     principal: Principal,
     State(state): State<ControlState>,
@@ -3899,6 +4055,7 @@ async fn delete_budget(
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("budget", Delete)).await?;
     BudgetRepo(pool(&state)).delete(id).await?;
+    publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
@@ -3950,6 +4107,7 @@ async fn create_rate_limit(
     let row = RateLimitRepo(pool(&state))
         .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
         .await?;
+    publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
@@ -3958,6 +4116,93 @@ async fn create_rate_limit(
         "rate_limit",
         row.id,
         serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "rpm": body.rpm, "tpm": body.tpm}),
+    )
+    .await;
+    Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateRateLimit {
+    // each cap is doubly optional: absent leaves it, null lifts it, a number
+    // sets it. a plain Option would make "lift the rpm cap" unsayable
+    #[serde(default, deserialize_with = "explicit_null")]
+    rpm: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "explicit_null")]
+    tpm: Option<Option<i32>>,
+}
+
+/// Check each cap a rate-limit edit sets.
+///
+/// A cap the patch sets has to be at least 1: the snapshot loader reads zero
+/// and below as "no cap", so storing one would look like a limit while
+/// admitting everything. Whether the caps left behind still limit anything
+/// depends on the row as it stands when the edit lands, so that half is
+/// [`RateLimitRepo::update`]'s to check, under its row lock.
+fn validate_rate_limit_caps(patch: &UpdateRateLimit) -> ApiResult<()> {
+    for (field, value) in [("rpm", patch.rpm), ("tpm", patch.tpm)] {
+        if matches!(value, Some(Some(cap)) if cap < 1) {
+            return Err(ApiError::Core(Error::Config(format!(
+                "{field} must be at least 1, or null to lift the cap"
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Change a rate limit's caps in place (#1285), for the reason
+/// [`update_budget`] gives: delete-and-recreate opened a window with no limit
+/// at all.
+async fn update_rate_limit(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<UpdateRateLimit>,
+) -> ApiResult<Json<RateLimit>> {
+    let existing = RateLimitRepo(pool(&state)).get(id).await?;
+    let chain =
+        ScopeChain::from_scope(pool(&state), &existing.scope_type, existing.scope_id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("rate_limit", Update)).await?;
+    if body.rpm.is_none() && body.tpm.is_none() {
+        // nothing asked for, so nothing written, bumped or audited
+        return Ok(Json(existing));
+    }
+    validate_rate_limit_caps(&body)?;
+    let edit = RateLimitRepo(pool(&state))
+        .update(id, body.rpm, body.tpm)
+        .await?;
+    if !edit.changed {
+        // both caps already read as sent: nothing written, bumped or audited
+        return Ok(Json(edit.after));
+    }
+    publish_config_change(&state).await?;
+    let (before, row) = (edit.before, edit.after);
+    let mut changes = serde_json::Map::new();
+    if before.rpm != row.rpm {
+        changes.insert(
+            "rpm".into(),
+            serde_json::json!({"from": before.rpm, "to": row.rpm}),
+        );
+    }
+    if before.tpm != row.tpm {
+        changes.insert(
+            "tpm".into(),
+            serde_json::json!({"from": before.tpm, "to": row.tpm}),
+        );
+    }
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "rate_limit.update",
+        "rate_limit",
+        id,
+        serde_json::json!({
+            "scope_type": row.scope_type,
+            "scope_id": row.scope_id,
+            "changes": changes,
+        }),
     )
     .await;
     Ok(Json(row))
@@ -3973,6 +4218,7 @@ async fn delete_rate_limit(
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("rate_limit", Delete)).await?;
     RateLimitRepo(pool(&state)).delete(id).await?;
+    publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
@@ -4862,5 +5108,75 @@ mod virtual_key_tests {
         let hash2 = rolter_auth::hash_key("pepper_two", &key1);
 
         assert_ne!(hash1, hash2);
+    }
+}
+
+#[cfg(test)]
+mod cap_edit_tests {
+    use super::*;
+
+    fn refused<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
+        matches!(res, Err(ApiError::Core(Error::Config(_))))
+    }
+
+    #[test]
+    fn a_limit_is_refused_outside_what_numeric_12_4_holds() {
+        for ok in [
+            "0",
+            "0.0001",
+            "500",
+            " 750.5 ",
+            "99999999.9999",
+            "99999999.99994",
+        ] {
+            assert!(validate_limit_usd(ok).is_ok(), "{ok} should be accepted");
+        }
+        // 99999999.99995 rounds up to 100000000.0000, one digit too many for
+        // the column, so it has to be refused with the rest of the overflow
+        for bad in [
+            "99999999.99995",
+            "100000000",
+            "1e9",
+            "-1",
+            "-0.0001",
+            "NaN",
+            "inf",
+            "lots",
+            "",
+        ] {
+            assert!(refused(validate_limit_usd(bad)), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_cap_a_patch_sets_has_to_be_positive() {
+        let patch = |body: serde_json::Value| -> UpdateRateLimit {
+            serde_json::from_value(body).expect("patch body")
+        };
+        for ok in [
+            serde_json::json!({}),
+            serde_json::json!({"rpm": 1}),
+            serde_json::json!({"rpm": null, "tpm": 10}),
+        ] {
+            assert!(validate_rate_limit_caps(&patch(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!({"rpm": 0}),
+            serde_json::json!({"tpm": -5}),
+            serde_json::json!({"rpm": 10, "tpm": 0}),
+        ] {
+            assert!(
+                refused(validate_rate_limit_caps(&patch(bad.clone()))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_null_is_told_apart_from_an_absent_cap() {
+        let lifted: UpdateRateLimit =
+            serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
+        assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
+        assert_eq!(lifted.tpm, None, "absent leaves it alone");
     }
 }

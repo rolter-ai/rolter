@@ -22,7 +22,7 @@ pub use mfa::*;
 use support::store_err;
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
 use rolter_core::{Error, Result};
@@ -2431,6 +2431,37 @@ impl VirtualKeyRepo<'_> {
     }
 }
 
+/// What an in-place edit did to a row (#1285).
+///
+/// `before` is the row as it stood under the edit's own row lock, so a diff
+/// built from the pair describes this edit and not one that overtook it
+/// between a caller's earlier read and the write.
+#[derive(Debug, Clone)]
+pub struct Edited<T> {
+    pub before: T,
+    pub after: T,
+    /// Unset when every field the edit named already held the value sent. No
+    /// statement was issued then, so `config_version` did not move and there
+    /// is nothing to announce or audit.
+    pub changed: bool,
+}
+
+impl<T: Clone> Edited<T> {
+    fn unchanged(row: T) -> Self {
+        Self {
+            after: row.clone(),
+            before: row,
+            changed: false,
+        }
+    }
+}
+
+/// Whether a rate limit with these caps limits anything. The snapshot loader
+/// reads a cap of zero or below as no cap, so only a positive one counts.
+fn keeps_a_cap(rpm: Option<i32>, tpm: Option<i32>) -> bool {
+    rpm.is_some_and(|cap| cap > 0) || tpm.is_some_and(|cap| cap > 0)
+}
+
 /// Budgets, attachable at any scope (org/team/project/virtual_key).
 pub struct BudgetRepo<'a>(pub &'a PgPool);
 
@@ -2482,6 +2513,81 @@ impl BudgetRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Change a budget in place (#1285).
+    ///
+    /// `None` leaves a field as it is. `unpriced_policy` is doubly optional
+    /// because clearing an override is an edit of its own: `Some(None)` sends
+    /// the budget back to inheriting the deployment-wide setting, while `None`
+    /// does not touch it.
+    ///
+    /// The row is locked and compared before anything is written, in one
+    /// transaction. An edit that moves a field is one `update` statement, so
+    /// the statement-level `budgets_bump_config_version` trigger fires once
+    /// and a polling gateway sees either the old budget or the new one, never
+    /// a scope with no cap in between. An edit whose every field already
+    /// holds the value sent issues no `update` at all and comes back with
+    /// [`Edited::changed`] unset: a statement trigger fires on an `update`
+    /// that matches no row too, so filtering the no-op out in the `where`
+    /// clause would still bump. `limit_usd` is compared in the column's own
+    /// `numeric(12,4)`, so `"500.0"` against a stored `500.0000` is no change.
+    /// The row keeps its id and `created_at`.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        limit_usd: Option<&str>,
+        period: Option<&str>,
+        unpriced_policy: Option<Option<&str>>,
+    ) -> Result<Edited<Budget>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let current = sqlx::query(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                    unpriced_policy, created_at,
+                    (limit_usd, period, unpriced_policy) is distinct from
+                    (coalesce($2::numeric(12, 4), limit_usd), coalesce($3, period),
+                     case when $4 then $5 else unpriced_policy end) as moves
+             from budgets where id = $1
+             for update",
+        )
+        .bind(id)
+        .bind(limit_usd)
+        .bind(period)
+        .bind(unpriced_policy.is_some())
+        .bind(unpriced_policy.flatten())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("budget {id}")))?;
+        let before = Budget::from_row(&current).map_err(store_err)?;
+        let moves: bool = current.try_get("moves").map_err(store_err)?;
+        if !moves {
+            tx.commit().await.map_err(store_err)?;
+            return Ok(Edited::unchanged(before));
+        }
+        let after = sqlx::query_as(
+            "update budgets set
+                 limit_usd = coalesce($2::numeric, limit_usd),
+                 period = coalesce($3, period),
+                 unpriced_policy = case when $4 then $5 else unpriced_policy end
+             where id = $1
+             returning id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                       unpriced_policy, created_at",
+        )
+        .bind(id)
+        .bind(limit_usd)
+        .bind(period)
+        .bind(unpriced_policy.is_some())
+        .bind(unpriced_policy.flatten())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(Edited {
+            before,
+            after,
+            changed: true,
+        })
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
@@ -2544,6 +2650,69 @@ impl RateLimitRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Change a rate limit's caps in place (#1285).
+    ///
+    /// Each cap is doubly optional: `None` leaves it alone, `Some(None)`
+    /// lifts it, `Some(Some(n))` sets it. The row is locked first, in one
+    /// transaction, and the caps the edit would leave are checked against
+    /// that locked row: a rate limit left with no positive cap admits every
+    /// request, so such an edit is an [`Error::Config`] and writes nothing.
+    /// Checked against a read taken before the lock, two edits that each lift
+    /// a different cap would both pass and together store exactly that.
+    ///
+    /// An edit that moves a cap is one `update` statement, so the
+    /// `rate_limits_bump_config_version` trigger bumps `config_version` once.
+    /// One that leaves both caps as they were issues no statement and comes
+    /// back with [`Edited::changed`] unset, for the reason
+    /// [`BudgetRepo::update`] gives.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        rpm: Option<Option<i32>>,
+        tpm: Option<Option<i32>>,
+    ) -> Result<Edited<RateLimit>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let before: RateLimit = sqlx::query_as(
+            "select id, scope_type, scope_id, rpm, tpm, created_at
+             from rate_limits where id = $1
+             for update",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))?;
+        let next_rpm = rpm.unwrap_or(before.rpm);
+        let next_tpm = tpm.unwrap_or(before.tpm);
+        if !keeps_a_cap(next_rpm, next_tpm) {
+            return Err(Error::Config(
+                "a rate limit must keep an rpm cap, a tpm cap or both; delete it to lift every cap"
+                    .into(),
+            ));
+        }
+        if (next_rpm, next_tpm) == (before.rpm, before.tpm) {
+            tx.commit().await.map_err(store_err)?;
+            return Ok(Edited::unchanged(before));
+        }
+        let after = sqlx::query_as(
+            "update rate_limits set rpm = $2, tpm = $3
+             where id = $1
+             returning id, scope_type, scope_id, rpm, tpm, created_at",
+        )
+        .bind(id)
+        .bind(next_rpm)
+        .bind(next_tpm)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(Edited {
+            before,
+            after,
+            changed: true,
+        })
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {

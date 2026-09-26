@@ -235,7 +235,7 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: VIEWER,
         create: ADMIN,
-        update: NA,
+        update: ADMIN,
         delete: ADMIN,
     },
     Capability {
@@ -243,7 +243,7 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: VIEWER,
         create: ADMIN,
-        update: NA,
+        update: ADMIN,
         delete: ADMIN,
     },
     // the pricing catalog and the effective model list are global (unscoped),
