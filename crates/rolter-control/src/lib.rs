@@ -1689,13 +1689,14 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     for key in &mut config.virtual_keys {
         key.key = REDACTED.to_string();
     }
-    for key in &mut config.db_virtual_keys {
-        key.key_hash.clear();
-    }
-    // the dashboard never reads these; the gateway takes them from the snapshot
+    // the dashboard never reads these; the gateway takes them from the snapshot.
+    // a database key record names its org, team, project and creator, so even
+    // with its digest blanked the list maps every tenant and its people
+    config.db_virtual_keys.clear();
     config.mcp_oauth_sessions.clear();
-    // which org owns a row is the gateway's business (#1844); this document is
-    // served without a credential, so it must not enumerate tenants
+    // which org owns a row is the gateway's business (#1844). the rows
+    // themselves, every org's providers, routes and groups, are still listed:
+    // whether this anonymous document may describe that topology at all is #1840
     for provider in &mut config.providers {
         provider.tenancy = None;
     }
@@ -2270,8 +2271,11 @@ mod tests {
         // the record and the session have no Default; parse the smallest
         // JSON that carries the secret instead of spelling every field out
         config.db_virtual_keys.push(
-            serde_json::from_value::<VirtualKeyRecord>(json!({"key_hash": "deadbeef", "id": "k"}))
-                .unwrap(),
+            serde_json::from_value::<VirtualKeyRecord>(json!({
+                "key_hash": "deadbeef", "id": "k",
+                "org_id": "org-of-a-tenant", "user_id": "user-of-a-tenant"
+            }))
+            .unwrap(),
         );
         config.mcp_oauth_sessions.push(
             serde_json::from_value::<McpOAuthSessionConfig>(json!({
@@ -2290,6 +2294,10 @@ mod tests {
             "sk-rolter-plaintext",
             "deadbeef",
             "ya29.secret",
+            // not secrets, but they map every tenant and its people for a
+            // caller with no session
+            "org-of-a-tenant",
+            "user-of-a-tenant",
             "user:pw",
             "u:p@",
             "ch:pass",
@@ -2307,6 +2315,7 @@ mod tests {
             Some("http://proxy.internal:3128/")
         );
         assert!(config.mcp_oauth_sessions.is_empty());
+        assert!(config.db_virtual_keys.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
             Some("http://clickhouse:8123/")
