@@ -1169,6 +1169,21 @@ pub async fn test_app_with_clickhouse(
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] publishing config bumps to a live Redis, for asserting that a
+/// write announces itself on [`rolter_core::CONFIG_CHANNEL`].
+///
+/// A handler that skips `publish_config_change` still bumps `config_version`
+/// through the table's trigger, so every test that reads the version back
+/// passes while a subscribed gateway waits out its poll interval. Only a
+/// subscriber on the channel can tell the two apart.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_redis(pool: sqlx::PgPool, redis_url: &str) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.redis = Some(redis::Client::open(redis_url)?);
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]

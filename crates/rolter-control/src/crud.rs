@@ -3926,18 +3926,30 @@ struct UpdateBudget {
     unpriced_policy: Option<Option<String>>,
 }
 
+/// The smallest `limit_usd` the `numeric(12,4)` column cannot hold.
+///
+/// The column tops out at 99999999.9999, and Postgres rounds a value to four
+/// places before it checks the precision, so everything from 99999999.99995
+/// up overflows. Parsing text to `f64` is monotonic, so refusing any value
+/// that parses to this float or above refuses every one of those. The only
+/// cost is a sliver just below the boundary that parses to the same float.
+const LIMIT_USD_CEILING: f64 = 99_999_999.999_95;
+
 /// Validate a budget cap on the update path.
 ///
 /// Stricter than the bare `f64` parse `create_budget` does: `NaN` parses as a
 /// float and is a valid `numeric`, but the gateway reads it back as no cap at
 /// all, and a negative cap refuses every request as already exhausted. A cap
-/// of zero stays legal, since it is how a scope is frozen without deleting
-/// anything.
+/// too large for the column would pass a parse and then fail in the store as
+/// a 500 carrying the database's own message, so it is refused here as a 400
+/// naming the range. A cap of zero stays legal, since it is how a scope is
+/// frozen without deleting anything.
 fn validate_limit_usd(value: &str) -> ApiResult<()> {
     match value.trim().parse::<f64>() {
-        Ok(limit) if limit.is_finite() && limit >= 0.0 => Ok(()),
+        // a range check refuses NaN and both infinities along with the rest
+        Ok(limit) if (0.0..LIMIT_USD_CEILING).contains(&limit) => Ok(()),
         _ => Err(ApiError::Core(Error::Config(
-            "limit_usd must be a finite number of zero or more".into(),
+            "limit_usd must be a finite number from 0 to 99999999.9999".into(),
         ))),
     }
 }
@@ -4002,7 +4014,7 @@ async fn update_budget(
         // and no audit row
         return Ok(Json(existing));
     }
-    let row = BudgetRepo(pool(&state))
+    let edit = BudgetRepo(pool(&state))
         .update(
             id,
             body.limit_usd.as_deref().map(str::trim),
@@ -4010,6 +4022,11 @@ async fn update_budget(
             body.unpriced_policy.as_ref().map(|p| p.as_deref()),
         )
         .await?;
+    if !edit.changed {
+        // every field sent already held that value, so the store wrote
+        // nothing and there is no bump to announce or edit to audit
+        return Ok(Json(edit.after));
+    }
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -4019,13 +4036,13 @@ async fn update_budget(
         "budget",
         id,
         serde_json::json!({
-            "scope_type": row.scope_type,
-            "scope_id": row.scope_id,
-            "changes": budget_changes(&existing, &row),
+            "scope_type": edit.after.scope_type,
+            "scope_id": edit.after.scope_id,
+            "changes": budget_changes(&edit.before, &edit.after),
         }),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(edit.after))
 }
 
 async fn delete_budget(
@@ -4115,30 +4132,20 @@ struct UpdateRateLimit {
     tpm: Option<Option<i32>>,
 }
 
-/// Check a rate-limit edit against the caps it would leave behind.
+/// Check each cap a rate-limit edit sets.
 ///
 /// A cap the patch sets has to be at least 1: the snapshot loader reads zero
 /// and below as "no cap", so storing one would look like a limit while
-/// admitting everything. The same reading decides the merged check. A rate
-/// limit left with no positive cap admits every request, so an edit that
-/// would get there is refused, and the message points at deleting the row
-/// instead.
-fn validate_rate_limit_patch(patch: &UpdateRateLimit, existing: &RateLimit) -> ApiResult<()> {
+/// admitting everything. Whether the caps left behind still limit anything
+/// depends on the row as it stands when the edit lands, so that half is
+/// [`RateLimitRepo::update`]'s to check, under its row lock.
+fn validate_rate_limit_caps(patch: &UpdateRateLimit) -> ApiResult<()> {
     for (field, value) in [("rpm", patch.rpm), ("tpm", patch.tpm)] {
         if matches!(value, Some(Some(cap)) if cap < 1) {
             return Err(ApiError::Core(Error::Config(format!(
                 "{field} must be at least 1, or null to lift the cap"
             ))));
         }
-    }
-    let capped = |value: Option<i32>| value.is_some_and(|cap| cap > 0);
-    let rpm = patch.rpm.unwrap_or(existing.rpm);
-    let tpm = patch.tpm.unwrap_or(existing.tpm);
-    if !capped(rpm) && !capped(tpm) {
-        return Err(ApiError::Core(Error::Config(
-            "a rate limit must keep an rpm cap, a tpm cap or both; delete it to lift every cap"
-                .into(),
-        )));
     }
     Ok(())
 }
@@ -4161,22 +4168,27 @@ async fn update_rate_limit(
         // nothing asked for, so nothing written, bumped or audited
         return Ok(Json(existing));
     }
-    validate_rate_limit_patch(&body, &existing)?;
-    let row = RateLimitRepo(pool(&state))
+    validate_rate_limit_caps(&body)?;
+    let edit = RateLimitRepo(pool(&state))
         .update(id, body.rpm, body.tpm)
         .await?;
+    if !edit.changed {
+        // both caps already read as sent: nothing written, bumped or audited
+        return Ok(Json(edit.after));
+    }
     publish_config_change(&state).await?;
+    let (before, row) = (edit.before, edit.after);
     let mut changes = serde_json::Map::new();
-    if existing.rpm != row.rpm {
+    if before.rpm != row.rpm {
         changes.insert(
             "rpm".into(),
-            serde_json::json!({"from": existing.rpm, "to": row.rpm}),
+            serde_json::json!({"from": before.rpm, "to": row.rpm}),
         );
     }
-    if existing.tpm != row.tpm {
+    if before.tpm != row.tpm {
         changes.insert(
             "tpm".into(),
-            serde_json::json!({"from": existing.tpm, "to": row.tpm}),
+            serde_json::json!({"from": before.tpm, "to": row.tpm}),
         );
     }
     log_audit(
@@ -5096,5 +5108,75 @@ mod virtual_key_tests {
         let hash2 = rolter_auth::hash_key("pepper_two", &key1);
 
         assert_ne!(hash1, hash2);
+    }
+}
+
+#[cfg(test)]
+mod cap_edit_tests {
+    use super::*;
+
+    fn refused<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
+        matches!(res, Err(ApiError::Core(Error::Config(_))))
+    }
+
+    #[test]
+    fn a_limit_is_refused_outside_what_numeric_12_4_holds() {
+        for ok in [
+            "0",
+            "0.0001",
+            "500",
+            " 750.5 ",
+            "99999999.9999",
+            "99999999.99994",
+        ] {
+            assert!(validate_limit_usd(ok).is_ok(), "{ok} should be accepted");
+        }
+        // 99999999.99995 rounds up to 100000000.0000, one digit too many for
+        // the column, so it has to be refused with the rest of the overflow
+        for bad in [
+            "99999999.99995",
+            "100000000",
+            "1e9",
+            "-1",
+            "-0.0001",
+            "NaN",
+            "inf",
+            "lots",
+            "",
+        ] {
+            assert!(refused(validate_limit_usd(bad)), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_cap_a_patch_sets_has_to_be_positive() {
+        let patch = |body: serde_json::Value| -> UpdateRateLimit {
+            serde_json::from_value(body).expect("patch body")
+        };
+        for ok in [
+            serde_json::json!({}),
+            serde_json::json!({"rpm": 1}),
+            serde_json::json!({"rpm": null, "tpm": 10}),
+        ] {
+            assert!(validate_rate_limit_caps(&patch(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!({"rpm": 0}),
+            serde_json::json!({"tpm": -5}),
+            serde_json::json!({"rpm": 10, "tpm": 0}),
+        ] {
+            assert!(
+                refused(validate_rate_limit_caps(&patch(bad.clone()))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_null_is_told_apart_from_an_absent_cap() {
+        let lifted: UpdateRateLimit =
+            serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
+        assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
+        assert_eq!(lifted.tpm, None, "absent leaves it alone");
     }
 }

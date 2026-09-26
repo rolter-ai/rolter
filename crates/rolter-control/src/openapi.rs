@@ -2707,9 +2707,9 @@ fn governance_schemas(p: &Prim) -> Value {
         },
         "UpdateBudget": {
             "type": "object",
-            "description": "every field is optional; omit one to leave it unchanged. The scope is not editable",
+            "description": "every field is optional; omit one to leave it unchanged. The scope is not editable. An edit that changes nothing writes nothing",
             "properties": {
-                "limit_usd": {"type": "string", "description": "a finite decimal of zero or more"},
+                "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
                 "period": string,
                 "unpriced_policy": {
                     "type": ["string", "null"],
@@ -2747,8 +2747,8 @@ fn governance_schemas(p: &Prim) -> Value {
             "type": "object",
             "description": "omit a cap to leave it unchanged, send null to lift it; at least one cap must remain",
             "properties": {
-                "rpm": {"type": ["integer", "null"], "minimum": 0},
-                "tpm": {"type": ["integer", "null"], "minimum": 0}
+                "rpm": {"type": ["integer", "null"], "minimum": 1},
+                "tpm": {"type": ["integer", "null"], "minimum": 1}
             },
             "additionalProperties": false
         },

@@ -66,10 +66,10 @@ curl -s -X PATCH https://control.example.com/api/v1/budgets/$BUDGET_ID \
 The response is the updated row. A few rules:
 
 - `unpriced_policy: null` drops the override, so the budget inherits the deployment setting again. Leaving the field out does not touch it.
-- `limit_usd` has to be a finite number of zero or more. Zero is allowed and freezes the scope, because no request is under a cap of zero.
+- `limit_usd` has to be a number from 0 to 99999999.9999, the most the `numeric(12,4)` column holds. Zero is allowed and freezes the scope, because no request is under a cap of zero. More decimal places than four are rounded, so a value that rounds up to 100000000 is refused too.
 - `period` cannot be blank.
 - The scope is not editable. A budget on a different scope is a different budget, so sending `scope_type` or `scope_id` is a `400`.
-- An empty body `{}` changes nothing and returns the row as it is.
+- A body that changes nothing returns the row as it is and writes nothing: no config version bump and no audit row. That covers an empty body `{}` and one that re-sends the values the row already holds, such as `"limit_usd": "500.0"` on a `500.0000` budget.
 
 <Note>
   **Why edit rather than delete and recreate.** A delete followed by a create leaves the scope with no budget between the two calls, and each call bumps the config version, so a gateway polling in that gap loads the scope uncapped. A `PATCH` is a single write and a single version bump: a gateway sees the old cap or the new one, never neither.
@@ -120,7 +120,7 @@ curl -s -X PATCH https://control.example.com/api/v1/rate-limits/$LIMIT_ID \
   -d '{"tpm": 200000, "rpm": null}'
 ```
 
-The edit is refused with `400` when it would leave the rate limit with no cap at all, because such a limit admits every request. Delete it instead. A cap of zero or below is also refused: the gateway reads it as "not capped", so storing one would look like a limit and do nothing.
+The edit is refused with `400` when it would leave the rate limit with no cap at all, because such a limit admits every request. Delete it instead. The check runs against the row as it stands when the edit is applied, so two edits sent at once that each lift a different cap cannot together leave none: whichever lands second is refused. A cap of zero or below is also refused: the gateway reads it as "not capped", so storing one would look like a limit and do nothing.
 
 ## Authorization
 
@@ -156,8 +156,8 @@ A `changes` entry carries the value before and after:
 }
 ```
 
-A field sent with the value it already had does not appear in `changes`.
+A field sent with the value it already had does not appear in `changes`, and an edit where every field sent already had its value writes no audit row at all. The `from` values are read under the edit's own row lock, so two edits of the same row in quick succession each record what they replaced.
 
 ## Propagation
 
-Every create, edit and delete bumps the config version in the same transaction, so a gateway polling `/internal/snapshot` picks the change up on its next poll. With Redis configured, the control plane also announces the new version, and subscribed gateways refetch straight away.
+Every create, delete and edit that changes something bumps the config version in the same transaction, so a gateway polling `/internal/snapshot` picks the change up on its next poll. With Redis configured, the control plane also announces the new version, and subscribed gateways refetch straight away.
