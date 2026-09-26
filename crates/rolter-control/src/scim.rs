@@ -138,7 +138,18 @@ impl From<rolter_core::Error> for ScimError {
             rolter_core::Error::NotFound(what) => {
                 Self::new(StatusCode::NOT_FOUND, None, what.to_string())
             }
-            other => Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, other.to_string()),
+            // a validation message is written for the caller, so it keeps its
+            // text; the crud api answers the same error with a 400 too
+            rolter_core::Error::Config(message) => Self::invalid(message),
+            rolter_core::Error::Unauthorized => Self::unauthorized(),
+            other => {
+                tracing::warn!(error = %other, "internal scim error");
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    None,
+                    "internal server error",
+                )
+            }
         }
     }
 }
@@ -725,10 +736,13 @@ impl From<ApiError> for ScimError {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
             ApiError::Core(err) => err.into(),
-            other => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Conflict(message) => {
+                Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
+            }
+            ApiError::TooManyAttempts(_) => Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
                 None,
-                format!("{other:?}"),
+                "too many rejected attempts; try again later",
             ),
         }
     }
@@ -873,5 +887,31 @@ mod tests {
             active: None,
         };
         assert_eq!(unkeyed.email(), None);
+    }
+
+    #[test]
+    fn internal_store_errors_are_redacted_in_scim_error() {
+        let sensitive = "postgres connection failed at postgres://user:pass@ch:5432/db";
+        let err = rolter_core::Error::Store(sensitive.to_string());
+        let scim_err: ScimError = err.into();
+        assert_eq!(scim_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(scim_err.detail, "internal server error");
+        assert!(!scim_err.detail.contains(sensitive));
+    }
+
+    #[test]
+    fn client_errors_keep_their_status_in_scim_error() {
+        let invalid: ScimError = rolter_core::Error::Config("userName is empty".into()).into();
+        assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+        assert_eq!(invalid.scim_type, Some("invalidValue"));
+        assert_eq!(invalid.detail, "userName is empty");
+
+        let conflict: ScimError = ApiError::Conflict("owned by the config file".into()).into();
+        assert_eq!(conflict.status, StatusCode::CONFLICT);
+        assert_eq!(conflict.scim_type, Some("uniqueness"));
+
+        let locked: ScimError =
+            ApiError::TooManyAttempts(std::time::Duration::from_secs(30)).into();
+        assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
     }
 }
