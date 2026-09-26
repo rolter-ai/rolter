@@ -75,8 +75,12 @@ and remote-tracking refs are shared by the repository.
 
 Each worktree runs its Postgres tests against a database of its own, derived
 from the worktree path rather than configured, so two agents' suites never share
-one (#1430). `ROLTER_TEST_DATABASE_URL` names the server; see
-[testing.md](testing.md#one-database-per-worktree).
+one (#1430). The server is shared: one `rolter-test-pg` container for the whole
+machine, which `eval "$(just test-pg)"` starts when it is not running and
+exports as `ROLTER_TEST_DATABASE_URL` either way. Never start a Postgres per
+worktree: it isolates nothing the per-worktree database does not, and it
+outlives the worktree (#1736). See
+[testing.md](testing.md#the-postgres-test-database).
 
 ## Dependent tasks
 
@@ -167,15 +171,20 @@ wt list --full
 wt remove <branch>
 ```
 
-The shared `pre-remove` hook runs `cargo clean` inside that worktree before
-Worktrunk deletes it. This reclaims the copied `target/` cache while the path
-still exists; source files and other worktrees are unaffected.
+The shared `pre-remove` hook runs two commands inside that worktree before
+Worktrunk deletes it. `cargo clean` reclaims the copied `target/` cache while
+the path still exists; source files and other worktrees are unaffected.
+`scripts/test-postgres.sh release` drops the worktree's database on the
+`rolter-test-pg` server, matched by the worktree path the test harness records
+as the database's comment. It never fails the removal: with the server down, or
+the database still in use, it does nothing.
 
-The worktree's Postgres test database is reclaimed too, but lazily: it is named
-after the worktree path and carries that path as its comment, so the next test
-run in any worktree drops every `rolter_test_wt_*` database whose directory is
-gone. Nothing has to run at removal time, and a worktree that is merely idle
-keeps its database. See
+Reclaiming the database does not depend on that hook. The next test run in any
+worktree drops every `rolter_test_wt_*` database whose directory is gone, which
+covers a worktree removed without Worktrunk, a branch that predates the hook,
+and a server other than `rolter-test-pg`. A worktree that is merely idle keeps
+its database. The container itself stays: it is one per machine, shared by
+every worktree, and `just test-pg-down` removes it. See
 [testing.md](testing.md#one-database-per-worktree).
 
 Worktrunk deletes a branch only when it can prove the branch adds no changes to

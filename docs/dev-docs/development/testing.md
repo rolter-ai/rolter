@@ -85,14 +85,34 @@ clobbering each other.
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
-a Postgres they may write to. The role wants `CREATEDB`, since each worktree
-gets a database of its own (below); without it the tests still run, they just
-share the database the url names:
+a Postgres they may write to. A machine needs one such server however many
+worktrees it has, and `just test-pg` is the way to get it:
 
 ```bash
-ROLTER_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/rolter_test \
-  cargo nextest run -p rolter-store -p rolter-control --features postgres
+eval "$(just test-pg)"   # starts rolter-test-pg on 127.0.0.1:55433 if needed, exports the url
+cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
+
+The recipe is idempotent: it creates the `rolter-test-pg` container the first
+time, starts it again after a reboot, and otherwise only prints the export line,
+so every session on the machine runs the same command and lands on the same
+server. `just test-pg-status` shows the connections in use against
+`max_connections` and which worktree each test database belongs to;
+`just test-pg-down` removes the container together with its data.
+`ROLTER_TEST_PG_PORT` and `ROLTER_TEST_PG_MAX_CONNECTIONS` pick a different port
+or limit, and only take effect when the container is created, so change them
+with a `just test-pg-down` first.
+
+Do not start a Postgres per worktree. Each worktree already gets a database of
+its own on the shared server (below), so a second container isolates nothing,
+and nothing ever takes it down: it outlives the worktree that started it, holding
+a port, shared memory and disk, and the next session has to step over it to find
+a free port (#1736). Containers left over from that habit (`rolter-test-pg-<n>`,
+`rolter-<n>-pg` and similar) can go once nothing uses them.
+
+Any other Postgres works too, as long as the role may create databases
+(`CREATEDB`), since each worktree gets one of its own; without it the tests still
+run, they just share the database the url names.
 
 ### One database per worktree
 
@@ -114,10 +134,15 @@ Two things that used to be true stop being true:
 - a worktree on an older commit no longer applies its migration set to the
   database another worktree is reading
 
-The worktree's path is stored as the database's comment, which is the whole
-cleanup story: the next run drops any `rolter_test_wt_*` database whose recorded
-directory no longer exists, so a removed worktree takes its database with it and
-no hook has to run. List them with `\l rolter_test_wt*`, or:
+The worktree's path is stored as the database's comment, and both ways a
+database is reclaimed go through it. Removing the worktree with `wt remove` runs
+the `pre-remove` hook in [`.config/wt.toml`](../../.config/wt.toml), which drops
+the databases carrying that worktree's path on the `just test-pg` server
+straight away. Independently of any hook, the next test run in any worktree drops
+every `rolter_test_wt_*` database whose recorded directory no longer exists, so a
+worktree removed some other way, or one whose tests ran against a different
+server, still takes its database with it. List them with `just test-pg-status`,
+`\l rolter_test_wt*`, or:
 
 ```sql
 select datname, shobj_description(oid, 'pg_database')
@@ -130,6 +155,65 @@ reproduction of the shared-database behaviour. The derivation also steps aside
 when it cannot create a database (a role without `CREATEDB`, for instance): it
 prints why and falls back to the configured url, because losing isolation is
 better than losing the suite.
+
+### The connection budget
+
+A database per worktree isolates schemas and migrations, but not the server's
+`max_connections`: every suite on the machine, from every worktree, draws from
+that one budget (#1735). When it runs out, Postgres refuses new connections with
+`sorry, too many clients already` and the refusal lands on whichever test
+happened to be connecting.
+
+Measured with the `rolter-store` and `rolter-control` postgres suites run the way
+plain `cargo test` runs them (every test in a binary at once, one thread per
+logical CPU by default), each simulated worktree on a database of its own, and
+client backends sampled every 100 ms:
+
+| Worktrees × test threads | Pool per test | `max_connections` | Peak client backends | Outcome                                         |
+| ------------------------ | ------------- | ----------------- | -------------------- | ----------------------------------------------- |
+| 1 × 8                    | 10            | 100               | 14                   | green                                           |
+| 6 × 8                    | 10            | 100               | 78                   | green                                           |
+| 4 × 24                   | 10            | 100               | 100, the limit       | 978 refused connections, 79 of 560 tests failed |
+| 4 × 24                   | 10            | 300               | 120                  | green but one flake of the sweep test (#1910)   |
+| 4 × 24                   | 4             | 300               | 114                  | green                                           |
+| 1 × 24                   | 1             | 300               | 27                   | 3 tests fail on the pool: they need 2           |
+
+A test holds about one connection at a time, so a worktree costs roughly one
+connection per test thread plus a handful for the harness. The pool size barely
+moves the peak; the number of tests running at once does. That is why the stock
+limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
+24-thread workstation. Under `cargo nextest` the `serial-db` group in
+[`.config/nextest.toml`](../../.config/nextest.toml) runs one postgres test at a
+time per worktree, so a worktree holds only a few connections there; the numbers
+above are the case for `cargo test`, and for nextest too if that group goes
+(#1429).
+
+So the budget is kept in two places:
+
+- `just test-pg` starts the server with `max_connections = 300`: room for about
+  ten worktrees at 24 threads, and twenty at 8. A slot nothing is connected to
+  costs a little shared memory, not a backend, and the larger lock table that
+  comes with it (`max_locks_per_transaction` is per slot) also gives the schema
+  drops more room. On a server of your own, size `max_connections` the same way:
+  worktrees × (test threads + 5)
+- `TestSchema` builds each test's pool with at most 4 connections instead of the
+  control plane's 10: twice what the hungriest tests use (a KEK rotation holding
+  a transaction while it queries, the readiness probe), and a test that wants
+  more waits for a free connection instead of opening one. It is a ceiling on
+  the worst case rather than the fix. `ROLTER_TEST_POOL_MAX_CONNECTIONS`
+  overrides it
+
+A test that cannot connect says which budget ran out, since the pool on its
+own does not: it retries `too many clients` until its 30-second acquire timeout
+and then reports a bare `pool timed out while waiting for an open connection`,
+which reads like a slow query or a regression. `TestSchema` connects directly
+for its own setup and panics with the server's answer (`has no connection slots
+left (SQLSTATE 53300 ...)`, or `nothing is accepting connections` when the server
+is down). A test that fails while the server is at or within a tenth of its limit
+gets the same note printed after its panic, and one that fails with its own pool
+fully checked out is told that instead. `just test-pg-status` shows how many
+connections are in use; `cargo test -- --test-threads=<n>` lowers a worktree's
+share when the server cannot be changed.
 
 ### One schema per test
 

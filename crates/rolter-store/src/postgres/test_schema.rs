@@ -18,13 +18,20 @@
 //!
 //! Set `ROLTER_TEST_KEEP_SCHEMA=1` to keep a failing test's schema (and skip
 //! the sweep) when the rows themselves are the evidence.
+//!
+//! Every suite on a machine, from every worktree, draws its connections from
+//! one Postgres server, so a test pool is sized for what a test uses rather
+//! than for what the control plane serves, and a test that cannot connect says
+//! whether the server ran out of slots instead of reporting a bare pool
+//! timeout (#1735).
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 
-use super::{connect, run_migrations};
+use super::{connect_with, run_migrations, PoolConfig};
 
 /// Prefix every isolated test schema carries. The sweep only ever considers
 /// names shaped exactly `test_<pid>_<seq>`, so a schema a human created is
@@ -50,12 +57,172 @@ const SWEEP_LOCK_KEY: i64 = 0x0101_3641_5745_4550;
 /// the next run's sweep clears, a wedged suite is not.
 const CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Connections one test's pool may open.
+///
+/// The production default of ten is sized for the control plane's fan-out; a
+/// test that shares a Postgres server with every other suite on the machine
+/// has no use for it. A pool opens connections lazily, so the ceiling only
+/// bites for a test that runs more than this many queries at once, and such a
+/// test waits for a free connection rather than failing.
+const TEST_POOL_MAX_CONNECTIONS: u32 = 4;
+
+/// Overrides [`TEST_POOL_MAX_CONNECTIONS`], to re-run the connection-budget
+/// measurement in `docs/dev-docs/development/testing.md` or to give one test
+/// more room while investigating it.
+const POOL_SIZE_ENV: &str = "ROLTER_TEST_POOL_MAX_CONNECTIONS";
+
+/// SQLSTATE `too_many_connections`: the server has no connection slot left.
+const TOO_MANY_CONNECTIONS: &str = "53300";
+
 static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
 static SWEPT: AtomicBool = AtomicBool::new(false);
 
 /// Whether the caller asked for schemas to be preserved for inspection.
 fn keep_schemas() -> bool {
     std::env::var("ROLTER_TEST_KEEP_SCHEMA").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The ceiling for a test pool: [`POOL_SIZE_ENV`] when it holds a positive
+/// number, [`TEST_POOL_MAX_CONNECTIONS`] otherwise.
+fn pool_max_connections(configured: Option<&str>) -> u32 {
+    configured
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|&n: &u32| n > 0)
+        .unwrap_or(TEST_POOL_MAX_CONNECTIONS)
+}
+
+/// The budget every [`TestSchema`] pool is built with.
+fn test_pool_config() -> PoolConfig {
+    PoolConfig {
+        max_connections: pool_max_connections(std::env::var(POOL_SIZE_ENV).ok().as_deref()),
+        ..PoolConfig::default()
+    }
+}
+
+/// `host:port` of the server `url` names, with the credentials left out, for
+/// messages a test prints.
+fn server_label(url: &str) -> String {
+    url.parse::<PgConnectOptions>().map_or_else(
+        |_| "the configured server".to_string(),
+        |options| format!("{}:{}", options.get_host(), options.get_port()),
+    )
+}
+
+fn is_too_many_connections(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if db.code().as_deref() == Some(TOO_MANY_CONNECTIONS))
+}
+
+/// What a test prints when the server has no connection slot left.
+fn exhaustion_message(server: &str) -> String {
+    format!(
+        "the test Postgres at {server} has no connection slots left (SQLSTATE \
+         {TOO_MANY_CONNECTIONS}, `sorry, too many clients already`). max_connections is one \
+         budget shared by every suite running against that server, from every worktree, so \
+         this is connection exhaustion rather than a failure of this test: give the server \
+         more headroom (`just test-pg` starts one with enough) or run fewer suites at once. \
+         See \"The connection budget\" in docs/dev-docs/development/testing.md"
+    )
+}
+
+/// Client connections in use on the server and its `max_connections`.
+async fn connection_usage(conn: &mut PgConnection) -> Option<(i64, i64)> {
+    sqlx::query_as(
+        "select count(*) filter (where backend_type = 'client backend'),
+                current_setting('max_connections')::int8
+           from pg_stat_activity",
+    )
+    .fetch_one(conn)
+    .await
+    .ok()
+}
+
+/// Why a direct connection to `url` failed, phrased for whoever reads the test
+/// output. `pool_error` is what the pool reported first, when there was one.
+fn describe_direct_failure(
+    url: &str,
+    err: &sqlx::Error,
+    pool_error: Option<&dyn std::fmt::Display>,
+) -> String {
+    let server = server_label(url);
+    if is_too_many_connections(err) {
+        return exhaustion_message(&server);
+    }
+    if matches!(err, sqlx::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused) {
+        return format!(
+            "nothing is accepting connections at {server}, the server \
+             ROLTER_TEST_DATABASE_URL names: start the test Postgres with `just test-pg`, or \
+             unset the variable to skip the postgres tests ({err})"
+        );
+    }
+    match pool_error {
+        Some(pool_error) => format!(
+            "could not connect to the test Postgres at {server}: {pool_error} (a direct \
+             connection failed too: {err})"
+        ),
+        None => format!("could not connect to the test Postgres at {server}: {err}"),
+    }
+}
+
+/// Turn a pool that failed to connect into a message that says why.
+///
+/// A pool treats `too many clients` as transient and retries it until its
+/// acquire timeout, then reports a bare `PoolTimedOut` that reads like a slow
+/// query. A single direct connection is not retried, so it surfaces the
+/// server's own answer, which is what this reports.
+async fn explain_pool_failure(url: &str, pool_error: &dyn std::fmt::Display) -> String {
+    let server = server_label(url);
+    match PgConnection::connect(url).await {
+        Err(err) => describe_direct_failure(url, &err, Some(pool_error)),
+        Ok(mut conn) => {
+            let usage = connection_usage(&mut conn)
+                .await
+                .map_or_else(String::new, |(used, max)| {
+                    format!(" and has {used} of max_connections {max} in use")
+                });
+            let _ = conn.close().await;
+            format!(
+                "could not connect to the test Postgres at {server}: {pool_error}. The server \
+                 accepts a direct connection now{usage}, so it was out of connection slots or \
+                 unreachable for the pool's whole acquire timeout; see \"The connection \
+                 budget\" in docs/dev-docs/development/testing.md"
+            )
+        }
+    }
+}
+
+/// A note for a test that failed while the server was out of connections, or
+/// close to it, since the failure the test reports is then most likely a pool
+/// timeout rather than a regression. `None` when the server has room.
+async fn exhaustion_note(url: &str) -> Option<String> {
+    match PgConnection::connect(url).await {
+        Err(err) if is_too_many_connections(&err) => Some(exhaustion_message(&server_label(url))),
+        Err(_) => None,
+        Ok(mut conn) => {
+            let usage = connection_usage(&mut conn).await;
+            let _ = conn.close().await;
+            let (used, max) = usage?;
+            // within a tenth of the ceiling: close enough that the pool's
+            // retries were most likely what ran the clock out
+            (used * 10 >= max * 9).then(|| {
+                format!(
+                    "the test Postgres at {} had {used} of max_connections {max} in use when \
+                     this test failed; if the failure is a pool timeout, it is connection \
+                     exhaustion rather than a regression. See \"The connection budget\" in \
+                     docs/dev-docs/development/testing.md",
+                    server_label(url)
+                )
+            })
+        }
+    }
+}
+
+/// A direct connection for the few statements a guard runs outside the test's
+/// schema, with the failure explained.
+async fn admin_connection(url: &str) -> PgConnection {
+    match PgConnection::connect(url).await {
+        Ok(conn) => conn,
+        Err(err) => panic!("{}", describe_direct_failure(url, &err, None)),
+    }
 }
 
 /// Isolated schema name unique to this process and call, safe to interpolate
@@ -96,20 +263,21 @@ impl TestSchema {
         // the defensive drop matters because the operating system recycles
         // pids: a previous run holding our pid may have left this exact name
         let schema = unique_schema();
-        let admin = connect(url).await.expect("connect");
-        sqlx::query(&format!("drop schema if exists {schema} cascade"))
-            .execute(&admin)
+        let mut admin = admin_connection(url).await;
+        admin
+            .execute(format!("drop schema if exists {schema} cascade").as_str())
             .await
             .expect("reset schema");
-        sqlx::query(&format!("create schema {schema}"))
-            .execute(&admin)
+        admin
+            .execute(format!("create schema {schema}").as_str())
             .await
             .expect("create schema");
-        admin.close().await;
+        let _ = admin.close().await;
 
-        let pool = connect(&with_search_path(url, &schema))
-            .await
-            .expect("connect scoped");
+        let pool = match connect_with(&with_search_path(url, &schema), test_pool_config()).await {
+            Ok(pool) => pool,
+            Err(err) => panic!("{}", explain_pool_failure(url, &err).await),
+        };
         Self {
             schema,
             admin_url: url.to_string(),
@@ -157,6 +325,22 @@ impl Drop for TestSchema {
         let schema = std::mem::take(&mut self.schema);
         let url = std::mem::take(&mut self.admin_url);
 
+        // a failing test on a busy server most often failed on a pool timeout,
+        // which names neither the pool nor the server, so say which one ran out
+        let panicking = std::thread::panicking();
+        if panicking {
+            if let Some(pool) = pool.as_ref() {
+                let max = pool.options().get_max_connections();
+                if pool.size() >= max && pool.num_idle() == 0 {
+                    eprintln!(
+                        "this test failed with its pool at its ceiling ({POOL_SIZE_ENV}={max}) \
+                         and no connection idle; if the failure is a pool timeout, the test \
+                         needs a bigger pool or holds a connection while it waits for another"
+                    );
+                }
+            }
+        }
+
         // the pool's sockets are registered with the reactor of the runtime the
         // test built them on, so awaiting anything on them from the cleanup
         // runtime below never completes — `close()` in particular hangs the
@@ -177,7 +361,15 @@ impl Drop for TestSchema {
                 .build()
                 .expect("cleanup runtime");
             runtime.block_on(async move {
-                match tokio::time::timeout(CLEANUP_TIMEOUT, drop_schema(&url, &schema)).await {
+                let work = async {
+                    if panicking {
+                        if let Some(note) = exhaustion_note(&url).await {
+                            eprintln!("{note}");
+                        }
+                    }
+                    drop_schema(&url, &schema).await
+                };
+                match tokio::time::timeout(CLEANUP_TIMEOUT, work).await {
                     Ok(Ok(())) => {}
                     Ok(Err(err)) => eprintln!("failed to drop test schema {schema}: {err}"),
                     // cleanup must never be the thing that hangs a test run; the
@@ -348,6 +540,7 @@ fn pid_is_live(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::postgres::connect;
 
     /// Comfortably above any `kernel.pid_max`, so it can never be live.
     const DEAD_PID: u32 = 4_000_000_000;
@@ -378,6 +571,79 @@ mod tests {
                 .expect("query");
         pool.close().await;
         exists
+    }
+
+    #[test]
+    fn the_test_pool_budget_falls_back_to_the_default_on_anything_but_a_positive_number() {
+        assert_eq!(pool_max_connections(None), TEST_POOL_MAX_CONNECTIONS);
+        assert_eq!(pool_max_connections(Some("10")), 10);
+        assert_eq!(pool_max_connections(Some(" 2 ")), 2);
+        assert_eq!(pool_max_connections(Some("0")), TEST_POOL_MAX_CONNECTIONS);
+        assert_eq!(pool_max_connections(Some("-1")), TEST_POOL_MAX_CONNECTIONS);
+        assert_eq!(
+            pool_max_connections(Some("lots")),
+            TEST_POOL_MAX_CONNECTIONS
+        );
+    }
+
+    /// The label ends up in panic messages and CI logs, so the password in the
+    /// url must never reach it.
+    #[test]
+    fn the_server_label_names_host_and_port_and_never_the_password() {
+        let label = server_label("postgres://u:p@db.internal:55432/rolter_test");
+        assert_eq!(label, "db.internal:55432");
+        assert_eq!(server_label("not a url"), "the configured server");
+    }
+
+    #[test]
+    fn the_exhaustion_message_names_the_limit_and_where_to_read_about_it() {
+        let message = exhaustion_message("127.0.0.1:55432");
+        for needle in [
+            "127.0.0.1:55432",
+            "53300",
+            "max_connections",
+            "connection exhaustion",
+            "The connection budget",
+        ] {
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from {message}"
+            );
+        }
+    }
+
+    /// A server that is down used to cost the full acquire timeout and then a
+    /// bare `PoolTimedOut`; a direct connection answers at once and says so.
+    #[tokio::test]
+    async fn a_server_that_is_not_listening_is_named_as_such() {
+        // bind and release a port so nothing is listening on it
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port")
+            .port();
+        let url = format!("postgres://u:p@127.0.0.1:{port}/rolter_test");
+        let err = PgConnection::connect(&url)
+            .await
+            .expect_err("nothing listens there");
+        let message = describe_direct_failure(&url, &err, None);
+        assert!(
+            message.contains("nothing is accepting connections")
+                && message.contains(&format!("127.0.0.1:{port}")),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_test_pool_is_built_with_the_test_budget() {
+        let Some(url) = database_url().await else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let guard = TestSchema::create(&url).await;
+        assert_eq!(
+            guard.pool().options().get_max_connections(),
+            test_pool_config().max_connections
+        );
     }
 
     #[test]

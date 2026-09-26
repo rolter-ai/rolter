@@ -105,7 +105,9 @@ cargo install cargo-nextest cargo-deny
 
 `cargo-nextest` is recommended but optional for the push hook; it falls back to
 `cargo test`. CI remains authoritative for database-backed tests that need
-`ROLTER_TEST_DATABASE_URL`.
+`ROLTER_TEST_DATABASE_URL`; to run them locally, `eval "$(just test-pg)"` starts
+the machine's shared test Postgres and exports the variable (see
+[testing.md](testing.md#the-postgres-test-database)).
 
 ### When the hooks skip Rust
 
