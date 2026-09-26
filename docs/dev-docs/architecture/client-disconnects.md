@@ -34,6 +34,18 @@ attribution, the slow target that made callers give up was exactly the one
 missing from the logs: a dogfood run logged 17 timed-out requests as
 `provider = ''`.
 
+A named row is charged to its target through `LogSink::log`, like any failure:
+`rolter_target_requests_total{outcome="error"}` and a passive health event.
+Whether a disconnect should be charged at all is open in #1933. What is settled
+is that one upstream failure is charged once. The forward loops funnel a failed
+attempt that a retry will supersede through `CancelGuard::record_failed_attempt`
+(#1646), which also marks the guard, and then back off. A caller who leaves
+during that backoff still gets a row naming the target, but the guard's `Drop`
+logs it through `LogSink::log_recorded_attempt`, which skips the per-target
+counter and the health event, the same way the loop's own error row does for an
+attempt it already funnelled. `attribute` clears the mark, since the next
+attempt has not been counted anywhere yet.
+
 ## How it is enforced
 
 | Where                      | Mechanism                                                                                                                                                                                                                                                                                                                              |
@@ -54,5 +66,6 @@ run.
 | `rolter_inflight_requests`        | gauge of requests currently in flight, summed across targets and sampled at scrape time. On an idle gateway it must read `0` — a floor that never returns to zero is a leaked slot, and the fastest signal that guarantee 3 has regressed |
 
 `crates/rolter-gateway/tests/client_disconnect.rs` pins all of it: a
-non-streaming caller that times out, a stream abandoned mid-body, and a normal
-request that must not be marked or counted.
+non-streaming caller that times out, a caller that leaves during a retry backoff
+(one `error` on the target and one health event, not two), a stream abandoned
+mid-body, and a normal request that must not be marked or counted.

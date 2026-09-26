@@ -2167,16 +2167,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         tried.pop();
                         if attempt < retry.max_retries {
                             // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646)
-                            state
-                                .log
-                                .record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
+                            // target that produced it before superseding the attempt (#1646).
+                            // through the guard, so a caller leaving during the backoff below
+                            // is not charged to the target a second time
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
@@ -2201,16 +2201,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         }
                         if attempt < retry.max_retries {
                             // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646)
-                            state
-                                .log
-                                .record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
+                            // target that produced it before superseding the attempt (#1646).
+                            // through the guard, so a caller leaving during the backoff below
+                            // is not charged to the target a second time
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
@@ -2261,16 +2261,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status: 0,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: last_error.as_deref().unwrap_or_default(),
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status: 0,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: last_error.as_deref().unwrap_or_default(),
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(
@@ -2815,16 +2815,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     tried.pop();
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -2847,16 +2847,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -2897,16 +2897,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 }
                 if attempt < retry.max_retries {
                     // the caller will never see this failure, so record it against the
-                    // target that produced it before superseding the attempt (#1646)
-                    state
-                        .log
-                        .record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &last_provider,
-                            target: &last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: last_error.as_deref().unwrap_or_default(),
-                        });
+                    // target that produced it before superseding the attempt (#1646).
+                    // through the guard, so a caller leaving during the backoff below
+                    // is not charged to the target a second time
+                    cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                        provider: &last_provider,
+                        target: &last_target,
+                        status: 0,
+                        latency_ms: attempt_started.elapsed().as_millis() as u32,
+                        error: last_error.as_deref().unwrap_or_default(),
+                    });
                     last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
@@ -3239,16 +3239,16 @@ async fn forward_variants(
                     tried.pop();
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &out.last_provider,
-                                target: &out.last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &out.last_provider,
+                            target: &out.last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -3271,16 +3271,16 @@ async fn forward_variants(
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &out.last_provider,
-                                target: &out.last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &out.last_provider,
+                            target: &out.last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -3324,16 +3324,16 @@ async fn forward_variants(
                 }
                 if attempt < retry.max_retries {
                     // the caller will never see this failure, so record it against the
-                    // target that produced it before superseding the attempt (#1646)
-                    state
-                        .log
-                        .record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &out.last_provider,
-                            target: &out.last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: out.last_error.as_deref().unwrap_or_default(),
-                        });
+                    // target that produced it before superseding the attempt (#1646).
+                    // through the guard, so a caller leaving during the backoff below
+                    // is not charged to the target a second time
+                    cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                        provider: &out.last_provider,
+                        target: &out.last_target,
+                        status: 0,
+                        latency_ms: attempt_started.elapsed().as_millis() as u32,
+                        error: out.last_error.as_deref().unwrap_or_default(),
+                    });
                     out.last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
