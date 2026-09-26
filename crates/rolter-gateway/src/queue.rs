@@ -199,7 +199,7 @@ impl ProviderQueues {
         // provider shares one new queue. Checking and then inserting let each
         // caller in the burst spawn a queue of its own, and a provider with
         // `workers = 2` took five calls at once (#1815). Spawning never
-        // blocks, so holding the shard across it is brief.
+        // blocks, so holding the shard across it is brief
         //
         // a config change is not handled as well. A replaced queue's workers
         // keep running until its buffered jobs drain, and a caller still on

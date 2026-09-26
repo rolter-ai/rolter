@@ -162,7 +162,7 @@ Before 1.0 a provider's workers took turns and sent one request at a time, so if
   <Accordion title="rolter_provider_inflight">
     **Type:** Gauge, per `provider`
 
-    Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on. A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
+    Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on, except briefly after a `[queue]` reload under load, when the replaced queue's workers are still draining ([#1932](https://github.com/rolter-ai/rolter/issues/1932)). A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
 
   </Accordion>
 
