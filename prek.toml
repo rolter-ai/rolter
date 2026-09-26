@@ -168,7 +168,7 @@ name = "prettier (markdown / json / yaml outside ui/)"
 entry = "bash scripts/format-docs.sh --check"
 language = "system"
 files = "\\.(md|mdx|json|ya?ml)$"
-exclude = "^(ui/|\\.github/workflows/|charts/rolter/templates/|crates/[^/]+/CHANGELOG\\.md$|CLAUDE\\.md$)"
+exclude = "^(ui/|charts/rolter/templates/|crates/[^/]+/CHANGELOG\\.md$|CLAUDE\\.md$)"
 pass_filenames = false
 
 [[repos.hooks]]
@@ -179,12 +179,25 @@ language = "system"
 files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
 pass_filenames = false
 
+# the checker reads the workflows as parsed yaml, so it needs pyyaml; prek
+# builds the environment from the script's own inline metadata (PEP 723), the
+# same pin `uv run --script` resolves in quality.yml. `--self-test` also runs
+# when the checker changes, so a check edited into one that can never fail
+# does not get past the commit
 [[repos.hooks]]
 id = "release-handoff"
 name = "release handoff is wired"
-entry = "bash scripts/check-release-handoff.sh"
-language = "system"
-files = "^\\.github/workflows/release(-plz)?\\.yml$"
+entry = "scripts/check-release-handoff.py"
+language = "python"
+files = "^(\\.github/workflows/(release|release-plz|ci)\\.yml|scripts/check-release-handoff\\.py)$"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "release-handoff-self-test"
+name = "release handoff checks can still fail"
+entry = "scripts/check-release-handoff.py --self-test"
+language = "python"
+files = "^scripts/check-release-handoff\\.py$"
 pass_filenames = false
 
 [[repos.hooks]]

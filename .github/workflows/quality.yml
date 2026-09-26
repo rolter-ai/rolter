@@ -286,6 +286,8 @@ jobs:
   # a token-created tag does not fire `push: tags`, so the dispatch in
   # release-plz.yml is the only thing that starts wheel/pypi publishing. losing
   # it fails silently — releases keep shipping, just without a wheel (#903).
+  # the checker reads the workflows as parsed yaml (#1723); `uv run --script`
+  # installs the pyyaml pinned in its inline metadata, nothing else
   release-handoff:
     name: release handoff wired
     runs-on: ubuntu-latest
@@ -293,8 +295,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: check the release handoff is wired
-        run: bash scripts/check-release-handoff.sh
+        run: uv run --script scripts/check-release-handoff.py
+      # a check that can no longer fail is worse than none: it reads as coverage
+      - name: every check still fails on a broken fixture
+        run: uv run --script scripts/check-release-handoff.py --self-test
 
   # ── board automation: the add-to-board retry policy ─────────────────────────
   # project-automation.yml decides which GitHub API failures to wait out and
