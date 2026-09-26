@@ -811,7 +811,23 @@ pub struct OrgAuthPolicy {
     /// an enum so widening the policy set is a migration, not a code change
     /// every consumer has to be recompiled for
     pub mfa_policy: String,
+    /// When a `required_*` policy starts sending unenrolled members through
+    /// enrolment before they get a session (#1852). `None` means it already
+    /// does; a future value is the grace window an org announces the
+    /// requirement with. Always `None` under `off` and `optional`
+    pub mfa_enforce_after: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// One org's second-factor policy as it applies to one of its members, read
+/// by the login exchange to decide what that member owes (#1852).
+#[derive(Debug, Clone, FromRow)]
+pub struct MfaPolicyBinding {
+    /// `off`, `optional`, `required_superadmin` or `required_all`
+    pub policy: String,
+    pub org_id: Uuid,
+    /// the org's grace window; `None` once the policy is in force
+    pub enforce_after: Option<DateTime<Utc>>,
 }
 
 /// What the dashboard and the login exchange may know about a user's second
@@ -829,7 +845,8 @@ pub struct TotpFactorStatus {
 
 /// A live second-factor challenge handed out by the login exchange. It
 /// authenticates nothing on its own -- it only names which user is halfway
-/// through signing in.
+/// through signing in, and what they may do next
+/// ([`crate::postgres::repo::ChallengePurpose`]).
 #[derive(Debug, Clone, FromRow)]
 pub struct MfaChallenge {
     pub id: Uuid,

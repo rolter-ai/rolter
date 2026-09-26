@@ -20,6 +20,32 @@ use super::support::store_err;
 
 pub struct MfaRepo<'a>(pub &'a PgPool);
 
+/// What a challenge may be redeemed for (`mfa_challenges.purpose`,
+/// `migrations/0076_mfa_enrolment_at_sign_in.sql`).
+///
+/// Every read and write of a challenge names one, so a token minted for one
+/// step is simply not found by the other: an enrolment token presented to the
+/// step-up, or a step-up token presented to enrolment, looks exactly like a
+/// token that never existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengePurpose {
+    /// the account has an armed factor and owes a code from it
+    Verify,
+    /// a `required_*` policy binds the account and it has no armed factor, so
+    /// the only thing the token allows is minting a secret and proving it
+    /// (#1852)
+    Enrol,
+}
+
+impl ChallengePurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verify => "verify",
+            Self::Enrol => "enrol",
+        }
+    }
+}
+
 /// The factor row as it sits on disk. Private to this module and never
 /// `Serialize`: the sealed secret has no route out of here except through
 /// [`MfaRepo::open_secret`], which hands back an [`OpenFactor`] instead.
@@ -265,15 +291,17 @@ impl MfaRepo<'_> {
         user_id: Uuid,
         token_hash: &str,
         expires_at: DateTime<Utc>,
+        purpose: ChallengePurpose,
     ) -> Result<MfaChallenge> {
         sqlx::query_as(
-            "insert into mfa_challenges (user_id, token_hash, expires_at)
-             values ($1, $2, $3)
+            "insert into mfa_challenges (user_id, token_hash, expires_at, purpose)
+             values ($1, $2, $3, $4)
              returning id, user_id, attempts, expires_at",
         )
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
+        .bind(purpose.as_str())
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -291,15 +319,67 @@ impl MfaRepo<'_> {
     pub async fn charge_challenge_attempt(
         &self,
         token_hash: &str,
+        purpose: ChallengePurpose,
         max_attempts: i32,
     ) -> Result<Option<MfaChallenge>> {
         sqlx::query_as(
             "update mfa_challenges set attempts = attempts + 1
-             where token_hash = $1 and expires_at > now() and attempts < $2
+             where token_hash = $1 and purpose = $2 and expires_at > now()
+               and attempts < $3
              returning id, user_id, attempts, expires_at",
         )
         .bind(token_hash)
+        .bind(purpose.as_str())
         .bind(max_attempts)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Read a live challenge without charging it, `None` once it has expired,
+    /// spent its budget, or was minted for the other purpose.
+    ///
+    /// For the steps that are not guesses: asking for an enrolment secret
+    /// proves nothing, so it should not eat into the attempts left to prove
+    /// one.
+    pub async fn live_challenge(
+        &self,
+        token_hash: &str,
+        purpose: ChallengePurpose,
+        max_attempts: i32,
+    ) -> Result<Option<MfaChallenge>> {
+        sqlx::query_as(
+            "select id, user_id, attempts, expires_at from mfa_challenges
+             where token_hash = $1 and purpose = $2 and expires_at > now()
+               and attempts < $3",
+        )
+        .bind(token_hash)
+        .bind(purpose.as_str())
+        .bind(max_attempts)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Consume a live challenge, returning it to exactly one caller.
+    ///
+    /// A delete with `returning` rather than a read followed by a delete: two
+    /// requests redeeming the same token both get past the code check, and
+    /// only the one whose delete removed the row may go on to mint anything.
+    /// Without that, a double-submitted enrolment would arm the factor twice
+    /// and the second batch of recovery codes would silently void the first.
+    pub async fn take_challenge(
+        &self,
+        token_hash: &str,
+        purpose: ChallengePurpose,
+    ) -> Result<Option<MfaChallenge>> {
+        sqlx::query_as(
+            "delete from mfa_challenges
+             where token_hash = $1 and purpose = $2 and expires_at > now()
+             returning id, user_id, attempts, expires_at",
+        )
+        .bind(token_hash)
+        .bind(purpose.as_str())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)

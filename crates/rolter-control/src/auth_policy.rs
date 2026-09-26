@@ -112,6 +112,14 @@ struct SetPolicy {
     /// silently reset to `off`
     #[serde(default)]
     mfa_policy: Option<String>,
+    /// When a `required_*` policy starts making unenrolled members enrol
+    /// before they get a session (#1852); absent or null means at once. It
+    /// travels with `mfa_policy`: read whenever `mfa_policy` is sent, and
+    /// kept as it is whenever `mfa_policy` is not, so the legacy client that
+    /// sends neither changes neither. Dropped under `off` and `optional`,
+    /// where there is nothing for it to postpone
+    #[serde(default)]
+    mfa_enforce_after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 async fn set_policy(
@@ -145,19 +153,26 @@ async fn set_policy(
         }
     }
     let current = OrgAuthPolicyRepo(pool(&state)).get(org_id).await?;
-    let mfa_policy = body.mfa_policy.clone().unwrap_or(current.mfa_policy);
+    let (mfa_policy, mfa_enforce_after) = match body.mfa_policy.clone() {
+        Some(policy) => (policy, body.mfa_enforce_after),
+        None => (current.mfa_policy, current.mfa_enforce_after),
+    };
     if !MFA_POLICIES.contains(&mfa_policy.as_str()) {
         return Err(ApiError::Core(rolter_core::Error::Config(format!(
             "mfa_policy must be one of {}",
             MFA_POLICIES.join(", ")
         ))));
     }
+    // a window only postpones a requirement; stored under `off` it would sit
+    // there to surprise whoever next turns the requirement on
+    let mfa_enforce_after = mfa_enforce_after.filter(|_| mfa_policy.starts_with("required_"));
     let policy = OrgAuthPolicyRepo(pool(&state))
         .set(
             org_id,
             body.allow_password_login,
             body.allow_sso,
             &mfa_policy,
+            mfa_enforce_after,
         )
         .await?;
     log_audit(
@@ -171,6 +186,7 @@ async fn set_policy(
             "allow_password_login": body.allow_password_login,
             "allow_sso": body.allow_sso,
             "mfa_policy": policy.mfa_policy,
+            "mfa_enforce_after": policy.mfa_enforce_after,
         }),
     )
     .await;

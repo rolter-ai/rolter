@@ -9643,11 +9643,293 @@ async fn break_glass_reset_clears_the_factor_and_revokes_sessions() {
     assert_eq!(reason.as_deref(), Some("lost phone, ticket 42"));
 }
 
-/// An org policy of `required_all` refuses a session to an account with no
-/// armed factor, rather than letting it in unprotected.
+/// Seed a non-superadmin local account as an admin of a fresh org whose
+/// `mfa_policy` is `policy`, with the grace window `enforce_after` (a SQL
+/// expression, so a test can say `now() + interval '7 days'` without a clock
+/// of its own). Returns `(user_id, org_id)`.
+async fn seed_bound_member(
+    pool: &sqlx::PgPool,
+    email: &str,
+    password: &str,
+    policy: &str,
+    enforce_after: &str,
+) -> (uuid::Uuid, uuid::Uuid) {
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid = sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, $2, false)
+         returning id",
+    )
+    .bind(email)
+    .bind(&hash)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+            .bind(format!("org-{}", uuid::Uuid::new_v4().simple()))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'admin')")
+        .bind(user_id)
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "insert into org_auth_policies (org_id, mfa_policy, mfa_enforce_after)
+         values ($1, $2, {enforce_after})"
+    ))
+    .bind(org_id)
+    .bind(policy)
+    .execute(pool)
+    .await
+    .unwrap();
+    (user_id, org_id)
+}
+
+/// Sign in with a password and return whatever the exchange answered.
+async fn password_login(
+    client: &reqwest::Client,
+    base: &str,
+    email: &str,
+    password: &str,
+) -> Value {
+    let response = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": email, "password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "password sign-in");
+    response.json().await.unwrap()
+}
+
+/// A `required_all` org no longer refuses an account with no armed factor: the
+/// sign-in hands out an enrolment challenge, proving a code from the secret it
+/// mints is what issues the session, and the challenge opens nothing else on
+/// the way (#1852).
 #[tokio::test]
-async fn a_required_policy_refuses_an_unenrolled_account() {
+async fn a_required_policy_sends_an_unenrolled_account_through_enrolment() {
     skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    // an admin token, so the CRUD api actually checks what it is handed rather
+    // than letting every request through as open mode does
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admin-secret".into()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let (user_id, org_id) = seed_bound_member(
+        &pool,
+        "unenrolled@example.com",
+        &password,
+        "required_all",
+        "null",
+    )
+    .await;
+
+    let challenge = password_login(&client, &base, "unenrolled@example.com", &password).await;
+    assert_eq!(challenge["mfa_enrolment_required"], true, "{challenge}");
+    assert!(
+        challenge["token"].is_null(),
+        "an enrolment challenge is not a session: {challenge}"
+    );
+    let enrolment_token = challenge["enrolment_token"]
+        .as_str()
+        .expect("enrolment token")
+        .to_string();
+
+    // the token reads nothing and writes nothing: not as a bearer on the
+    // account's own routes, not on the CRUD api, and not on the step-up
+    for (method, path) in [
+        ("GET", "/api/v1/auth/me"),
+        ("GET", "/api/v1/me/mfa"),
+        ("POST", "/api/v1/me/mfa/enroll"),
+        ("GET", "/api/v1/me/virtual-keys"),
+        ("GET", "/api/v1/orgs"),
+        ("GET", &format!("/api/v1/orgs/{org_id}/auth-policy")),
+    ] {
+        let response = client
+            .request(method.parse().unwrap(), format!("{base}{path}"))
+            .bearer_auth(&enrolment_token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            401,
+            "{method} {path} must not accept an enrolment token"
+        );
+    }
+    let write = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(&enrolment_token)
+        .json(&json!({"name": "stolen", "slug": "stolen"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(write.status(), 401, "an enrolment token must not write");
+    let relax = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .bearer_auth(&enrolment_token)
+        .json(&json!({"allow_password_login": true, "allow_sso": true, "mfa_policy": "off"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        relax.status(),
+        401,
+        "an enrolment token must not relax the policy it is bound by"
+    );
+    let step_up = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": enrolment_token, "code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(step_up.status(), 401, "the step-up must not accept it");
+
+    // what it is for: a secret, shown once
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/enroll"))
+        .json(&json!({"enrolment_token": enrolment_token}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().expect("secret").to_string();
+    assert!(
+        enrol["otpauth_uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/"),
+        "{enrol}"
+    );
+
+    // a pending secret still arms nothing, so a code from it does not get
+    // past the step-up either -- the one way through is the confirm below
+    let still_refused = client
+        .post(format!("{base}/api/v1/auth/mfa/verify"))
+        .json(&json!({"mfa_token": enrolment_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(still_refused.status(), 401);
+
+    let wrong = client
+        .post(format!("{base}/api/v1/auth/mfa/confirm"))
+        .json(&json!({"enrolment_token": enrolment_token, "code": "000000"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 400, "a wrong code keeps the challenge");
+
+    let signed_in: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/confirm"))
+        .json(&json!({"enrolment_token": enrolment_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session = signed_in["token"]
+        .as_str()
+        .expect("confirming yields a session")
+        .to_string();
+    assert_eq!(
+        signed_in["recovery_codes"].as_array().map(Vec::len),
+        Some(10),
+        "{signed_in}"
+    );
+    assert_eq!(signed_in["user"]["email"], "unenrolled@example.com");
+    let me = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200, "the enrolled session must authenticate");
+    let status: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["enabled"], true, "{status}");
+
+    // single use: the token went with the session it minted
+    let again = client
+        .post(format!("{base}/api/v1/auth/mfa/confirm"))
+        .json(&json!({"enrolment_token": enrolment_token, "code": current_code(&secret)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 401, "an enrolment token redeems once");
+
+    // audited like any other sign-in, and the enrolment says where it happened
+    let actions: Vec<(String, Option<bool>)> = sqlx::query_as(
+        "select action, (detail->>'at_sign_in')::boolean from audit_log
+         where actor_user_id = $1 order by at",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|(action, _)| action == "auth.mfa_enrolment_challenge"),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|(action, at_sign_in)| action == "auth.mfa_enabled" && *at_sign_in == Some(true)),
+        "{actions:?}"
+    );
+    assert!(
+        actions.iter().any(|(action, _)| action == "auth.login"),
+        "{actions:?}"
+    );
+
+    // the factor is armed now, so the next sign-in is an ordinary step-up --
+    // and that step-up token does not open the enrolment routes either
+    let step_up: Value = password_login(&client, &base, "unenrolled@example.com", &password).await;
+    assert_eq!(step_up["mfa_required"], true, "{step_up}");
+    let reenrol = client
+        .post(format!("{base}/api/v1/auth/mfa/enroll"))
+        .json(&json!({"enrolment_token": step_up["mfa_token"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reenrol.status(),
+        401,
+        "a step-up token must not re-enrol the account"
+    );
+}
+
+/// An enrolment challenge is short-lived and bounded: once it expires, or once
+/// its codes are spent, it opens nothing, the right code included.
+#[tokio::test]
+async fn an_enrolment_challenge_expires_and_is_spent_by_wrong_codes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
@@ -9655,34 +9937,170 @@ async fn a_required_policy_refuses_an_unenrolled_account() {
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
     let password = random_password();
-    let user_id = seed_local_user(&pool, "unenrolled@example.com", &password).await;
+    seed_bound_member(&pool, "late@example.com", &password, "required_all", "null").await;
 
-    let org_id: uuid::Uuid =
-        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
-            .fetch_one(&pool)
+    // expiry: a challenge left sitting is dead to both routes
+    let stale = password_login(&client, &base, "late@example.com", &password).await;
+    let stale_token = stale["enrolment_token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/enroll"))
+        .json(&json!({"enrolment_token": stale_token}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().expect("secret").to_string();
+    sqlx::query("update mfa_challenges set expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for route in ["enroll", "confirm"] {
+        let response = client
+            .post(format!("{base}/api/v1/auth/mfa/{route}"))
+            .json(&json!({"enrolment_token": stale_token, "code": current_code(&secret)}))
+            .send()
             .await
             .unwrap();
-    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'admin')")
-        .bind(user_id)
-        .bind(org_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("insert into org_auth_policies (org_id, mfa_policy) values ($1, 'required_all')")
-        .bind(org_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+        assert_eq!(response.status(), 401, "{route} after expiry");
+    }
 
-    let refused = client
-        .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "unenrolled@example.com", "password": password}))
+    // budget: five wrong codes spend a fresh challenge
+    let fresh = password_login(&client, &base, "late@example.com", &password).await;
+    let token = fresh["enrolment_token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    let enrol: Value = client
+        .post(format!("{base}/api/v1/auth/mfa/enroll"))
+        .json(&json!({"enrolment_token": token}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = enrol["secret"].as_str().expect("secret").to_string();
+    for attempt in 0..5 {
+        let wrong = client
+            .post(format!("{base}/api/v1/auth/mfa/confirm"))
+            .json(&json!({"enrolment_token": token, "code": "000000"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 400, "attempt {attempt}");
+    }
+    let correct = client
+        .post(format!("{base}/api/v1/auth/mfa/confirm"))
+        .json(&json!({"enrolment_token": token, "code": current_code(&secret)}))
         .send()
         .await
         .unwrap();
-    assert_eq!(refused.status(), 403);
-    let body: Value = refused.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "mfa_enrolment_required", "{body}");
+    assert_eq!(
+        correct.status(),
+        401,
+        "a spent enrolment challenge must not redeem, right code or not"
+    );
+    let armed: Option<bool> = sqlx::query_scalar(
+        "select confirmed_at is not null from user_totp_factors f
+         join users u on u.id = f.user_id where u.email = 'late@example.com'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert_eq!(armed, Some(false), "nothing was armed along the way");
+}
+
+/// A grace window announces the requirement without enforcing it: until it
+/// passes the unenrolled member signs in with the password and is told by
+/// when; after it, the same sign-in is an enrolment (#1852).
+#[tokio::test]
+async fn a_grace_window_lets_an_unenrolled_member_in_until_it_passes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let (_, org_id) = seed_bound_member(&pool, "grace@example.com", &password, "off", "null").await;
+
+    // the window is set through the api, so the round trip is covered too
+    let deadline = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+    let policy: Value = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .json(&json!({
+            "allow_password_login": true,
+            "allow_sso": true,
+            "mfa_policy": "required_all",
+            "mfa_enforce_after": deadline,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(policy["mfa_enforce_after"].is_string(), "{policy}");
+
+    let signed_in = password_login(&client, &base, "grace@example.com", &password).await;
+    let session = signed_in["token"]
+        .as_str()
+        .expect("inside the window the password is enough")
+        .to_string();
+    assert_eq!(
+        signed_in["mfa_enrol_by"], policy["mfa_enforce_after"],
+        "the session says by when: {signed_in}"
+    );
+    let status: Value = client
+        .get(format!("{base}/api/v1/me/mfa"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["required"], true, "{status}");
+    assert_eq!(status["enforce_after"], policy["mfa_enforce_after"]);
+
+    // the window runs out
+    sqlx::query("update org_auth_policies set mfa_enforce_after = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let after = password_login(&client, &base, "grace@example.com", &password).await;
+    assert_eq!(after["mfa_enrolment_required"], true, "{after}");
+
+    // relaxing the policy drops the window with it, rather than leaving it to
+    // surprise whoever next turns the requirement on
+    let relaxed: Value = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .json(&json!({
+            "allow_password_login": true,
+            "allow_sso": true,
+            "mfa_policy": "optional",
+            "mfa_enforce_after": deadline,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(relaxed["mfa_enforce_after"].is_null(), "{relaxed}");
+    let plain = password_login(&client, &base, "grace@example.com", &password).await;
+    assert!(plain["token"].is_string(), "{plain}");
+    assert!(
+        plain.get("mfa_enrol_by").is_none(),
+        "nothing is owed, so nothing is announced: {plain}"
+    );
 }
 
 /// A custom label's full life on a provider, and the conflict an operator gets
