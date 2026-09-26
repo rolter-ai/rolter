@@ -1257,7 +1257,10 @@ impl BatchWriter {
 #[derive(Serialize)]
 struct PayloadLog<'a> {
     /// the same instant as the metadata row, so a payload and the request it
-    /// belongs to sit in the same partition and sort together
+    /// belongs to sit in the same partition and sort together. the control
+    /// plane joins a body to its row on `(request_id, ts)` because the caller
+    /// chooses `request_id`, so this must stay the row's own `ts` through the
+    /// same serializer (#1820)
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     ts: DateTime<Utc>,
     request_id: &'a str,
@@ -1336,6 +1339,25 @@ mod tests {
         // unset numeric fields default to 0, not null
         assert_eq!(value["total_tokens"], 0);
         assert_eq!(value["cost_usd"], 0.0);
+    }
+
+    #[test]
+    fn a_payload_row_carries_its_log_rows_exact_ts() {
+        // the control plane binds a captured body to its log row on
+        // (request_id, ts), since request_id is the caller's x-request-id and
+        // two tenants can send the same one. a payload stamped any other way
+        // would never join, and every body would read as "capture is off"
+        let rec = RequestLog {
+            ts: DateTime::from_timestamp_millis(1_757_030_542_061).expect("timestamp is in range"),
+            request_id: "shared-id".to_string(),
+            request_payload: "{\"prompt\":\"p\"}".to_string(),
+            response_payload: "{\"answer\":\"a\"}".to_string(),
+            ..Default::default()
+        };
+        let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
+        let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert_eq!(payload["ts"], log["ts"]);
+        assert_eq!(payload["request_id"], log["request_id"]);
     }
 
     #[test]

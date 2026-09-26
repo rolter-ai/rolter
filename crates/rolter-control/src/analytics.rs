@@ -547,6 +547,18 @@ pub struct InvocationsQuery {
 /// lets the dashboard say "hidden for your role" instead of "payload logging is
 /// off", which is what an empty body used to mean.
 ///
+/// A body is attached to the log row it was captured with, never to every row
+/// that shares its `request_id`. The gateway takes that id from the caller's
+/// `x-request-id` header, so two requests from different tenants can carry the
+/// same one. Joining on the id alone let a caller log a bodiless request under
+/// an id they had seen in another project and read that project's prompt
+/// through their own row, which the mask above passes because it is evaluated
+/// against the row, not against the body. The join is therefore on
+/// `(request_id, ts)`: the gateway stamps a payload with its log row's own
+/// `ts`, through the same serializer, so the pair names one request. The
+/// payload side is bounded by the same window as the rows, since a body outside
+/// it has no row to join to, and grouped on the pair so a row never repeats.
+///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
@@ -579,10 +591,10 @@ fn invocations_sql(status_expr: &str) -> String {
                     as payload_withheld \
          from request_logs \
          left join ( \
-             select request_id, argMax(request_payload, ts) as request_payload, \
-                    argMax(response_payload, ts) as response_payload \
-             from request_payloads group by request_id \
-         ) as payload using (request_id) \
+             select request_id, ts, any(request_payload) as request_payload, \
+                    any(response_payload) as response_payload \
+             from request_payloads where {WHERE_WINDOW} group by request_id, ts \
+         ) as payload using (request_id, ts) \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
            and ({{model:String}} = '' or model = {{model:String}}) \
@@ -741,6 +753,20 @@ mod tests {
     }
 
     #[test]
+    fn invocations_sql_binds_each_body_to_its_own_log_row() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // request_id is whatever the caller sent as x-request-id, so joining on
+        // it alone hands one tenant's captured body to another tenant's row
+        // under the same id. the log row's own ts is what names the request
+        assert!(sql.contains("as payload using (request_id, ts)"));
+        assert!(!sql.contains("using (request_id)"));
+        assert!(sql.contains("group by request_id, ts"));
+        // no aggregate may reach across every row that shares an id
+        assert!(!sql.contains("argMax(request_payload"));
+        assert!(!sql.contains("group by request_id "));
+    }
+
+    #[test]
     fn every_request_log_rollup_is_filtered_to_the_caller() {
         // the rollups build their sql inline, so the guard reads the source: a
         // new rollup over request_logs that forgets the filter would answer
@@ -833,8 +859,9 @@ mod tests {
         // `= ''` disjunct short-circuits it, so a strict parse fails the whole
         // first page (#1177)
         assert!(!sql.contains("parseDateTime64BestEffort("));
-        // two for the shared window bounds, two for the keyset cursor
-        assert_eq!(sql.matches("parseDateTime64BestEffortOrZero(").count(), 4);
+        // two for the rows' window bounds, two for the same bounds on the
+        // payload side of the join, two for the keyset cursor
+        assert_eq!(sql.matches("parseDateTime64BestEffortOrZero(").count(), 6);
         assert_eq!(
             parse_keyset_cursor(None, "request_id"),
             Ok((String::new(), String::new()))

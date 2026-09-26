@@ -172,14 +172,19 @@ async fn seed_user(
     project: Option<Uuid>,
     role: &str,
 ) -> String {
-    let user: Uuid = sqlx::query_scalar(
-        "insert into users (email, password_hash, is_superadmin) values ($1, null, false) \
-         returning id",
-    )
-    .bind(format!("{role}-{}@scoping.test", Uuid::new_v4().simple()))
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let (user, token) = seed_account(pool, role).await;
+    add_membership(pool, user, org, team, project, role).await;
+    token
+}
+
+async fn add_membership(
+    pool: &sqlx::PgPool,
+    user: Uuid,
+    org: Option<Uuid>,
+    team: Option<Uuid>,
+    project: Option<Uuid>,
+    role: &str,
+) {
     sqlx::query(
         "insert into memberships (user_id, org_id, team_id, project_id, role) \
          values ($1, $2, $3, $4, $5)",
@@ -192,6 +197,19 @@ async fn seed_user(
     .execute(pool)
     .await
     .unwrap();
+}
+
+/// A signed-in local user with no role anywhere yet, as its id and the bearer
+/// token the dashboard would send.
+async fn seed_account(pool: &sqlx::PgPool, label: &str) -> (Uuid, String) {
+    let user: Uuid = sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, null, false) \
+         returning id",
+    )
+    .bind(format!("{label}-{}@scoping.test", Uuid::new_v4().simple()))
+    .fetch_one(pool)
+    .await
+    .unwrap();
     let token = format!("rolter_sess_scoping_{}", Uuid::new_v4().simple());
     sqlx::query(
         "insert into sessions (user_id, token_hash, expires_at) \
@@ -202,7 +220,57 @@ async fn seed_user(
     .execute(pool)
     .await
     .unwrap();
-    token
+    (user, token)
+}
+
+/// Give `user` a custom role of `org` whose base is viewer and which grants
+/// `resource:read` outright, conferred at `project` through an access profile.
+async fn grant_custom_role(
+    pool: &sqlx::PgPool,
+    user: Uuid,
+    org: Uuid,
+    project: Uuid,
+    resource: &str,
+) {
+    let role: Uuid = sqlx::query_scalar(
+        "insert into custom_roles (org_id, slug, name, base_role) \
+         values ($1, 'payload-reader', 'Payload reader', 'viewer') returning id",
+    )
+    .bind(org)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into custom_role_grants (role_id, resource, action) values ($1, $2, 'read')",
+    )
+    .bind(role)
+    .bind(resource)
+    .execute(pool)
+    .await
+    .unwrap();
+    let profile: Uuid = sqlx::query_scalar(
+        "insert into access_profiles (org_id, slug, name) \
+         values ($1, 'auditors', 'Auditors') returning id",
+    )
+    .bind(org)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into access_profile_roles (profile_id, role_id, project_id) values ($1, $2, $3)",
+    )
+    .bind(profile)
+    .bind(role)
+    .bind(project)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into access_profile_assignments (profile_id, user_id) values ($1, $2)")
+        .bind(profile)
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 /// One request-log row per project with a captured body, plus one row the
@@ -352,6 +420,25 @@ async fn each_role_reads_its_own_tenancy_and_bodies_only_where_it_may() {
         rows(&[("umbrella-a", true, false), ("umbrella-b", true, false)])
     );
 
+    // the most specific role decides the bodies: an org admin who is only a
+    // viewer on project a reads the org's rows but not project a's prompts
+    let (narrowed, narrowed_token) = seed_account(&pool, "narrowed").await;
+    add_membership(&pool, narrowed, Some(acme.org), None, None, "admin").await;
+    add_membership(&pool, narrowed, None, None, Some(acme.project_a), "viewer").await;
+    assert_eq!(
+        visible(&http, addr, &narrowed_token, &ids).await,
+        rows(&[("acme-a", false, true), ("acme-b", true, false)])
+    );
+
+    // a custom role granting request_payload:read at one project, and no
+    // membership at all, reads exactly that project with its bodies
+    let (auditor, auditor_token) = seed_account(&pool, "auditor").await;
+    grant_custom_role(&pool, auditor, acme.org, acme.project_a, "request_payload").await;
+    assert_eq!(
+        visible(&http, addr, &auditor_token, &ids).await,
+        rows(&[("acme-a", true, false)])
+    );
+
     // a project admin lets its viewers read the bodies of that project alone
     let admin_of_b = seed_user(&pool, None, None, Some(acme.project_b), "admin").await;
     let set = http
@@ -384,4 +471,285 @@ async fn each_role_reads_its_own_tenancy_and_bodies_only_where_it_may() {
         .await
         .unwrap();
     assert_eq!(anonymous_health.status(), 401);
+}
+
+/// Every invocation row `token` is shown whose request id is in `request_ids`,
+/// as `(request_id, project_id, request_payload, payload_withheld)`, sorted.
+async fn invocation_rows(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    request_ids: &[&str],
+) -> Vec<(String, String, String, bool)> {
+    let response = client
+        .get(format!(
+            "http://{addr}/api/v1/analytics/invocations?limit=200"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "invocations as {token}");
+    let body: Value = response.json().await.unwrap();
+    let mut seen: Vec<(String, String, String, bool)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| request_ids.contains(&row["request_id"].as_str().unwrap_or_default()))
+        .map(|row| {
+            let text = |key: &str| row[key].as_str().unwrap_or_default().to_string();
+            (
+                text("request_id"),
+                text("project_id"),
+                text("request_payload"),
+                row["payload_withheld"].as_u64() == Some(1),
+            )
+        })
+        .collect();
+    seen.sort();
+    seen
+}
+
+#[tokio::test]
+async fn a_shared_request_id_never_carries_another_projects_body() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "shared").await;
+    let (victim, intruder) = (acme.project_a.to_string(), acme.project_b.to_string());
+
+    // the gateway keeps whatever x-request-id the caller sent, so a member of
+    // project b can log a request under an id they saw on project a's rows.
+    // `bodiless` is the attack: b's request stored no body of its own, so an
+    // id-only join handed it a's. `both` is the reverse: b's own later body
+    // must not replace a's on a's row either
+    let bodiless = format!("shared-bodiless-{}", Uuid::new_v4().simple());
+    let both = format!("shared-both-{}", Uuid::new_v4().simple());
+    let at = |ago_ms: i64| {
+        (chrono::Utc::now() - chrono::Duration::milliseconds(ago_ms))
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    };
+    let (earlier, later) = (at(4000), at(2000));
+    let log = |request_id: &str, project: &str, ts: &str| {
+        json!({
+            "ts": ts, "request_id": request_id,
+            "org_id": acme.org.to_string(), "team_id": acme.team.to_string(),
+            "project_id": project, "model": "fake-llm", "status": 200,
+        })
+    };
+    let payload = |request_id: &str, ts: &str, body: &str| {
+        json!({
+            "ts": ts, "request_id": request_id,
+            "request_payload": body, "response_payload": body,
+        })
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            log(&bodiless, &victim, &earlier),
+            log(&bodiless, &intruder, &later),
+            log(&both, &victim, &earlier),
+            log(&both, &intruder, &later),
+        ],
+    )
+    .await;
+    insert_rows(
+        &http,
+        &ch,
+        "request_payloads",
+        &[
+            payload(&bodiless, &earlier, "victim-bodiless"),
+            payload(&both, &earlier, "victim-both"),
+            payload(&both, &later, "intruder-both"),
+        ],
+    )
+    .await;
+    let ids = [bodiless.as_str(), both.as_str()];
+
+    // the intruder's own rows carry nothing of the victim's, and nothing is
+    // "withheld" on the bodiless one because there never was a body there
+    let intruder_member = seed_user(&pool, None, None, Some(acme.project_b), "member").await;
+    assert_eq!(
+        invocation_rows(&http, addr, &intruder_member, &ids).await,
+        vec![
+            (bodiless.clone(), intruder.clone(), String::new(), false),
+            (
+                both.clone(),
+                intruder.clone(),
+                "intruder-both".into(),
+                false
+            ),
+        ]
+    );
+
+    // the victim's members still read their own bodies, never the intruder's
+    let victim_member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(
+        invocation_rows(&http, addr, &victim_member, &ids).await,
+        vec![
+            (
+                bodiless.clone(),
+                victim.clone(),
+                "victim-bodiless".into(),
+                false
+            ),
+            (both.clone(), victim.clone(), "victim-both".into(), false),
+        ]
+    );
+
+    // and a caller who reads both projects gets each row exactly once, with
+    // its own body. project ids are random, so the expectation is sorted the
+    // same way the rows are
+    let mut expected = vec![
+        (bodiless.clone(), intruder.clone(), String::new(), false),
+        (
+            bodiless.clone(),
+            victim.clone(),
+            "victim-bodiless".into(),
+            false,
+        ),
+        (
+            both.clone(),
+            intruder.clone(),
+            "intruder-both".into(),
+            false,
+        ),
+        (both.clone(), victim.clone(), "victim-both".into(), false),
+    ];
+    expected.sort();
+    assert_eq!(
+        invocation_rows(&http, addr, ADMIN_TOKEN, &ids).await,
+        expected
+    );
+}
+
+/// A provider named `name` in `org`, created straight in the store.
+async fn seed_provider(pool: &sqlx::PgPool, org: Uuid, name: &str) {
+    sqlx::query(
+        "insert into providers (org_id, name, slug, kind, api_base) \
+         values ($1, $2, $2, 'openai', 'http://127.0.0.1:9')",
+    )
+    .bind(org)
+    .bind(name)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The provider names among `names` that a health route answers `token` with.
+async fn health_providers(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    route: &str,
+    token: &str,
+    names: &[&str],
+) -> Vec<String> {
+    let response = client
+        .get(format!("http://{addr}/api/v1/health/{route}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "health/{route} as {token}");
+    let body: Value = response.json().await.unwrap();
+    let mut seen: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["provider"].as_str())
+        .filter(|provider| names.contains(provider))
+        .map(str::to_string)
+        .collect();
+    seen.sort();
+    seen.dedup();
+    seen
+}
+
+#[tokio::test]
+async fn provider_health_answers_only_the_providers_of_orgs_the_caller_reads() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "health-acme").await;
+    let umbrella = seed_tenant(&pool, "health-umbrella").await;
+
+    // names are unique to this run: the clickhouse server is shared, and the
+    // rows this test writes outlive it
+    let suffix = &Uuid::new_v4().simple().to_string()[..12];
+    let acme_provider = format!("hp-acme-{suffix}");
+    let umbrella_provider = format!("hp-umbrella-{suffix}");
+    seed_provider(&pool, acme.org, &acme_provider).await;
+    seed_provider(&pool, umbrella.org, &umbrella_provider).await;
+
+    // one outage and its recovery per provider, so mttr has an incident to
+    // report as well as uptime and the timeline having events
+    let at = |ago_ms: i64| {
+        (chrono::Utc::now() - chrono::Duration::milliseconds(ago_ms))
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    };
+    let mut events = Vec::new();
+    for provider in [&acme_provider, &umbrella_provider] {
+        for (ago_ms, outcome) in [(6000, "ok"), (4000, "error"), (2000, "ok")] {
+            events.push(json!({
+                "ts": at(ago_ms), "target_id": provider, "provider": provider,
+                "source": "probe", "outcome": outcome, "latency_ms": 10,
+            }));
+        }
+    }
+    insert_rows(&http, &ch, "provider_health_events", &events).await;
+    let names = [acme_provider.as_str(), umbrella_provider.as_str()];
+
+    let acme_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    let umbrella_viewer = seed_user(&pool, Some(umbrella.org), None, None, "viewer").await;
+    // provider health is org-level: a project role does not reach it
+    let acme_project_admin = seed_user(&pool, None, None, Some(acme.project_a), "admin").await;
+
+    for route in ["uptime", "mttr", "timeline"] {
+        assert_eq!(
+            health_providers(&http, addr, route, ADMIN_TOKEN, &names).await,
+            vec![acme_provider.clone(), umbrella_provider.clone()],
+            "{route} as the admin token"
+        );
+        assert_eq!(
+            health_providers(&http, addr, route, &acme_viewer, &names).await,
+            vec![acme_provider.clone()],
+            "{route} as an acme org viewer"
+        );
+        assert_eq!(
+            health_providers(&http, addr, route, &umbrella_viewer, &names).await,
+            vec![umbrella_provider.clone()],
+            "{route} as an umbrella org viewer"
+        );
+        assert_eq!(
+            health_providers(&http, addr, route, &acme_project_admin, &names).await,
+            Vec::<String>::new(),
+            "{route} as an acme project admin"
+        );
+    }
 }
