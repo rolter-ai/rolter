@@ -84,6 +84,17 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   the capability table to gate on instead — and Delete is the one control that
   takes `<resource>:delete` (#1297). The `AsViewer` story on each screen
   asserts all five are refused and name the Admin role.
+- **The first-run checklist.** `GettingStarted` on the Dashboard is written
+  for whoever sets the deployment up, so it renders nothing for a caller
+  refused all three of `provider:create`, `route:create` and
+  `virtual_key:create`, and sends none of its three list requests. The
+  Playground step does not count: it takes no role, and one open link above
+  three refusals is not a checklist. While the answer is in flight the card
+  waits rather than showing and then retracting, and an unanswered gate falls
+  open like everywhere else. A 403 from one of its lists hides it too, since
+  a role held below the org the provider list is read at is not something
+  the gate can say first; it is never a `forbidden` `LoadError` on the first
+  screen a member opens (#1848).
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors, alerting and the MCP logs are wrapped in

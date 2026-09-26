@@ -29,6 +29,8 @@ A fresh deployment opens the Dashboard on a **Getting started** card: the four s
 
 Each step is ticked from the deployment itself, not from a checklist kept in your browser: a step reads as done when the row exists, so work another administrator did shows up on reload. A step whose form your role may not open is shown as a disabled button naming the role it needs, rather than a link into a screen that would refuse you.
 
+The card is for whoever sets the deployment up. If your role can add none of a provider, a route or a virtual key (a member or a viewer, typically), the Dashboard opens straight on its traffic panels and the card is not shown at all. The same happens when your role may not read the providers, routes or keys it would tick off. Neither case is reported as an error.
+
 **Dismiss** hides the card and leaves a **Getting started** button in its place, so it is never gone for good. It retires itself once the deployment has both a provider and traffic — traffic on its own can be a single Playground call, which is step one.
 
 ## The left rail

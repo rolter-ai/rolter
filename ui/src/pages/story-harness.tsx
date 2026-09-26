@@ -414,6 +414,20 @@ export async function expectAllowed(
   });
 }
 
+/**
+ * Wait until `/api/v1/rbac/effective` has answered with a payload.
+ *
+ * For a play that asserts something is *absent* because of the answer: absent
+ * is also what a surface looks like before it has rendered at all, so a
+ * `queryBy…` that comes back null only means the gate hid it once the gate has
+ * spoken (#1848). The probe is read the way `expectAllowed` reads it.
+ */
+export async function expectGateAnswered(): Promise<void> {
+  await waitFor(() =>
+    expect(within(document.body).getByTestId(GATE_PROBE)).toHaveAttribute("data-gate", "answered"),
+  );
+}
+
 /** Assert the screen is standing in a skeleton for content it does not have yet. */
 export async function expectSkeleton(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
