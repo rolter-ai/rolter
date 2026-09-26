@@ -4,14 +4,19 @@
 //! HTTP upgrade is accepted. The selected provider/key is then pinned for the
 //! lifetime of the socket: reconnecting is a client operation, never an
 //! invisible mid-session failover that could duplicate audio or tool events.
+//!
+//! Admission is the HTTP request path's, keyed on the same scope chain: a spent
+//! budget, a full rate-limit window or an unpriced model under a `block` policy
+//! refuses the upgrade before any upstream is dialled. Once the session is
+//! live, [`crate::realtime_metering`] meters it per response turn and closes it
+//! when its budget runs out (#1396).
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use axum::extract::{
-    ws::{Message, WebSocket, WebSocketUpgrade},
+    ws::{close_code, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     Query, State,
 };
 use axum::http::{header, HeaderMap, StatusCode};
@@ -25,8 +30,10 @@ use tokio_tungstenite::{
 };
 
 use crate::handlers::{
-    authenticate, authorize_model, authorize_route, key_pool_key, pick_untried, variant_key,
+    authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
+    rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
+use crate::realtime_metering::{SessionEnd, SessionMeter, TurnTracker};
 use crate::state::{AppState, Snapshot};
 
 /// Process-local admission counter for persistent sessions.
@@ -93,6 +100,18 @@ pub async fn realtime(
     if let Err(denial) = authorize_route(virtual_key.as_ref(), entry) {
         return denial.into_response();
     }
+
+    // the policy an HTTP request meets, on the same scope chain (#1396). a
+    // session opens only while every budget it draws on has room left, and
+    // only for a model this deployment is willing to serve unpriced
+    let scope = request_scope(virtual_key.as_ref());
+    if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
+        return refusal;
+    }
+    let priced = snap.prices.contains_key(&entry.route.model);
+    if let Some(refusal) = unpriced_admission(&state, &snap, &scope, &entry.route.model, priced) {
+        return refusal;
+    }
     let Some(session_guard) = state
         .realtime_sessions
         .acquire(snap.realtime.max_connections)
@@ -102,6 +121,12 @@ pub async fn realtime(
             "realtime session limit reached",
         );
     };
+    // after the process-local cap, so a session this gateway could not have
+    // held anyway never takes a slot of the key's `rpm`. opening a session is
+    // one request; the tokens its turns use reach `tpm` as they are metered
+    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
+        return refusal;
+    }
 
     // realtime has no request body, so session affinity uses the caller-supplied
     // session id and strategy-aware balancing sees an empty prompt
@@ -129,7 +154,30 @@ pub async fn realtime(
         Err(message) => return api_error(StatusCode::BAD_GATEWAY, &message),
     };
 
-    ws.on_upgrade(move |socket| relay(socket, selected))
+    // the ensure_request_id middleware guarantees this header is present
+    let request_id = headers
+        .get(crate::trace::REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
+    let meter = SessionMeter {
+        state: state.clone(),
+        scope,
+        model: query.model,
+        price_model: entry.route.model.clone(),
+        provider: selected.provider.clone(),
+        target: selected.target.clone(),
+        variant: selected.variant.clone(),
+        request_id,
+        trace_id: crate::trace::request_trace_id(&headers),
+        flush_every: match snap.realtime.usage_flush_secs {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        },
+    };
+
+    ws.on_upgrade(move |socket| relay(socket, selected, meter))
         .into_response()
 }
 
@@ -142,9 +190,20 @@ struct SelectedSession {
     _load: crate::load::LoadGuard,
     _session: SessionGuard,
     state: AppState,
-    model: String,
     provider: String,
     target: String,
+    /// the variant the session was pinned to; empty on a route without
+    /// variants
+    variant: String,
+}
+
+/// One target a session may be pinned to, in the order it is tried.
+struct Candidate<'a> {
+    target: &'a rolter_core::Target,
+    /// load-tracker key: the public model, or the variant key
+    namespace: String,
+    index: usize,
+    variant: &'a str,
 }
 
 #[expect(
@@ -165,7 +224,12 @@ async fn connect_selected(
     let mut last_error = "no target selected".to_string();
 
     for candidate in candidates {
-        let (target, namespace, index) = candidate;
+        let Candidate {
+            target,
+            namespace,
+            index,
+            variant,
+        } = candidate;
         let Some(provider) = snap.providers.get(&target.provider) else {
             last_error = "configured target provider not found".to_string();
             continue;
@@ -189,9 +253,9 @@ async fn connect_selected(
                     _load: load,
                     _session: session_guard,
                     state: state.clone(),
-                    model: model.to_string(),
                     provider: target.provider.clone(),
                     target: upstream_model.to_string(),
+                    variant: variant.to_string(),
                 });
             }
             Err(error) => {
@@ -217,7 +281,7 @@ fn realtime_candidates<'a>(
     model: &str,
     context: &RouteContext<'_>,
     key_meta: Option<&crate::state::KeyMeta>,
-) -> Vec<(&'a rolter_core::Target, String, usize)> {
+) -> Vec<Candidate<'a>> {
     if !entry.route.has_variants() {
         let mut loads = state.loads.snapshot(model, entry.route.targets.len());
         for (index, target) in entry.route.targets.iter().enumerate() {
@@ -241,7 +305,12 @@ fn realtime_candidates<'a>(
         ) {
             entry.balancer.observe(index, context);
             tried.push(index);
-            ordered.push((&entry.route.targets[index], model.to_string(), index));
+            ordered.push(Candidate {
+                target: &entry.route.targets[index],
+                namespace: model.to_string(),
+                index,
+                variant: "",
+            });
         }
         return ordered;
     }
@@ -292,7 +361,12 @@ fn realtime_candidates<'a>(
             if let Some(balancer) = entry.variant_balancers.get(variant_index) {
                 balancer.observe(index, context);
             }
-            ordered.push((&variant.targets[index], namespace.clone(), index));
+            ordered.push(Candidate {
+                target: &variant.targets[index],
+                namespace: namespace.clone(),
+                index,
+                variant: &variant.name,
+            });
         }
     }
     ordered
@@ -332,23 +406,31 @@ fn realtime_request(
     Ok(request)
 }
 
-async fn relay(socket: WebSocket, session: SelectedSession) {
-    let started = Instant::now();
+async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter) {
     let SelectedSession {
         upstream,
         _load,
         _session,
         state,
-        model,
         provider,
         target,
+        variant: _,
     } = session;
+    let (meter, exhausted) = meter.spawn();
+    let mut exhausted = Some(exhausted);
+    let mut turns = TurnTracker::default();
     let (mut client_sender, mut client_receiver) = socket.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
-    let mut ok = true;
+    // what the session ended on, for the row of any response it cut short
+    let mut end = SessionEnd::client_left();
 
-    let max_session = state.snapshot.load().realtime.max_session_secs;
-    let idle_timeout = state.snapshot.load().realtime.idle_timeout_secs;
+    let (max_session, idle_timeout) = {
+        let snap = state.snapshot.load();
+        (
+            snap.realtime.max_session_secs,
+            snap.realtime.idle_timeout_secs,
+        )
+    };
     let session_deadline =
         (max_session != 0).then(|| tokio::time::Instant::now() + Duration::from_secs(max_session));
     let mut idle_deadline = (idle_timeout != 0)
@@ -369,13 +451,42 @@ async fn relay(socket: WebSocket, session: SelectedSession) {
                 std::future::pending::<()>().await;
             }
         };
+        let budget_wait = async {
+            match exhausted.as_mut() {
+                Some(verdict) => verdict.await.ok(),
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
-            _ = session_wait => { break; },
-            _ = idle_wait => { break; },
+            _ = session_wait => {
+                end = SessionEnd::limit_reached("max_session_secs");
+                break;
+            },
+            _ = idle_wait => {
+                end = SessionEnd::limit_reached("idle_timeout_secs");
+                break;
+            },
+            spent = budget_wait => match spent {
+                Some(message) => {
+                    // the error event first, so the client learns why before
+                    // the close frame arrives
+                    let _ = client_sender.send(Message::Text(budget_error_event(&message).into())).await;
+                    let _ = client_sender.send(budget_close_frame()).await;
+                    let _ = upstream_sender.send(UpstreamMessage::Close(None)).await;
+                    end = SessionEnd::budget_spent(message);
+                    break;
+                }
+                // the meter stopped without a verdict: keep relaying under the
+                // session's other limits rather than polling a closed channel
+                None => exhausted = None,
+            },
             message = client_receiver.next() => match message {
                 Some(Ok(message)) => {
                     let close = matches!(message, Message::Close(_));
-                    if upstream_sender.send(to_upstream(message)).await.is_err() { ok = false; break; }
+                    if upstream_sender.send(to_upstream(message)).await.is_err() {
+                        end = SessionEnd::upstream_failed();
+                        break;
+                    }
                     idle_deadline = (idle_timeout != 0).then(|| tokio::time::Instant::now() + Duration::from_secs(idle_timeout));
                     if close { break; }
                 }
@@ -384,30 +495,62 @@ async fn relay(socket: WebSocket, session: SelectedSession) {
             message = upstream_receiver.next() => match message {
                 Some(Ok(message)) => {
                     let close = matches!(message, UpstreamMessage::Close(_));
-                    if client_sender.send(to_client(message)).await.is_err() { ok = false; break; }
+                    let turn = match &message {
+                        UpstreamMessage::Text(text) => turns.observe(text.as_str()),
+                        _ => None,
+                    };
+                    let delivered = client_sender.send(to_client(message)).await.is_ok();
+                    // the upstream billed a finished turn whether or not the
+                    // client read its last event
+                    if let Some(turn) = turn {
+                        meter.turn(turn);
+                    }
+                    if !delivered { break; }
                     idle_deadline = (idle_timeout != 0).then(|| tokio::time::Instant::now() + Duration::from_secs(idle_timeout));
-                    if close { break; }
+                    if close {
+                        end = SessionEnd::upstream_closed();
+                        break;
+                    }
                 }
-                Some(Err(_)) | None => { ok = false; break; },
+                Some(Err(_)) | None => {
+                    end = SessionEnd::upstream_failed();
+                    break;
+                },
             }
         }
     }
 
-    state.metrics.observe_target(&provider, &target, ok);
-    state
-        .metrics
-        // a realtime session has no request/response shape and reports no
-        // token usage, so it contributes duration only — see the deviations in
-        // `crate::genai` (#808)
-        .observe_request(
-            &provider,
-            &model,
-            started.elapsed().as_millis() as u32,
-            0,
-            0,
-        );
+    // each finished turn reports its own outcome through the request log, so
+    // only a broken upstream leg is attributed to the target here
+    if end.upstream_fault() {
+        state.metrics.observe_target(&provider, &target, false);
+    }
     drop(_load);
     drop(_session);
+    meter.end(end, turns.into_open()).await;
+}
+
+/// The Realtime `error` event a session closed for its budget receives.
+///
+/// It is the shape the Realtime API uses for its own failures, so an SDK
+/// surfaces it the way it surfaces the provider's errors, and its `error`
+/// object is the HTTP refusal's, `insufficient_quota` code included.
+fn budget_error_event(message: &str) -> String {
+    let mut event = crate::error::ApiError::new(StatusCode::PAYMENT_REQUIRED, message)
+        .with_code("insufficient_quota")
+        .body();
+    event["type"] = "error".into();
+    event["event_id"] = format!("event_rolter_{}", uuid::Uuid::new_v4().simple()).into();
+    event.to_string()
+}
+
+/// A policy-violation close, which a client can branch on without parsing the
+/// event before it.
+fn budget_close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: close_code::POLICY,
+        reason: Utf8Bytes::from_static("budget exceeded"),
+    }))
 }
 
 fn to_upstream(message: Message) -> UpstreamMessage {

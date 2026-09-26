@@ -447,6 +447,19 @@ disabled = false # revoke without deleting
 # timeout_secs = 2     # per-scrape timeout
 # path = "/metrics"    # appended to each provider's api_base when scraping
 
+# --- realtime websocket sessions ---
+# per-process resource limits for /v1/realtime, plus how often a live session is
+# metered. a session also meets [[budgets]], [[rate_limits]] and unpriced_policy
+# at admission; while it runs, each finished response is logged and charged, and
+# a spent budget closes the session at the next flush. 0 disables a limit;
+# usage_flush_secs = 0 flushes after every response instead of on a timer.
+# defaults shown below.
+# [realtime]
+# max_connections = 1000     # concurrent sessions this gateway process admits
+# max_session_secs = 3600    # hard session-duration limit
+# idle_timeout_secs = 300    # close when neither side sends a frame
+# usage_flush_secs = 15      # log, charge and re-check budgets this often
+
 # --- exact-match response cache (ROL-56, streaming: ROL-235) ---
 # when enabled (and a redis url is configured), a successful response is stored
 # in redis keyed by the exact request (path + post-injection body); an identical

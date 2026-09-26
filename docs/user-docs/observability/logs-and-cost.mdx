@@ -45,6 +45,8 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | `error`             | String        | Error message if the request failed; empty on success                                                                                 |
 | `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
 
+A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
+
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
 

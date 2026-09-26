@@ -223,13 +223,14 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 
 ### `[realtime]`
 
-Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per gateway process; set a value to `0` to disable that limit.
+Resource limits and metering cadence for persistent `/v1/realtime` WebSocket sessions. The three limits are per gateway process; set one to `0` to disable it.
 
-The `/v1/realtime` relay carries the `realtime` [stability marker](../development/stability-markers.md), so these keys may change shape in a minor release. They are also the _only_ limits a realtime session meets: budgets, rate limits and usage recording sit on the HTTP request path and do not see it.
+These are the gateway's own resource guards, not tenant policy. A session also meets the deployment's budgets, `unpriced_policy` and rate limits at admission, and is metered per response turn while it runs; see [Realtime metering](../architecture/realtime-metering.md).
 
 - `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame
+- `usage_flush_secs` (u64, default `15`) — how often a live session's finished response turns are written to the request log, added to budgets and `tpm` windows, and followed by a budget re-check. It bounds how long a session can overspend a budget before it is closed. `0` flushes after every turn instead of on a timer; metering cannot be switched off
 
 ### `[egress]`
 

@@ -1,18 +1,8 @@
 ---
 title: "Realtime"
 sidebarTitle: "Realtime"
-description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and what it does not yet cover."
+description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and how a session is admitted, metered and closed by budgets and rate limits."
 ---
-
-<Warning>
-  **Experimental.** `/v1/realtime` carries the `realtime`
-  [stability marker](/api/stability) and may change shape or be withdrawn in a
-  minor release. More importantly: a realtime session is admitted against
-  process-local caps only. **Budgets, rate limits, guardrails, usage recording
-  and cost attribution all sit on the HTTP request path and do not see it** —
-  spend through a realtime session is neither capped nor recorded. Treat it as
-  a preview, not something to meter a deployment on.
-</Warning>
 
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
 Rolter authenticates the request and selects an upstream before accepting the
@@ -38,9 +28,65 @@ Text, binary audio and WebSocket control frames are relayed in both
 directions without application-level buffering, including `session.update`,
 `input_audio_buffer.*`, `response.*` and function-call events.
 
-If the upstream connection drops, the client must reconnect — rolter does not
+If the upstream connection drops, the client must reconnect. Rolter does not
 fail a live session over to another target, because replaying audio or tool
 events mid-session is not safe to do automatically.
+
+## Budgets, rate limits and usage
+
+A realtime session meets the same [budgets and rate limits](/security/budgets-and-rate-limits)
+as an HTTP request, on the same key, project, team and org scope.
+
+**Opening a session** is checked before any upstream is dialled. A refused
+upgrade gets the HTTP status and error body a chat request would:
+
+| Refusal                                                          | Status | `error.code`          |
+| ---------------------------------------------------------------- | ------ | --------------------- |
+| a budget in the key's scope is spent                             | `402`  | `insufficient_quota`  |
+| the model has no price and `unpriced_policy` resolves to `block` | `402`  | `model_unpriced`      |
+| an `rpm` or `tpm` window is full                                 | `429`  | `rate_limit_exceeded` |
+
+Opening a session counts as one request against `rpm`, and a `429` carries
+`Retry-After`.
+
+**While the session runs**, rolter meters it per response. Each `response.done`
+event reports the tokens that response used, and rolter turns it into one row in
+the request log, priced and attributed like any other request, so realtime
+spend appears in [cost tracking](/observability/logs-and-cost) and analytics.
+Its cost is added to your budgets and its tokens to your `tpm` limits every
+`usage_flush_secs` seconds (15 by default), not only when the session closes. A
+session that stays open all day is accounted as it goes.
+
+A full `tpm` window does not close a live session; it refuses the key's next
+session or request, as it would for HTTP.
+
+**When a budget runs out mid-session**, rolter closes the session. This happens
+at the next flush after the budget is spent, whether this session or other
+traffic spent it. The client receives a Realtime `error` event first:
+
+```json
+{
+  "type": "error",
+  "event_id": "event_rolter_…",
+  "error": {
+    "type": "insufficient_quota",
+    "code": "insufficient_quota",
+    "message": "budget exceeded for Org 'acme' (limit $500.00)",
+    "param": null
+  }
+}
+```
+
+It then receives a close frame with code `1008` (policy violation). A session
+can overspend by at most one flush window, plus the response in flight when the
+budget ran out; lower `usage_flush_secs` to tighten that.
+
+**A response cut short** (the client leaves, the upstream drops, or the session
+is closed mid-answer) never reports its usage, although the provider bills
+what it generated. Its row is written with `usage_unknown = 1` so the gap is
+visible rather than counted as free. See
+[Withheld responses](/observability/logs-and-cost#withheld-responses) for how
+to query it.
 
 ## Current limits
 
@@ -48,23 +94,34 @@ events mid-session is not safe to do automatically.
   WebSocket-first flow is supported today.
 - **No failover.** A dropped upstream ends the session; there is no
   session-affinity retry the way HTTP routes get.
-- **Outside budgets, rate limits, guardrails, usage recording and cost
-  attribution.** These are enforced on the HTTP request path, which a
-  long-lived WebSocket session never travels after the initial upgrade. A
-  virtual key with a budget or a rate limit is not protected against realtime
-  spend.
+- **Guardrails and plugins do not run on realtime events.** Budgets and rate
+  limits apply; content policy does not yet
+  ([#1880](https://github.com/rolter-ai/rolter/issues/1880)).
+- **A revoked key does not end a live session.** Disabling or deleting a key
+  stops new sessions at once, but one already open runs until it ends or hits
+  `max_session_secs`
+  ([#1881](https://github.com/rolter-ai/rolter/issues/1881)).
+- **Audio and text tokens share one price.** A model price has one input and
+  one output rate, so set them to the blend you expect
+  ([#1882](https://github.com/rolter-ai/rolter/issues/1882)). Input-audio
+  transcription, which the upstream bills as a separate model, is not metered
+  yet ([#1883](https://github.com/rolter-ai/rolter/issues/1883)).
 
 ## `[realtime]` configuration
 
-The gateway's own `[realtime]` config block is the _only_ thing that bounds a
-session, and it is process-local rather than organization- or key-scoped:
+The gateway's `[realtime]` block holds per-process resource limits, which bound
+what one gateway will hold rather than what a tenant may spend, and the
+metering cadence:
 
 - `max_connections` (default `1000`) — concurrent sessions this gateway
   process admits
 - `max_session_secs` (default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (default `300`) — closes a session when neither side
   sends a frame
+- `usage_flush_secs` (default `15`) — how often finished responses are logged,
+  charged to budgets and `tpm`, and followed by a budget check. `0` does this
+  after every response instead of on a timer
 
-Set any value to `0` to disable that particular limit. See
-[Configuration](/configuration/config-file) for where `[realtime]` lives in
-`rolter.toml`.
+Set any of the first three to `0` to disable that limit. Metering itself cannot
+be switched off. See [Configuration](/configuration/config-file) for
+where `[realtime]` lives in `rolter.toml`.

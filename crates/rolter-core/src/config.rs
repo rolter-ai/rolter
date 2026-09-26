@@ -591,6 +591,12 @@ pub struct RealtimeConfig {
     /// close an inactive session after this many seconds; 0 disables the limit
     #[serde(default = "default_realtime_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+    /// how often a live session's completed response turns are written to the
+    /// request log, added to budgets and `tpm` windows, and followed by a
+    /// budget re-check. 0 flushes after every completed turn instead of on a
+    /// timer; metering itself cannot be switched off (#1396)
+    #[serde(default = "default_realtime_usage_flush_secs")]
+    pub usage_flush_secs: u64,
 }
 
 impl Default for RealtimeConfig {
@@ -599,6 +605,7 @@ impl Default for RealtimeConfig {
             max_connections: default_realtime_max_connections(),
             max_session_secs: default_realtime_max_session_secs(),
             idle_timeout_secs: default_realtime_idle_timeout_secs(),
+            usage_flush_secs: default_realtime_usage_flush_secs(),
         }
     }
 }
@@ -613,6 +620,10 @@ fn default_realtime_max_session_secs() -> u64 {
 
 fn default_realtime_idle_timeout_secs() -> u64 {
     300
+}
+
+fn default_realtime_usage_flush_secs() -> u64 {
+    15
 }
 
 /// The wire protocol a provider speaks.
