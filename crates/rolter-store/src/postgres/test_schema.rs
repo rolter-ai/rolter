@@ -767,7 +767,9 @@ mod tests {
             return;
         };
         let role = format!("rolter_{}", unique_schema());
-        let password = "slotless";
+        // a fresh password per run, since the role lives, however briefly, on
+        // a server every suite on the machine shares
+        let password = uuid::Uuid::new_v4().simple().to_string();
         let mut admin = PgConnection::connect(&url).await.expect("connect");
         admin
             .execute(
@@ -776,7 +778,7 @@ mod tests {
             )
             .await
             .expect("create a role with no connection slots");
-        let slotless = url_as(&url, &role, password);
+        let slotless = url_as(&url, &role, &password);
 
         // assertions run in a task of their own so the role is dropped even
         // when one of them fails
