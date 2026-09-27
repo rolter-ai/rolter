@@ -93,8 +93,11 @@ through the gateway; recreating the route restores access. HTTP regressions:
 `response_lifecycle_rechecks_route_authorization_after_revocation` and
 `response_lifecycle_reauthorizes_pinned_addresses`.
 
-A new endpoint that resolves a route must call both gates. Budgets, rate limits
-and metering for Realtime sessions are tracked separately in #1396.
+A new endpoint that resolves a route must call both gates. A Realtime session
+also meets the budget, `unpriced_policy` and rate-limit admission of the HTTP
+path and is metered per response turn; see
+[Realtime metering](realtime-metering.md). Its key is checked once, at the
+upgrade, so revoking a key does not yet end a session already open (#1881).
 
 ### Empty key sets
 

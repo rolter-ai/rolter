@@ -89,6 +89,8 @@ rustls-pki-types = "1"
 bytes = "1"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# cancellation and task tracking for draining realtime sessions on shutdown
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # config change pub/sub between control plane and gateways
 redis = { version = "1.3", default-features = false, features = [

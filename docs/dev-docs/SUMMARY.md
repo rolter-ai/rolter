@@ -25,6 +25,7 @@
 - [Billed but withheld](architecture/billed-but-withheld.md)
 - [Redis connections](architecture/redis-connections.md)
 - [Rate limiting](architecture/rate-limiting.md)
+- [Realtime metering](architecture/realtime-metering.md)
 - [Performance](architecture/performance.md)
 - [Provider prompt caching](architecture/prompt-caching.md)
 

@@ -122,7 +122,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [/v1/chat/completions](/api/chat-completions): Create a chat completion by sending a list of messages. Supports streaming via Server-Sent Events and is fully OpenAI SDK-compatible.
 - [/v1/completions](/api/completions): Create a text completion using the OpenAI legacy completions endpoint. Pass a prompt string and receive a completion response from your configured route.
 - [/v1/messages](/api/messages): Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config.
-- [Realtime](/api/realtime): Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and what it does not yet cover.
+- [Realtime](/api/realtime): Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/realtime, and how a session is admitted, metered and closed by budgets and rate limits.
 - [MCP](/api/mcp): Proxy Streamable HTTP and SSE MCP servers with user-bound OAuth authorization.
 - [/v1/models](/api/models): List the route names, provider-pinned addresses and provider-group addresses your Rolter virtual key is authorized to use, filtered by the key allow-list.
 - [Health & Metrics](/api/health-and-metrics): Use GET /healthz for liveness probes, GET /readyz for readiness probes, and GET /metrics for Prometheus scraping to integrate Rolter into your monitoring and orchestration stack.
