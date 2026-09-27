@@ -420,7 +420,7 @@ export const EvaluatesARule: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
     const button = canvas.getByRole("button", {
-      name: "Evaluate rule high error rate",
+      name: "Evaluate rule high error rate now",
     });
 
     await userEvent.click(button);
