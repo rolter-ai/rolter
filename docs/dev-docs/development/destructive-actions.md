@@ -20,18 +20,17 @@ Every destructive action goes through `ConfirmDialog`
 
 ```tsx
 const [target, setTarget] = React.useState<ChannelRow | null>(null);
-// reset first: an error from a previous failed delete would otherwise greet
-// the next row the operator picks
-const startDelete = (channel: ChannelRow) => {
-  remove.reset();
-  setTarget(channel);
-};
 
 <ConfirmDialog
   // stable key for the UX stream; never the row's own name (#1730)
   name="alert-channel-delete"
   open={!!target}
-  onOpenChange={(open) => !open && setTarget(null)}
+  onOpenChange={(open) => {
+    if (open) return;
+    setTarget(null);
+    // an error from a failed delete would otherwise greet the next row opened
+    remove.reset();
+  }}
   title={t("pages.alerting.confirm.channelTitle", { name: target?.name })}
   description={t("pages.alerting.confirm.channelBody")}
   confirmLabel={t("pages.alerting.confirm.channelConfirm")}
@@ -60,7 +59,10 @@ Four properties are load-bearing:
 - **Pending is visible and both buttons are out of reach.** The confirm button
   spins so a slow request does not read as a dropped click, and cancel is
   disabled too — the request is already on the wire, and a button that looks
-  like it recalls one would be lying.
+  like it recalls one would be lying. Escape, the scrim and the header's close
+  button still close the dialog: neither the fetch nor the control plane times
+  a request out, so a delete stuck behind a row lock would otherwise hold the
+  operator in a full-page modal until a reload.
 
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
@@ -75,9 +77,62 @@ the confirm path of four screens had never been exercised by a test. `rg
 "window.confirm" ui/src` now finds nothing outside the `check:literals` fixtures:
 the discard guards #1179 left behind came over in #1463, described below.
 
+**A hand-assembled `Dialog` is not a confirmation either.** Eight dialogs
+drifted back into a `DialogFooter` with their own destructive `Button` after
+#1179: `ProviderGroups`, `Models`, `Pricing`, `PromptRepository`,
+`SkillsRepository`, the MCP server delete, the `Account` key delete and the
+scope switcher (#1760). Each worked out pending, error and disabled on its own,
+emitted none of the rows below, and missed every fix made to `ConfirmDialog`.
+`bun run check:primitives` now fails on a `DialogFooter` holding a
+`"destructive"` button; `ConfirmDialog` itself carries the only waiver. A
+confirmation that needs input, such as the prompt and skill deletes that ask
+for the slug typed back, passes the field as `children` and holds the button
+with `confirmDisabled`.
+
 **A confirmation is not a substitute for a reversible action.** Where retiring
 and deleting both exist — `CostAttribution` — the copy points at the reversible
 one rather than only warning about the other.
+
+## What the dialog reports
+
+`ConfirmDialog` feeds the UX stream through `useFormTelemetry` under its `name`
+(see [UX telemetry](ux-telemetry.md)). The caller owns the mutation, so the
+dialog reads the outcome off the props that report it:
+
+| Row                      | When                                                               |
+| ------------------------ | ------------------------------------------------------------------ |
+| `form_submit` `ok`       | the confirm button is pressed                                      |
+| `form_submit` `error`    | an `error` arrives after the press that was not already on screen  |
+| `retry_submit`           | the confirm is pressed again after a refusal                       |
+| `save_confirmed`         | the caller closes the dialog after the press, with nothing refused |
+| `form_abandon` cancelled | the dialog closes without a press                                  |
+
+The refusal is read off the press rather than off a `pending` edge (#1761). A
+request that settles in the tick it started hands react-query's pending and
+error to one notify batch, so `pending={true}` never renders, and an
+edge-triggered read reported nothing but the press. It is keyed on the error's
+identity, so a retry refused the same way is a row of its own.
+
+`save_confirmed` is how a landed delete looks from inside the dialog: the
+caller closes it from `onSuccess`, so closed after a press with no new error is
+the success. Passing `pending` at all is what marks a confirmation that runs a
+request. The discard prompt passes none, closes the sheet and is done, so it
+reports no landing.
+
+Two things follow for a call site:
+
+- **Keep the dialog mounted** and drive it with `open={!!target}`. A dialog
+  rendered only while a target exists unmounts on the closing edge and never
+  sees the landing.
+- **Reset the mutation on close** (`remove.reset()` in `onOpenChange`), so a
+  refusal from one row does not greet the next row opened. A dismissal while
+  `pending` resets a mutation whose answer is still coming, which from inside
+  the dialog looks exactly like a landing, so the dialog disarms its read
+  before it passes the dismissal on: the press is recorded and nothing after
+  it.
+
+A confirmation rendered outside any `UxScreenProvider`, such as the scope
+switcher in the user menu, has no screen key and stays silent.
 
 ## Dismissing a dirty editor
 

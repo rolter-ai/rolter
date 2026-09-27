@@ -63,6 +63,7 @@ that looks healthy while quietly not doing what it was configured to do.
 | `ROLTER_REDIS_URL` present                                       | warning         | Without it rate limits and budgets are enforced per replica, not per deployment                                                                                                                                                  |
 | Control plane not bound to `0.0.0.0`                             | warning         | The management API should not be reachable on every interface                                                                                                                                                                    |
 | `ROLTER_KEY_PEPPER` present                                      | warning         | Without it a leaked virtual-key digest is usable as-is against this deployment                                                                                                                                                   |
+| `ROLTER_SESSION_PEPPER` present                                  | warning         | Without it session, invitation, SCIM-token and recovery-code digests are unpeppered, so a database write is enough to plant a session, and the failed-login throttle's Redis keys carry no deployment salt                       |
 | CORS does not allow `*`                                          | error           | The dashboard is served same-origin; a wildcard lets any page a logged-in operator visits drive the management API as them                                                                                                       |
 | Datastores accept a connection (with `--connect`)                | error / warning | A URL that parses but resolves to nothing fails at first use rather than at rollout                                                                                                                                              |
 | `ROLTER_KEK` opens the store (with `--connect`, postgres builds) | error           | Every other KEK rule reads the environment alone, so all of them pass on a database restored under a _different_ KEK — a failure with no startup symptom at all                                                                  |
@@ -89,6 +90,19 @@ it fires, and `rolter kek verify` runs the same audit on its own.
 Redis and the bind address are warnings rather than errors because a
 single-replica deployment behind an ingress is legitimately fine without either.
 Use `--strict` in an environment where they are not.
+
+The two peppers are warnings because a deployment without them works. For the
+session pepper the reasoning is concrete: session, invitation and SCIM tokens
+are 256 bits of CSPRNG output and recovery codes 80, all far past brute force, so
+a leaked digest cannot be inverted with or without it, and what goes missing is
+the defence in depth. Both peppers are expensive to add late,
+though. Setting `ROLTER_KEY_PEPPER` on a deployment that
+ran without one invalidates every virtual key already issued. Setting
+`ROLTER_SESSION_PEPPER` on one signs everyone out and voids open invitations,
+SCIM tokens and MFA recovery codes, so users regenerate their codes and each
+SCIM client needs a new token. `rolter init` writes both from the start, which
+is the cheap time to have them. Under `--strict`, which the Helm chart's init
+container uses, a missing pepper blocks the rollout like any other warning.
 
 Anything resembling credentials in a URL is redacted before printing, since this
 output routinely lands in CI logs.
@@ -184,10 +198,17 @@ rolter init --print                          # stdout only, for piping into a se
 rolter init --env-only --database-url ...    # just the environment
 ```
 
-It generates four distinct secrets — the KEK, the admin token, the internal
-token and the virtual-key pepper — each 256 bits from the system CSPRNG. They
-are distinct by construction and a test asserts it: reusing one value in two
-roles would mean a leaked admin token also decrypts every stored credential.
+It generates five distinct secrets, each 256 bits from the system CSPRNG:
+
+- `ROLTER_KEK`, the key-encryption key for provider credentials at rest
+- `ROLTER_ADMIN_TOKEN`, the management API's bearer token
+- `ROLTER_INTERNAL_TOKEN`, shared between the control plane and its gateways
+- `ROLTER_KEY_PEPPER`, mixed into virtual-key digests
+- `ROLTER_SESSION_PEPPER`, mixed into the digests of sign-in sessions,
+  invitation links, SCIM tokens and MFA recovery codes
+
+They are distinct by construction and a test asserts it: reusing one value in
+two roles would mean a leaked admin token also decrypts every stored credential.
 
 **Nothing here is interactive.** A generator that prompts cannot run in the
 Dockerfile, the Helm hook or the CI job where a production deployment is

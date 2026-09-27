@@ -39,6 +39,42 @@ cd ui && bun install && bun run dev  # http://localhost:3000 (proxies /api -> :4
 docker compose -f docker/docker-compose.yml up -d                 # postgres, redis, clickhouse, gateway, control
 ```
 
+ClickHouse asks for 262144 open files, its production recommendation. A
+container runtime cannot grant more than its own hard limit, and rootless
+Docker or Podman, sandboxed CI runners and locked-down VMs often have less. There
+the ClickHouse container is never created:
+
+```text
+OCI runtime create failed: runc create failed: unable to start container process:
+error during container init: error setting rlimits for ready process:
+error setting rlimit type 7: operation not permitted
+```
+
+Lower the limit with `CLICKHOUSE_NOFILE`. `20000` is plenty for a dev stack
+(#1819). Put it in `docker/.env` (gitignored), so every later compose call
+renders the same limit:
+
+```bash
+echo CLICKHOUSE_NOFILE=20000 >> docker/.env
+docker compose -f docker/docker-compose.yml up -d
+```
+
+It has to be `docker/.env`, not a `.env` at the repository root.
+`docker compose -f docker/docker-compose.yml` takes its project directory from
+the first `-f` file, so it interpolates from the shell environment and from
+`docker/.env` only; a root `.env` is read only when you pass `--env-file .env`.
+The `just` recipes run compose the same way, so `docker/.env` covers them too.
+
+A one-off prefix such as `CLICKHOUSE_NOFILE=20000 just dogfood` also works, but
+only for that command. The next compose call without it (`just up`, or
+`just signoz-reset` after a failed SigNoz provisioning) renders 262144 again,
+and compose recreates the ClickHouse container at that limit, where the runtime
+refuses it.
+
+The same variable covers SigNoz's ClickHouse in `docker/docker-compose.signoz.yml`
+and the e2e stack's. The e2e compose file lives in `integration/e2e/`, so its
+persistent spot is `integration/e2e/.env`.
+
 ## Handy tasks
 
 `just` wraps the common commands:
@@ -105,7 +141,9 @@ cargo install cargo-nextest cargo-deny
 
 `cargo-nextest` is recommended but optional for the push hook; it falls back to
 `cargo test`. CI remains authoritative for database-backed tests that need
-`ROLTER_TEST_DATABASE_URL`.
+`ROLTER_TEST_DATABASE_URL`; to run them locally, `eval "$(just test-pg)"` starts
+the machine's shared test Postgres and exports the variable (see
+[testing.md](testing.md#the-postgres-test-database)).
 
 ### When the hooks skip Rust
 

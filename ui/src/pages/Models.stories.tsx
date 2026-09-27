@@ -4,20 +4,27 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Models from "./Models";
 import {
   Harness,
+  cancelConfirmation,
+  confirmDestructive,
   expectEmptyState,
   expectLoadError,
   expectAllowed,
+  expectNoUxEvent,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   json,
   NEEDS_SUPERADMIN,
   pending,
+  recording,
   routes,
   scoped,
   Toasted,
   expectToast,
   expectUxEvent,
   recordUxEvents,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import type { EffectiveModelDto, LabelRow, RouteRow, RouteTargetRow } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
@@ -197,20 +204,77 @@ export const DeleteRejectedByTheServer: Story = {
           : oneRoutedModel(input, init),
       )}
     >
-      <Toasted>
-        <Models />
-      </Toasted>
+      <UxScreenProvider screen="model-catalog">
+        <Toasted>
+          <Models />
+        </Toasted>
+      </UxScreenProvider>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Delete model gpt-4o" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete model" }));
+    // the stub refuses in the same tick, which ConfirmDialog used to miss
+    // (#1761): the refusal is a row of its own beside the press
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "model-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
+    expectNoUxEvent("save_confirmed", "model-delete");
 
     await expectToast(canvasElement, /referenced by 2 virtual keys/, "error");
     await waitFor(() => expect(dialog.getByText(/referenced by 2 virtual keys/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The delete confirms through the shared `ConfirmDialog` (#1760): the title
+ * names the model, a cancel sends nothing and is an abandon, and a confirm
+ * sends the DELETE and lands as `save_confirmed`.
+ */
+let modelDeletes: Recorder;
+export const DeleteIsConfirmedAndReported: Story = {
+  render: () => {
+    modelDeletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? json(null, 204) : oneRoutedModel(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={modelDeletes.stub}>
+        <UxScreenProvider screen="model-catalog">
+          <Models />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const remove = await canvas.findByRole("button", { name: "Delete model gpt-4o" });
+    await userEvent.click(remove);
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Delete model gpt-4o?" }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    modelDeletes.expectNotSent("DELETE", "/models/");
+    const abandon = await expectUxEvent("form_abandon", "model-delete");
+    await expect(abandon.screen).toBe("model-catalog");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "model-delete");
+
+    await userEvent.click(remove);
+    await confirmDestructive(/every route and target/i, "Delete model");
+    await modelDeletes.expectSent("DELETE", "/models/gpt-4o");
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "model-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "model-delete");
   },
 };
 

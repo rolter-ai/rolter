@@ -13,6 +13,13 @@ import {
   expectSkeleton,
   expectToast,
   withCapabilities,
+  cancelConfirmation,
+  confirmDestructive,
+  expectNoUxEvent,
+  expectUxEvent,
+  recordUxEvents,
+  recording,
+  type Recorder,
   type StoryRole,
 } from "./story-harness";
 import type {
@@ -21,6 +28,7 @@ import type {
   PromptTemplateVersionRow,
 } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000001";
 const TEAM = "00000000-0000-4000-8000-000000000002";
@@ -174,7 +182,16 @@ function loadedStub(): FetchStub {
   };
 }
 
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  screen: uxScreen,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  /** the key the app shell's UxScreenProvider supplies, for a story asserting the UX stream */
+  screen?: string;
+}) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
@@ -190,11 +207,12 @@ function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }
     },
     [],
   );
-  const screen = (
+  const page = (
     <div className="h-screen bg-[color:var(--surface-app)]">
       <PromptRepository />
     </div>
   );
+  const screen = uxScreen ? <UxScreenProvider screen={uxScreen}>{page}</UxScreenProvider> : page;
   return (
     <QueryClientProvider client={client}>
       <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
@@ -362,21 +380,45 @@ export const RenamesTemplateKeepingSlug: Story = {
   },
 };
 
+/**
+ * Deleting confirms through the shared `ConfirmDialog` (#1760), with the slug
+ * typed back as its `children`: the title names the row, a cancel sends
+ * nothing and is an abandon, and the confirm stays locked until the slug
+ * matches, then sends the DELETE and lands as `save_confirmed`.
+ */
+let deletes: Recorder;
 export const RequiresSlugToDeleteTemplate: Story = {
-  render: () => <Harness fetchStub={loadedStub()} />,
+  beforeEach: recordUxEvents,
+  render: () => {
+    deletes = recording(loadedStub());
+    return <Harness fetchStub={deletes.stub} screen="prompt-repo" />;
+  },
   play: async ({ canvas, canvasElement }) => {
-    await userEvent.click(await canvas.findByRole("button", { name: "Delete Support concierge" }));
+    const remove = await canvas.findByRole("button", { name: "Delete Support concierge" });
+    await userEvent.click(remove);
     const page = within(canvasElement.ownerDocument.body);
+    await expect(
+      await page.findByRole("heading", { name: "Delete template Support concierge?" }),
+    ).toBeVisible();
+    await cancelConfirmation();
+    deletes.expectNotSent("DELETE", "/prompt-templates/");
+    const abandon = await expectUxEvent("form_abandon", "prompt-template-delete");
+    await expect(abandon.screen).toBe("prompt-repo");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "prompt-template-delete");
+
+    await userEvent.click(remove);
     const dialog = within(await page.findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Delete Support concierge?" })).toBeVisible();
-    await expect(dialog.getByText(/v2 is live/)).toBeVisible();
     const confirm = dialog.getByRole("button", { name: "Delete template" });
     // the destructive action stays locked until the slug is typed back
     await expect(confirm).toBeDisabled();
     await userEvent.type(dialog.getByRole("textbox"), "support-concierge");
-    await waitFor(() => expect(confirm).toBeEnabled());
-    await userEvent.click(confirm);
+    await confirmDestructive(/v2 is live/, "Delete template");
+    await deletes.expectSent("DELETE", `/prompt-templates/${TEMPLATE}`);
     await waitFor(() => expect(canvas.getByText("Start with a prompt template")).toBeVisible());
+    const submit = await expectUxEvent("form_submit", "prompt-template-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "prompt-template-delete");
   },
 };
 

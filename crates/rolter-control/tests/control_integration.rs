@@ -1729,6 +1729,688 @@ async fn a_budget_carries_its_own_unpriced_policy_into_the_snapshot() {
         .any(|detail| detail["unpriced_policy"].is_null()));
 }
 
+/// #1285: a budget changes in place. Delete-and-recreate left the scope with
+/// no cap between the two calls and bumped `config_version` twice, so a
+/// polling gateway could load exactly that gap. The edit keeps the row's id
+/// and `created_at`, bumps the version once, reaches the snapshot, and leaves
+/// a `budget.update` audit row naming what moved.
+#[tokio::test]
+async fn a_budget_is_edited_in_place_with_one_config_bump() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: String,
+        body: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let resp = client
+            .request(method, &url)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    let (_, org) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Editable", "slug": "editable"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    let (status, created) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/budgets"),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "100"}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {created}");
+    let id = created["id"].as_str().expect("budget id").to_string();
+    let url = format!("{base}/api/v1/budgets/{id}");
+
+    // raise the cap and tighten the unpriced policy in one edit
+    let before = config_version(&pool).await;
+    let (status, edited) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"limit_usd": "250.5", "unpriced_policy": "block"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(
+        config_version(&pool).await - before,
+        1,
+        "one edit must bump config_version exactly once"
+    );
+    assert_eq!(
+        edited["id"], created["id"],
+        "the row is edited, not replaced"
+    );
+    assert_eq!(edited["created_at"], created["created_at"]);
+    assert_eq!(edited["limit_usd"], "250.5000");
+    assert_eq!(edited["unpriced_policy"], "block");
+    // a field the patch did not name is left alone
+    assert_eq!(edited["period"], created["period"]);
+
+    // explicit null drops the override; absent fields still stay put
+    let (status, inheriting) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"unpriced_policy": null, "period": "daily"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{inheriting}");
+    assert!(inheriting["unpriced_policy"].is_null());
+    assert_eq!(inheriting["period"], "daily");
+    assert_eq!(inheriting["limit_usd"], "250.5000");
+
+    // an empty patch is a no-op: no write, so no bump
+    let before = config_version(&pool).await;
+    let (status, unchanged) = send(&client, reqwest::Method::PATCH, url.clone(), json!({})).await;
+    assert_eq!(status, 200, "{unchanged}");
+    assert_eq!(unchanged["period"], "daily");
+    assert_eq!(config_version(&pool).await, before);
+
+    // so is one that re-sends what the row already holds, including a limit
+    // spelled differently from the column's numeric(12,4): the dashboard sends
+    // "250.50" when someone retypes the cap they were shown. the audit query
+    // below counts exactly two update rows, so this one must not add a third
+    let (status, resent) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"limit_usd": "250.50", "period": "daily", "unpriced_policy": null}),
+    )
+    .await;
+    assert_eq!(status, 200, "{resent}");
+    assert_eq!(resent["limit_usd"], "250.5000");
+    assert_eq!(
+        config_version(&pool).await,
+        before,
+        "an edit that moves nothing must not wake the fleet"
+    );
+
+    // bad values are 400s that change nothing. the column is numeric(12,4),
+    // so 1e8 and anything rounding up to it would otherwise overflow in the
+    // store and come back as a 500 carrying the database's own message
+    for body in [
+        json!({"unpriced_policy": "blocked"}),
+        json!({"limit_usd": "lots"}),
+        json!({"limit_usd": "NaN"}),
+        json!({"limit_usd": "-1"}),
+        json!({"limit_usd": "100000000"}),
+        json!({"limit_usd": "99999999.99995"}),
+        json!({"limit_usd": "1e9"}),
+        json!({"period": "  "}),
+    ] {
+        let (status, error) =
+            send(&client, reqwest::Method::PATCH, url.clone(), body.clone()).await;
+        assert_eq!(status, 400, "{body} should be refused, got {error}");
+    }
+    // the scope is not editable: a budget moved elsewhere is another budget
+    let (status, _) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"scope_id": org_id}),
+    )
+    .await;
+    assert_eq!(status, 400, "scope_id is not a patchable field");
+    assert_eq!(config_version(&pool).await, before);
+
+    let (status, _) = send(
+        &client,
+        reqwest::Method::PATCH,
+        format!("{base}/api/v1/budgets/{}", uuid::Uuid::new_v4()),
+        json!({"limit_usd": "1"}),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    // still one budget on the scope, and the gateway sees the edited cap
+    let listed: Value = client
+        .get(format!(
+            "{base}/api/v1/budgets?scope_type=org&scope_id={org_id}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let budget = snap["config"]["budgets"]
+        .as_array()
+        .expect("budgets")
+        .iter()
+        .find(|b| b["id"] == org_id.as_str())
+        .expect("org budget in snapshot")
+        .clone();
+    // the snapshot carries the cap as a JSON number
+    assert_eq!(budget["limit_usd"], 250.5);
+    assert_eq!(budget["period"], "daily");
+    assert!(budget.get("unpriced_policy").is_none());
+
+    // one audit row per edit, each naming only what it moved
+    let details: Vec<Value> = sqlx::query_scalar(
+        "select detail from audit_log where action = 'budget.update' order by at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(details.len(), 2, "{details:?}");
+    assert_eq!(
+        details[0]["changes"],
+        json!({
+            "limit_usd": {"from": "100.0000", "to": "250.5000"},
+            "unpriced_policy": {"from": null, "to": "block"},
+        })
+    );
+    assert_eq!(
+        details[1]["changes"],
+        json!({
+            "period": {"from": "30d", "to": "daily"},
+            "unpriced_policy": {"from": "block", "to": null},
+        })
+    );
+    assert_eq!(details[0]["scope_type"], "org");
+    let deletes: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action in ('budget.delete', 'budget.create')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(deletes, 1, "only the original create, never a recreate");
+}
+
+/// #1285, the rate-limit half: each cap is set, lifted with an explicit null
+/// or left alone when absent, and an edit that would leave no cap at all is
+/// refused rather than stored as a limit that admits everything.
+#[tokio::test]
+async fn a_rate_limit_is_edited_in_place() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: String,
+        body: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let resp = client
+            .request(method, &url)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    let (_, org) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Throttled", "slug": "throttled"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+    let (status, created) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/rate-limits"),
+        json!({"scope_type": "org", "scope_id": org_id, "rpm": 60}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {created}");
+    let url = format!(
+        "{base}/api/v1/rate-limits/{}",
+        created["id"].as_str().expect("rate limit id")
+    );
+
+    let before = config_version(&pool).await;
+    let (status, edited) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"tpm": 1000}),
+    )
+    .await;
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(config_version(&pool).await - before, 1);
+    assert_eq!(edited["id"], created["id"]);
+    assert_eq!(edited["rpm"], 60, "an absent cap is left alone");
+    assert_eq!(edited["tpm"], 1000);
+
+    let (status, lifted) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"rpm": null}),
+    )
+    .await;
+    assert_eq!(status, 200, "{lifted}");
+    assert!(lifted["rpm"].is_null());
+    assert_eq!(lifted["tpm"], 1000);
+
+    // re-sending both caps as they stand writes nothing: no bump, and no
+    // third audit row for the count below to trip on
+    let before = config_version(&pool).await;
+    let (status, resent) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"rpm": null, "tpm": 1000}),
+    )
+    .await;
+    assert_eq!(status, 200, "{resent}");
+    assert_eq!(resent["tpm"], 1000);
+    assert_eq!(config_version(&pool).await, before);
+
+    // lifting the last cap would leave a limit that admits everything, and
+    // the gateway reads a cap of zero or below as no cap at all
+    let before = config_version(&pool).await;
+    for body in [
+        json!({"tpm": null}),
+        json!({"tpm": -5}),
+        json!({"rpm": 0}),
+        json!({"rpm": null, "tpm": 0}),
+    ] {
+        let (status, error) =
+            send(&client, reqwest::Method::PATCH, url.clone(), body.clone()).await;
+        assert_eq!(status, 400, "{body} should be refused, got {error}");
+    }
+    assert_eq!(config_version(&pool).await, before);
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let limit = snap["config"]["rate_limits"]
+        .as_array()
+        .expect("rate limits")
+        .iter()
+        .find(|l| l["id"] == org_id.as_str())
+        .expect("org rate limit in snapshot")
+        .clone();
+    // a lifted cap is absent from the snapshot rather than zero
+    assert!(limit.get("rpm").is_none());
+    assert_eq!(limit["tpm"], 1000);
+
+    let details: Vec<Value> = sqlx::query_scalar(
+        "select detail from audit_log where action = 'rate_limit.update' order by at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(details.len(), 2, "{details:?}");
+    assert_eq!(
+        details[0]["changes"],
+        json!({"tpm": {"from": null, "to": 1000}})
+    );
+    assert_eq!(
+        details[1]["changes"],
+        json!({"rpm": {"from": 60, "to": null}})
+    );
+}
+
+/// Editing a budget or rate limit takes `update` on it, which the matrix
+/// grants to an admin of the scope and not to a viewer (#1285). Both reach the
+/// row's own scope chain, so the check is against where the cap already lives.
+#[tokio::test]
+async fn editing_a_cap_takes_admin_on_its_scope() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+
+    let org = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Caps", "slug": "caps"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let budget = post_as(
+        &client,
+        format!("{base}/api/v1/budgets"),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10"}),
+    )
+    .await;
+    let limit = post_as(
+        &client,
+        format!("{base}/api/v1/rate-limits"),
+        json!({"scope_type": "org", "scope_id": org_id, "rpm": 10}),
+    )
+    .await;
+    let budget_url = format!("{base}/api/v1/budgets/{}", budget["id"].as_str().unwrap());
+    let limit_url = format!(
+        "{base}/api/v1/rate-limits/{}",
+        limit["id"].as_str().unwrap()
+    );
+
+    let viewer = seed_user(&pool, "caps-viewer@example.com", false).await;
+    seed_membership(&pool, viewer, Some(org_uuid), None, None, "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "capsviewer").await;
+    let admin = seed_user(&pool, "caps-admin@example.com", false).await;
+    seed_membership(&pool, admin, Some(org_uuid), None, None, "admin").await;
+    let admin_token = seed_session(&pool, admin, "capsadmin").await;
+    // an admin, but of another org: the edit is authorized against the org
+    // the cap lives in, so admin anywhere else is not enough
+    let other_org = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Elsewhere", "slug": "elsewhere"}),
+    )
+    .await;
+    let other_org_uuid: uuid::Uuid = other_org["id"].as_str().unwrap().parse().unwrap();
+    let outsider = seed_user(&pool, "caps-outsider@example.com", false).await;
+    seed_membership(&pool, outsider, Some(other_org_uuid), None, None, "admin").await;
+    let outsider_token = seed_session(&pool, outsider, "capsoutsider").await;
+
+    for (url, body) in [
+        (&budget_url, json!({"limit_usd": "20"})),
+        (&limit_url, json!({"rpm": 20})),
+    ] {
+        let refused = client
+            .patch(url.as_str())
+            .bearer_auth(&viewer_token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403, "a viewer edited {url}");
+
+        let refused = client
+            .patch(url.as_str())
+            .bearer_auth(&outsider_token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status(),
+            403,
+            "an admin of another org edited {url}"
+        );
+
+        let allowed = client
+            .patch(url.as_str())
+            .bearer_auth(&admin_token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), 200, "an org admin could not edit {url}");
+    }
+}
+
+/// Two edits that each lift a different cap must not together leave a rate
+/// limit with none (#1285). The "keep at least one cap" rule is checked
+/// against the row under the edit's own lock, so whichever edit lands second
+/// sees the first one's result and is refused, and the row always limits
+/// something. Checked against a read taken before the write, both edits would
+/// pass and store a limit that admits everything.
+#[tokio::test]
+async fn concurrent_edits_cannot_lift_every_cap() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Racing", "slug": "racing"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    // a few rounds, since a single one can land both edits in order by luck
+    for round in 0..5 {
+        let created: Value = client
+            .post(format!("{base}/api/v1/rate-limits"))
+            .json(&json!({"scope_type": "org", "scope_id": org_id, "rpm": 60, "tpm": 1000}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = created["id"].as_str().expect("rate limit id").to_string();
+        let url = format!("{base}/api/v1/rate-limits/{id}");
+
+        let (lift_rpm, lift_tpm) = tokio::join!(
+            client.patch(&url).json(&json!({"rpm": null})).send(),
+            client.patch(&url).json(&json!({"tpm": null})).send(),
+        );
+        let mut statuses = [
+            lift_rpm.unwrap().status().as_u16(),
+            lift_tpm.unwrap().status().as_u16(),
+        ];
+        statuses.sort_unstable();
+        assert_eq!(
+            statuses,
+            [200, 400],
+            "round {round}: exactly one lift may land"
+        );
+
+        let (rpm, tpm): (Option<i32>, Option<i32>) =
+            sqlx::query_as("select rpm, tpm from rate_limits where id = $1::uuid")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            rpm.is_some() != tpm.is_some(),
+            "round {round}: one cap should remain, got rpm={rpm:?} tpm={tpm:?}"
+        );
+    }
+}
+
+/// Every cap write announces the new config version on Redis (#1285), so a
+/// subscribed gateway refetches at once rather than at its next poll. A
+/// handler that forgot to publish would still bump `config_version` through
+/// the table trigger, so only a subscriber on the channel can tell. Needs a
+/// Redis (`ROLTER_TEST_REDIS_URL`, set in CI); skipped without one.
+#[tokio::test]
+async fn cap_writes_announce_the_new_version_on_redis() {
+    use futures_util::StreamExt;
+
+    skip_without_db!();
+    let Some(redis_url) = std::env::var("ROLTER_TEST_REDIS_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+    else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app_with_redis(pool.clone(), &redis_url)
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // subscribed before the first write, so no announcement can slip past
+    let subscriber = redis::Client::open(redis_url.as_str()).expect("redis url");
+    let mut pubsub = subscriber.get_async_pubsub().await.expect("redis pubsub");
+    pubsub
+        .subscribe(rolter_core::CONFIG_CHANNEL)
+        .await
+        .expect("subscribe");
+    let mut announced = std::pin::pin!(pubsub.on_message());
+
+    // the channel is shared with whatever else talks to this redis, so wait
+    // for this schema's own version rather than for the next message
+    async fn expect_announced(
+        announced: &mut (impl futures_util::Stream<Item = redis::Msg> + Unpin),
+        what: &str,
+        version: i64,
+    ) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let message = tokio::time::timeout_at(deadline, announced.next())
+                .await
+                .unwrap_or_else(|_| panic!("{what} never announced version {version}"))
+                .expect("pubsub stream ended");
+            if message.get_payload::<i64>().ok() == Some(version) {
+                return;
+            }
+        }
+    }
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Announced", "slug": "announced"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    let budget: Value = client
+        .post(format!("{base}/api/v1/budgets"))
+        .json(&json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "100"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    expect_announced(&mut announced, "budget create", config_version(&pool).await).await;
+    let budget_url = format!("{base}/api/v1/budgets/{}", budget["id"].as_str().unwrap());
+    let edited = client
+        .patch(&budget_url)
+        .json(&json!({"limit_usd": "200"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), 200);
+    expect_announced(&mut announced, "budget update", config_version(&pool).await).await;
+    let deleted = client.delete(&budget_url).send().await.unwrap();
+    assert_eq!(deleted.status(), 204);
+    expect_announced(&mut announced, "budget delete", config_version(&pool).await).await;
+
+    let limit: Value = client
+        .post(format!("{base}/api/v1/rate-limits"))
+        .json(&json!({"scope_type": "org", "scope_id": org_id, "rpm": 60}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    expect_announced(
+        &mut announced,
+        "rate limit create",
+        config_version(&pool).await,
+    )
+    .await;
+    let limit_url = format!(
+        "{base}/api/v1/rate-limits/{}",
+        limit["id"].as_str().unwrap()
+    );
+    let edited = client
+        .patch(&limit_url)
+        .json(&json!({"rpm": 120}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), 200);
+    expect_announced(
+        &mut announced,
+        "rate limit update",
+        config_version(&pool).await,
+    )
+    .await;
+    let deleted = client.delete(&limit_url).send().await.unwrap();
+    assert_eq!(deleted.status(), 204);
+    expect_announced(
+        &mut announced,
+        "rate limit delete",
+        config_version(&pool).await,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn virtual_key_cost_attribution_round_trip() {
     skip_without_db!();
@@ -6605,6 +7287,32 @@ async fn self_service_key_lifecycle() {
     // usage 503s without ClickHouse configured
     let usage = client
         .get(format!("{base}/api/v1/me/usage"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(usage.status(), 503);
+
+    // a window ClickHouse would read as the epoch is refused first, naming the
+    // bound, rather than widening the scan to 1970 (#1192)
+    for param in ["since", "until"] {
+        let usage = client
+            .get(format!("{base}/api/v1/me/usage?{param}=not-a-date"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(usage.status(), 400, "{param}");
+        let body: Value = usage.json().await.unwrap();
+        assert_eq!(body["error"]["param"], param);
+        assert_eq!(body["error"]["code"], "invalid_time_bound");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+    }
+    // and a valid one still reaches the handler, which 503s as before
+    let usage = client
+        .get(format!(
+            "{base}/api/v1/me/usage?since=2026-07-01T00:00:00Z&until=2026-07-08%2000:00:00"
+        ))
         .bearer_auth(&token)
         .send()
         .await

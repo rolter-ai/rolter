@@ -18,7 +18,8 @@ names.
 | Piece                                                                                | Where                                    |
 | ------------------------------------------------------------------------------------ | ---------------------------------------- |
 | fifteen fake OpenAI-compatible upstreams on `127.0.0.1:18001-18015`                  | `integration/dogfood/fleet.ts`           |
-| the matching rolter config — fifteen providers, three provider groups, eleven routes | `integration/dogfood/dogfood.toml`       |
+| the gateway's runtime config (listen address, request-log sink)                      | `integration/dogfood/gateway.toml`       |
+| the fleet as desired state — fifteen providers, three provider groups, eleven routes | `integration/dogfood/dogfood.toml`       |
 | the keys those upstreams expect (fake, loopback-only, checked in on purpose)         | `integration/dogfood/keys.env`           |
 | the one local login every service shares                                             | `integration/dogfood/creds.env`          |
 | the SigNoz dashboards the session is read through                                    | `integration/dogfood/signoz/dashboards/` |
@@ -42,11 +43,16 @@ just dogfood        # datastores, fleet, control, gateway, SigNoz, then the shee
 just dogfood-sheet  # re-print every url, login, endpoint and model
 just dogfood-key    # mint another gateway virtual key
 just dogfood-seed   # re-import dogfood.toml over a running stack
+just dogfood-adaptive off  # serve deepseek-r1 from its fallback stack (`on` undoes it)
 just dogfood-ux     # prove the dashboard UX capture works, before relying on it
 ```
 
 `--import` is desired state, so re-importing an edited `dogfood.toml` updates
-the rows it already created rather than duplicating them.
+the rows it already created rather than duplicating them. The gateway never
+reads that file: it runs on `gateway.toml`, and gets the fleet from the control
+plane's snapshot. The integration README's
+[which config file does what](../../../integration/dogfood/README.md#which-config-file-does-what)
+says which setting belongs in which file (#1288).
 
 The whole stack binds to loopback, talks only to the fake providers, and holds
 nothing real. That is the only reason its credentials are checked in — do not
@@ -115,9 +121,38 @@ chart on their own defaults.
   from the snapshot and the `claude-sonnet-4` route with it. The gateway says
   so on every reload and the dashboard shows it under config problems; it is
   expected until #1133 lands.
+- **Adaptive routing is switched on by `just dogfood`.** `deepseek-r1` is the
+  fleet's `strategy = "adaptive"` route, and that strategy only routes once the
+  deployment-wide kill switch is on. The switch ships off, and the importer
+  does not write it (#1818), so `just dogfood` flips it on through
+  `PUT /api/v1/adaptive-routing-policy` once the control plane answers (#1817).
+  The route engages after `min_samples` picks, 50 by default. To compare against
+  the fallback stack, run `just dogfood-adaptive off` or use **Adaptive Routing →
+  Settings**. Either change survives a control-plane restart, and the next
+  `just dogfood` turns the switch back on. Only `enabled` changes: blend weights
+  set on the Settings screen stay as they are.
+- **ClickHouse wants 262144 open files, and some runtimes cannot grant it.**
+  Rootless Docker or Podman and sandboxed runners often cap `nofile` lower. There
+  both ClickHouse containers fail with
+  `error setting rlimit type 7: operation not permitted` and everything
+  downstream (request logs, `ui_events`, SigNoz) is missing. Put
+  `CLICKHOUSE_NOFILE=20000` in `docker/.env` there, not in a repository-root
+  `.env`, which compose does not read for these files (#1819). A one-off
+  `CLICKHOUSE_NOFILE=20000 just dogfood` works for that run, but the next compose
+  call without it, `just signoz-reset` included, recreates ClickHouse at 262144.
 - **Analytics need the gateway's `[logging].clickhouse_url`,** not just the
   control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).
+- **The SigNoz dashboards are tied to the SigNoz pin.** `provision-signoz.sh`
+  targets v0.136.0, the release `docker/docker-compose.signoz.yml` pins, which
+  moved sign-in to `/api/v2/sessions/email_password` and dashboard creation to
+  `/api/v2/dashboards` (#1864). The boards are written in the v1 import format
+  with `"version": "v5"`, which v0.136 converts on import. A SigNoz the script
+  cannot talk to makes it exit 2 naming the version, a sign-in route that moved
+  included: only a refused credential is reported as a different account and
+  pointed at `just signoz-reset`. `just dogfood` repeats the failure after the
+  sheet, and `just dev-creds` exits with it. Run `just signoz-provision` against
+  a new release before moving the pin.
 
 ## Before a week of capture: prove the UX stream
 

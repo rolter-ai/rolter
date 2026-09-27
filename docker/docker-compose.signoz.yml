@@ -66,10 +66,12 @@ services:
       - signoz-clickhouse:/var/lib/clickhouse/
     environment:
       - CLICKHOUSE_SKIP_USER_SETUP=1
+    # same knob as rolter's own clickhouse in docker-compose.yml: lower it where
+    # the runtime cannot grant 262144 open files (#1819)
     ulimits:
       nofile:
-        soft: 262144
-        hard: 262144
+        soft: ${CLICKHOUSE_NOFILE:-262144}
+        hard: ${CLICKHOUSE_NOFILE:-262144}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
       interval: 10s
@@ -97,6 +99,10 @@ services:
         /signoz-otel-collector migrate async up
 
   signoz:
+    # integration/dogfood/provision-signoz.sh speaks this release's sign-in and
+    # dashboard APIs, which moved in v0.136 (#1864). run `just signoz-provision`
+    # against a new release before bumping this, or the dogfood stack comes up
+    # with no dashboards
     image: signoz/signoz:v0.136.0
     restart: unless-stopped
     depends_on:

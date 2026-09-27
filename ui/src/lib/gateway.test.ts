@@ -1,21 +1,29 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
 import {
+  GatewayError,
+  awaitingMintedKey,
+  fetchGatewayModels,
   getPlaygroundKey,
   getPlaygroundKeyState,
+  keyPropagationDelay,
   realtimeUrl,
+  setKeyPropagationForTests,
   setPlaygroundKey,
   subscribePlaygroundKey,
 } from "@/lib/gateway";
 
 const originalStorage = globalThis.localStorage;
 const originalLocation = globalThis.location;
+const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   // the key store is a module variable now, so a key one test set is a key
   // every later test in this process inherits
   setPlaygroundKey("");
+  setKeyPropagationForTests(null);
   globalThis.localStorage = originalStorage;
+  globalThis.fetch = originalFetch;
   // bun has no `location` of its own, so "restore" means take the stub away
   // again — left behind, it is a fake origin every later test file inherits
   if (originalLocation) globalThis.location = originalLocation;
@@ -126,5 +134,59 @@ describe("realtimeUrl", () => {
     withLocation("http:", "localhost:5173");
     const url = new URL(realtimeUrl("vendor/model?x=1&y=2"));
     expect(url.searchParams.get("model")).toBe("vendor/model?x=1&y=2");
+  });
+});
+
+/**
+ * A key minted a moment ago answers 401 until the gateway's next snapshot poll
+ * picks it up (#1853). These pin what gets waited out, for how long, and what
+ * falls straight through to the fallback.
+ */
+describe("waiting for a minted key to reach the gateway", () => {
+  const unauthorized = new GatewayError("invalid key", 401);
+
+  it("reports the status a refusal came back with", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "invalid key" } }), {
+        status: 401,
+      })) as unknown as typeof fetch;
+    const error = await fetchGatewayModels().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GatewayError);
+    expect((error as GatewayError).status).toBe(401);
+    expect((error as GatewayError).message).toBe("invalid key");
+  });
+
+  it("backs off by doubling, up to a ceiling", () => {
+    expect([0, 1, 2, 3, 4, 5].map(keyPropagationDelay)).toEqual([250, 500, 1000, 2000, 2000, 2000]);
+  });
+
+  // two of the gateway's default 5 s polls: long enough for the key to land,
+  // short enough that a key the gateway never accepts still ends in a fallback
+  it("keeps asking for about two snapshot poll intervals, and then stops", () => {
+    let retries = 0;
+    let waited = 0;
+    while (awaitingMintedKey(retries, unauthorized)) {
+      waited += keyPropagationDelay(retries);
+      retries += 1;
+    }
+    expect(retries).toBeGreaterThan(3);
+    expect(waited).toBeGreaterThan(5_000);
+    expect(waited).toBeLessThanOrEqual(10_000);
+  });
+
+  // anything but a 401 says something about the gateway, not about the key,
+  // so waiting it out would only hold back the fallback
+  it("does not wait out a failure the key cannot explain", () => {
+    expect(awaitingMintedKey(0, new GatewayError("bad gateway", 502))).toBe(false);
+    expect(awaitingMintedKey(0, new GatewayError("forbidden", 403))).toBe(false);
+    expect(awaitingMintedKey(0, new TypeError("Failed to fetch"))).toBe(false);
+  });
+
+  it("takes a shorter budget from a story, and gives it back", () => {
+    setKeyPropagationForTests({ budgetMs: 100, firstDelayMs: 50, maxDelayMs: 50 });
+    expect(awaitingMintedKey(1, unauthorized)).toBe(true);
+    expect(awaitingMintedKey(2, unauthorized)).toBe(false);
+    setKeyPropagationForTests(null);
+    expect(keyPropagationDelay(0)).toBe(250);
   });
 });

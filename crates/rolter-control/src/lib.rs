@@ -101,6 +101,7 @@ mod sso;
 #[cfg(feature = "postgres")]
 mod stability;
 mod telemetry;
+mod time_bounds;
 mod ui_config;
 #[cfg(feature = "postgres")]
 mod ui_events;
@@ -1227,6 +1228,21 @@ pub async fn test_app_with_bootstrap(
     rolter_store::postgres::run_migrations(&pool).await?;
     let mut state = test_state(pool, None, None);
     state.config_owned = Arc::new(ConfigOwned::from_config(bootstrap));
+    Ok(build_app_with(state, true))
+}
+
+/// [`test_app`] publishing config bumps to a live Redis, for asserting that a
+/// write announces itself on [`rolter_core::CONFIG_CHANNEL`].
+///
+/// A handler that skips `publish_config_change` still bumps `config_version`
+/// through the table's trigger, so every test that reads the version back
+/// passes while a subscribed gateway waits out its poll interval. Only a
+/// subscriber on the channel can tell the two apart.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_redis(pool: sqlx::PgPool, redis_url: &str) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.redis = Some(redis::Client::open(redis_url)?);
     Ok(build_app_with(state, true))
 }
 
@@ -2672,7 +2688,7 @@ mod tests {
         assert_eq!(provider_kind_str(&AzureOpenai), "azure_openai");
     }
 
-    fn state_with_token(token: Option<&str>) -> ControlState {
+    pub(crate) fn state_with_token(token: Option<&str>) -> ControlState {
         state_with_tokens(token, None)
     }
 

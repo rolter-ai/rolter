@@ -16,6 +16,7 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Field } from "@/components/ui/field";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Input } from "@/components/ui/input";
@@ -490,7 +492,11 @@ export default function PromptRepository() {
         template={selected}
         pending={remove.isPending}
         error={remove.error as Error | null}
-        onOpenChange={setDeleteOpen}
+        onOpenChange={(next) => {
+          setDeleteOpen(next);
+          // a refusal for this template must not greet the next one opened
+          if (!next) remove.reset();
+        }}
         onConfirm={() => remove.mutate()}
       />
     </div>
@@ -1506,43 +1512,33 @@ function DeleteTemplateDialog({
   // retype the slug rather than let one stray click drop live prompt content
   const matches = confirmation.trim() === template?.slug;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>
-          {t("pages.promptRepo.deleteTitle", { name: template?.name ?? "" })}
-        </DialogTitle>
-        <DialogDescription>
+    <ConfirmDialog
+      name="prompt-template-delete"
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t("pages.promptRepo.confirm.deleteTitle", { name: template?.name ?? "" })}
+      description={
+        <>
           {template?.published_version
-            ? t("pages.promptRepo.deleteLive", { version: template.published_version })
-            : t("pages.promptRepo.deleteUnpublished")}{" "}
-          {t("pages.promptRepo.deleteConsequence")}
-        </DialogDescription>
-      </DialogHeader>
-      <label className="block text-xs font-medium">
-        {t("pages.promptRepo.deleteConfirmLabel", { slug: template?.slug ?? "" })}
+            ? t("pages.promptRepo.confirm.deleteLive", { version: template.published_version })
+            : t("pages.promptRepo.confirm.deleteUnpublished")}{" "}
+          {t("pages.promptRepo.confirm.deleteConsequence")}
+        </>
+      }
+      confirmLabel={t("pages.promptRepo.confirm.deleteConfirm")}
+      pending={pending}
+      error={error}
+      confirmDisabled={!matches}
+      onConfirm={onConfirm}
+    >
+      <Field label={t("pages.promptRepo.confirm.deleteSlugLabel", { slug: template?.slug ?? "" })}>
         <Input
-          className="mt-1"
-          autoFocus
           value={confirmation}
           onChange={(event) => setConfirmation(event.target.value)}
           placeholder={template?.slug}
         />
-      </label>
-      {error && (
-        <p role="alert" className="mt-2 text-xs text-[color:var(--status-danger-text)]">
-          {error.message}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>
-          {t("pages.promptRepo.cancel")}
-        </Button>
-        <Button variant="destructive" disabled={pending || !matches} onClick={onConfirm}>
-          <Trash2 className="h-4 w-4" />
-          {pending ? t("pages.promptRepo.deleting") : t("pages.promptRepo.deleteSubmit")}
-        </Button>
-      </DialogFooter>
-    </Dialog>
+      </Field>
+    </ConfirmDialog>
   );
 }
 

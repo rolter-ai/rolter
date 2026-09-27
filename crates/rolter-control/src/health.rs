@@ -25,13 +25,15 @@
 //! (the timeline bucket) is validated against a fixed whitelist first. The SLA
 //! target is a bound-checked float, never string-interpolated.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+
+use crate::time_bounds::{Query, TimeBounds};
 
 use crate::analytics::{
     bucket_fn, client_or_503, run, window_params, with_access, WindowQuery, WHERE_WINDOW,
@@ -57,6 +59,12 @@ struct UptimeQuery {
     /// SLA target as a fraction in (0, 1]; defaults to 0.99. Drives the reported
     /// error budget and breach flag.
     sla: Option<f64>,
+}
+
+impl TimeBounds for UptimeQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        self.window.time_bounds()
+    }
 }
 
 /// Per provider/target uptime over the window: event counts, uptime %, and the

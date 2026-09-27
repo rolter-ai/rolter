@@ -246,21 +246,33 @@ impl Op {
     }
 }
 
+/// The inclusive lower bound every ClickHouse-backed read shares. The format is
+/// spelled out because a value outside it is a `400`, not a wider window: the
+/// bound reaches a best-effort parse that turns anything it cannot read into
+/// the epoch, so the control plane checks it first (#1192).
+const SINCE: QueryParam = QueryParam::new(
+    "since",
+    "string",
+    "inclusive lower bound, RFC 3339 (`2026-07-01T00:00:00Z`; percent-encode a `+` offset as \
+     `%2B`), `YYYY-MM-DD hh:mm:ss[.fff]` or `YYYY-MM-DD`; defaults to 7 days ago, and a value \
+     that does not parse is a 400",
+);
+
+/// The exclusive upper bound beside [`SINCE`], checked the same way.
+const UNTIL: QueryParam = QueryParam::new(
+    "until",
+    "string",
+    "exclusive upper bound, in the same forms as `since`; defaults to now, and a value that \
+     does not parse is a 400",
+);
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
 /// sees page one forever.
 const MCP_LOGS_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "server",
         "string",
@@ -283,7 +295,8 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "cursor",
         "string",
-        "opaque keyset cursor; send back the previous page's `next_cursor`",
+        "opaque keyset cursor; send back the previous page's `next_cursor` unchanged. one \
+         whose timestamp does not parse is a 400",
     ),
 ];
 
@@ -340,37 +353,18 @@ const SCOPE_QUERY: &[QueryParam] = &[
     QueryParam::required(
         "scope_type",
         "string",
-        "what the limit is attached to: `org`, `team`, `project`, `key`, `user` or `business_unit`",
+        "what the limit is attached to: `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`",
     ),
     QueryParam::required("scope_id", "string", "uuid of that scope"),
 ];
 
 /// The time window the analytics, health and usage summaries share.
-const WINDOW_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
-];
+const WINDOW_QUERY: &[QueryParam] = &[SINCE, UNTIL];
 
 /// The window plus the bucket only the timeseries endpoint reads.
 const TIMESERIES_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "bucket",
         "string",
@@ -380,16 +374,8 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
 
 /// The uptime endpoint's window plus the target it measures against.
 const UPTIME_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "sla",
         "number",
@@ -445,16 +431,8 @@ const EFFECTIVE_QUERY: &[QueryParam] = &[
 /// The attribution report's window plus the two knobs that change which rows
 /// come back at all — not merely how many.
 const ATTRIBUTION_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new(
         "dimension",
         "string",
@@ -471,16 +449,8 @@ const ATTRIBUTION_QUERY: &[QueryParam] = &[
 /// a caller that does not know to send back `next_cursor` as `cursor` cannot
 /// reach the second page at all (#1394).
 const INVOCATIONS_QUERY: &[QueryParam] = &[
-    QueryParam::new(
-        "since",
-        "string",
-        "inclusive lower bound, RFC 3339; defaults to 7 days ago",
-    ),
-    QueryParam::new(
-        "until",
-        "string",
-        "exclusive upper bound, RFC 3339; defaults to now",
-    ),
+    SINCE,
+    UNTIL,
     QueryParam::new("model", "string", "exact model name; omit for every model"),
     QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
     QueryParam::new(
@@ -498,9 +468,10 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "cursor",
         "string",
-        "the preceding page's `next_cursor`; omit for the first page. paging is \
-         a keyset over `(ts, request_id)`, so rows logged between two pages \
-         cannot repeat or hide a row",
+        "the preceding page's `next_cursor`, unchanged; omit for the first page. \
+         paging is a keyset over `(ts, request_id)`, so rows logged between two \
+         pages cannot repeat or hide a row. one whose timestamp does not parse \
+         is a 400",
     ),
 ];
 
@@ -1148,6 +1119,13 @@ fn operations() -> Vec<Op> {
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
+            Op::patch(
+                "/api/v1/budgets/{id}",
+                "updateBudget",
+                "Change a spend budget's limit, period or unpriced policy in place",
+            )
+            .body(Payload::Ref("UpdateBudget"))
+            .ok(Payload::Ref("Budget")),
             Op::delete(
                 "/api/v1/budgets/{id}",
                 "deleteBudget",
@@ -1162,6 +1140,13 @@ fn operations() -> Vec<Op> {
                 "Create a rate limit",
             )
             .body(Payload::Ref("CreateRateLimit"))
+            .ok(Payload::Ref("RateLimit")),
+            Op::patch(
+                "/api/v1/rate-limits/{id}",
+                "updateRateLimit",
+                "Change a rate limit's rpm or tpm cap in place",
+            )
+            .body(Payload::Ref("UpdateRateLimit"))
             .ok(Payload::Ref("RateLimit")),
             Op::delete(
                 "/api/v1/rate-limits/{id}",
@@ -2201,6 +2186,9 @@ fn stability_schemas(p: &Prim) -> Value {
 
 fn error_schemas(p: &Prim) -> Value {
     let string = &p.string;
+    // `param` is null when a refusal has no single parameter to name, as the
+    // OpenAI envelope does for a query string that does not deserialize
+    let nullable_string = &p.nullable_string;
     json!({
         "Error": {
             "type": "object",
@@ -2211,7 +2199,7 @@ fn error_schemas(p: &Prim) -> Value {
                         "message": string,
                         "type": string,
                         "code": string,
-                        "param": string
+                        "param": nullable_string
                     }
                 }
             }
@@ -2686,13 +2674,19 @@ fn governance_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
+    // the `SCOPE_TYPES` allowlist in `crud.rs`: business unit and customer are
+    // the governance dimensions a key's spend rolls up to (#539)
+    let scope_type = json!({
+        "type": "string",
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+    });
     json!({
         "Budget": {
             "type": "object",
             "required": ["id", "scope_type", "scope_id", "limit_usd", "period", "created_at"],
             "properties": {
                 "id": uuid,
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": {"type": "string", "description": "decimal(12,4) as text"},
                 "period": string,
@@ -2704,11 +2698,25 @@ fn governance_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["scope_type", "scope_id", "limit_usd"],
             "properties": {
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": string,
                 "period": {"type": "string", "default": "30d"},
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+            },
+            "additionalProperties": false
+        },
+        "UpdateBudget": {
+            "type": "object",
+            "description": "every field is optional; omit one to leave it unchanged. The scope is not editable. An edit that changes nothing writes nothing",
+            "properties": {
+                "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
+                "period": string,
+                "unpriced_policy": {
+                    "type": ["string", "null"],
+                    "enum": ["ignore", "warn", "block", null],
+                    "description": "null drops the override and inherits the deployment-wide setting"
+                }
             },
             "additionalProperties": false
         },
@@ -2718,7 +2726,7 @@ fn governance_schemas(p: &Prim) -> Value {
             "required": ["id", "scope_type", "scope_id", "created_at"],
             "properties": {
                 "id": uuid,
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
@@ -2729,10 +2737,19 @@ fn governance_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["scope_type", "scope_id"],
             "properties": {
-                "scope_type": {"type": "string", "enum": ["org", "team", "project", "virtual_key"]},
+                "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]}
+            },
+            "additionalProperties": false
+        },
+        "UpdateRateLimit": {
+            "type": "object",
+            "description": "omit a cap to leave it unchanged, send null to lift it; at least one cap must remain",
+            "properties": {
+                "rpm": {"type": ["integer", "null"], "minimum": 1},
+                "tpm": {"type": ["integer", "null"], "minimum": 1}
             },
             "additionalProperties": false
         },
@@ -3061,6 +3078,13 @@ mod tests {
         assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
         assert!(doc["components"]["securitySchemes"]["bearerAuth"].is_object());
         assert!(doc["components"]["responses"]["Error"].is_object());
+        // `time_bounds` answers `param: null` for a query string with no one
+        // parameter to blame, so the schema has to admit it
+        assert_eq!(
+            doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["param"]
+                ["type"],
+            json!(["string", "null"])
+        );
         // a representative operation is fully described, path parameter included
         let create = &doc["paths"]["/api/v1/projects/{project_id}/routes"]["post"];
         assert_eq!(create["operationId"], "createRoute");

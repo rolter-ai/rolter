@@ -126,7 +126,7 @@
       "scope": "org",
       "read": "viewer",
       "create": "admin",
-      "update": null,
+      "update": "admin",
       "delete": "admin"
     },
     {
@@ -134,7 +134,7 @@
       "scope": "org",
       "read": "viewer",
       "create": "admin",
-      "update": null,
+      "update": "admin",
       "delete": "admin"
     },
     {

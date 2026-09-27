@@ -15,6 +15,19 @@ test:
     cargo nextest run --workspace
     cargo test --doc --workspace
 
+# one throwaway postgres for every worktree's tests (#1736), idempotent.
+# start the shared test postgres if needed, print its export line: `eval "$(just test-pg)"`
+test-pg:
+    @bash scripts/test-postgres.sh up
+
+# connections in use against max_connections, and each worktree's database
+test-pg-status:
+    @bash scripts/test-postgres.sh status
+
+# remove the shared test postgres and everything in it
+test-pg-down:
+    @bash scripts/test-postgres.sh down
+
 # format rust sources
 fmt:
     cargo fmt --all
@@ -262,10 +275,22 @@ dogfood:
         | sed 's/^/[gateway] /' ) &
     sleep 6
     just dogfood-key >/dev/null 2>&1 || true
+    # the adaptive strategy only routes once the deployment-wide kill switch is
+    # on, and it ships off. nothing else here turns it on (`rolter-seed
+    # --import` does not write it, #1818), so without this `deepseek-r1` serves
+    # its fallback stack all session (#1817). non-fatal like the rest: a stack
+    # with the switch off still works, and the script says how to retry
+    ./"$d"/adaptive-routing.sh on || true
     # non-fatal: a SigNoz that already has a different account is a thing to
-    # report, not a reason to tear down a working stack
-    ./"$d"/provision-signoz.sh || true
+    # report, not a reason to tear down a working stack. but repeat it after the
+    # sheet, which otherwise scrolls the failure out of view and leaves a stack
+    # with no dashboards looking provisioned (#1792)
+    signoz_rc=0
+    ./"$d"/provision-signoz.sh || signoz_rc=$?
     ./"$d"/sheet.sh
+    if [ "$signoz_rc" -ne 0 ]; then
+      echo "[dogfood] SigNoz provisioning FAILED (exit $signoz_rc) — see the [signoz] lines above; rerun with: just signoz-provision" >&2
+    fi
     wait
 
 # prove the dashboard UX capture works end to end before relying on it
@@ -320,6 +345,10 @@ dogfood-key:
       > integration/dogfood/.virtual-key
     cat integration/dogfood/.virtual-key
 
+# turn the adaptive-routing kill switch on or off (`just dogfood` turns it on)
+dogfood-adaptive state="on":
+    ./integration/dogfood/adaptive-routing.sh {{state}}
+
 # seed the full 15-provider fleet instead of adding it by hand
 dogfood-seed:
     #!/usr/bin/env bash
@@ -370,8 +399,16 @@ dev-creds:
       fi
     fi
 
-    ./"$d"/provision-signoz.sh || true
+    signoz_rc=0
+    ./"$d"/provision-signoz.sh || signoz_rc=$?
     ./"$d"/sheet.sh
+    # unlike `just dogfood` there is no running stack here for a failure to
+    # tear down, so hand the exit code on: `just dev-creds && ...` must not read
+    # a SigNoz with no dashboards as provisioned (#1792)
+    if [ "$signoz_rc" -ne 0 ]; then
+      echo "[dev-creds] SigNoz provisioning FAILED (exit $signoz_rc) — see the [signoz] lines above" >&2
+      exit "$signoz_rc"
+    fi
 
 # provision SigNoz with the shared dev login and the checked-in dashboards
 signoz-provision:

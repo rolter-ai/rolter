@@ -1,0 +1,163 @@
+---
+title: "Managing Budgets and Rate Limits over the API"
+sidebarTitle: "Budgets & rate limits"
+description: "List, create, edit in place and delete spend budgets and rate limits through the control plane. PATCH changes a cap without a window where the scope has none."
+---
+
+Budgets and rate limits stored in the database are managed through the control plane. Each one hangs off a **scope**: an org, team, project, virtual key, business unit or customer, named by `scope_type` and `scope_id`. What the caps do once they reach the gateway is covered in [Budgets & Rate Limits](/security/budgets-and-rate-limits); this page is the API.
+
+| Method   | Path                                          | What it does                      |
+| -------- | --------------------------------------------- | --------------------------------- |
+| `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`     | list the budgets on one scope     |
+| `POST`   | `/api/v1/budgets`                             | create a budget                   |
+| `PATCH`  | `/api/v1/budgets/{id}`                        | change a budget in place          |
+| `DELETE` | `/api/v1/budgets/{id}`                        | delete a budget                   |
+| `GET`    | `/api/v1/rate-limits?scope_type=…&scope_id=…` | list the rate limits on one scope |
+| `POST`   | `/api/v1/rate-limits`                         | create a rate limit               |
+| `PATCH`  | `/api/v1/rate-limits/{id}`                    | change a rate limit in place      |
+| `DELETE` | `/api/v1/rate-limits/{id}`                    | delete a rate limit               |
+
+`scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`. Both list routes require both query parameters and answer `400` without them.
+
+## Budgets
+
+A budget row looks like this:
+
+```json
+{
+  "id": "2f1c9a4e-7b3d-4e8a-9c21-5d6f0a1b2c3d",
+  "scope_type": "project",
+  "scope_id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+  "limit_usd": "500.0000",
+  "period": "30d",
+  "unpriced_policy": null,
+  "created_at": "2026-09-01T09:03:11.482Z"
+}
+```
+
+| Field             | Type             | Meaning                                                                                                                                                                |
+| ----------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit_usd`       | decimal, as text | the cap for one window, in the deployment's base currency despite the name. Stored as `numeric(12,4)`, so it comes back with four decimal places                       |
+| `period`          | string           | the window. `daily`, `1d` and `24h` reset daily; `total`, `lifetime` and `all` never reset; anything else is a monthly window                                          |
+| `unpriced_policy` | string or null   | this budget's own `ignore`, `warn` or `block` answer to [unpriced traffic](/security/budgets-and-rate-limits#unpriced-traffic); `null` inherits the deployment setting |
+
+### Create
+
+```bash
+curl -s -X POST https://control.example.com/api/v1/budgets \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scope_type": "project", "scope_id": "'"$PROJECT_ID"'", "limit_usd": "500", "period": "30d"}'
+```
+
+`period` defaults to `30d` and `unpriced_policy` to `null` when omitted.
+
+### Edit in place
+
+`PATCH /api/v1/budgets/{id}` changes `limit_usd`, `period` and `unpriced_policy` on the existing row. Send only the fields you want to change; a field you leave out keeps its value.
+
+```bash
+curl -s -X PATCH https://control.example.com/api/v1/budgets/$BUDGET_ID \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"limit_usd": "750", "unpriced_policy": "block"}'
+```
+
+The response is the updated row. A few rules:
+
+- `unpriced_policy: null` drops the override, so the budget inherits the deployment setting again. Leaving the field out does not touch it.
+- `limit_usd` has to be a number from 0 to 99999999.9999, the most the `numeric(12,4)` column holds. Zero is allowed and freezes the scope, because no request is under a cap of zero. More decimal places than four are rounded, so a value that rounds up to 100000000 is refused too.
+- `period` cannot be blank.
+- The scope is not editable. A budget on a different scope is a different budget, so sending `scope_type` or `scope_id` is a `400`.
+- A body that changes nothing returns the row as it is and writes nothing: no config version bump and no audit row. That covers an empty body `{}` and one that re-sends the values the row already holds, such as `"limit_usd": "500.0"` on a `500.0000` budget.
+
+<Note>
+  **Why edit rather than delete and recreate.** A delete followed by a create leaves the scope with no budget between the two calls, and each call bumps the config version, so a gateway polling in that gap loads the scope uncapped. A `PATCH` is a single write and a single version bump: a gateway sees the old cap or the new one, never neither.
+
+The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by scope and period window rather than by budget row, so raising or lowering `limit_usd` keeps the spend already counted this period. Changing `period` moves the budget onto that window's counter.
+
+</Note>
+
+## Rate limits
+
+```json
+{
+  "id": "8f2a41c7-9b3d-4c55-bb1e-71a0c2e4d9f3",
+  "scope_type": "virtual_key",
+  "scope_id": "c41d7e02-3a8b-4f19-8f2c-5d9e1a7b3c04",
+  "rpm": 600,
+  "tpm": null,
+  "created_at": "2026-09-01T09:04:02.117Z"
+}
+```
+
+`rpm` caps requests per minute and `tpm` tokens per minute. `null` means that dimension is not capped.
+
+### Create
+
+```bash
+curl -s -X POST https://control.example.com/api/v1/rate-limits \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scope_type": "virtual_key", "scope_id": "'"$KEY_ID"'", "rpm": 600}'
+```
+
+### Edit in place
+
+`PATCH /api/v1/rate-limits/{id}` works the same way as for budgets, with one difference: each cap can be lifted.
+
+| You send        | Effect                    |
+| --------------- | ------------------------- |
+| field omitted   | the cap is left unchanged |
+| a number, `≥ 1` | the cap is set to it      |
+| `null`          | the cap is lifted         |
+
+```bash
+# raise the token cap and stop capping requests
+curl -s -X PATCH https://control.example.com/api/v1/rate-limits/$LIMIT_ID \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tpm": 200000, "rpm": null}'
+```
+
+The edit is refused with `400` when it would leave the rate limit with no cap at all, because such a limit admits every request. Delete it instead. The check runs against the row as it stands when the edit is applied, so two edits sent at once that each lift a different cap cannot together leave none: whichever lands second is refused. A cap of zero or below is also refused: the gateway reads it as "not capped", so storing one would look like a limit and do nothing.
+
+## Authorization
+
+Each action takes the matching capability on the `budget` or `rate_limit` resource, checked at the scope the row lives on:
+
+| Action               | Minimum role on the scope |
+| -------------------- | ------------------------- |
+| list                 | `viewer`                  |
+| create, edit, delete | `admin`                   |
+
+`GET /api/v1/rbac/matrix` publishes these rows, and `GET /api/v1/rbac/effective` reports whether the calling account holds them at a given scope. A caller without the capability is refused with `403`; an unknown id is `404`.
+
+## Audit log
+
+Every write leaves one row in the org's audit log:
+
+| Action                               | `detail`                                                         |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `budget.create`, `rate_limit.create` | the scope and the values the row was created with                |
+| `budget.update`, `rate_limit.update` | the scope and a `changes` object, one entry per field that moved |
+| `budget.delete`, `rate_limit.delete` | empty                                                            |
+
+A `changes` entry carries the value before and after:
+
+```json
+{
+  "scope_type": "project",
+  "scope_id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+  "changes": {
+    "limit_usd": { "from": "500.0000", "to": "750.0000" },
+    "unpriced_policy": { "from": null, "to": "block" }
+  }
+}
+```
+
+A field sent with the value it already had does not appear in `changes`, and an edit where every field sent already had its value writes no audit row at all. The `from` values are read under the edit's own row lock, so two edits of the same row in quick succession each record what they replaced.
+
+## Propagation
+
+Every create, delete and edit that changes something bumps the config version in the same transaction, so a gateway polling `/internal/snapshot` picks the change up on its next poll. With Redis configured, the control plane also announces the new version, and subscribed gateways refetch straight away.
