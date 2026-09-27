@@ -399,6 +399,36 @@ export const ConfirmsBeforeDeletingARule: Story = {
   },
 };
 
+const ruleEvaluations = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST" && String(input).includes("/evaluate")) {
+      return json({ evaluated: true, firing: true }, 200);
+    }
+    return loaded(input, init);
+  }),
+);
+
+export const EvaluatesARule: Story = {
+  render: () => (
+    <Harness fetchStub={ruleEvaluations.stub}>
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
+    const button = canvas.getByRole("button", {
+      name: "Evaluate rule high error rate",
+    });
+
+    await userEvent.click(button);
+    await ruleEvaluations.expectSent("POST", "/alert-rules/rule-1/evaluate");
+    await expectToast(canvasElement, /high error rate evaluated/);
+  },
+};
+
 export const HistoryLoaded: Story = {
   render: () => (
     <Harness fetchStub={loaded}>

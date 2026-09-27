@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Megaphone, Play } from "lucide-react";
+import { Gavel, History, Loader2, Megaphone, Play } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -490,7 +490,11 @@ function AlertRulesScreen() {
                   disabled={evaluate.isPending}
                   onClick={() => evaluate.mutate(r.id)}
                 >
-                  <Play className="h-3.5 w-3.5" />
+                  {evaluate.isPending && evaluate.variables === r.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Play className="h-3.5 w-3.5" />
+                  )}
                   {t("pages.alerting.rules.evaluateNow")}
                 </GatedButton>
                 <DeleteIconButton
