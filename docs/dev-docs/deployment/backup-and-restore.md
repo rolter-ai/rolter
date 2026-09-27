@@ -10,12 +10,13 @@ wrong one fails silently.
 
 ## What has to be in the backup set
 
-| Item                                       | Where it lives                            | What its loss costs                                            |
-| ------------------------------------------ | ----------------------------------------- | -------------------------------------------------------------- |
-| the control-plane database                 | Postgres                                  | everything below, plus routes, budgets, RBAC and the audit log |
-| `ROLTER_KEK`                               | your secret manager, **not** the database | every sealed secret in that database, permanently              |
-| `ROLTER_KEY_PEPPER`                        | your secret manager                       | every virtual key hash stops matching; keys must be reissued   |
-| the gateway's `rolter.toml`, if it has one | config management                         | reconstructible, but not from the dump                         |
+| Item                                       | Where it lives                            | What its loss costs                                                                                             |
+| ------------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| the control-plane database                 | Postgres                                  | everything below, plus routes, budgets, RBAC and the audit log                                                  |
+| `ROLTER_KEK`                               | your secret manager, **not** the database | every sealed secret in that database, permanently                                                               |
+| `ROLTER_KEY_PEPPER`                        | your secret manager                       | every virtual key hash stops matching; keys must be reissued                                                    |
+| `ROLTER_SESSION_PEPPER`                    | your secret manager                       | everyone is signed out; open invitations, SCIM tokens and MFA recovery codes stop matching and must be reissued |
+| the gateway's `rolter.toml`, if it has one | config management                         | reconstructible, but not from the dump                                                                          |
 
 A backup of the database alone is not a backup. The KEK is stored separately by
 design — that is the whole point of encrypting at rest — which means the one
@@ -123,8 +124,10 @@ value can no longer read a stored credential. Keep the window short, and roll
 the gateways after the control plane so `/internal/snapshot` is already serving
 secrets the new KEK sealed.
 
-Rotation does not touch `ROLTER_KEY_PEPPER`. Virtual-key hashes are not
-reversible, so a pepper change is a reissue, not a rotation.
+Rotation does not touch `ROLTER_KEY_PEPPER` or `ROLTER_SESSION_PEPPER`. The
+digests under them are not reversible, so a pepper change is a reissue, not a
+rotation: every virtual key for the first, and for the second every session,
+open invitation, SCIM token and MFA recovery code.
 
 ## What is audited
 
