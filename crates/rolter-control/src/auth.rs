@@ -247,7 +247,12 @@ impl IntoResponse for AuthError {
                  operator must set it, or an administrator must relax the policy",
             ),
             Self::Internal(ref msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal", msg.as_str())
+                tracing::error!(error = %msg, "internal auth error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "an internal server error occurred",
+                )
             }
         };
         let mut response = (
@@ -835,6 +840,17 @@ mod tests {
             open_message.contains("ROLTER_ADMIN_TOKEN"),
             "{open_message}"
         );
+    }
+
+    #[tokio::test]
+    async fn internal_auth_error_redacts_sensitive_details() {
+        let sensitive = "postgres connection failed at postgres://user:secret@10.0.0.1:5432/db";
+        let (status, code, message) = rendered(AuthError::Internal(sensitive.to_string())).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(code, "internal");
+        assert_eq!(message, "an internal server error occurred");
+        assert!(!message.contains("postgres"));
+        assert!(!message.contains(sensitive));
     }
 }
 
