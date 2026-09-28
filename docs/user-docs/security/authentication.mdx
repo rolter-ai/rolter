@@ -222,3 +222,19 @@ literally:
 - **anything else** — a network failure, a 5xx, or a control plane that does
   not serve `/api/v1/auth/*` at all. The session is kept: a control plane that
   blinked is not a reason to sign you out.
+
+### What ends a session early
+
+A session ends before its seven days are up when:
+
+- you sign out (`POST /api/v1/auth/logout`)
+- a superadmin deactivates or deletes the account, or the identity provider
+  deprovisions it over SCIM
+- the account's second factor is reset
+- a superadmin sets a new password for the account (`PUT /api/v1/users/{id}`
+  with a `password`). The usual reason for a reset is that the old password is
+  in someone else's hands, so every session opened with it ends on the spot.
+  The one exception is the session that made the request: a superadmin who
+  resets their own password stays signed in on that page and is signed out
+  everywhere else. The `user.update` audit entry records how many sessions the
+  reset ended (`sessions_revoked`)
