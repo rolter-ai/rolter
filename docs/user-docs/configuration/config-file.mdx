@@ -344,6 +344,10 @@ Virtual keys are the bearer tokens clients present to the gateway. Remove the en
   Model allow-list. An empty list grants access to all models. When non-empty, requests for models not on the list are rejected.
 </ParamField>
 
+<ParamField path="providers" default="[]" type="list">
+  Upstream provider allow-list. An empty list allows selecting any provider on an allowed route. When non-empty, requests authenticated with this key can only route to the named providers.
+</ParamField>
+
 <ParamField path="disabled" default="false" type="boolean">
   Set to `true` to revoke the key without deleting it from the config file. Useful for auditing.
 </ParamField>
@@ -352,13 +356,19 @@ Virtual keys are the bearer tokens clients present to the gateway. Remove the en
   An RFC3339 expiry timestamp. The key stops authenticating at or after this instant, e.g. `"2027-01-01T00:00:00Z"`.
 </ParamField>
 
+<ParamField path="cache" type="boolean">
+  Per-key response-cache override, independent of a route's own opt-in. Omit to inherit the route decision, `false` to force responses to bypass the cache, or `true` to cache responses even on a route that did not opt in. The global `[cache]` switch is still required.
+</ParamField>
+
 ```toml
 [[virtual_keys]]
 key = "sk-rolter-dev"
 name = "local-dev"
 models = []        # empty = all models allowed
+providers = []     # empty = all providers allowed
 disabled = false
 # expires_at = "2027-01-01T00:00:00Z"
+# cache = false
 ```
 
 ---
