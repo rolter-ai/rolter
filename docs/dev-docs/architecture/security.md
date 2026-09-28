@@ -128,6 +128,22 @@ freezes every gateway" failure mode described in
 [config-and-hot-reload.md](config-and-hot-reload.md) — and would be bypassable
 by DNS rebinding regardless.
 
+A literal is read the way the HTTP client reads it. `EgressPolicy::check_url`
+parses with the WHATWG `url` crate that `reqwest` uses, because that parser
+normalizes the host before anything connects: `http://2852039166/`,
+`http://0xa9fea9fe/`, `http://169.254.43518/`, `http://0251.0376.0251.0376/`
+and `http://169.254.169.254./` all dial `169.254.169.254`, and a backslash ends
+the authority, so the host of `http://169.254.169.254\@example.com/` is the
+address. A hand-rolled host split saw none of those as that address, and
+`hyper` never calls a resolver for an IP literal, so the connect-time check
+below did not see them either. `deny_reason` also classifies an IPv4-mapped
+IPv6 address (`::ffff:169.254.169.254`) as the IPv4 address it carries and
+treats the unspecified address (`0.0.0.0`, `::`) as loopback, since connecting
+to it reaches the local host. A socks proxy URL keeps its host opaque to the
+parser, so that host is parsed again as an `http` host would be. `allow_hosts`
+entries are parsed the same way and match the address, so an entry for
+`169.254.169.254` also covers `0xa9fea9fe`.
+
 So the same policy is enforced a third time, at **connect time**, by a custom
 resolver on every upstream client: whatever DNS actually returns is classified
 immediately before the connection is made. That covers the two cases config
@@ -141,6 +157,14 @@ the whole name would take down a legitimate multi-homed upstream. Only a name
 left with nothing is refused — which is exactly what rebinding to a denied
 address produces. The resolver reads the policy from a live handle, so a hot
 reload re-tunes enforcement without discarding pooled connections.
+
+The control plane's own requests to operator-supplied URLs (the connector test
+probe, alert channel delivery, MCP OAuth discovery) check the same policy on
+the stored URL when it is saved and again before each request. Alert delivery
+and MCP OAuth discovery also refuse redirects, so a `3xx` cannot hand the
+request to a host the check never saw. None of them has a connect-time
+resolver yet, and the connector probe still follows redirects; both are
+tracked in #1949.
 
 ## Control-plane input validation
 

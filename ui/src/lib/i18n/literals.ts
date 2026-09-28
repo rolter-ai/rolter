@@ -172,8 +172,12 @@ const PROP_EXPR = new RegExp(
  * generic return type on an arrow function hits that, so the lookbehind is
  * load-bearing rather than defensive. A comparison (`a > b`) survives the
  * lookbehind, so every match is confirmed against `jsxTagEnds` too (#1370).
+ *
+ * The prose may open with one glyph: `+ Add rule` sat in a toolbar for months
+ * because the run had to start with a letter (#1872). A glyph alone, or a
+ * glyph before an interpolation (`+ {t("…")}`), is still not copy.
  */
-const TEXT = /(?<!=)>\s*([A-Za-z][^<>{}]{2,}?)\s*</g;
+const TEXT = /(?<!=)>\s*((?:[+←→•]\s*)?[A-Za-z][^<>{}]{2,}?)\s*</g;
 /**
  * an expression sitting where text would: `>{pending ? "Saving…" : "Save"}<`.
  * the string literals inside are the copy; the rest of the expression is not

@@ -30,7 +30,9 @@ const CHANNELS: AlertChannelRow[] = [
     id: "chan-1",
     name: "ops-slack",
     kind: "webhook",
-    endpoint: "https://hooks.slack.com/services/T000/B000/xxx",
+    // a relay in front of the chat tool: the body is rolter's own shape, which
+    // a chat or paging service does not accept directly
+    endpoint: "https://alerts.example.com/rolter/slack",
     enabled: true,
     secret_configured: true,
     created_at: "2026-05-01T00:00:00Z",
@@ -40,7 +42,7 @@ const CHANNELS: AlertChannelRow[] = [
     id: "chan-2",
     name: "pager",
     kind: "webhook",
-    endpoint: "https://events.pagerduty.com/v2/enqueue",
+    endpoint: "https://alerts.example.com/rolter/pagerduty",
     enabled: false,
     secret_configured: false,
     created_at: "2026-05-02T00:00:00Z",
@@ -79,6 +81,21 @@ const RULES: AlertRuleRow[] = [
     created_at: "2026-05-02T00:00:00Z",
     updated_at: "2026-08-11T12:00:00Z",
   },
+  {
+    id: "rule-3",
+    name: "spend spike",
+    signal: "spend_velocity",
+    threshold: 50,
+    window_secs: 3600,
+    channel_id: "chan-1",
+    enabled: true,
+    state: "error",
+    last_value: 12.5,
+    last_evaluated_at: "2026-08-11T11:00:00Z",
+    last_error: "alert evaluation requires CLICKHOUSE_URL",
+    created_at: "2026-05-03T00:00:00Z",
+    updated_at: "2026-08-11T12:00:00Z",
+  },
 ];
 
 const HISTORY: AlertNotificationRow[] = [
@@ -88,7 +105,7 @@ const HISTORY: AlertNotificationRow[] = [
     channel_id: "chan-1",
     state: "firing",
     delivery_status: "delivered",
-    detail: "error_rate 0.11 over 300s",
+    detail: "HTTP 200",
     sent_at: "2026-08-11T12:00:00Z",
   },
   {
@@ -97,8 +114,17 @@ const HISTORY: AlertNotificationRow[] = [
     channel_id: "chan-1",
     state: "resolved",
     delivery_status: "failed",
-    detail: "connection refused",
+    detail: "could not connect to the endpoint",
     sent_at: "2026-08-10T09:30:00Z",
+  },
+  {
+    id: "note-3",
+    rule_id: "rule-2",
+    channel_id: null,
+    state: "firing",
+    delivery_status: "skipped",
+    detail: "no channel configured",
+    sent_at: "2026-08-09T08:00:00Z",
   },
 ];
 
@@ -286,6 +312,9 @@ export const RulesLoaded: Story = {
     await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
     // a rule with no channel still renders rather than blanking the card
     await expect(canvas.getByText("slow p95")).toBeInTheDocument();
+    // a rule whose evaluation failed says why on its card (#1871)
+    await expect(canvas.getByText("error")).toBeInTheDocument();
+    await expect(canvas.getByText("alert evaluation requires CLICKHOUSE_URL")).toBeInTheDocument();
   },
 };
 
@@ -348,6 +377,161 @@ export const CreatesARule: Story = {
   },
 };
 
+// the window input allowed 30 while the API refuses anything under 60, so a
+// value the form accepted came back as a 400 (#1872)
+const ruleCreates = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return String(input).includes("/alert-channels") ? json(CHANNELS) : json(RULES);
+  }),
+);
+
+export const TheRuleWindowHoldsToTheApiBounds: Story = {
+  render: () => (
+    <Harness fetchStub={ruleCreates.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "fast window");
+    const windowInput = within(form).getByLabelText("Window (seconds)");
+    const create = within(form).getByRole("button", { name: "Create" });
+    await expect(windowInput).toHaveAttribute("min", "60");
+    await expect(windowInput).toHaveAttribute("max", "86400");
+
+    // under the floor, over the ceiling, and not a whole number of seconds
+    for (const outside of ["30", "86401", "90.5"]) {
+      await userEvent.clear(windowInput);
+      await userEvent.type(windowInput, outside);
+      await waitFor(() => expect(windowInput).toHaveAttribute("aria-invalid", "true"));
+      await expect(create).toBeDisabled();
+      await expect(within(form).getByText("From 60 to 86400 seconds.")).toBeVisible();
+    }
+    ruleCreates.expectNotSent("POST", "/alert-rules");
+
+    await userEvent.clear(windowInput);
+    await userEvent.type(windowInput, "60");
+    await waitFor(() => expect(windowInput).not.toHaveAttribute("aria-invalid"));
+    await userEvent.click(create);
+    const body = await ruleCreates.expectSentBody<{ window_secs: number }>("POST", "/alert-rules");
+    await expect(body.window_secs).toBe(60);
+    await expectSheetClosed();
+  },
+};
+
+// a transition the channel refused is an alert nobody received, so the toast
+// says so instead of reading as a plain success (#1871)
+export const EvaluateReportsAFailedDelivery: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") {
+          return json({
+            rule: RULES[0],
+            notified: false,
+            notification: {
+              id: "note-9",
+              rule_id: "rule-1",
+              channel_id: "chan-1",
+              state: "firing",
+              delivery_status: "failed",
+              detail: "HTTP 500",
+              sent_at: "2026-08-11T12:01:00Z",
+            },
+          });
+        }
+        return loaded(input, init);
+      })}
+    >
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(canvasElement, /delivery failed: HTTP 500\. It is retried/, "error");
+  },
+};
+
+// the backend records state=error and last_error before it answers with the
+// failure, so the card has to be read again to show them (#1953)
+export const EvaluateFailureRefreshesTheRuleCard: Story = {
+  render: () => {
+    let evaluated = false;
+    return (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (init?.method === "POST" && url.includes("/evaluate")) {
+            evaluated = true;
+            return json({ error: { message: "could not connect to ClickHouse" } }, 502);
+          }
+          if (evaluated && url.includes("/alert-rules")) {
+            return json([
+              { ...RULES[0], state: "error", last_error: "could not connect to ClickHouse" },
+              ...RULES.slice(1),
+            ]);
+          }
+          return loaded(input, init);
+        })}
+      >
+        <Toasted>
+          <AlertRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(canvasElement, /could not connect to ClickHouse/, "error");
+    // on the card as well as in the toast, without a reload
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByText("could not connect to ClickHouse")
+          .some((node) => node.closest('[role="alert"]') === null),
+      ).toBe(true),
+    );
+  },
+};
+
+export const EvaluateReportsADelivery: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") {
+          return json({
+            rule: RULES[0],
+            notified: true,
+            notification: {
+              id: "note-9",
+              rule_id: "rule-1",
+              channel_id: "chan-1",
+              state: "firing",
+              delivery_status: "delivered",
+              detail: "HTTP 204",
+              sent_at: "2026-08-11T12:01:00Z",
+            },
+          });
+        }
+        return loaded(input, init);
+      })}
+    >
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(canvasElement, /the channel accepted it \(HTTP 204\)/);
+  },
+};
+
 export const AnEditedRuleFormPromptsBeforeDiscarding: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
@@ -394,6 +578,10 @@ export const ConfirmsBeforeDeletingARule: Story = {
     ruleDeletes.expectNotSent("DELETE", "/alert-rules/rule-1");
 
     await userEvent.click(button);
+    // the rule's history goes with it, which the dialog says before the click
+    await expect(
+      await within(document.body).findByText(/alert history is deleted with it/),
+    ).toBeVisible();
     await confirmDestructive(/high error rate/, /delete rule/i);
     await ruleDeletes.expectSent("DELETE", "/alert-rules/rule-1");
   },
@@ -439,7 +627,9 @@ export const HistoryLoaded: Story = {
     const canvas = within(canvasElement);
     // a failed delivery is the row that matters most: the alert fired and
     // nobody was told
-    await expect(await canvas.findByText("connection refused")).toBeInTheDocument();
+    await expect(await canvas.findByText("could not connect to the endpoint")).toBeInTheDocument();
+    // a transition with no channel is still recorded, as skipped
+    await expect(canvas.getByText("no channel configured")).toBeInTheDocument();
   },
 };
 
@@ -464,7 +654,7 @@ export const HistoryEmpty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText(/no alerts delivered yet/i)).toBeInTheDocument();
+    await expect(await canvas.findByText(/no alert transitions yet/i)).toBeInTheDocument();
   },
 };
 

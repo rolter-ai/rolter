@@ -3253,11 +3253,17 @@ export function deleteAlertRule(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/alert-rules/${id}`);
 }
 
-export function evaluateAlertRule(id: string): Promise<{ rule: AlertRuleRow; notified: boolean }> {
-  return sendJson<{ rule: AlertRuleRow; notified: boolean }>(
-    "POST",
-    `/api/v1/alert-rules/${id}/evaluate`,
-  );
+/** One evaluation's result: the updated rule, and the history row it wrote
+ * when the reading was a transition (`notified` is true only when that row
+ * was delivered). */
+export interface AlertEvaluation {
+  rule: AlertRuleRow;
+  notified: boolean;
+  notification: AlertNotificationRow | null;
+}
+
+export function evaluateAlertRule(id: string): Promise<AlertEvaluation> {
+  return sendJson<AlertEvaluation>("POST", `/api/v1/alert-rules/${id}/evaluate`);
 }
 
 export function fetchAlertHistory(limit = 100, ruleId?: string): Promise<AlertNotificationRow[]> {

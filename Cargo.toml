@@ -86,6 +86,9 @@ reqwest = { version = "0.12", default-features = false, features = [
   "http2",
 ] }
 rustls-pki-types = "1"
+# the WHATWG url parser reqwest itself uses, so the egress check reads a host
+# the way the client that connects to it does (#1953)
+url = "2.5"
 bytes = "1"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }

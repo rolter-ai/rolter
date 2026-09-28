@@ -36,6 +36,17 @@ describe("findLiterals", () => {
     expect(texts("<p>No events in window.</p>")).toEqual(["No events in window."]);
   });
 
+  // `+ Add rule` hid in a toolbar because a text run had to open with a
+  // letter (#1872)
+  test("catches a JSX text node that opens with a glyph", () => {
+    expect(texts("<Button>+ Add channel</Button>")).toEqual(["+ Add channel"]);
+    expect(texts("<Button>\n  + Add rule\n</Button>")).toEqual(["+ Add rule"]);
+    expect(texts("<a>← Back to keys</a>")).toEqual(["← Back to keys"]);
+    // the glyph beside a translated label, or on its own, is not copy
+    expect(texts('<Button>+ {t("pages.alerting.rules.add")}</Button>')).toEqual([]);
+    expect(texts("<span>+</span><span>+5</span>")).toEqual([]);
+  });
+
   // the `>` of an arrow is not a closing tag. without this, every `.tsx` file
   // returning a generic from an arrow function reports the type name as copy
   test("ignores a generic return type on an arrow function", () => {
