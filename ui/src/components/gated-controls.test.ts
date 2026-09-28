@@ -23,7 +23,7 @@ const ROOT = join(import.meta.dir, "..", "..");
 /** always gated, so every call site names itself */
 const GATED = ["GatedButton", "GatedSwitch", "GatedCombobox", "RowIconButton"];
 /** gated only when it is handed a `gate`, and then it names itself too */
-const OPTIONALLY_GATED = ["DeleteIconButton"];
+const OPTIONALLY_GATED = ["DeleteIconButton", "SwitchRow"];
 const OPENING = new RegExp(`<(${[...GATED, ...OPTIONALLY_GATED].join("|")})\\b`, "g");
 /**
  * The files that *are* the gated controls, and so the only ones allowed to call
@@ -35,6 +35,7 @@ const GATE_OWNERS = new Set([
   "src/components/GatedCombobox.tsx",
   "src/components/screen.tsx",
   "src/components/ui/delete-icon-button.tsx",
+  "src/components/ui/switch-row.tsx",
   "src/lib/can.tsx",
 ]);
 /** the waiver a genuine non-control use carries in the comment above it */

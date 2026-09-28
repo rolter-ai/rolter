@@ -113,7 +113,28 @@ noticing.
   per backoff window for each consumer, never once per request.
 - On recovery: `redis connection re-established; enforcement resumed` (info).
 
-Each line carries `consumer` = `budgets`, `rate limits` or `response cache`.
+Each line carries `consumer` = `budgets`, `rate_limits` or `response_cache`,
+the same value as the metrics' `consumer` label.
+
+On `/metrics` and over OTLP (#1772), each consumer that has a Redis URL reports:
+
+- `rolter_redis_connected{consumer}`: `1` while it holds a live connection,
+  `0` once an attempt failed or the connection was evicted;
+- `rolter_redis_reconnects_total{consumer}` and
+  `rolter_redis_connect_failures_total{consumer}`;
+- `rolter_fail_open_total{control="budget"|"rate_limit"}`: admission checks
+  that let a request through because Redis could not be reached, counted where
+  `exceeded` and `check_at` give up (no connection, or the read or admission
+  script failed). The response cache backs no control, so it has no series.
+
+`ReconnectingRedis` holds these as `RedisConnStats` (plain atomics in
+`metrics.rs`) and updates them only on the slow path: in `connect` and
+`invalidate`, and in the consumers' fail-open branches. A command over a live
+connection touches none of them. `AppState::with_logging` registers each
+consumer and warms its connection in the background (`warm_up`), so the gauge
+is truthful from startup rather than reading `0` until the first budgeted
+request. After that it is what the last use found: an idle consumer does not
+probe, which the user docs spell out next to the metric.
 
 ## Tests
 
@@ -130,3 +151,7 @@ The contract is tested against a real Redis. The tests self-skip unless
   reads are replayed and writes are not, and single-flight connection attempts.
 - Tests that point at a closed port cover backoff pacing and the fail-open
   latency.
+- The outage-and-restart test also reads the three connection series back
+  through `Metrics::render`: connected before, disconnected with failures
+  counted during, reconnected once after. The fail-open window test asserts one
+  counted failure for a burst of 500 callers.

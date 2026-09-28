@@ -344,6 +344,10 @@ Virtual keys are the bearer tokens clients present to the gateway. Remove the en
   Model allow-list. An empty list grants access to all models. When non-empty, requests for models not on the list are rejected.
 </ParamField>
 
+<ParamField path="providers" default="[]" type="list">
+  Upstream provider allow-list. An empty list allows selecting any provider on an allowed route. When non-empty, requests authenticated with this key can only route to the named providers.
+</ParamField>
+
 <ParamField path="disabled" default="false" type="boolean">
   Set to `true` to revoke the key without deleting it from the config file. Useful for auditing.
 </ParamField>
@@ -352,13 +356,19 @@ Virtual keys are the bearer tokens clients present to the gateway. Remove the en
   An RFC3339 expiry timestamp. The key stops authenticating at or after this instant, e.g. `"2027-01-01T00:00:00Z"`.
 </ParamField>
 
+<ParamField path="cache" type="boolean">
+  Per-key response-cache override, independent of a route's own opt-in. Omit to inherit the route decision, `false` to force responses to bypass the cache, or `true` to cache responses even on a route that did not opt in. The global `[cache]` switch is still required.
+</ParamField>
+
 ```toml
 [[virtual_keys]]
 key = "sk-rolter-dev"
 name = "local-dev"
 models = []        # empty = all models allowed
+providers = []     # empty = all providers allowed
 disabled = false
 # expires_at = "2027-01-01T00:00:00Z"
+# cache = false
 ```
 
 ---
@@ -567,7 +577,11 @@ snapshot reload.
 </ParamField>
 
 <ParamField path="workers" default="8" type="usize">
-  Concurrent upstream requests waiting for response headers for each provider.
+  Concurrent upstream requests waiting for response headers for each provider:
+  a provider with `workers = 8` has up to eight such calls outstanding, and the
+  next one waits for a worker. A worker is released when the headers arrive, so
+  a streamed response keeps generating upstream after its worker has moved on
+  and does not count against this limit.
 </ParamField>
 
 <ParamField path="backpressure" default="error" type="drop | block | error">
@@ -587,7 +601,7 @@ backpressure = "error"
 block_timeout_ms = 1000
 ```
 
-Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`.
+Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`. Depth, in-flight calls and the time requests wait for a worker are per-provider series described under [Provider queue](/observability/metrics#provider-queue).
 
 ---
 

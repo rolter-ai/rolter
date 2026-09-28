@@ -5,16 +5,17 @@ import {
   fetchOrgs,
   fetchProjects,
   fetchTeams,
+  type MeMembership,
   type OrgRow,
   type ProjectRow,
   type TeamRow,
 } from "@/lib/api";
 import { useOptionalAuth } from "@/lib/auth";
 
-// persisted, user-selectable org/team/project scope. auth is still a
-// client-side email gate only (see lib/auth.tsx), and there's no RBAC
-// backend yet (Phase 3 in TODO.md), so this is scope selection, not
-// permission enforcement — every signed-in user can see/pick any org.
+// persisted, user-selectable org/team/project scope. the lists come from the
+// control plane already narrowed to what the account can reach (#1846), so a
+// pick is always one of the account's own scopes; the server still decides
+// what each screen may read there
 const STORAGE_KEY = "rolter.scope";
 
 interface StoredScope {
@@ -49,6 +50,23 @@ function writeStored(scope: StoredScope) {
 // the write is broadcast instead
 const listeners = new Set<(scope: StoredScope) => void>();
 
+/** The org, team and project of the account's most specific membership. */
+function ownScope(
+  memberships: MeMembership[] | undefined,
+): { orgId?: string; teamId?: string; projectId?: string } | undefined {
+  const depth = (m: MeMembership) => (m.project_id ? 2 : m.team_id ? 1 : 0);
+  const best = memberships?.reduce<MeMembership | undefined>(
+    (pick, m) => (pick && depth(pick) >= depth(m) ? pick : m),
+    undefined,
+  );
+  if (!best) return undefined;
+  return {
+    orgId: best.org_id ?? best.scope_org_id ?? undefined,
+    teamId: best.team_id ?? best.scope_team_id ?? undefined,
+    projectId: best.project_id ?? undefined,
+  };
+}
+
 export interface ScopeResult {
   orgId?: string;
   teamId?: string;
@@ -74,10 +92,14 @@ export function useScope(): ScopeResult {
   }, []);
 
   const orgs = useQuery({ queryKey: ["scope", "orgs"], queryFn: fetchOrgs });
-  // the first org this account is actually a member of, from /auth/me (#1196).
-  // optional because scope is also read outside a session — and outside the
-  // provider entirely, in stories
-  const memberOrgId = useOptionalAuth()?.memberships.find((m) => m.org_id)?.org_id;
+  // the account's own scope, from /auth/me: an org it is a member of (#1196),
+  // else the org, team and project of its most specific membership, so a
+  // project member lands on their project rather than on whatever each list
+  // happens to start with (#1846). optional because scope is also read outside
+  // a session — and outside the provider entirely, in stories
+  const memberships = useOptionalAuth()?.memberships;
+  const own = ownScope(memberships);
+  const memberOrgId = memberships?.find((m) => m.org_id)?.org_id ?? own?.orgId;
   // prefer the stored id if it still exists in the fetched list, then the org
   // the account belongs to, and only then the first org the control plane
   // happened to return — this also self-heals a stale stored id (e.g. the org
@@ -95,7 +117,11 @@ export function useScope(): ScopeResult {
   const teamId =
     (stored.teamId && teams.data?.some((t) => t.id === stored.teamId)
       ? stored.teamId
-      : undefined) ?? teams.data?.[0]?.id;
+      : undefined) ??
+    (own?.orgId === orgId && own?.teamId && teams.data?.some((t) => t.id === own.teamId)
+      ? own.teamId
+      : undefined) ??
+    teams.data?.[0]?.id;
 
   const projects = useQuery({
     queryKey: ["scope", "projects", teamId],
@@ -105,7 +131,11 @@ export function useScope(): ScopeResult {
   const projectId =
     (stored.projectId && projects.data?.some((p) => p.id === stored.projectId)
       ? stored.projectId
-      : undefined) ?? projects.data?.[0]?.id;
+      : undefined) ??
+    (own?.teamId === teamId && own?.projectId && projects.data?.some((p) => p.id === own.projectId)
+      ? own.projectId
+      : undefined) ??
+    projects.data?.[0]?.id;
 
   const persist = React.useCallback((next: StoredScope) => {
     writeStored(next);

@@ -36,6 +36,7 @@ fn bench_pick(c: &mut Criterion) {
         ),
         token_ids: None,
         adapter: None,
+        ..Default::default()
     };
 
     let mut group = c.benchmark_group("pick");

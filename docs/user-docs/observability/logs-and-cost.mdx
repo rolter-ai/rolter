@@ -205,7 +205,7 @@ where withheld = 1 and ts > now() - interval 30 day;
 
 `rolter_withheld_responses_total` counts the same refusals in Prometheus. A sustained rate usually means a prompt is steering the model into output your policy forbids, and you pay for every attempt.
 
-`usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. Rows written before these columns existed default to `0`.
+`usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. It is also set on a `502` whose upstream answered and then failed to deliver the body the gateway was reading (a reset, a truncated response): the provider may have billed an answer nobody received. Rows written before these columns existed default to `0`.
 
 ## Time windows
 
@@ -254,10 +254,24 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
+
+## Finding one request by its id
+
+Every gateway response carries `x-request-id`, and the same id is the row's `request_id`. When a client reports a failed call, that id takes you straight to it:
+
+```bash
+curl -si https://gateway.example.com/v1/chat/completions ... | grep -i x-request-id
+# x-request-id: 3f2c9a1e-...
+
+curl -H "Authorization: Bearer $ROLTER_TOKEN" \
+  "https://control.example.com/api/v1/analytics/invocations?request_id=3f2c9a1e-..."
+```
+
+The answer is that one row, with its status, error, tokens, cost, latency and — if your role may read them — the captured bodies. `trace_id` looks a request up by its W3C trace id the same way, for when you start from a span in your tracing backend instead. Without a `since`, a lookup by either id searches every row still retained rather than the default last 7 days, so an older request is found rather than answered with an empty page. The lookup obeys the same visibility as the rest of the log: an id from a project you cannot read returns nothing.
 
 ## Built-in dashboard
 

@@ -151,6 +151,7 @@ impl Harness {
                     }),
                 }),
                 variants: Default::default(),
+                tenancy: None,
             });
         }
 

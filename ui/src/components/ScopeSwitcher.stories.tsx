@@ -11,6 +11,8 @@ import {
   cancelConfirmation,
   confirmDestructive,
   confirmation,
+  expectAllowed,
+  expectRefused,
   expectNoUxEvent,
   expectSheetClosed,
   expectUxEvent,
@@ -36,7 +38,7 @@ const chain =
       projects?: () => Response | Promise<Response>;
     } = {},
   ): FetchStub =>
-  async (input) => {
+  async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
     if (path === "/api/v1/orgs") return (over.orgs ?? (() => json([ORG])))();
     if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) {
@@ -44,6 +46,11 @@ const chain =
     }
     if (/^\/api\/v1\/teams\/[^/]+\/projects$/.test(path)) {
       return (over.projects ?? (() => json([PROJECT])))();
+    }
+    // the project's own settings echo what was saved, the way the server does
+    if (/^\/api\/v1\/projects\/[^/]+\/settings$/.test(path)) {
+      if (init?.method === "PUT") return json(JSON.parse(String(init.body)));
+      return json({ payload_min_role: "member" });
     }
     return json({});
   };
@@ -229,5 +236,54 @@ export const DeleteCanBeCancelled: Story = {
     await expect(abandon.outcome).toBe("cancelled");
     expectNoUxEvent("form_submit", "team-delete");
     expectNoUxEvent("form_abandon", "project-delete");
+  },
+};
+
+/**
+ * #1820: a project admin opens the project's settings from its row and lets
+ * the project's viewers read captured request and response bodies. Off is the
+ * default, so the switch starts off and the save sends the lowered floor.
+ */
+export const ProjectSettingsLetViewersReadPayloads: Story = {
+  render: () => {
+    const recorder = recording(chain());
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub} role="admin">
+        <ScopeSwitcher />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Project settings" }));
+    const dialog = await confirmation();
+    const toggle = await within(dialog).findByRole("switch", {
+      name: "Viewers can read captured payloads",
+    });
+    await expect(toggle).not.toBeChecked();
+    await expectAllowed(dialog, "Viewers can read captured payloads", "switch");
+    await userEvent.click(toggle);
+    const body = await calls.expectSentBody("PUT", `/projects/${PROJECT.id}/settings`);
+    await expect(body).toEqual({ payload_min_role: "viewer" });
+  },
+};
+
+/**
+ * A viewer can open the dialog and see where the setting stands, but the
+ * switch is refused up front and says the role it needs.
+ */
+export const ProjectSettingsAreAnAdminsToChange: Story = {
+  render: () => (
+    <Harness fetchStub={chain()} role="viewer">
+      <ScopeSwitcher />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Project settings" }));
+    const dialog = await confirmation();
+    await within(dialog).findByRole("switch", { name: "Viewers can read captured payloads" });
+    await expectRefused(dialog, "Viewers can read captured payloads", undefined, "switch");
   },
 };

@@ -182,6 +182,7 @@ impl Harness {
                 }),
             }),
             variants: Default::default(),
+            tenancy: None,
         });
 
         let mut state = AppState::with_logging(&config, None);

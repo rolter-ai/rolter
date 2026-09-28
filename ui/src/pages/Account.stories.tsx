@@ -50,6 +50,7 @@ const MFA: MfaStatus = {
   recovery_codes_remaining: 0,
   policy: "off",
   required: false,
+  enforce_after: null,
 };
 
 const KEYS: OwnedKeyRow[] = [
