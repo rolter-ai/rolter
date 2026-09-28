@@ -559,7 +559,9 @@ impl ControlHistograms {
     /// A counter rather than a histogram: the question is "is someone running a
     /// credential-stuffing run against this deployment", which is a rate, not a
     /// distribution. `outcome` is a closed set — `success`, `invalid`,
-    /// `throttled`, `locked` — and carries no account or address label, since
+    /// `throttled`, `locked`, `error`, and the second-factor steps
+    /// `mfa_challenge`, `mfa_invalid`, `mfa_enrolment`, `mfa_required` — and
+    /// carries no account or address label, since
     /// either would be unbounded cardinality *and* would put the identity an
     /// attacker is guessing into the metrics pipeline (#1079).
     pub fn record_login(&self, outcome: &'static str) {

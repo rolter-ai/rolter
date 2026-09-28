@@ -98,7 +98,7 @@ await step("T4.2", "a rate limit on the project answers 429 with Retry-After", a
   let hit: any = null;
   const seen: number[] = [];
   for (let i = 0; i < 8 && !hit; i++) {
-    const c = await gw("/v1/models", key2);
+    await gw("/v1/models", key2);
     const x = await chat(key2, "gpt-4o-mini");
     seen.push(x.status);
     if (x.status === 429) hit = x;
@@ -161,7 +161,6 @@ await step("T6.1", "remove the new hire's membership; they lose the project at o
   (globalThis as any).newhireKey = personal.json.key;
   await until(async () => (await gw("/v1/models", personal.json.key)).status === 200, 20000);
   const del = await api("DELETE", `/api/v1/memberships/${m.id}`, token);
-  const listVia = members.status === 200 ? "the lead" : "the admin token (the lead cannot list org memberships)";
   assert(del.status === 200 || del.status === 204, `delete membership as the lead → ${del.status} ${JSON.stringify(del.json).slice(0, 120)}`);
   const after = await api("GET", `/api/v1/projects/${projectId}/routes`, inviteeToken);
   assert(after.status === 403, `newhire still reads routes: ${after.status}`);
