@@ -130,9 +130,19 @@ pub async fn realtime(
         return denial.into_response();
     }
 
-    let entry = match snap.routes.get(&query.model) {
+    // another org's route is absent here, as it is on the HTTP pipelines
+    let entry = match snap.named_route_for(&query.model, virtual_key.as_ref()) {
         Some(entry) => entry,
-        None => return api_error(StatusCode::NOT_FOUND, "no route for requested model"),
+        // the same answer as the HTTP pipelines give a model nobody configured
+        None => {
+            return crate::error::ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no route for model '{}'", query.model),
+            )
+            .with_code("model_not_found")
+            .with_param("model")
+            .into_response()
+        }
     };
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");

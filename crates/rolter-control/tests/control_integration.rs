@@ -330,6 +330,1030 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
+/// One org can neither point its routes and groups at another org's providers
+/// nor take a name the gateway holds in a deployment-wide namespace, and the
+/// snapshot stays servable through every refused attempt (#1844, #1845).
+#[tokio::test]
+async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let post = |url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client.post(&url).json(&body).send().await.unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let tenant = |slug: &'static str| {
+        let base = base.clone();
+        async move {
+            let (_, org) = post(
+                format!("{base}/api/v1/orgs"),
+                json!({"name": slug, "slug": slug}),
+            )
+            .await;
+            let org_id = org["id"].as_str().unwrap().to_string();
+            let (_, team) = post(
+                format!("{base}/api/v1/orgs/{org_id}/teams"),
+                json!({"name": "core"}),
+            )
+            .await;
+            let team_id = team["id"].as_str().unwrap();
+            let (_, project) = post(
+                format!("{base}/api/v1/teams/{team_id}/projects"),
+                json!({"name": "app"}),
+            )
+            .await;
+            (org_id, project["id"].as_str().unwrap().to_string())
+        }
+    };
+    let (org_a, project_a) = tenant("tenant-a").await;
+    let (org_b, project_b) = tenant("tenant-b").await;
+    let provider = |org: String, name: &'static str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+
+    let (status, provider_a) = provider(org_a.clone(), "edge-a").await;
+    assert_eq!(status, 200, "{provider_a}");
+    let provider_a = provider_a["id"].as_str().unwrap().to_string();
+    let (status, route_a) = post(
+        format!("{base}/api/v1/projects/{project_a}/routes"),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{route_a}");
+    let (status, _) = post(
+        format!(
+            "{base}/api/v1/routes/{}/targets",
+            route_a["id"].as_str().unwrap()
+        ),
+        json!({"provider_id": provider_a, "weight": 1}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = post(
+        format!("{base}/api/v1/orgs/{org_a}/provider-groups"),
+        json!({"name": "pool-a", "strategy": "round_robin",
+               "members": [{"provider_id": provider_a}]}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // names the gateway holds across every org answer 409, without saying where
+    let (status, body) = provider(org_b.clone(), "edge-a").await;
+    assert_eq!(status, 409, "{body}");
+    assert!(!body.to_string().contains("tenant-a"), "{body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/providers"),
+        json!({"name": "edge-b", "slug": "edge-a", "kind": "openai_compatible",
+               "api_base": "http://127.0.0.1:9"}),
+    )
+    .await;
+    assert_eq!(status, 409, "provider slug: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/projects/{project_b}/routes"),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(status, 409, "route name: {body}");
+
+    // another org's provider is refused as a target and as a member, as if unknown
+    let (status, provider_b) = provider(org_b.clone(), "edge-b").await;
+    assert_eq!(status, 200, "{provider_b}");
+    let (status, route_b) = post(
+        format!("{base}/api/v1/projects/{project_b}/routes"),
+        json!({"model": "gpt-4o-b", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{route_b}");
+    let (status, body) = post(
+        format!(
+            "{base}/api/v1/routes/{}/targets",
+            route_b["id"].as_str().unwrap()
+        ),
+        json!({"provider_id": provider_a, "weight": 1}),
+    )
+    .await;
+    assert_eq!(status, 404, "cross-org target: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "pool-b", "strategy": "round_robin",
+               "members": [{"provider_id": provider_a}]}),
+    )
+    .await;
+    assert_eq!(status, 404, "cross-org member: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "pool-a", "strategy": "round_robin",
+               "members": [{"provider_id": provider_b["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group slug: {body}");
+
+    // the fleet still converges, and every row names the org that owns it
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let config = &snapshot["config"];
+    assert!(config.is_object(), "snapshot refused: {snapshot}");
+    let route = config["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["model"] == "gpt-4o")
+        .unwrap();
+    assert_eq!(route["tenancy"]["org_id"], org_a.as_str());
+    assert_eq!(route["tenancy"]["project_id"], project_a.as_str());
+    let edge_b = config["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "edge-b")
+        .unwrap();
+    assert_eq!(edge_b["tenancy"]["org_id"], org_b.as_str());
+
+    // the anonymous dashboard config names no tenant
+    let public: Value = client
+        .get(format!("{base}/api/v1/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !public.to_string().contains(&org_a),
+        "public config names an org"
+    );
+}
+
+/// Providers and provider groups answer `slug/model` from one namespace at the
+/// gateway, so a slug either kind holds is refused to the other kind too, on
+/// create and on rename. A route name is refused where it would sit on another
+/// org's `slug/model` address or on the builtin `fake-llm`, and is otherwise
+/// free to contain `/` (#1845).
+#[tokio::test]
+async fn providers_groups_and_route_names_share_the_gateways_address_namespace() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let tenant = |slug: &'static str| {
+        let base = base.clone();
+        async move {
+            let (_, org) = post(
+                format!("{base}/api/v1/orgs"),
+                json!({"name": slug, "slug": slug}),
+            )
+            .await;
+            let org_id = org["id"].as_str().unwrap().to_string();
+            let (_, team) = post(
+                format!("{base}/api/v1/orgs/{org_id}/teams"),
+                json!({"name": "core"}),
+            )
+            .await;
+            let team_id = team["id"].as_str().unwrap();
+            let (_, project) = post(
+                format!("{base}/api/v1/teams/{team_id}/projects"),
+                json!({"name": "app"}),
+            )
+            .await;
+            (org_id, project["id"].as_str().unwrap().to_string())
+        }
+    };
+    let (org_a, project_a) = tenant("tenant-a").await;
+    let (org_b, project_b) = tenant("tenant-b").await;
+    let provider = |org: &str, name: &str, slug: &str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "slug": slug, "kind": "openai_compatible",
+                   "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+
+    // org a holds provider slug `edge` and group slug `pool`
+    let (status, edge) = provider(&org_a, "edge", "edge").await;
+    assert_eq!(status, 200, "{edge}");
+    let (status, pool) = post(
+        format!("{base}/api/v1/orgs/{org_a}/provider-groups"),
+        json!({"name": "pool", "slug": "pool", "strategy": "round_robin",
+               "members": [{"provider_id": edge["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{pool}");
+
+    // across kinds: a provider may not take a group's slug, nor a group a
+    // provider's, and the refusal does not say which org holds it
+    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
+    assert_eq!(status, 409, "provider on a group slug: {body}");
+    assert!(!body.to_string().contains("tenant-a"), "{body}");
+    let (status, own) = provider(&org_b, "edge-b", "edge-b").await;
+    assert_eq!(status, 200, "{own}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group on a provider slug: {body}");
+    let (status, own_group) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "pool-b", "slug": "pool-b", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{own_group}");
+
+    // the same on rename
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
+        json!({"slug": "pool", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "provider renamed onto a group slug: {body}");
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            own_group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "edge", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "group renamed onto a provider slug: {body}");
+    // re-sending a group's own slug is no collision
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            own_group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "pool-b", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "a group collided with itself: {body}");
+
+    let route = |project: &str, model: &str| {
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": model, "strategy": "round_robin"}),
+        )
+    };
+    // another org's addresses, and the builtin, are not a route name
+    for model in ["edge/gpt-4o", "pool/gpt-4o", "fake-llm"] {
+        let (status, body) = route(&project_b, model).await;
+        assert_eq!(status, 409, "{model}: {body}");
+        assert!(!body.to_string().contains("tenant-a"), "{model}: {body}");
+    }
+    // the org's own address is its choice, and an hf-style name is no address
+    for (project, model) in [
+        (&project_a, "edge/gpt-4o"),
+        (&project_b, "edge-b/gpt-4o"),
+        (&project_b, "Qwen/Qwen2.5-7B-Instruct"),
+    ] {
+        let (status, body) = route(project, model).await;
+        assert_eq!(status, 200, "{model}: {body}");
+    }
+
+    // nothing refused above reached the snapshot, and it still builds
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        snapshot["config"].is_object(),
+        "snapshot refused: {snapshot}"
+    );
+}
+
+/// A readonly provider or group from the bootstrap file answers `slug/model`
+/// for every org, so no database provider or group may take its slug, on create
+/// or on rename, and no route may be named on its address (#1845).
+#[tokio::test]
+async fn a_bootstrap_slug_is_refused_to_every_database_row() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let mut bootstrap = rolter_core::GatewayConfig::default();
+    // a derived slug (`edge-cluster`) and an explicit group slug
+    bootstrap.providers.push(rolter_core::ProviderConfig {
+        name: "Edge Cluster".to_string(),
+        kind: rolter_core::ProviderKind::OpenaiCompatible,
+        api_base: "http://127.0.0.1:9".to_string(),
+        ..Default::default()
+    });
+    bootstrap
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "Shared".to_string(),
+            slug: Some("shared-pool".to_string()),
+            strategy: rolter_core::BalancingStrategy::RoundRobin,
+            members: vec![rolter_core::GroupMember {
+                provider: "Edge Cluster".to_string(),
+                model: None,
+                weight: 1,
+            }],
+            tenancy: None,
+        });
+    let app = rolter_control::test_app_with_bootstrap(db.pool().clone(), &bootstrap)
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let (_, org) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "tenant", "slug": "tenant"}),
+    )
+    .await;
+    let org = org["id"].as_str().unwrap().to_string();
+    let (_, team) = post(
+        format!("{base}/api/v1/orgs/{org}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let (_, project) = post(
+        format!(
+            "{base}/api/v1/teams/{}/projects",
+            team["id"].as_str().unwrap()
+        ),
+        json!({"name": "app"}),
+    )
+    .await;
+    let project = project["id"].as_str().unwrap().to_string();
+    let provider = |name: &str, slug: &str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "slug": slug, "kind": "openai_compatible",
+                   "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+
+    for slug in ["edge-cluster", "shared-pool"] {
+        let (status, body) = provider("mine", slug).await;
+        assert_eq!(status, 409, "provider on bootstrap slug {slug}: {body}");
+    }
+    let (status, own) = provider("mine", "mine").await;
+    assert_eq!(status, 200, "{own}");
+    // a readonly group's own slug meets the older config-owned guard first,
+    // which answers 400; a readonly provider's slug meets the namespace check
+    for (slug, refused) in [("edge-cluster", 409), ("shared-pool", 400)] {
+        let (status, body) = post(
+            format!("{base}/api/v1/orgs/{org}/provider-groups"),
+            json!({"name": format!("group-{slug}"), "slug": slug, "strategy": "round_robin",
+                   "members": [{"provider_id": own["id"]}]}),
+        )
+        .await;
+        assert_eq!(status, refused, "group on bootstrap slug {slug}: {body}");
+    }
+    let (status, group) = post(
+        format!("{base}/api/v1/orgs/{org}/provider-groups"),
+        json!({"name": "my-pool", "slug": "my-pool", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{group}");
+
+    // the same on a slug change
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
+        json!({"slug": "shared-pool", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "provider renamed onto a bootstrap slug: {body}"
+    );
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        format!(
+            "{base}/api/v1/provider-groups/{}",
+            group["id"].as_str().unwrap()
+        ),
+        json!({"slug": "edge-cluster", "allow_slug_change": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "group renamed onto a bootstrap slug: {body}");
+
+    // and a route may not sit on either address
+    for model in ["edge-cluster/gpt-4o", "shared-pool/gpt-4o"] {
+        let (status, body) = post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": model, "strategy": "round_robin"}),
+        )
+        .await;
+        assert_eq!(status, 409, "{model}: {body}");
+    }
+}
+
+/// Listings answer a caller whose role sits below the org with what that
+/// caller reaches, instead of refusing the whole list (#1846, #1850). A project
+/// member can navigate to their own project, a team admin sees and manages
+/// their own team's people, and nobody learns another tenant's org exists.
+#[tokio::test]
+async fn members_below_the_org_list_what_they_reach() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("listing".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let insert = |sql: &'static str, parent: Option<uuid::Uuid>, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            let query = sqlx::query_scalar::<_, uuid::Uuid>(sql);
+            let query = match parent {
+                Some(parent) => query.bind(parent),
+                None => query,
+            };
+            query.bind(name).fetch_one(&pool).await.unwrap()
+        }
+    };
+    let org_sql = "insert into orgs (name, slug) values ($1, $1) returning id";
+    let team_sql = "insert into teams (org_id, name) values ($1, $2) returning id";
+    let project_sql = "insert into projects (team_id, name) values ($1, $2) returning id";
+    let acme = insert(org_sql, None, "acme").await;
+    let globex = insert(org_sql, None, "globex").await;
+    let core = insert(team_sql, Some(acme), "core").await;
+    let research = insert(team_sql, Some(acme), "research").await;
+    let payments = insert(team_sql, Some(globex), "payments").await;
+    let app_project = insert(project_sql, Some(core), "app").await;
+    let batch = insert(project_sql, Some(core), "batch").await;
+    let evals = insert(project_sql, Some(research), "evals").await;
+    let checkout = insert(project_sql, Some(payments), "checkout").await;
+
+    let member = seed_user(&pool, "pm@acme.test", false).await;
+    seed_membership(&pool, member, None, None, Some(app_project), "member").await;
+    let lead = seed_user(&pool, "lead@acme.test", false).await;
+    seed_membership(&pool, lead, None, Some(core), None, "admin").await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(acme), None, None, "admin").await;
+    let outsider = seed_user(&pool, "ops@globex.test", false).await;
+    seed_membership(&pool, outsider, None, None, Some(checkout), "member").await;
+    let pm = seed_session(&pool, member, "listing_pm").await;
+    let lead_session = seed_session(&pool, lead, "listing_lead").await;
+    let org_session = seed_session(&pool, org_admin, "listing_org").await;
+    let ops = seed_session(&pool, outsider, "listing_ops").await;
+
+    let get = |path: String, token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}{path}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let ids = |rows: &Value| -> Vec<String> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // a project member: their own org, team and project, nothing else
+    let (_, orgs) = get("/api/v1/orgs".into(), pm.clone()).await;
+    assert_eq!(ids(&orgs), vec![acme.to_string()]);
+    let (_, teams) = get(format!("/api/v1/orgs/{acme}/teams"), pm.clone()).await;
+    assert_eq!(ids(&teams), vec![core.to_string()]);
+    let (_, projects) = get(format!("/api/v1/teams/{core}/projects"), pm.clone()).await;
+    assert_eq!(ids(&projects), vec![app_project.to_string()]);
+    let (_, projects) = get(format!("/api/v1/orgs/{acme}/projects"), pm.clone()).await;
+    assert_eq!(ids(&projects), vec![app_project.to_string()]);
+    assert_eq!(
+        get(format!("/api/v1/orgs/{globex}/teams"), pm.clone())
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        get(format!("/api/v1/teams/{research}/projects"), pm.clone())
+            .await
+            .0,
+        403
+    );
+    // and /auth/me says which org and team the project sits under
+    let (_, me) = get("/api/v1/auth/me".into(), pm.clone()).await;
+    assert_eq!(me["memberships"][0]["scope_org_id"], acme.to_string());
+    assert_eq!(me["memberships"][0]["scope_team_id"], core.to_string());
+    assert_eq!(me["memberships"][0]["project_id"], app_project.to_string());
+    // and the org's rule table, which the dashboard reads to say why a control
+    // is disabled: the custom roles are the org's, a project role is enough
+    let (status, matrix) = get(format!("/api/v1/rbac/matrix?org_id={acme}"), pm.clone()).await;
+    assert_eq!(status, 200, "{matrix}");
+    assert!(matrix["custom_roles"].is_array(), "{matrix}");
+
+    // another tenant's member never sees that acme exists
+    let (_, orgs) = get("/api/v1/orgs".into(), ops.clone()).await;
+    assert_eq!(ids(&orgs), vec![globex.to_string()]);
+    assert_eq!(
+        get(format!("/api/v1/rbac/matrix?org_id={acme}"), ops.clone())
+            .await
+            .0,
+        403
+    );
+
+    // a team admin: every project of their team, and their team's people
+    let (_, projects) = get(
+        format!("/api/v1/teams/{core}/projects"),
+        lead_session.clone(),
+    )
+    .await;
+    let mut both = vec![app_project.to_string(), batch.to_string()];
+    both.sort();
+    let mut listed = ids(&projects);
+    listed.sort();
+    assert_eq!(listed, both);
+    let (_, memberships) = get(
+        format!("/api/v1/orgs/{acme}/memberships"),
+        lead_session.clone(),
+    )
+    .await;
+    let people: Vec<&str> = memberships
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["user_id"].as_str().unwrap())
+        .collect();
+    assert!(people.contains(&lead.to_string().as_str()), "{memberships}");
+    assert!(
+        people.contains(&member.to_string().as_str()),
+        "{memberships}"
+    );
+    assert!(
+        !people.contains(&org_admin.to_string().as_str()),
+        "org row leaked: {memberships}"
+    );
+    let (_, users) = get(format!("/api/v1/orgs/{acme}/users"), lead_session.clone()).await;
+    let emails: Vec<&str> = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["email"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["lead@acme.test", "pm@acme.test"]);
+
+    // invitations: the team admin sees and revokes their team's, not research's
+    let invite = |scope_id: uuid::Uuid, email: &'static str| {
+        client
+            .post(format!("{base}/api/v1/orgs/{acme}/invitations"))
+            .bearer_auth("listing")
+            .json(&json!({"email": email, "role": "member",
+                          "scope_type": "project", "scope_id": scope_id}))
+            .send()
+    };
+    let ours: Value = invite(batch, "new@acme.test")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let theirs: Value = invite(evals, "eval@acme.test")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ours = ours["invitation"]["id"].as_str().unwrap().to_string();
+    let theirs = theirs["invitation"]["id"].as_str().unwrap().to_string();
+    let (_, invitations) = get(
+        format!("/api/v1/orgs/{acme}/invitations"),
+        lead_session.clone(),
+    )
+    .await;
+    assert_eq!(ids(&invitations), vec![ours.clone()]);
+    let revoke = |id: String| {
+        client
+            .delete(format!("{base}/api/v1/invitations/{id}"))
+            .bearer_auth(lead_session.clone())
+            .send()
+    };
+    assert_eq!(revoke(ours).await.unwrap().status(), 200);
+    assert_eq!(revoke(theirs).await.unwrap().status(), 403);
+
+    // an org role still gets the whole list
+    let (_, memberships) = get(format!("/api/v1/orgs/{acme}/memberships"), org_session).await;
+    assert_eq!(memberships.as_array().unwrap().len(), 3, "{memberships}");
+}
+
+/// A superadmin account holds no membership, and still gets what an org admin
+/// gets from the self-service key routes: the seeded operator could not open
+/// the Playground on a fresh deployment (#1847).
+#[tokio::test]
+async fn a_superadmin_without_membership_mints_personal_and_playground_keys() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("keys".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'app') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // a playground key is scoped to the project's routes, so it needs one
+    sqlx::query(
+        "insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'round_robin')",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let operator = seed_user(&pool, "operator@acme.test", true).await;
+    let session = seed_session(&pool, operator, "keys_operator").await;
+
+    let playground = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project}/playground-key"
+        ))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(playground.status(), 200);
+    let personal = client
+        .post(format!("{base}/api/v1/me/projects/{project}/virtual-keys"))
+        .bearer_auth(&session)
+        .json(&json!({"name": "operator laptop", "expires_in_days": 7}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(personal.status(), 200);
+}
+
+/// Offboarding stops a person's own keys at the gateway and leaves the shared
+/// keys an admin minted for the project alone (#1841). Deprovisioning through
+/// SCIM moves the snapshot version, so a polling gateway refetches; the same
+/// keys come back on reprovisioning; and deleting the account disables them
+/// rather than letting the foreign key turn them into shared keys.
+#[tokio::test]
+async fn a_leavers_personal_keys_leave_the_snapshot_and_shared_keys_stay() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("leaver".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("leaver")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'app') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let scim: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("leaver")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim = scim["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&scim)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "engineer@acme.test",
+            "emails": [{"value": "engineer@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let engineer: uuid::Uuid = scim_id.parse().unwrap();
+    seed_membership(&pool, engineer, None, None, Some(project), "member").await;
+    let session = seed_session(&pool, engineer, "leaver_engineer").await;
+
+    let mint = |url: String, bearer: String| {
+        let client = client.clone();
+        async move {
+            let row: Value = client
+                .post(url)
+                .bearer_auth(bearer)
+                .json(&json!({"name": "k", "expires_in_days": 7}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            row["id"].as_str().unwrap().to_string()
+        }
+    };
+    let personal = mint(
+        format!("{base}/api/v1/me/projects/{project}/virtual-keys"),
+        session.clone(),
+    )
+    .await;
+    let shared = mint(
+        format!("{base}/api/v1/projects/{project}/virtual-keys"),
+        "leaver".to_string(),
+    )
+    .await;
+    // the version and, per served key, whether it is disabled
+    let snapshot = || {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let snapshot: Value = client
+                .get(format!("{base}/internal/snapshot"))
+                .bearer_auth("leaver")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let keys = snapshot["config"]["db_virtual_keys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|key| {
+                    (
+                        key["id"].as_str().unwrap().to_string(),
+                        key["disabled"].as_bool().unwrap_or(false),
+                    )
+                })
+                .collect::<std::collections::HashMap<String, bool>>();
+            (snapshot["version"].as_i64().unwrap(), keys)
+        }
+    };
+    let set_active = |active: bool| {
+        let client = client.clone();
+        let url = format!("{base}/scim/v2/Users/{scim_id}");
+        let scim = scim.clone();
+        async move {
+            let response = client
+                .patch(url)
+                .bearer_auth(scim)
+                .json(&json!({
+                    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                    "Operations": [{"op": "replace", "path": "active", "value": active}]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+    };
+    let (version, keys) = snapshot().await;
+    assert_eq!(keys.get(&personal), Some(&false), "{keys:?}");
+    assert_eq!(keys.get(&shared), Some(&false), "{keys:?}");
+
+    // deprovisioned by the IdP: the personal key goes, and the version moves
+    // so the gateways refetch; the shared one stays
+    set_active(false).await;
+    let (after, keys) = snapshot().await;
+    assert!(
+        after > version,
+        "deactivation left the version at {version}"
+    );
+    assert!(
+        !keys.contains_key(&personal),
+        "a deactivated creator's key is served"
+    );
+    assert_eq!(keys.get(&shared), Some(&false));
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'scim.user.update' order by at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["personal_keys"], 1, "{detail}");
+
+    // reprovisioned: the same key is back, nothing about it changed
+    set_active(true).await;
+    let (again, keys) = snapshot().await;
+    assert!(again > after, "reactivation left the version at {after}");
+    assert_eq!(keys.get(&personal), Some(&false));
+
+    // their last role that reaches the project is removed: gone again
+    sqlx::query("delete from memberships where user_id = $1")
+        .bind(engineer)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, keys) = snapshot().await;
+    assert!(
+        !keys.contains_key(&personal),
+        "a creator with no reach keeps their key"
+    );
+    assert_eq!(keys.get(&shared), Some(&false));
+
+    // the account is deleted: the key outlives it as a row, disabled, rather
+    // than being served as a shared key with its owner's policy gone
+    seed_membership(&pool, engineer, None, None, Some(project), "member").await;
+    let deleted = client
+        .delete(format!("{base}/api/v1/users/{engineer}"))
+        .bearer_auth("leaver")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    let (_, keys) = snapshot().await;
+    assert_eq!(keys.get(&personal), Some(&true), "{keys:?}");
+    assert_eq!(keys.get(&shared), Some(&false));
+    // written to the org it left, since its memberships went with it (#1854)
+    let (audited_org, detail): (Option<uuid::Uuid>, Value) = sqlx::query_as(
+        "select org_id, detail from audit_log where action = 'user.delete' and target_id = $1",
+    )
+    .bind(engineer)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited_org, Some(org));
+    assert_eq!(detail["personal_keys"], 1, "{detail}");
+}
+
+/// Account events are written with no org. An org's audit log shows them for
+/// its own people, and not for anyone else's (#1854).
+#[tokio::test]
+async fn an_orgs_audit_log_shows_its_own_peoples_account_events() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'app') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, admin, Some(org), None, None, "admin").await;
+    let member = seed_user(&pool, "pm@acme.test", false).await;
+    seed_membership(&pool, member, None, None, Some(project), "member").await;
+    let stranger = seed_user(&pool, "ops@globex.test", false).await;
+    for (user, action) in [
+        (member, "auth.mfa_break_glass_reset"),
+        (member, "auth.login_failed"),
+        (stranger, "auth.login_failed"),
+    ] {
+        sqlx::query(
+            "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
+             values (null, $1, $2, 'user', $1, '{}')",
+        )
+        .bind(user)
+        .bind(action)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let session = seed_session(&pool, admin, "audit_admin").await;
+    let page: Value = client
+        .get(format!("http://{addr}/api/v1/orgs/{org}/audit-log"))
+        .bearer_auth(session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows: Vec<(String, String)> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["actor_user_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                row["action"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let member = member.to_string();
+    assert!(
+        rows.contains(&(member.clone(), "auth.mfa_break_glass_reset".to_string())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&(member, "auth.login_failed".to_string())),
+        "{rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|(actor, _)| actor == &stranger.to_string()),
+        "another tenant's account events: {rows:?}"
+    );
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();
@@ -2133,6 +3157,211 @@ async fn admin_token_guards_crud_and_snapshot() {
         .await
         .unwrap();
     assert!(allowed.status().is_success(), "{}", allowed.status());
+}
+
+/// Every GET the served OpenAPI document does not mark public refuses an
+/// anonymous or forged caller once an admin token is configured (#1820).
+///
+/// The analytics and health routes answered anyone for months: they were merged
+/// onto the open router, the document said they needed a bearer, and nothing
+/// compared the two. This walks the document the control plane actually serves,
+/// so a route added later without a guard fails here rather than in a
+/// deployment — and so does a route that is open by design but was never marked
+/// `.public()`, which keeps the document honest about what an anonymous caller
+/// can ask. Only a 401 passes: before the fix these routes answered 503 in a
+/// test app with no ClickHouse, so "anything but 200" would have passed too.
+#[tokio::test]
+async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app =
+        rolter_control::test_app_with_admin_token(db.pool().clone(), Some("sweep".to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let spec: Value = client
+        .get(format!("http://{addr}/openapi.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // authenticated downstream rather than here: the playground proxy hands the
+    // caller's virtual key to the gateway, and the gateway is what checks it
+    const CHECKED_DOWNSTREAM: &[&str] = &["/gw/{path}"];
+    let nil = uuid::Uuid::nil().to_string();
+    let mut answered = Vec::new();
+    let mut walked = 0;
+    for (path, item) in spec["paths"].as_object().expect("the document has paths") {
+        let Some(op) = item.get("get") else {
+            continue;
+        };
+        if op.get("security") == Some(&json!([])) || CHECKED_DOWNSTREAM.contains(&path.as_str()) {
+            continue;
+        }
+        // every path parameter becomes the nil uuid: a guarded route has to
+        // refuse the caller before it looks anything up
+        let mut concrete = String::with_capacity(path.len());
+        let mut rest = path.as_str();
+        while let Some(open) = rest.find('{') {
+            let close = rest[open..].find('}').expect("closed parameter") + open;
+            concrete.push_str(&rest[..open]);
+            concrete.push_str(&nil);
+            rest = &rest[close + 1..];
+        }
+        concrete.push_str(rest);
+        for bearer in [None, Some("forged")] {
+            let mut request = client.get(format!("http://{addr}{concrete}"));
+            if let Some(bearer) = bearer {
+                request = request.bearer_auth(bearer);
+            }
+            let status = request.send().await.unwrap().status();
+            if status != 401 {
+                let who = if bearer.is_some() {
+                    "forged bearer"
+                } else {
+                    "anonymous"
+                };
+                answered.push(format!("{path} ({who}) -> {status}"));
+            }
+        }
+        walked += 1;
+    }
+    assert!(walked > 50, "the sweep only reached {walked} routes");
+    assert!(
+        answered.is_empty(),
+        "routes that did not refuse a caller without credentials: {answered:#?}"
+    );
+}
+
+/// Only a project admin changes who reads a project's captured bodies, only to
+/// a role the column admits, and the change is audited (#1820).
+#[tokio::test]
+async fn project_settings_are_read_by_viewers_and_changed_by_project_admins() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("settings".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'app') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut tokens = std::collections::HashMap::new();
+    for role in ["viewer", "member", "admin"] {
+        let user = seed_user(&pool, &format!("{role}@settings.test"), false).await;
+        seed_membership(&pool, user, None, None, Some(project), role).await;
+        tokens.insert(
+            role,
+            seed_session(&pool, user, &format!("settings_{role}")).await,
+        );
+    }
+    let settings = format!("{base}/api/v1/projects/{project}/settings");
+    let read = |role: &'static str| client.get(&settings).bearer_auth(&tokens[role]).send();
+    let write = |role: &'static str, value: &'static str| {
+        client
+            .put(&settings)
+            .bearer_auth(&tokens[role])
+            .json(&json!({"payload_min_role": value}))
+            .send()
+    };
+
+    // members by default, and any role on the project may read the setting
+    let current: Value = read("viewer").await.unwrap().json().await.unwrap();
+    assert_eq!(current, json!({"payload_min_role": "member"}));
+
+    // a member cannot lower the bar for everyone else
+    assert_eq!(write("member", "viewer").await.unwrap().status(), 403);
+    // and an admin cannot set a role the column does not admit
+    assert_eq!(write("admin", "admin").await.unwrap().status(), 400);
+
+    let changed = write("admin", "viewer").await.unwrap();
+    assert_eq!(changed.status(), 200);
+    let current: Value = read("viewer").await.unwrap().json().await.unwrap();
+    assert_eq!(current, json!({"payload_min_role": "viewer"}));
+
+    // the viewer's effective permissions at the project now include the bodies
+    let effective: Value = client
+        .get(format!(
+            "{base}/api/v1/rbac/effective?org_id={org}&team_id={team}&project_id={project}"
+        ))
+        .bearer_auth(&tokens["viewer"])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(allowed.contains(&"request_payload:read"), "{allowed:?}");
+
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'project.settings.update' \
+         and target_id = $1 and detail->>'payload_min_role' = 'viewer'",
+    )
+    .bind(project)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    // a viewer of another org who names acme's project beside their own org
+    // resolves a role at that assembled chain, but holds none on the project's
+    // real one: the setting is acme's, and it must not come back as theirs
+    let umbrella: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Umbrella', 'umbrella') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let outsider = seed_user(&pool, "outsider@settings.test", false).await;
+    seed_membership(&pool, outsider, Some(umbrella), None, None, "viewer").await;
+    let outsider_token = seed_session(&pool, outsider, "settings_outsider").await;
+    let effective: Value = client
+        .get(format!(
+            "{base}/api/v1/rbac/effective?org_id={umbrella}&project_id={project}"
+        ))
+        .bearer_auth(&outsider_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(effective["role"], json!("viewer"), "{effective}");
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!allowed.contains(&"request_payload:read"), "{allowed:?}");
 }
 
 /// `GET /api/v1/config/export` hands back the deployment as an importable
@@ -11093,8 +12322,7 @@ async fn org_projects_lists_every_team_in_the_org_and_no_other() {
     assert!(rows[0]["id"].is_string());
     assert!(rows[0]["created_at"].is_string());
 
-    // read is a viewer's, at the org: the answer spans every team, so a
-    // membership in one team is not enough
+    // read is a viewer's; a role at the org answers for every team
     let org_viewer = seed_user(&pool, "org-viewer@example.com", false).await;
     seed_membership(&pool, org_viewer, Some(org_uuid), None, None, "viewer").await;
     let org_token = seed_session(&pool, org_viewer, "org-projects-viewer").await;
@@ -11117,9 +12345,37 @@ async fn org_projects_lists_every_team_in_the_org_and_no_other() {
     )
     .await;
     let team_token = seed_session(&pool, team_viewer, "org-projects-team-viewer").await;
-    let refused = client
+    // a role in one team answers with that team's projects rather than
+    // refusing the whole list, so a team member can find their own (#1846)
+    let for_team = client
         .get(format!("{base}/api/v1/orgs/{org_id}/projects"))
         .bearer_auth(&team_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(for_team.status(), 200);
+    let for_team: Value = for_team.json().await.unwrap();
+    let names: Vec<(&str, &str)> = for_team
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["team_name"].as_str().unwrap(),
+                row["name"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(names, vec![("Alpha", "prod"), ("Alpha", "staging")]);
+
+    // and a caller with no role anywhere in this org is still refused
+    let outsider = seed_user(&pool, "outsider@example.com", false).await;
+    let other_uuid: uuid::Uuid = other_org.parse().unwrap();
+    seed_membership(&pool, outsider, Some(other_uuid), None, None, "viewer").await;
+    let outsider_token = seed_session(&pool, outsider, "org-projects-outsider").await;
+    let refused = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/projects"))
+        .bearer_auth(&outsider_token)
         .send()
         .await
         .unwrap();

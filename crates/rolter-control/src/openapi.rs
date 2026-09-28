@@ -506,7 +506,7 @@ fn operations() -> Vec<Op> {
                 "Embedded Scalar bundle backing /docs",
             )
             .public(),
-            Op::get("/api/v1/ping", "ping", "Round-trip check for the dashboard"),
+            Op::get("/api/v1/ping", "ping", "Round-trip check for the dashboard").public(),
             Op::get(
                 "/api/v1/version",
                 "getVersion",
@@ -515,13 +515,16 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/config",
                 "getConfig",
-                "The assembled gateway configuration",
-            ),
+                "The assembled gateway configuration, with every secret redacted",
+            )
+            // deliberately open: `redact_config_for_dashboard` strips it first
+            .public(),
             Op::get(
                 "/api/v1/config/problems",
                 "getConfigProblems",
                 "Configuration problems detected in the assembled config",
-            ),
+            )
+            .public(),
             Op::get(
                 "/api/v1/config/export",
                 "exportConfig",
@@ -531,13 +534,15 @@ fn operations() -> Vec<Op> {
                 "/api/v1/currency",
                 "getCurrency",
                 "Supported currencies and their conversion rates",
-            ),
+            )
+            .public(),
             Op::get(
                 "/api/v1/provider-kinds",
                 "getProviderKinds",
                 "Provider kinds this build can talk to",
-            ),
-            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
+            )
+            .public(),
+            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog").public(),
             Op::get(
                 "/api/v1/stability",
                 "getStability",
@@ -671,6 +676,19 @@ fn operations() -> Vec<Op> {
             )
             .ok(Payload::List("OrgProject")),
             Op::delete("/api/v1/projects/{id}", "deleteProject", "Delete a project"),
+            Op::get(
+                "/api/v1/projects/{id}/settings",
+                "getProjectSettings",
+                "A project's settings: who may read its captured payloads",
+            )
+            .ok(Payload::Ref("ProjectSettings")),
+            Op::put(
+                "/api/v1/projects/{id}/settings",
+                "updateProjectSettings",
+                "Change a project's settings (project admin)",
+            )
+            .body(Payload::Ref("ProjectSettings"))
+            .ok(Payload::Ref("ProjectSettings")),
             Op::get(
                 "/api/v1/orgs/{org_id}/business-units",
                 "listBusinessUnits",
@@ -1602,7 +1620,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/invocations",
                 "listInvocations",
-                "Page individual request records",
+                "Page the request records the caller's roles reach, bodies withheld below the payload floor",
             )
             .query(INVOCATIONS_QUERY),
         ],
@@ -2253,6 +2271,15 @@ fn tenancy_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["name"],
             "properties": {"name": string},
+            "additionalProperties": false
+        },
+        "ProjectSettings": {
+            "type": "object",
+            "description": "A project's own settings. `payload_min_role` is the lowest built-in role that may read the request and response bodies payload capture stored for the project's traffic; an admin always may.",
+            "required": ["payload_min_role"],
+            "properties": {
+                "payload_min_role": {"type": "string", "enum": ["member", "viewer"], "default": "member"}
+            },
             "additionalProperties": false
         },
 

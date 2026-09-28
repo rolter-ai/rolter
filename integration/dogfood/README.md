@@ -24,6 +24,8 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 | `keys.env`            | the API keys the fleet expects (fake, loopback-only, checked in on purpose)                   |
 | `adaptive-routing.sh` | turns the adaptive-routing kill switch on or off (#1817)                                      |
 | `ux-capture.sh`       | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)             |
+| `personas.sh`         | one account per user-journey persona, each at the role and scope its script assumes           |
+| `journeys/`           | the user-journey scripts as a headless runner (`just dogfood-journeys`)                       |
 
 ### Which config file does what
 
