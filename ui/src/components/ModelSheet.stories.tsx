@@ -387,6 +387,34 @@ export const OffersNoAdditionalFieldsSwitch: Story = {
 };
 
 /**
+ * The sheet offers no connection check (#1972).
+ *
+ * Its "Test connection" button ran a timer and then showed "Connection OK" for
+ * any draft, an empty provider and upstream included, without a request. The
+ * one probe the control plane has, the provider test, says whether a provider
+ * answers and not whether it serves this upstream model, so nothing here claims
+ * a result until a probe can (#2008, #2009).
+ */
+export const OffersNoFakeConnectionTest: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
+    await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
+    // a complete draft, the state an operator would have tested from, with the
+    // footer past validation: this is an absent control, not a footer that has
+    // not painted its actions yet
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Add model" })).toBeEnabled());
+    await expect(
+      dialog.queryByRole("button", { name: /test connection/i }),
+    ).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/connection ok/i)).not.toBeInTheDocument();
+    calls.expectNotSent("POST", "/test");
+  },
+};
+
+/**
  * A save that touched nothing in the advanced editor does not rewrite the blob
  * — the params PUT still goes, the advanced PUT does not.
  */

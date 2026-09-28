@@ -355,11 +355,6 @@
       "vkeys": "Allowed virtual keys",
       "users": "Restrict to specific users"
     },
-    "test": {
-      "run": "Test connection",
-      "testing": "Testing…",
-      "ok": "Connection OK"
-    },
     "errors": {
       "provider": "Required. Pick the upstream provider that actually serves this model.",
       "upstream": "Required. Enter the model id exactly as the provider's API expects it — this is the string sent to the base URL (e.g. gpt-4o, claude-sonnet-4-20250514).",

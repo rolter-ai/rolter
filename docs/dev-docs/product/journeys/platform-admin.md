@@ -134,12 +134,13 @@ many places, and does traffic need spreading?**
 
 ### A3-a — one provider, one route
 
-| #    | step                                      | where                                                                               | expect                                                                                      | status                                                 |
-| ---- | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| A3.1 | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers` | the key is sealed with the KEK and never shown again                                        | verified                                               |
-| A3.2 | check it before anything depends on it    | the provider's **Test connection**                                                  | a model list from the upstream, or the reason there is none                                 | verified                                               |
-| A3.3 | add a route: public name → provider/model | **Models → Routing Rules** · `POST /api/v1/projects/{id}/routes`                    | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)                                        |
-| A3.4 | try it                                    | **Playground**, the new model                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | bug — #1853; #1847 for a superadmin with no membership |
+| #     | step                                      | where                                                                               | expect                                                                                      | status                                                 |
+| ----- | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| A3.1  | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers` | the key is sealed with the KEK and never shown again                                        | verified                                               |
+| A3.2  | check it before anything depends on it    | the provider's **Test connection**                                                  | a model list from the upstream, or the reason there is none                                 | verified                                               |
+| A3.3  | add a route: public name → provider/model | **Models → Routing Rules** · `POST /api/v1/projects/{id}/routes`                    | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)                                        |
+| A3.3a | check the upstream name before saving     | **Model Catalog → + Add model**, the sheet                                          | the provider's catalogue lists the upstream model, or the reason it could not tell          | gap — #2008 (UI: #2009)                                |
+| A3.4  | try it                                    | **Playground**, the new model                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | bug — #1853; #1847 for a superadmin with no membership |
 
 ### A3-b — the same model from two providers, with failover
 

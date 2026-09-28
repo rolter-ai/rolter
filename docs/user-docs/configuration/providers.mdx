@@ -49,6 +49,8 @@ curl -X POST https://control.example.com/api/v1/providers/$ID/test
 
 It issues a `GET` against the provider kind's free model-list endpoint — the same one the gateway's health sweep uses, so a green test means the sweep will agree. It is a catalogue call, not a completion, so it costs nothing to run.
 
+It checks the provider, not a model. `models_found` is a count, so a green test does not say that the upstream model name a route sends is among them, and the model sheet has no connection check of its own until the probe can answer that ([#2008](https://github.com/rolter-ai/rolter/issues/2008)).
+
 ### Reading the result
 
 | Field          | What it tells you                                                                                         |

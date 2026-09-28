@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Lock, Plug, Plus } from "lucide-react";
+import { Lock, Plus } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -569,7 +569,6 @@ export function ModelSheet({
     preview: false,
   });
   const [dupFrom, setDupFrom] = React.useState("");
-  const [testState, setTestState] = React.useState<"idle" | "testing" | "ok">("idle");
   const initialRef = React.useRef("");
   // the advanced payload as it was seeded, so a save can skip the extra PUT
   // when the operator changed nothing on that half of the form
@@ -650,7 +649,6 @@ export function ModelSheet({
     }
     setDraft(d);
     setDupFrom("");
-    setTestState("idle");
     setSecOpen({
       general: true,
       params: false,
@@ -879,11 +877,6 @@ export function ModelSheet({
     saving: save.isPending,
     onOpenChange,
   });
-
-  const runTest = () => {
-    setTestState("testing");
-    window.setTimeout(() => setTestState("ok"), 1100);
-  };
 
   // duplicate-from: prefill the draft from an existing db route, then tweak
   const applyDupFrom = (routeId: string) => {
@@ -1648,29 +1641,10 @@ export function ModelSheet({
           }
         />
         <div className="flex items-center gap-2.5 px-[22px] py-3.5">
-          <button
-            type="button"
-            disabled={readonly}
-            onClick={runTest}
-            className={cn(
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              "inline-flex h-9 items-center gap-1.5 rounded-md border border-[color:var(--border-subtle)] px-3 text-sm transition-colors hover:bg-[color:var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50",
-              testState === "ok"
-                ? "text-[color:var(--status-success-text)]"
-                : "text-[color:var(--text-secondary)]",
-            )}
-          >
-            {testState === "ok" ? (
-              <Check className="h-[15px] w-[15px]" />
-            ) : (
-              <Plug className="h-[15px] w-[15px]" />
-            )}
-            {testState === "testing"
-              ? t("modelSheet.test.testing")
-              : testState === "ok"
-                ? t("modelSheet.test.ok")
-                : t("modelSheet.test.run")}
-          </button>
+          {/* no connection check here until the provider probe can say whether
+              it serves this upstream model (#2008, #2009). the provider's own
+              test answers "does the provider answer", which beside a model
+              name reads as a claim about the model */}
           {/* the primary action stays where it is and greys out instead of
               vanishing (#1265): a footer that reflows tells an operator who
               never scrolled to the field errors only that saving is gone, so
