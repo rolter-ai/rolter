@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Filter, ScrollText, X } from "lucide-react";
+import { ChartNoAxesColumn, ChevronLeft, ChevronRight, Filter, ScrollText, X } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import {
   FilterCheckList,
@@ -24,7 +25,7 @@ import {
   fetchModels,
   type InvocationRow,
 } from "@/lib/api";
-import { useIsSuperadmin } from "@/lib/can";
+import { useCan } from "@/lib/can";
 import type { CodeLanguage } from "@/lib/code";
 import { useCurrencyCode } from "@/lib/currency";
 import { useScope } from "@/lib/scope";
@@ -36,6 +37,8 @@ import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 50;
+// how often the live feed asks for the newest page
+const POLL_MS = 5000;
 type StatusFilter = "all" | "error" | "success";
 
 const num = (v: number | string | undefined): number => {
@@ -60,8 +63,10 @@ const TD = "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono
 
 // LLM logs from the design prototype: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
-// the raw request/response payloads
-export default function Logs() {
+// the raw request/response payloads. `pollMs` is only ever set by a story, so
+// a play can watch several polling intervals pass inside the test-runner's
+// per-story budget
+export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
@@ -146,7 +151,14 @@ export default function Logs() {
       }),
     retry: (n, error) => !isUnavailable(error) && n < 2,
     placeholderData: (prev) => prev,
-    refetchInterval: streaming ? 5000 : false,
+    // a query that has never held data goes back to pending on every refetch,
+    // which unmounts its error: polling one that failed swapped the alert for
+    // a skeleton and back every cycle, and a screen reader heard the alert
+    // again each time (#1984). so the feed stops there and waits for the
+    // retry button. a failure with rows already on screen keeps its error
+    // through a refetch, so that one goes on polling and says it is retrying
+    refetchInterval: (q) =>
+      streaming && !(q.state.status === "error" && q.state.data === undefined) ? pollMs : false,
   });
 
   // every filter is applied by the server now (#1247). filtering the page
@@ -179,16 +191,45 @@ export default function Logs() {
     setCustomerSel([]);
   };
 
-  // a deployment with no analytics store is a load state like any other, not a
-  // grey paragraph of its own: LoadError names the cause, says which setting
-  // changes it, and withholds the retry that cannot work (#1236)
+  // a deployment with no analytics store is a shape rolter supports, not a
+  // failure, so it gets a calm panel naming the setting rather than the red
+  // alert a 500 gets (#1236, #1984). no retry, since none can help
   if (isUnavailable(query.error)) {
     return (
       <div className="p-[22px]">
-        <LoadError error={query.error} resource={t("errors.resources.requestLogs")} />
+        <AnalyticsUnavailable error={query.error} />
       </div>
     );
   }
+
+  // what the toolbar says the feed is doing, read off the fetch rather than
+  // off the pause toggle. it used to pulse green and say "Streaming" through
+  // the first load and through every failed refresh, which is exactly when
+  // the rows on screen are not live (#1984)
+  const failedAt = fmt.time(query.errorUpdatedAt);
+  const feed: { dot: string; label: string } = query.isError
+    ? {
+        dot: "bg-[color:var(--status-danger)]",
+        // no rows means the feed stopped polling (see `refetchInterval`), so
+        // only a failure with rows on screen and the stream on is retrying
+        label:
+          query.data === undefined
+            ? t("pages.logs.feed.loadFailed", { time: failedAt })
+            : streaming
+              ? t("pages.logs.feed.refreshFailedRetrying", { time: failedAt })
+              : t("pages.logs.feed.refreshFailed", { time: failedAt }),
+      }
+    : query.isPending
+      ? { dot: "bg-[color:var(--text-subtle)]", label: t("pages.logs.feed.loading") }
+      : {
+          dot: streaming
+            ? "rl-pulse bg-[color:var(--status-success)]"
+            : "bg-[color:var(--text-subtle)]",
+          label: `${streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} · ${t(
+            "pages.logs.requests",
+            { count: rows.length },
+          )}`,
+        };
 
   const statusSelected = status === "all" ? [] : [status];
 
@@ -342,17 +383,9 @@ export default function Logs() {
             {t("common.filters")}
             {filterCount > 0 && ` · ${filterCount}`}
           </button>
-          <span className="inline-flex items-center gap-[7px] text-xs text-muted-foreground">
-            <span
-              className={cn(
-                "h-[7px] w-[7px] rounded-full",
-                streaming
-                  ? "rl-pulse bg-[color:var(--status-success)]"
-                  : "bg-[color:var(--text-subtle)]",
-              )}
-            />
-            {streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} ·{" "}
-            {t("pages.logs.requests", { count: rows.length })}
+          <span className="inline-flex min-w-0 items-center gap-[7px] text-xs text-muted-foreground">
+            <span className={cn("h-[7px] w-[7px] flex-none rounded-full", feed.dot)} />
+            {feed.label}
           </span>
           <div className="ml-auto flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
@@ -501,16 +534,21 @@ export default function Logs() {
             </div>
           )}
           {/* the screen had no loading indicator at all, so a slow clickhouse
-              read looked like a deployment with no traffic (#1180) */}
-          {query.isLoading && (
+              read looked like a deployment with no traffic (#1180). pending
+              rather than loading: a retry parked in a hidden tab is pending
+              and not fetching, and is still not an answer (#1984) */}
+          {query.isPending && (
             <div className="p-3">
               <ListSkeleton rows={8} />
             </div>
           )}
           {/* a full page can be the last one, so the page after it may come
               back empty. that is the end of the log, not a deployment that
-              has served nothing, and the way out is back to the newest */}
-          {!query.isLoading && !query.error && rows.length === 0 && page > 0 && (
+              has served nothing, and the way out is back to the newest.
+              both empty states need a successful answer: gated on "not
+              loading and no error" instead, a failed first load whose retry
+              was parked in a hidden tab said "Nothing logged yet" (#1984) */}
+          {query.isSuccess && rows.length === 0 && page > 0 && (
             <EmptyState
               uxTarget="request-logs"
               icon={<ScrollText />}
@@ -523,7 +561,7 @@ export default function Logs() {
               }
             />
           )}
-          {!query.isLoading && !query.error && rows.length === 0 && page === 0 && (
+          {query.isSuccess && rows.length === 0 && page === 0 && (
             <EmptyState
               uxTarget="request-logs"
               icon={<ScrollText />}
@@ -588,10 +626,12 @@ export default function Logs() {
  * row's, by design) has already elapsed. The row itself does not record which,
  * so the copy names all three rather than asserting one.
  *
- * A superadmin can be told which it is, because they can read the setting; for
- * everyone else the answer would be a 403, so the screen does not ask. Either
- * way the text says where the setting lives instead of leaving the reader to
- * hunt for it.
+ * A caller who can read `logging_settings` (a superadmin) can be told which it
+ * is; for everyone else the answer would be a 403, so the screen does not ask.
+ * The link to the settings follows the same gate (#1984): it used to render for
+ * everyone and land a member on a refusal, so a caller the gate refuses is told
+ * who owns the setting instead. Either way the reader learns where it lives
+ * rather than hunting for it.
  *
  * The fourth reason is the caller's own role (#1820): the server blanks a body
  * a viewer may not read and says so with `payload_withheld`, and that one is
@@ -608,14 +648,15 @@ function PayloadBlock({
   withheld?: boolean;
 }) {
   const { t } = useTranslation();
-  const isSuperadmin = useIsSuperadmin();
+  const can = useCan();
+  const readsSettings = can("logging_settings", "read");
   const body = pretty(raw);
   const settings = useQuery({
     queryKey: ["logging-settings", "payload-hint"],
     queryFn: fetchLoggingSettings,
     // only asked when the answer is readable, and a failure is not worth
     // surfacing: the generic explanation below is still true
-    enabled: isSuperadmin === true && body === null && !withheld,
+    enabled: readsSettings === true && body === null && !withheld,
     retry: false,
     staleTime: 60_000,
   });
@@ -643,14 +684,59 @@ function PayloadBlock({
       <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
         <p className="text-xs leading-relaxed text-muted-foreground">{reason}</p>
         {/* the deployment's log settings cannot change a role, so a withheld
-            body has nowhere there to point */}
-        {!withheld && (
-          <a
-            href="/logs-settings"
-            className="mt-2 inline-block text-xs font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {t("pages.logs.payloadSettingsLink")}
-          </a>
+            body has nowhere there to point. only an explicit "no" hides the
+            link, the rule the rail follows for the same screen */}
+        {!withheld &&
+          (readsSettings === false ? (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t("pages.logs.payloadSettingsOwner")}
+            </p>
+          ) : (
+            <Link
+              to="/logs-settings"
+              className="mt-2 inline-block text-xs font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("pages.logs.payloadSettingsLink")}
+            </Link>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the screen shows on a deployment with no analytics store (#1984).
+ *
+ * That deployment answered, and the answer will not change until someone sets
+ * `CLICKHOUSE_URL`: it is a configuration rolter supports, not an outage. It
+ * used to render `LoadError`, whose red `role="alert"` put it in the same voice
+ * as a 500 and had a screen reader announce it as urgent on every visit. This
+ * is the same information, stated calmly as a `status`: the cause, the setting
+ * in monospace, and the control plane's own words under it (#962). There is
+ * no retry, because no retry can help.
+ */
+function AnalyticsUnavailable({ error }: { error: unknown }) {
+  const { t } = useTranslation();
+  const detail = error instanceof Error ? error.message : null;
+  return (
+    <div
+      role="status"
+      className="flex max-w-[72ch] items-start gap-3 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-3.5"
+    >
+      <ChartNoAxesColumn
+        aria-hidden
+        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-info-text)]"
+      />
+      <div className="flex min-w-0 flex-col gap-2">
+        <p className="text-sm font-medium text-foreground">{t("pages.logs.noAnalytics.title")}</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          <Trans
+            i18nKey="pages.logs.noAnalytics.body"
+            components={[<code key="env" className="font-mono text-xs text-foreground" />]}
+          />
+        </p>
+        {detail && (
+          <p className="break-words font-mono text-xs text-[color:var(--text-subtle)]">{detail}</p>
         )}
       </div>
     </div>
