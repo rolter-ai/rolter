@@ -201,6 +201,7 @@ priorities live on the issues.
 | #1845 | a same-named route in a second project freezes config for every gateway                | A3, T3                                         |
 | #1847 | a superadmin with no membership cannot open the Playground or mint a personal key      | A3.4                                           |
 | #1853 | the Playground asks for models before its key is live, then defaults to a dead route   | A3.4, E3.1                                     |
+| #2008 | nothing can check that a provider serves an upstream model name (UI: #2009)            | A3.3a                                          |
 | #1851 | `cache_aware` sends every request to one replica and never checks load                 | A3-d, P2.4, P5                                 |
 | #1850 | a team admin cannot list their own team's members                                      | T2, T6                                         |
 | #1852 | no second-factor enrolment at sign-in when an org requires one                         | A1a.4, S2.1                                    |
