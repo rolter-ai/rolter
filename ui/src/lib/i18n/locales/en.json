@@ -1072,7 +1072,7 @@
         "evaluated": "Rule {{name}} evaluated",
         "evaluateFailed": "Could not evaluate {{name}}",
         "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
-        "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}.",
+        "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
         "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
         "deleteAria": "Delete rule {{name}}",
         "evaluateAria": "Evaluate rule {{name}} now",
@@ -1097,7 +1097,7 @@
       },
       "history": {
         "emptyTitle": "No alert transitions yet",
-        "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. Newest first.",
+        "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. A failed delivery is retried, and each attempt gets a row. Newest first.",
         "emptyAction": "Open alert rules",
         "colSent": "Recorded",
         "colRule": "Rule",

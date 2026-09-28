@@ -393,6 +393,10 @@ function AlertRulesScreen() {
       });
     },
     onError: (error, id) => {
+      // a failed evaluation still wrote the rule's error state and last_error,
+      // which the card shows only once it is read again
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["alert-history"] });
       toast.push({
         tone: "error",
         title: t("pages.alerting.rules.evaluateFailed", { name: ruleName(id) }),

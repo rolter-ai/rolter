@@ -30,7 +30,9 @@ const CHANNELS: AlertChannelRow[] = [
     id: "chan-1",
     name: "ops-slack",
     kind: "webhook",
-    endpoint: "https://hooks.slack.com/services/T000/B000/xxx",
+    // a relay in front of the chat tool: the body is rolter's own shape, which
+    // a chat or paging service does not accept directly
+    endpoint: "https://alerts.example.com/rolter/slack",
     enabled: true,
     secret_configured: true,
     created_at: "2026-05-01T00:00:00Z",
@@ -40,7 +42,7 @@ const CHANNELS: AlertChannelRow[] = [
     id: "chan-2",
     name: "pager",
     kind: "webhook",
-    endpoint: "https://events.pagerduty.com/v2/enqueue",
+    endpoint: "https://alerts.example.com/rolter/pagerduty",
     enabled: false,
     secret_configured: false,
     created_at: "2026-05-02T00:00:00Z",
@@ -450,7 +452,50 @@ export const EvaluateReportsAFailedDelivery: Story = {
   ),
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
-    await expectToast(canvasElement, /delivery failed: HTTP 500/, "error");
+    await expectToast(canvasElement, /delivery failed: HTTP 500\. It is retried/, "error");
+  },
+};
+
+// the backend records state=error and last_error before it answers with the
+// failure, so the card has to be read again to show them (#1953)
+export const EvaluateFailureRefreshesTheRuleCard: Story = {
+  render: () => {
+    let evaluated = false;
+    return (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (init?.method === "POST" && url.includes("/evaluate")) {
+            evaluated = true;
+            return json({ error: { message: "could not connect to ClickHouse" } }, 502);
+          }
+          if (evaluated && url.includes("/alert-rules")) {
+            return json([
+              { ...RULES[0], state: "error", last_error: "could not connect to ClickHouse" },
+              ...RULES.slice(1),
+            ]);
+          }
+          return loaded(input, init);
+        })}
+      >
+        <Toasted>
+          <AlertRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(canvasElement, /could not connect to ClickHouse/, "error");
+    // on the card as well as in the toast, without a reload
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByText("could not connect to ClickHouse")
+          .some((node) => node.closest('[role="alert"]') === null),
+      ).toBe(true),
+    );
   },
 };
 
