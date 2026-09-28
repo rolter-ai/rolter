@@ -121,7 +121,6 @@ await step("A3.1", "add a provider and test the connection", async () => {
   try {
     const sealed = JSON.stringify(p.json).includes("not-a-real-key");
     const test = await api("POST", `/api/v1/providers/${p.json.id}/test`, org);
-    const models = test.json?.models ?? test.json?.data ?? [];
     assert(!sealed, "the key came back in the response");
     assert(test.status === 200, `test ${test.status} ${JSON.stringify(test.json).slice(0, 160)}`);
     const why = test.json.reachable ? `${(test.json.models ?? []).length} models listed` : `unreachable, and says why: upstream ${test.json.status} at ${test.json.probed_url} (credential ${test.json.credential})`;
