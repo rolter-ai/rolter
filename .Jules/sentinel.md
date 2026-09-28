@@ -25,3 +25,8 @@
 
 **Learning:** HTTP 500 error responses generated during SCIM error conversions (`From<rolter_core::Error>` and `From<ApiError>`) in `rolter-control` previously echoed internal error strings (`other.to_string()`) directly into the SCIM JSON error response detail, potentially leaking internal store errors or database connection details.
 **Prevention:** Always log internal error details using `tracing::warn!` or `tracing::error!` and return a generic, sanitized error detail (such as `"internal server error"`) in API HTTP error response bodies.
+
+## 2026-09-28 - Redact Store and Auth Errors in Control 500 Responses
+
+**Learning:** In `rolter-control`, `ApiError::into_response` (in `crud.rs`) and `AuthError::into_response` (in `auth.rs`) converted internal `Error::Store` or `AuthError::Internal` failures to HTTP 500 responses while echoing `err.to_string()` directly in the JSON response message. This revealed database schema/query details, connection string parameters, or internal authentication provider error details to clients.
+**Prevention:** In Axum response error handlers, ensure HTTP 500 responses log internal error context with `tracing::warn!` or `tracing::error!` and return sanitized `"internal server error"` messages to clients.

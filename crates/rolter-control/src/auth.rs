@@ -244,7 +244,12 @@ impl IntoResponse for AuthError {
                  `rolter mfa reset` so it can enrol",
             ),
             Self::Internal(ref msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal", msg.as_str())
+                tracing::warn!(error = %msg, "internal auth error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
             }
         };
         let mut response = (
@@ -727,6 +732,16 @@ mod tests {
             json["error"]["code"].as_str().unwrap().to_string(),
             json["error"]["message"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn internal_auth_errors_are_redacted_in_500_responses() {
+        let sensitive = "secret_ldap_server_unreachable_at_10.0.0.1";
+        let (status, code, message) = rendered(AuthError::Internal(sensitive.to_string())).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(code, "internal");
+        assert!(!message.contains(sensitive));
+        assert_eq!(message, "internal server error");
     }
 
     #[tokio::test]

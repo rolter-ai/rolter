@@ -242,7 +242,13 @@ impl IntoResponse for ApiError {
                     Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
-                (status, err.to_string())
+                let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    tracing::warn!(error = %err, "internal server error");
+                    "internal server error".to_string()
+                } else {
+                    err.to_string()
+                };
+                (status, message)
             }
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
@@ -5178,5 +5184,27 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod error_redaction_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn internal_store_errors_are_redacted_in_500_responses() {
+        let sensitive = "secret_postgres_connection_details_table_users";
+        let api_err = ApiError::Core(Error::Store(sensitive.to_string()));
+        let response = api_err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = body["error"]["message"].as_str().unwrap();
+
+        assert!(!message.contains(sensitive));
+        assert_eq!(message, "internal server error");
     }
 }
