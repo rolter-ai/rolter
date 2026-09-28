@@ -10,6 +10,7 @@ import {
   expectClosesWithoutPrompting,
   expectNoUxEvent,
   expectSheetClosed,
+  expectListTable,
   expectSkeleton,
   expectUxEvent,
   json,
@@ -226,6 +227,7 @@ export const Loaded: Story = {
     const row = name.closest('[style*="grid-template-columns"]');
     await expect(row).not.toBeNull();
     await expect(getComputedStyle(row as HTMLElement).gridTemplateColumns).not.toBe("none");
+    await expectListTable(canvasElement, "Virtual Keys");
   },
 };
 

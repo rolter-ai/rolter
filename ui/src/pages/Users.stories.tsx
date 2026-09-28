@@ -11,6 +11,7 @@ import {
   expectAllowed,
   expectRefused,
   expectSheetClosed,
+  expectListTable,
   expectSkeleton,
   expectToast,
   json,
@@ -98,6 +99,7 @@ export const Loaded: Story = {
     // are the only place the counts are visible
     await expect(await canvas.findByText("ada@example.com")).toBeInTheDocument();
     await expect(canvas.getByText("former@example.com")).toBeInTheDocument();
+    await expectListTable(canvasElement, "Users");
   },
 };
 

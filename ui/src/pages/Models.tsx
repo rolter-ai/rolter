@@ -9,8 +9,12 @@ import { ListSkeleton } from "@/components/LoadingState";
 import { ModelPriceCell } from "@/components/ModelPriceCell";
 import { ModelSheet, type ModelSheetMode } from "@/components/ModelSheet";
 import {
+  ListActionsHeader,
+  ListCell,
   ListHeader,
+  ListHeaderCell,
   ListRow,
+  ListStateRow,
   ListTable,
   PageBody,
   Pill,
@@ -340,7 +344,7 @@ export default function Models() {
         </p>
       )}
 
-      <ListTable>
+      <ListTable label={t("screens.model-catalog.title")}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.models.columns.model")}
@@ -354,14 +358,14 @@ export default function Models() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <span>{t("pages.models.columns.strategy")}</span>
+          <ListHeaderCell>{t("pages.models.columns.strategy")}</ListHeaderCell>
           <SortLabel
             label={t("pages.models.columns.origin")}
             col="origin"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <span className="text-right">{t("pages.models.columns.price")}</span>
+          <ListHeaderCell className="text-right">{t("pages.models.columns.price")}</ListHeaderCell>
           <SortLabel
             label={t("pages.models.columns.weight")}
             col="weight"
@@ -369,12 +373,16 @@ export default function Models() {
             onCycle={(c) => cycle(c as never)}
             justify="flex-end"
           />
-          <span />
+          <ListActionsHeader />
         </ListHeader>
-        {models.isLoading && <ListSkeleton rows={5} className="p-3" />}
+        {models.isLoading && (
+          <ListStateRow>
+            <ListSkeleton rows={5} className="p-3" />
+          </ListStateRow>
+        )}
         {sorted.map((r) => (
           <ListRow key={r.name} grid={GRID}>
-            <div className="flex min-w-0 items-center gap-2">
+            <ListCell className="flex min-w-0 items-center gap-2">
               <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
               <span className="flex min-w-0 flex-col gap-1">
                 <span className="truncate font-mono text-sm">{r.name}</span>
@@ -388,8 +396,8 @@ export default function Models() {
                   <Lock className="h-3 w-3" />
                 </span>
               )}
-            </div>
-            <span
+            </ListCell>
+            <ListCell
               className={cn(
                 "truncate font-mono text-xs text-[color:var(--text-secondary)]",
                 r.providerNames.length > 1 && "cursor-help",
@@ -397,13 +405,13 @@ export default function Models() {
               title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
             >
               {r.providerName}
-            </span>
-            <div>
+            </ListCell>
+            <ListCell>
               <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
                 {r.strategy}
               </Pill>
-            </div>
-            <div>
+            </ListCell>
+            <ListCell>
               {r.origin === "config" ? (
                 <Pill
                   color="var(--text-secondary)"
@@ -422,12 +430,14 @@ export default function Models() {
                   db
                 </Pill>
               )}
-            </div>
-            <ModelPriceCell priced={r.priced} inPrice={r.inPrice} outPrice={r.outPrice} />
-            <span className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
+            </ListCell>
+            <ListCell className="grid">
+              <ModelPriceCell priced={r.priced} inPrice={r.inPrice} outPrice={r.outPrice} />
+            </ListCell>
+            <ListCell className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
               {r.weight}
-            </span>
-            <div className="flex items-center justify-end gap-1.5">
+            </ListCell>
+            <ListCell className="flex items-center justify-end gap-1.5">
               {/* a config-file model opens read-only, so only the
                   editable half of this control is gated (#1258) */}
               {r.origin === "config" ? (
@@ -477,36 +487,38 @@ export default function Models() {
                   }}
                 />
               )}
-            </div>
+            </ListCell>
           </ListRow>
         ))}
         {!models.isLoading && sorted.length === 0 && (
           // "no rows" and "nothing matched the filters" are different answers:
           // one wants a model created, the other wants the filter cleared
-          <EmptyState
-            uxTarget="models"
-            icon={<Boxes />}
-            title={filtersActive ? t("pages.models.noMatchTitle") : t("pages.models.emptyTitle")}
-            description={
-              filtersActive ? t("pages.models.noMatchBody") : t("pages.models.emptyBody")
-            }
-            actions={
-              filtersActive ? (
-                <Button variant="outline" onClick={clearFilters}>
-                  {t("common.clearSearch")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="route:create"
-                  control="model-new-empty"
-                  disabled={scopeBlocked || !scope.projectId}
-                  onClick={() => setSheet({ mode: "add" })}
-                >
-                  {t("pages.models.emptyAction")}
-                </GatedButton>
-              )
-            }
-          />
+          <ListStateRow>
+            <EmptyState
+              uxTarget="models"
+              icon={<Boxes />}
+              title={filtersActive ? t("pages.models.noMatchTitle") : t("pages.models.emptyTitle")}
+              description={
+                filtersActive ? t("pages.models.noMatchBody") : t("pages.models.emptyBody")
+              }
+              actions={
+                filtersActive ? (
+                  <Button variant="outline" onClick={clearFilters}>
+                    {t("common.clearSearch")}
+                  </Button>
+                ) : (
+                  <GatedButton
+                    gate="route:create"
+                    control="model-new-empty"
+                    disabled={scopeBlocked || !scope.projectId}
+                    onClick={() => setSheet({ mode: "add" })}
+                  >
+                    {t("pages.models.emptyAction")}
+                  </GatedButton>
+                )
+              }
+            />
+          </ListStateRow>
         )}
       </ListTable>
 

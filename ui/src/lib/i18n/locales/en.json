@@ -1427,7 +1427,9 @@
         "refreshAria": "Renew the session {{owner}} holds on {{server}}",
         "revokeAria": "Revoke the session {{owner}} holds on {{server}}",
         "header": "Sessions",
-        "revokeTitle": "Revoke this session; the consent behind it stands"
+        "revokeTitle": "Revoke this session; the consent behind it stands",
+        "colRenew": "Renew",
+        "colRevoke": "Revoke"
       },
       "server": "Server",
       "owner": "Owner",

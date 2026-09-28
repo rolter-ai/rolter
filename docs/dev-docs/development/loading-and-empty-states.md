@@ -40,7 +40,18 @@ nothing moves when the data arrives:
 
 For a list inside a `ListTable`, put the skeleton _inside_ the table, under the
 header. The column headers are real information — they say what a row will
-carry — and taking them away to show a placeholder loses that.
+carry — and taking them away to show a placeholder loses that. Inside the table
+it goes in a `ListStateRow`, and so does the empty state: a `role="status"` or
+a button placed straight in the table body belongs to no row, which breaks the
+table for a screen reader (see [list tables](list-tables.md)):
+
+```tsx
+{keys.isLoading && (
+  <ListStateRow>
+    <ListSkeleton rows={4} className="p-3" />
+  </ListStateRow>
+)}
+```
 
 Every shape wraps itself in one `role="status"` region labelled with
 `common.loading`, so a screen reader hears one announcement rather than one per

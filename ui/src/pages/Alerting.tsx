@@ -12,7 +12,9 @@ import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
 import {
+  ListCell,
   ListHeader,
+  ListHeaderCell,
   ListRow,
   ListTable,
   PageBody,
@@ -791,29 +793,35 @@ function AlertHistoryScreen() {
         />
       )}
       {history.data && history.data.length > 0 && (
-        <ListTable>
+        <ListTable label={t("screens.alerting-history.title")}>
           <ListHeader grid={HISTORY_GRID}>
-            <span>{t("pages.alerting.history.colSent")}</span>
-            <span>{t("pages.alerting.history.colRule")}</span>
-            <span>{t("pages.alerting.history.colState")}</span>
-            <span>{t("pages.alerting.history.colDelivery")}</span>
-            <span>{t("pages.alerting.history.colDetail")}</span>
+            <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colState")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
           </ListHeader>
           {history.data.map((n) => {
             const tone = stateTone(n.state);
             return (
               <ListRow key={n.id} grid={HISTORY_GRID}>
-                <span className="font-mono text-xs text-[color:var(--text-secondary)]">
+                <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
                   {fmt.dateTime(n.sent_at)}
-                </span>
-                <span className="truncate font-mono text-xs">{ruleName(n.rule_id)}</span>
-                <Pill color={tone[0]} tint={tone[1]}>
-                  {n.state}
-                </Pill>
-                <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
-                  {n.delivery_status}
-                </Pill>
-                <span className="truncate text-xs text-muted-foreground">{n.detail ?? "—"}</span>
+                </ListCell>
+                <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+                <ListCell className="grid">
+                  <Pill color={tone[0]} tint={tone[1]}>
+                    {n.state}
+                  </Pill>
+                </ListCell>
+                <ListCell className="grid">
+                  <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
+                    {n.delivery_status}
+                  </Pill>
+                </ListCell>
+                <ListCell className="truncate text-xs text-muted-foreground">
+                  {n.detail ?? "—"}
+                </ListCell>
               </ListRow>
             );
           })}
