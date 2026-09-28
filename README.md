@@ -58,8 +58,11 @@ The image binds every interface inside the container, which is what makes a
 published port reachable. With no `ROLTER_ADMIN_TOKEN` the dashboard and
 management API are unauthenticated, so the container refuses to start until
 `ROLTER_ALLOW_OPEN_MODE=1` acknowledges it, and the `127.0.0.1:` prefix keeps
-both ports on your own machine. To serve a network, pass
-`-e ROLTER_ADMIN_TOKEN=<secret>` instead.
+both ports on your own machine. To serve a network, pass an admin token you
+keep (`openssl rand -hex 32`) as `-e ROLTER_ADMIN_TOKEN` instead, and replace the
+bundled `sk-rolter-dev` virtual key in a mounted `rolter.toml`: the token closes
+the management API only, and that key is public and allows every model. See
+[Run the single image](docs/user-docs/deployment/docker.mdx#run-the-single-image).
 
 Open the dashboard at http://localhost:4001. For Postgres, Redis, and
 ClickHouse, use the full-stack option instead:

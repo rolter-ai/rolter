@@ -34,19 +34,29 @@ pub struct EasyUpArgs {
     /// bootstrap config file; created from the bundled example if missing
     #[arg(short, long, env = "ROLTER_CONFIG", default_value = "rolter.toml")]
     pub config: PathBuf,
-    /// host both the gateway and the control plane bind to. Loopback by
-    /// default: `easy-up` is the zero-credential local path, and the control
-    /// plane it starts is unauthenticated unless `--admin-token` is set, which
-    /// must not reach a public interface by omission (#970). Pass
-    /// `--host 0.0.0.0` with an admin token to serve a network.
+    /// host the gateway binds to, and the control plane too unless
+    /// `--control-host` is set. Loopback by default: `easy-up` is the
+    /// zero-credential local path, and the control plane it starts is
+    /// unauthenticated unless `--admin-token` is set, which must not reach a
+    /// public interface by omission (#970). Pass `--host 0.0.0.0` with an
+    /// admin token to serve a network.
     ///
     /// Read from `ROLTER_HOST` when the flag is absent, the same variable the
-    /// gateway binds from. The published image sets it to `0.0.0.0`, because a
-    /// container's loopback is unreachable through a published port (#1891);
-    /// a non-loopback host with no admin token still refuses to start unless
-    /// `ROLTER_ALLOW_OPEN_MODE` acknowledges it
+    /// gateway binds from. The published image's default command passes
+    /// `--host 0.0.0.0`, because a container's loopback is unreachable through
+    /// a published port (#1891); a non-loopback host with no admin token still
+    /// refuses to start unless `ROLTER_ALLOW_OPEN_MODE` acknowledges it
     #[arg(long, env = "ROLTER_HOST", default_value = "127.0.0.1")]
     pub host: String,
+    /// host the control plane binds to, when it should differ from `--host`.
+    ///
+    /// Read from `ROLTER_CONTROL_HOST`, the variable `rolter control` binds
+    /// from, so an env file that keeps the management plane on loopback while
+    /// the gateway serves a network (`rolter init --profile production` writes
+    /// one) means the same thing under `easy-up`. Unset or blank falls back to
+    /// `--host`
+    #[arg(long, env = "ROLTER_CONTROL_HOST")]
+    pub control_host: Option<String>,
     /// gateway (data-plane) port
     #[arg(long, env = "ROLTER_PORT", default_value_t = 4000)]
     pub gateway_port: u16,
@@ -94,6 +104,17 @@ pub struct EasyUpArgs {
     #[cfg(feature = "postgres")]
     #[arg(long)]
     pub import: Option<PathBuf>,
+}
+
+impl EasyUpArgs {
+    /// The host the control plane binds: `--control-host` when it is set and
+    /// not blank, `--host` otherwise.
+    fn control_host(&self) -> &str {
+        self.control_host
+            .as_deref()
+            .filter(|host| !host.trim().is_empty())
+            .unwrap_or(&self.host)
+    }
 }
 
 /// Ensure a config file exists at `path`, writing the bundled example when it
@@ -145,7 +166,7 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
     #[cfg(not(feature = "postgres"))]
     let _ = &database_url;
     rolter_control::Args {
-        host: args.host.clone(),
+        host: args.control_host().to_string(),
         port: args.control_port,
         ui_dir: args.ui_dir.clone(),
         // these args are built by hand rather than parsed, so clap's `env =`
@@ -220,15 +241,22 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// Refuse the one bind the control plane would refuse anyway: a host that is
-/// not loopback, no admin token, and no acknowledgement (#970).
+/// Refuse the one exposure the control plane would refuse anyway: the
+/// management API on a host that is not loopback, with no admin token and no
+/// acknowledgement (#970).
 ///
-/// The control plane enforces this itself. Checking it here as well stops
-/// `easy-up` before it writes a config, seeds a database or prints a `try it`
-/// command that cannot work, and lets the refusal name the container remedy.
-/// The published image binds `0.0.0.0` (#1891), and there "bind loopback", the
-/// control plane's own advice, is what makes the container unreachable.
-fn refuse_unacknowledged_open_mode(args: &EasyUpArgs) -> anyhow::Result<()> {
+/// The control plane enforces this itself for its own listener. Checking it
+/// here as well stops `easy-up` before it writes a config, seeds a database or
+/// prints a `try it` command that cannot work, and lets the refusal name the
+/// container remedy. The published image binds `0.0.0.0` (#1891), and there
+/// "bind loopback", the control plane's own advice, is what makes the
+/// container unreachable.
+///
+/// In database mode the gateway serves the same API at `/admin/*` by proxying
+/// to the co-hosted control plane, so the gateway's host counts too: a control
+/// plane on loopback behind a gateway on `0.0.0.0` passes the control plane's
+/// own check and is still reachable from the network.
+fn refuse_unacknowledged_open_mode(args: &EasyUpArgs, db_mode: bool) -> anyhow::Result<()> {
     let token_set = args
         .admin_token
         .as_deref()
@@ -236,23 +264,35 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs) -> anyhow::Result<()> {
     if token_set || args.allow_open_mode {
         return Ok(());
     }
-    // a host that is not an ip literal is left for the listeners to reject
-    // with their own error; there is nothing to decide about it here
-    let Ok(ip) = args.host.parse::<std::net::IpAddr>() else {
+    let mut surfaces = vec![("the management API", args.control_host(), args.control_port)];
+    if db_mode {
+        surfaces.push((
+            "the gateway's /admin/* proxy to the management API",
+            args.host.as_str(),
+            args.gateway_port,
+        ));
+    }
+    // an ip literal, bracketed or not; anything else is left for the
+    // listeners to reject with their own error, since they bind only literals
+    let exposed = surfaces.into_iter().find(|(_, host, _)| {
+        host.strip_prefix('[')
+            .and_then(|inner| inner.strip_suffix(']'))
+            .unwrap_or(host)
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| !ip.is_loopback())
+    });
+    let Some((surface, host, port)) = exposed else {
         return Ok(());
     };
-    if ip.is_loopback() {
-        return Ok(());
-    }
     anyhow::bail!(
-        "refusing to start: easy-up is set to bind {host}, which is not a loopback address, \
-         and no ROLTER_ADMIN_TOKEN is set, so the management API on port {control} would \
-         accept every request from off this machine as superadmin. Set ROLTER_ADMIN_TOKEN to \
-         close it. For a local-only container, acknowledge the open control plane with \
+        "refusing to start: easy-up is set to serve {surface} on {host}:{port}, which is not a \
+         loopback address, and no ROLTER_ADMIN_TOKEN is set, so it would accept every request \
+         from off this machine as superadmin. Set ROLTER_ADMIN_TOKEN to close it. For a \
+         local-only container, acknowledge the open control plane with \
          `-e ROLTER_ALLOW_OPEN_MODE=1` and publish the ports on loopback only \
          (`-p 127.0.0.1:{gateway}:{gateway} -p 127.0.0.1:{control}:{control}`). Outside a \
-         container, unset ROLTER_HOST or pass --host 127.0.0.1",
-        host = args.host,
+         container, keep both planes on loopback: unset ROLTER_HOST and ROLTER_CONTROL_HOST, \
+         or pass --host 127.0.0.1 --control-host 127.0.0.1",
         gateway = args.gateway_port,
         control = args.control_port,
     )
@@ -262,16 +302,16 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs) -> anyhow::Result<()> {
 /// database, print a startup summary, then supervise the control plane and
 /// gateway together.
 pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
-    refuse_unacknowledged_open_mode(&args)?;
-    let created = ensure_config(&args.config)?;
-    if created {
-        tracing::info!(config = %args.config.display(), "created config from bundled example");
-    }
-
     #[cfg(feature = "postgres")]
     let database_url: Option<String> = args.database_url.clone();
     #[cfg(not(feature = "postgres"))]
     let database_url: Option<String> = None;
+
+    refuse_unacknowledged_open_mode(&args, database_url.is_some())?;
+    let created = ensure_config(&args.config)?;
+    if created {
+        tracing::info!(config = %args.config.display(), "created config from bundled example");
+    }
 
     #[cfg(feature = "postgres")]
     let admin_note: Option<String> = if let Some(url) = database_url.clone() {
@@ -403,6 +443,14 @@ fn try_it_lines(host: &str, gateway_port: u16, auth: &HintAuth) -> Vec<String> {
     lines
 }
 
+/// The host to print in a url: a wildcard bind is reached as `localhost`.
+fn display_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "::" => "localhost",
+        host => host,
+    }
+}
+
 fn print_summary(
     args: &EasyUpArgs,
     db_mode: bool,
@@ -410,18 +458,16 @@ fn print_summary(
     auth: &HintAuth,
 ) {
     let mode = if db_mode { "database" } else { "file" };
-    let display_host = match args.host.as_str() {
-        "0.0.0.0" | "::" => "localhost",
-        host => host,
-    };
+    let gateway_host = display_host(&args.host);
     eprintln!("\nrolter easy-up — {mode} mode");
     eprintln!(
         "  gateway (OpenAI/Anthropic):  http://{}:{}",
-        display_host, args.gateway_port
+        gateway_host, args.gateway_port
     );
     eprintln!(
         "  control + UI:                http://{}:{}",
-        display_host, args.control_port
+        display_host(args.control_host()),
+        args.control_port
     );
     eprintln!("  config:                      {}", args.config.display());
     if !db_mode {
@@ -431,7 +477,7 @@ fn print_summary(
         eprintln!("  admin user created:          {email}");
     }
     eprintln!();
-    for line in try_it_lines(display_host, args.gateway_port, auth) {
+    for line in try_it_lines(gateway_host, args.gateway_port, auth) {
         eprintln!("{line}");
     }
     eprintln!();
@@ -648,6 +694,7 @@ models = ["fake-llm"]
         EasyUpArgs {
             config: PathBuf::from("rolter.toml"),
             host: host.to_string(),
+            control_host: None,
             gateway_port: 4000,
             control_port: 4001,
             ui_dir: PathBuf::from("ui/dist"),
@@ -676,10 +723,12 @@ models = ["fake-llm"]
         use clap::Parser;
         let _guard = env_lock();
         let _host = EnvVar::set("ROLTER_HOST", None);
+        let _control_host = EnvVar::set("ROLTER_CONTROL_HOST", None);
         let _open = EnvVar::set("ROLTER_ALLOW_OPEN_MODE", None);
 
         let cli = Cli::parse_from(["rolter"]);
         assert_eq!(cli.easy_up.host, "127.0.0.1");
+        assert_eq!(control_args(&cli.easy_up, None).host, "127.0.0.1");
         assert!(!cli.easy_up.allow_open_mode);
         // and the flag still works as a flag, with no value
         let cli = Cli::parse_from(["rolter", "--allow-open-mode"]);
@@ -688,58 +737,117 @@ models = ["fake-llm"]
 
     #[test]
     fn the_host_falls_back_to_rolter_host_and_the_flag_wins_over_it() {
-        // the published image binds every interface through ROLTER_HOST, since
-        // a container's loopback is unreachable through a published port
-        // (#1891). an explicit --host still overrides the image's default
+        // outside the image, easy-up binds where the gateway would: the host
+        // an env file exports as ROLTER_HOST. an explicit --host, which is how
+        // the image's default command binds every interface (#1891), wins
         use clap::Parser;
         let _guard = env_lock();
         let _host = EnvVar::set("ROLTER_HOST", Some("0.0.0.0"));
+        let _control_host = EnvVar::set("ROLTER_CONTROL_HOST", None);
 
         let cli = Cli::parse_from(["rolter"]);
         assert_eq!(cli.easy_up.host, "0.0.0.0");
+        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
         let cli = Cli::parse_from(["rolter", "--host", "127.0.0.1"]);
         assert_eq!(cli.easy_up.host, "127.0.0.1");
     }
 
     #[test]
+    fn the_control_plane_binds_rolter_control_host_when_one_is_set() {
+        // `rolter init --profile production` writes ROLTER_HOST=0.0.0.0 beside
+        // ROLTER_CONTROL_HOST=127.0.0.1: the gateway serves the network and
+        // the management plane stays on loopback. easy-up must not widen the
+        // second to match the first
+        use clap::Parser;
+        let _guard = env_lock();
+        let _host = EnvVar::set("ROLTER_HOST", Some("0.0.0.0"));
+        let _control_host = EnvVar::set("ROLTER_CONTROL_HOST", Some("127.0.0.1"));
+
+        let cli = Cli::parse_from(["rolter"]);
+        assert_eq!(
+            gateway_args(&cli.easy_up, false).host.as_deref(),
+            Some("0.0.0.0")
+        );
+        assert_eq!(control_args(&cli.easy_up, None).host, "127.0.0.1");
+        // the flag still wins over the variable
+        let cli = Cli::parse_from(["rolter", "--control-host", "0.0.0.0"]);
+        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
+
+        // a blank value is unset, as it is for the admin token
+        let _control_host = EnvVar::set("ROLTER_CONTROL_HOST", Some(""));
+        let cli = Cli::parse_from(["rolter"]);
+        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
+        let mut args = args_on("0.0.0.0");
+        args.control_host = Some("  ".to_string());
+        assert_eq!(args.control_host(), "0.0.0.0");
+    }
+
+    #[test]
     fn an_open_control_plane_off_loopback_is_refused_before_anything_starts() {
-        // the image sets ROLTER_HOST=0.0.0.0, so this is what a bare
+        // the image's default command binds 0.0.0.0, so this is what a bare
         // `docker run -p ...` meets: it must still refuse rather than serve a
         // superadmin api to the network (#970), and say how to proceed
-        let err = refuse_unacknowledged_open_mode(&args_on("0.0.0.0"))
+        let err = refuse_unacknowledged_open_mode(&args_on("0.0.0.0"), false)
             .expect_err("no token and no acknowledgement on 0.0.0.0");
         let message = err.to_string();
         assert!(message.contains("ROLTER_ADMIN_TOKEN"), "{message}");
         assert!(message.contains("ROLTER_ALLOW_OPEN_MODE=1"), "{message}");
         assert!(message.contains("-p 127.0.0.1:4001:4001"), "{message}");
 
-        for host in ["10.0.0.5", "::"] {
+        for host in ["10.0.0.5", "::", "[::]"] {
             assert!(
-                refuse_unacknowledged_open_mode(&args_on(host)).is_err(),
+                refuse_unacknowledged_open_mode(&args_on(host), false).is_err(),
                 "{host}"
             );
         }
         // a blank token is no token, exactly as the control plane reads it
         let mut blank = args_on("0.0.0.0");
         blank.admin_token = Some("  ".to_string());
-        assert!(refuse_unacknowledged_open_mode(&blank).is_err());
+        assert!(refuse_unacknowledged_open_mode(&blank, false).is_err());
+
+        // the control host decides, not the gateway's: a control plane
+        // widened on its own is refused behind a loopback gateway
+        let mut widened = args_on("127.0.0.1");
+        widened.control_host = Some("0.0.0.0".to_string());
+        assert!(refuse_unacknowledged_open_mode(&widened, false).is_err());
+    }
+
+    #[test]
+    fn database_mode_counts_the_gateways_admin_proxy_as_the_management_api() {
+        // in database mode the gateway serves /admin/* by proxying to the
+        // co-hosted control plane, so a control plane on loopback behind a
+        // gateway on 0.0.0.0 is the open api on the network all the same
+        let mut split = args_on("0.0.0.0");
+        split.control_host = Some("127.0.0.1".to_string());
+        let err = refuse_unacknowledged_open_mode(&split, true)
+            .expect_err("the admin proxy reaches the open control plane");
+        let message = err.to_string();
+        assert!(message.contains("/admin/*"), "{message}");
+        assert!(message.contains("0.0.0.0:4000"), "{message}");
+
+        // in file mode the gateway proxies nothing, so the same split is fine
+        assert!(refuse_unacknowledged_open_mode(&split, false).is_ok());
+        split.admin_token = Some("secret".to_string());
+        assert!(refuse_unacknowledged_open_mode(&split, true).is_ok());
     }
 
     #[test]
     fn a_token_an_acknowledgement_or_loopback_lets_easy_up_start() {
         for host in ["127.0.0.1", "::1"] {
-            assert!(
-                refuse_unacknowledged_open_mode(&args_on(host)).is_ok(),
-                "{host}"
-            );
+            for db_mode in [false, true] {
+                assert!(
+                    refuse_unacknowledged_open_mode(&args_on(host), db_mode).is_ok(),
+                    "{host} db_mode={db_mode}"
+                );
+            }
         }
         let mut closed = args_on("0.0.0.0");
         closed.admin_token = Some("secret".to_string());
-        assert!(refuse_unacknowledged_open_mode(&closed).is_ok());
+        assert!(refuse_unacknowledged_open_mode(&closed, true).is_ok());
 
         let mut acknowledged = args_on("0.0.0.0");
         acknowledged.allow_open_mode = true;
-        assert!(refuse_unacknowledged_open_mode(&acknowledged).is_ok());
+        assert!(refuse_unacknowledged_open_mode(&acknowledged, true).is_ok());
     }
 
     #[test]

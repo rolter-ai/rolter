@@ -31,7 +31,9 @@ The fastest way to try Rolter is the published Docker image — it starts the ga
     The default single-container command is `rolter easy-up`: gateway on port 4000 and the dashboard on port 4001. It also includes the deterministic `fake-llm` route, so no provider credential or config file is needed for the first request.
 
     <Note>
-      The image binds every interface inside the container so that the published ports reach it. With no `ROLTER_ADMIN_TOKEN` the dashboard and management API accept every request as superadmin, so the container refuses to start until `-e ROLTER_ALLOW_OPEN_MODE=1` acknowledges that. The `127.0.0.1:` prefix on each `-p` keeps both ports on your own machine. To serve other hosts, drop the acknowledgement and pass `-e ROLTER_ADMIN_TOKEN=$(openssl rand -hex 32)` instead.
+      The image binds every interface inside the container so that the published ports reach it. With no `ROLTER_ADMIN_TOKEN` the dashboard and management API accept every request as superadmin, so the container refuses to start until `-e ROLTER_ALLOW_OPEN_MODE=1` acknowledges that. The `127.0.0.1:` prefix on each `-p` keeps both ports on your own machine.
+
+      To serve other hosts, drop the acknowledgement and close the management API with an admin token you keep a copy of: run `export ROLTER_ADMIN_TOKEN=$(openssl rand -hex 32)` and `echo "$ROLTER_ADMIN_TOKEN"`, then pass `-e ROLTER_ADMIN_TOKEN`. The token does not protect the gateway. Also replace the bundled `sk-rolter-dev` virtual key in your `rolter.toml` with a key of your own: it is public and allows every model. Deleting it without adding another leaves the gateway open. [Run the single image](/deployment/docker#run-the-single-image) has the full command.
     </Note>
 
   </Step>
