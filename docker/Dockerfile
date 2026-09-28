@@ -62,4 +62,11 @@ ENV ROLTER_CONFIG=/app/rolter.toml \
     ROLTER_UI_DIR=/app/ui/dist \
     RUST_LOG=info
 EXPOSE 4000 4001
-CMD ["/usr/local/bin/rolter", "easy-up", "--config", "/app/rolter.toml", "--ui-dir", "/app/ui/dist"]
+# `--host 0.0.0.0`: a published port (`docker run -p 4000:4000`) forwards to the
+# container's own network interface, never to its loopback, so easy-up's
+# loopback default answers nothing from the host (#1891). it is a flag on this
+# command rather than an image-wide ROLTER_HOST, which would also override the
+# `[server] host` of every `rolter-gateway` run from the image. this does not
+# reopen #970: with no ROLTER_ADMIN_TOKEN, easy-up and the control plane under
+# it refuse a non-loopback bind unless ROLTER_ALLOW_OPEN_MODE=1 acknowledges it
+CMD ["/usr/local/bin/rolter", "easy-up", "--host", "0.0.0.0", "--config", "/app/rolter.toml", "--ui-dir", "/app/ui/dist"]

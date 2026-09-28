@@ -41,8 +41,27 @@ easy-up`, so one image serves the gateway and dashboard with the built-in
 
 ```bash
 docker build -f docker/Dockerfile -t rolter:dev .
-docker run --rm -p 4000:4000 -p 4001:4001 rolter:dev
+docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+  -e ROLTER_ALLOW_OPEN_MODE=1 rolter:dev
 ```
+
+The default command passes `--host 0.0.0.0` to `easy-up`. A published port
+forwards to the container's own interface and never to its loopback, so
+easy-up's loopback default would answer nothing from the host (#1891). The bind
+is a flag on that one command rather than an image-wide `ROLTER_HOST`:
+`ROLTER_HOST` outranks `[server] host`, so as an image default it would silently
+rebind every `rolter-gateway` run from the image, whatever its config says.
+
+That bind does not reopen #970. With no `ROLTER_ADMIN_TOKEN`, `easy-up` refuses
+a non-loopback host before it starts anything, and the control plane refuses it
+again on its own, unless `ROLTER_ALLOW_OPEN_MODE=1` acknowledges it. The
+`127.0.0.1:` prefix keeps an acknowledged open container on the developer's
+machine. Anything other hosts reach needs an admin token, and a virtual key of
+its own in place of the bundled `sk-rolter-dev`, which is public and allows
+every model. `docker/smoke/image-smoke.sh` checks all three states through
+published ports: the blocking `image-smoke` job in `quality.yml` runs it on
+every PR, and the release workflow's `smoke image` job runs it against each
+built architecture.
 
 Then open http://localhost:4001 and verify the data plane with:
 
@@ -53,11 +72,19 @@ curl -s http://localhost:4000/v1/chat/completions \
   -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Override the command to run just the gateway or control plane:
+Override the command to run just the gateway or control plane. The gateway
+binds the `[server] host` of its config, `0.0.0.0` in the bundled example. The
+control plane defaults to loopback, so inside a container it needs
+`ROLTER_CONTROL_HOST=0.0.0.0`, and with that an admin token:
 
 ```bash
 docker run --rm -p 4000:4000 rolter:dev rolter-gateway --config /app/rolter.toml
-docker run --rm -p 4001:4001 rolter:dev rolter-control
+
+export ROLTER_ADMIN_TOKEN=$(openssl rand -hex 32)
+echo "$ROLTER_ADMIN_TOKEN"   # the management API and the dashboard ask for it
+docker run --rm -p 4001:4001 \
+  -e ROLTER_CONTROL_HOST=0.0.0.0 -e ROLTER_ADMIN_TOKEN \
+  rolter:dev rolter-control
 ```
 
 ## Published images

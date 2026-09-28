@@ -214,6 +214,18 @@ This is why `ROLTER_CONTROL_HOST` defaults to `127.0.0.1` rather than
 `0.0.0.0`: containers and clusters set it explicitly, and by then they have a
 reason to have set a token too.
 
+The published image is one of those containers. Its default command runs
+`rolter easy-up --host 0.0.0.0`, since a published port cannot reach a
+container's loopback (#1891), and leaves the refusal above in charge: a bare
+`docker run` of the image with no token exits rather than serving. `easy-up`
+applies the same rule before it writes, seeds or binds anything, to the host
+its control plane binds (`--control-host`/`ROLTER_CONTROL_HOST`, else
+`--host`/`ROLTER_HOST`) and, in database mode, to the gateway's host as well,
+because the gateway then serves the management API at `/admin/*` by proxying
+to the co-hosted control plane. The bind is a flag on that command, not an
+image-wide variable, so a `rolter-gateway` or `rolter-control` run from the
+image keeps its own default.
+
 ## Who reads the request log (#1820)
 
 `/api/v1/analytics/*` (the request log, usage, spend and attribution rollups)

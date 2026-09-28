@@ -47,11 +47,22 @@ model answers locally, so the first request needs no provider key or config.
 ```bash
 # single image: gateway + dashboard, no compose or config file
 docker pull ghcr.io/rolter-ai/rolter:latest
-docker run --rm -p 4000:4000 -p 4001:4001 ghcr.io/rolter-ai/rolter:latest
+docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
+  -e ROLTER_ALLOW_OPEN_MODE=1 ghcr.io/rolter-ai/rolter:latest
 
 # native binary (installed from a release, cargo, uv, or pip)
 rolter easy-up
 ```
+
+The image binds every interface inside the container, which is what makes a
+published port reachable. With no `ROLTER_ADMIN_TOKEN` the dashboard and
+management API are unauthenticated, so the container refuses to start until
+`ROLTER_ALLOW_OPEN_MODE=1` acknowledges it, and the `127.0.0.1:` prefix keeps
+both ports on your own machine. To serve a network, pass an admin token you
+keep (`openssl rand -hex 32`) as `-e ROLTER_ADMIN_TOKEN` instead, and replace the
+bundled `sk-rolter-dev` virtual key in a mounted `rolter.toml`: the token closes
+the management API only, and that key is public and allows every model. See
+[Run the single image](docs/user-docs/deployment/docker.mdx#run-the-single-image).
 
 Open the dashboard at http://localhost:4001. For Postgres, Redis, and
 ClickHouse, use the full-stack option instead:
