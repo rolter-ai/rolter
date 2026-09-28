@@ -1254,14 +1254,19 @@ mod tests {
 
     #[test]
     fn channels_reject_a_secret_that_is_not_a_header_value() {
-        for secret in ["tok\n", "tok\r\nX-Injected: 1", "a\u{7f}b"] {
+        // the case index, not the value, in the message: an assertion that
+        // prints a secret is the habit this module exists to avoid
+        for (case, value) in ["tok\n", "tok\r\nX-Injected: 1", "a\u{7f}b"]
+            .into_iter()
+            .enumerate()
+        {
             assert!(
                 save(
-                    &channel("https://hooks.example/rolter", Some(secret.into())),
+                    &channel("https://hooks.example/rolter", Some(value.into())),
                     &egress()
                 )
                 .is_err(),
-                "{secret:?} was accepted"
+                "case {case} was accepted"
             );
         }
         assert!(save(
