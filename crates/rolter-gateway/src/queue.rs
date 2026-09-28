@@ -15,7 +15,7 @@ use rolter_proxy::Forwarder;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::Instrument;
 
-use crate::metrics::Metrics;
+use crate::metrics::{InflightGuard, Metrics, QueuedGuard};
 
 #[derive(Clone)]
 pub struct ProviderQueues {
@@ -41,6 +41,8 @@ enum Job {
         reply: oneshot::Sender<Result<reqwest::Response>>,
         wait: tracing::Span,
         parent: tracing::Span,
+        /// counts the job in its provider's queue depth until a worker takes it
+        queued: QueuedGuard,
     },
     Raw {
         provider: ProviderConfig,
@@ -52,6 +54,8 @@ enum Job {
         reply: oneshot::Sender<Result<reqwest::Response>>,
         wait: tracing::Span,
         parent: tracing::Span,
+        /// counts the job in its provider's queue depth until a worker takes it
+        queued: QueuedGuard,
     },
 }
 
@@ -106,6 +110,7 @@ impl ProviderQueues {
         trace_headers: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
         if !config.enabled {
+            let _inflight = InflightGuard::new(self.metrics.provider_load(&provider.name));
             return self
                 .forwarder
                 .forward_json(provider, path, body, api_key, upstream_model, trace_headers)
@@ -125,6 +130,7 @@ impl ProviderQueues {
             // the caller's span across so the forwarder's own stages land under
             // `upstream.request` instead of becoming orphan roots (#805)
             parent: tracing::Span::current(),
+            queued: QueuedGuard::new(self.metrics.provider_load(&provider.name)),
         };
         self.dispatch(config, &provider.name, job, result).await
     }
@@ -141,6 +147,7 @@ impl ProviderQueues {
         trace_headers: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
         if !config.enabled {
+            let _inflight = InflightGuard::new(self.metrics.provider_load(&provider.name));
             return self
                 .forwarder
                 .forward_raw(provider, path, body, content_type, api_key, trace_headers)
@@ -160,6 +167,7 @@ impl ProviderQueues {
             // the caller's span across so the forwarder's own stages land under
             // `upstream.request` instead of becoming orphan roots (#805)
             parent: tracing::Span::current(),
+            queued: QueuedGuard::new(self.metrics.provider_load(&provider.name)),
         };
         self.dispatch(config, &provider.name, job, result).await
     }
@@ -241,9 +249,12 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             reply,
             wait,
             parent,
+            queued,
         } => {
-            // the job is off the queue: close the wait span before doing any work
+            // the job is off the queue: close the wait span before doing any work,
+            // and move it from the queue depth to the provider's in-flight count
             drop(wait);
+            let _inflight = queued.picked();
             let headers = borrowed_headers(&trace_headers);
             // `.instrument`, not `.enter()`: an entered guard is `!Send` and this
             // future is spawned onto the worker task
@@ -271,9 +282,12 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             reply,
             wait,
             parent,
+            queued,
         } => {
-            // the job is off the queue: close the wait span before doing any work
+            // the job is off the queue: close the wait span before doing any work,
+            // and move it from the queue depth to the provider's in-flight count
             drop(wait);
+            let _inflight = queued.picked();
             let headers = borrowed_headers(&trace_headers);
             // `.instrument`, not `.enter()`: an entered guard is `!Send` and this
             // future is spawned onto the worker task

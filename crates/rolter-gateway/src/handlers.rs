@@ -1753,20 +1753,27 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-    let prompt = std::str::from_utf8(&body).ok();
+    // prefix affinity reads the conversation, not the JSON envelope every
+    // request to the model shares (#1851); a shape it cannot read keeps the
+    // raw body, as before
+    let affinity = crate::prompt_affinity::affinity(path, &parsed);
     let token_ids = parse_vllm_token_ids(&headers);
-    let ctx = RouteContext {
+    // the affinity text is only the prompt's leading bytes; route_context also
+    // hands over the whole prompt's length and digest, which the predictor's
+    // token estimate and consistent_hash need
+    let ctx = crate::prompt_affinity::route_context(
+        affinity.as_ref(),
+        &body,
         session_key,
-        prompt,
-        token_ids: token_ids.as_deref(),
+        token_ids.as_deref(),
         // adapter identity only exists when the request addresses something
         // other than the route's own model — i.e. a passthrough provider-group
         // route, which is how vLLM addresses LoRA adapters over shared base
         // weights. On a single-model route the two are equal and this stays
         // None, which keeps adapter scoring inert: treating one model as an
         // adapter would pin the whole route to whichever target served first
-        adapter: (model != effective_model).then_some(model.as_str()),
-    };
+        (model != effective_model).then_some(model.as_str()),
+    );
     // trace context plus any client headers the operator allowlisted (#564).
     //
     // this is the *fallback* set, used when no OTLP pipeline is installed: it
@@ -2689,6 +2696,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let ctx = RouteContext {
         session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
         prompt: None,
+        prompt_len: None,
+        prompt_digest: None,
         token_ids: token_ids.as_deref(),
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
@@ -3043,7 +3052,8 @@ pub(crate) fn key_pool_key(provider: &str) -> String {
 
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
-/// pool), then the remaining targets follow in declared order so the fallback
+/// pool, and told which targets are `eligible` as the classic pool's balancer
+/// is), then the remaining targets follow in declared order so the fallback
 /// tail stays deterministic. A route without variant balancers (or a pick out
 /// of range) degrades to plain declared order.
 fn variant_target_order(
@@ -3052,11 +3062,12 @@ fn variant_target_order(
     vi: usize,
     n: usize,
     loads: &[u64],
+    eligible: &dyn Fn(usize) -> bool,
 ) -> Vec<usize> {
     let lead = entry
         .variant_balancers
         .get(vi)
-        .and_then(|b| b.pick(ctx, loads))
+        .and_then(|b| b.pick_eligible(ctx, loads, eligible))
         .filter(|&i| i < n);
     let mut order = Vec::with_capacity(n);
     if let Some(i) = lead {
@@ -3064,6 +3075,61 @@ fn variant_target_order(
     }
     order.extend((0..n).filter(|&i| Some(i) != lead));
     order
+}
+
+/// Whether target `ti` of variant `v` (balanced under `key`) can lead an
+/// attempt: the same skip rules the attempt loop applies, so the variant's
+/// balancer weighs only targets it can lead with (#1851).
+fn variant_target_eligible(
+    state: &AppState,
+    key_meta: Option<&KeyMeta>,
+    key: &str,
+    v: &rolter_core::Variant,
+    cd_enabled: bool,
+    ti: usize,
+) -> bool {
+    v.targets.get(ti).is_some_and(|target| {
+        key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+            && !(cd_enabled && state.cooldowns.is_parked(key, ti))
+            && state.health.is_healthy(&target.provider)
+            && state.breaker.allows(key, ti)
+    })
+}
+
+/// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
+/// then the rest in declared order, each variant's targets flattened with the
+/// one its balancer picks from the eligible targets in the lead.
+fn variant_candidates(
+    state: &AppState,
+    entry: &crate::state::RouteEntry,
+    model: &str,
+    ctx: &RouteContext<'_>,
+    primary: usize,
+    key_meta: Option<&KeyMeta>,
+    cd_enabled: bool,
+) -> Vec<(usize, usize)> {
+    let route = &entry.route;
+    let mut candidates: Vec<(usize, usize)> =
+        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
+    for vi in route.fallback_order(primary) {
+        if let Some(v) = route.variants.get(vi) {
+            let key = variant_key(model, &v.name);
+            let mut loads = state.loads.snapshot(&key, v.targets.len());
+            for (i, target) in v.targets.iter().enumerate() {
+                if let Some(l) = loads.get_mut(i) {
+                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+                }
+            }
+            let eligible =
+                |ti: usize| variant_target_eligible(state, key_meta, &key, v, cd_enabled, ti);
+            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
+                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
+                    candidates.push((vi, ti));
+                }
+            }
+        }
+    }
+    candidates
 }
 
 /// Forward through the weighted-variant fallback chain. Samples a primary
@@ -3093,28 +3159,8 @@ async fn forward_variants(
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
 
-    // primary by weight, then the rest in declared order; flatten each variant's
-    // targets into one ordered candidate list, letting the variant's balancer
-    // choose which of its targets leads
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let mut candidates: Vec<(usize, usize)> =
-        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
-    for vi in route.fallback_order(primary) {
-        if let Some(v) = route.variants.get(vi) {
-            let key = variant_key(model, &v.name);
-            let mut loads = state.loads.snapshot(&key, v.targets.len());
-            for (i, target) in v.targets.iter().enumerate() {
-                if let Some(l) = loads.get_mut(i) {
-                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-                }
-            }
-            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads) {
-                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
-                    candidates.push((vi, ti));
-                }
-            }
-        }
-    }
+    let candidates = variant_candidates(state, entry, model, ctx, primary, key_meta, cd_enabled);
 
     let mut out = ForwardOutcome {
         outcome: None,
@@ -3362,11 +3408,18 @@ pub(crate) fn pick_untried(
             || !breaker.allows(model, i)
     };
     let n = entry.route.targets.len();
+    // the balancer weighs only the targets this attempt can use, so a dead
+    // replica's empty queue never reads as the least-loaded target (#1851)
+    let usable = |i: usize| i < n && !tried.contains(&i) && !skip(i);
     // a pick past the target list is treated as no pick rather than indexed:
     // a balancer shared across per-request pools (#1655) can be sized from a
     // different list than the one it is picking over, and `skip` indexes
     // `targets` directly (#1714)
-    if let Some(i) = entry.balancer.pick(ctx, loads).filter(|&i| i < n) {
+    if let Some(i) = entry
+        .balancer
+        .pick_eligible(ctx, loads, &usable)
+        .filter(|&i| i < n)
+    {
         if !tried.contains(&i) && !skip(i) {
             return Some(i);
         }
@@ -4820,7 +4873,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(1))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![1, 0]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![1, 0]
+        );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4828,7 +4884,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(9))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4836,7 +4895,74 @@ mod tests {
             variant_balancers: Vec::new(),
             route,
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
+    }
+
+    /// A dead variant target drains to an empty queue. The variant's
+    /// balancer must not read that zero as the least-loaded target, or the
+    /// warm target looks overloaded and the spill leads with the dead one.
+    #[test]
+    fn a_dead_variant_target_does_not_shape_the_variants_pick() {
+        let variant = rolter_core::Variant {
+            name: "v".to_string(),
+            weight: 1,
+            params: Default::default(),
+            targets: ["a", "b", "c"]
+                .into_iter()
+                .map(|provider| Target {
+                    provider: provider.to_string(),
+                    model: None,
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            targets: Vec::new(),
+            variants: vec![variant.clone()],
+            tenancy: None,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
+        rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
+            variant_balancers: vec![Box::new(cache_aware)],
+            route,
+        };
+        let state = AppState::new(&config_with_keys());
+        state.health.set("c", false);
+        // ten in flight on the first target, three on the warm one, and none on
+        // the dead one, which drained when it stopped taking traffic
+        let key = variant_key("m", "v");
+        let _in_flight: Vec<_> = std::iter::repeat_n(0, 10)
+            .chain(std::iter::repeat_n(1, 3))
+            .map(|ti| state.loads.begin(&key, ti))
+            .collect();
+        assert_eq!(state.loads.snapshot(&key, 3), vec![10, 3, 0]);
+        let candidates = variant_candidates(&state, &entry, "m", &ctx, 0, None, false);
+        assert_eq!(
+            candidates.first(),
+            Some(&(0, 1)),
+            "the warm live target should lead: {candidates:?}"
+        );
+        // the same pick blind to eligibility leads with the dead target
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 3, &[10, 3, 0], &|_| true)[0],
+            2
+        );
     }
 
     #[test]
@@ -5061,6 +5187,61 @@ mod tests {
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
         assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+    }
+
+    /// #1851's load guard against a pool with a dead replica: its load stays
+    /// at 0, and counting it made every warm replica with three requests in
+    /// flight look overloaded, so the spill went to the dead replica and then
+    /// on to target 0 by index, cache or no cache.
+    #[test]
+    fn cache_aware_balances_against_live_targets_only() {
+        let target = |provider: &str| Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::CacheAware,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![target("a"), target("b"), target("c")],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        entry.balancer.observe(1, &ctx);
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::new();
+        let bb = crate::breaker::Breaker::default();
+        hh.set("c", false);
+        let loads = [10, 3, 0];
+        // the warm replica is the least loaded of the live ones: it keeps the
+        // request rather than losing it to busy target 0
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(1)
+        );
+        // once it was tried, the spill goes to the other live replica
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[1], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(0)
+        );
+        // with every replica down the pick fails open, as before
+        hh.set("a", false);
+        hh.set("b", false);
+        assert!(pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None).is_some());
     }
 
     #[test]

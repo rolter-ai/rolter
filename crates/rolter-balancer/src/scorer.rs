@@ -954,6 +954,7 @@ mod tests {
             prompt: Some("a long shared system prompt then a question"),
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         // cold: prefix scores 0 for both, load scorer absent -> tie, any target ok
         let first = p.select(&ctx, &[], |_| true).unwrap();
@@ -972,6 +973,7 @@ mod tests {
             prompt: None,
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         // cold: no affinity, all candidates tie -> record whichever wins as served
         p.observe(2, &ctx);
@@ -996,6 +998,7 @@ mod tests {
             prompt: None,
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         scorer.observe(1, &ctx);
         // zero ttl -> entry is immediately stale, so no boost
@@ -1010,6 +1013,7 @@ mod tests {
             prompt: None,
             token_ids: None,
             adapter: None,
+            ..Default::default()
         };
         scorer.observe(2, &ctx);
         // target 2 not in the candidate set -> no boost applied

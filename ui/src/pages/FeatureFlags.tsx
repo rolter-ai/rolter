@@ -140,6 +140,7 @@ function FeatureFlagsScreen() {
           title={copy[key].title}
           desc={copy[key].desc}
           checked={form[key]}
+          storedOn={flags.data?.[key] ?? false}
           unavailableReason={reasonFor(key)}
           onChange={(v) => set(key, v)}
         />
@@ -155,20 +156,25 @@ function FeatureFlagsScreen() {
 }
 
 // an unavailable flag stays visible but cannot be switched on: the server would
-// reject it, and a live switch would imply the subsystem is running
+// reject it, and a live switch would imply the subsystem is running. one that
+// was already on when its subsystem went away keeps a live switch so it can be
+// turned off — the server refuses only the transition to on (#1856)
 function FlagCard({
   title,
   desc,
   checked,
+  storedOn,
   unavailableReason,
   onChange,
 }: {
   title: string;
   desc: string;
   checked: boolean;
+  storedOn: boolean;
   unavailableReason?: string;
   onChange: (v: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const unavailable = unavailableReason !== undefined;
   return (
     <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
@@ -183,10 +189,15 @@ function FlagCard({
             {unavailableReason}
           </p>
         )}
+        {unavailable && storedOn && (
+          <p className="mt-1.5 text-[0.6875rem] text-[color:var(--text-subtle)]">
+            {t("pages.featureFlags.stillOn")}
+          </p>
+        )}
       </div>
       <Switch
         checked={checked}
-        disabled={unavailable}
+        disabled={unavailable && !storedOn}
         aria-label={title}
         onCheckedChange={onChange}
       />
