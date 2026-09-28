@@ -579,14 +579,28 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/auth/login",
                 "login",
-                "Exchange email and password for a session token, or for a \
-                 second-factor challenge when the account has one armed",
+                "Exchange email and password for a session token, for a \
+                 second-factor challenge when the account has one armed, or \
+                 for an enrolment challenge when its org requires one it lacks",
             )
             .public(),
             Op::post(
                 "/api/v1/auth/mfa/verify",
                 "verifyMfaChallenge",
                 "Redeem a second-factor challenge for a session token",
+            )
+            .public(),
+            Op::post(
+                "/api/v1/auth/mfa/enroll",
+                "beginSignInMfaEnrolment",
+                "Issue a TOTP secret against an enrolment challenge (shown once)",
+            )
+            .public(),
+            Op::post(
+                "/api/v1/auth/mfa/confirm",
+                "confirmSignInMfaEnrolment",
+                "Arm the factor against an enrolment challenge, returning a \
+                 session token and recovery codes",
             )
             .public(),
             Op::post(

@@ -24,15 +24,100 @@ authenticates nothing and names only which login is in flight.
 ```
 password ok ──► armed factor?
                  │
-                 ├── no, and no policy requires one ──► session
-                 ├── no, but policy requires one ─────► 403 mfa_enrolment_required
-                 └── yes ──► challenge ──► /auth/mfa/verify ──► session
+                 ├── yes ──► challenge (verify) ──► /auth/mfa/verify ──► session
+                 └── no ──► policy requires one, and in force?
+                             │
+                             ├── no (or still in its grace window) ──► session
+                             ├── yes, no ROLTER_KEK ──► 403 mfa_enrolment_required
+                             └── yes ──► challenge (enrol) ──► /auth/mfa/enroll
+                                                           ──► /auth/mfa/confirm ──► session
 ```
 
 The challenge lives in its own table rather than as a flagged `sessions` row.
 A challenge grants nothing, and putting it in `sessions` would mean every
 future reader of that table had to remember to exclude it — a rule that holds
 only until someone forgets it.
+
+## Enrolment at sign-in
+
+A `required_*` policy used to refuse a session to an account with no armed
+factor, and the only enrolment path needed a session, so the member could not
+fix it and an admin had to relax the policy or run the break-glass reset
+(#1852). The login exchange now hands such an account an **enrolment
+challenge** instead: a row in `mfa_challenges` with `purpose = 'enrol'`,
+ten minutes to live, five codes to spend.
+
+What makes it safe to hand out is how little it opens:
+
+- It is not a session. `CurrentUser` and `Principal` look tokens up in
+  `sessions` and `virtual_keys`, and it is in neither, so as a bearer it is
+  refused everywhere.
+- It is presented in the body of exactly two routes,
+  `POST /api/v1/auth/mfa/enroll` (mint a pending secret) and
+  `POST /api/v1/auth/mfa/confirm` (prove it). Every challenge read names a
+  purpose, so `/auth/mfa/verify` does not find an enrolment token and the
+  enrolment routes do not find a step-up token. Without that, a code from a
+  secret the token minted but never armed would redeem the step-up.
+- The confirm checks the code, then consumes the token with a
+  `delete … returning`. Only the request whose delete removed the row goes on
+  to arm the factor, mint the recovery codes and call `issue_session`, so a
+  double submit cannot mint two batches, the second silently voiding the
+  first.
+- The session comes out of `issue_session`, the same path every other
+  sign-in takes, so it is audited as `auth.login`, next to `auth.mfa_enabled`
+  with `at_sign_in: true`. The password step writes `after_lock` on the
+  challenge row (`mfa_challenges.after_lock`), and the redeeming request reads
+  it back, so a sign-in that followed a lockout says so on its `auth.login`
+  row even though a later request issued the session. The step-up carries it
+  the same way.
+
+Both writes an enrolment makes decide inside the statement rather than in a
+read before it, for the same reason the replay check does:
+
+- `MfaRepo::confirm` arms the factor only while the row still holds the
+  secret the code was checked against (`secret_nonce`, fresh per seal).
+  Otherwise a second live enrolment token for the same account, or a second
+  tab, could replace the pending secret between the check and the arm, and the
+  confirm would arm a secret its caller never saw.
+- `MfaRepo::begin_enrolment` upserts only over a row whose `confirmed_at` is
+  null. The `has_armed_factor` check in front of it answers the common case;
+  the condition covers an enrolment racing a confirm, which would otherwise
+  silently disarm the factor that confirm had just armed.
+
+A break-glass reset, a new password set through `PUT /users/{id}` and a
+deactivation (API or SCIM) all drop the user's challenges in flight. An
+enrolment token is refused while a factor is armed, so without the purge, one
+minted before a reset would come back to life the moment the reset cleared the
+factor.
+
+Asking for a secret does not charge the token's budget; proving one does. The
+budget is not a guessing defence (whoever holds the token holds the secret)
+but a bound on how long one token stays useful.
+
+A control plane with no `ROLTER_KEK` cannot seal a secret, so it keeps the
+old 403 `mfa_enrolment_required`. Handing out a challenge that fails one step
+later would only move the same dead end, and the fix is the operator's. For the
+same reason `PUT /orgs/{id}/auth-policy` refuses a `required_*` value there
+with a 409 naming the key: without it nobody can enrol, and every account the
+policy binds, the admin saving it included, would be refused at its next
+sign-in.
+
+KEK availability comes from `Kek::from_env` in production. The integration
+suite installs one KEK process-wide (#1351) and cannot unset it without racing
+other tests' in-flight requests, so `ControlState::mfa_without_kek`, set only
+by `test_app_without_kek`, is how the tests reach these branches.
+
+Both challenge responses carry `expires_in` next to `expires_at`, and the
+dashboard times its prompts from that. Comparing `expires_at` with the browser
+clock expired the prompt on arrival for anyone whose laptop clock ran more
+than the TTL fast, and under `required_*` that meant never getting in.
+
+The trade is the one every enrol-at-sign-in flow makes: until a member
+enrols, their password alone gets whoever holds it through enrolment. That is
+no worse than the policy being off, the grace window below gives members a
+way to enrol from their own session first, and every enrolment at sign-in is
+audited. A factor armed by someone else is cleared with break-glass plus a new
+password; the reset alone leaves the password with whoever used it.
 
 ## Why SHA-1
 
@@ -84,12 +169,13 @@ of a mistyped digit.
 
 ## Storage
 
-| Table                          | Holds                                                                 |
-| ------------------------------ | --------------------------------------------------------------------- |
-| `user_totp_factors`            | one row per user: the sealed secret, `confirmed_at`, `last_used_step` |
-| `user_recovery_codes`          | hashed single-use codes; `used_at` marks a spent one                  |
-| `mfa_challenges`               | logins in flight; hashed token, attempt count, expiry                 |
-| `org_auth_policies.mfa_policy` | enforcement, alongside the password/SSO switches                      |
+| Table                                 | Holds                                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `user_totp_factors`                   | one row per user: the sealed secret, `confirmed_at`, `last_used_step`                             |
+| `user_recovery_codes`                 | hashed single-use codes; `used_at` marks a spent one                                              |
+| `mfa_challenges`                      | logins in flight; hashed token, `purpose` (`verify`/`enrol`), attempt count, expiry, `after_lock` |
+| `org_auth_policies.mfa_policy`        | enforcement, alongside the password/SSO switches                                                  |
+| `org_auth_policies.mfa_enforce_after` | the grace window before a `required_*` policy applies (`0076`)                                    |
 
 The secret is sealed with the deployment KEK — it is a bearer credential, so a
 database dump alone must not yield one — and is registered in `SEALED_COLUMNS`
@@ -114,10 +200,24 @@ reasoning as `custom_roles` in `0058`.
 and a user's effective policy is the **strictest** across their orgs. Taking
 the first match instead would let a relaxed membership soften a hardened one.
 
-Under a `required_*` policy an unenrolled account is refused a session rather
-than admitted unprotected, with a distinct `mfa_enrolment_required` code — the
-remedy is an administrator's, and telling the user to retype their password
-would be a lie.
+Under a `required_*` policy the password sign-in never admits an unenrolled
+account unprotected: it gets the enrolment challenge above, or, on a control
+plane with no KEK, a distinct `mfa_enrolment_required` refusal. Telling that
+user to retype their password would be a lie. Invitation acceptance does not
+go through this decision yet and issues a session directly (#1935).
+
+`mfa_enforce_after` lets an org announce the requirement before it applies.
+`SetPolicy` reads it as a double option: an explicit `null` clears it, an
+absent key keeps the stored value, so a client that predates the field cannot
+cancel an announced window by re-sending `mfa_policy`.
+`EffectivePolicy` in `mfa.rs` reduces every org policy that binds the user:
+strictest wins for the policy, and the **earliest** start wins for the window,
+so one hardened org already enforcing is enough and a later window elsewhere
+cannot postpone it. While every binding requirement is still in its window
+the password alone signs in, and the session carries `mfa_enrol_by` so the
+dashboard can say the date on the way in. `required` stays true through the
+window, so removing an armed factor stays refused; the window lets the
+unenrolled in for a while and never lets the enrolled back out.
 
 Unlike `allow_password_login`, `required_all` does not exempt superadmins. The
 exemption there exists because a broken IdP has no other way back in; here the
@@ -126,9 +226,10 @@ way back in is `rolter mfa reset`, which needs no exemption to work.
 ## Break-glass
 
 `rolter mfa reset --email ... --reason ...` clears the factor and its recovery
-codes, revokes every live session for the account, and writes an audit entry
-carrying the reason. It runs on the host against the database, which is the
-same privilege level as reading the rows it deletes.
+codes, revokes every live session for the account, drops its challenges in
+flight, and writes an audit entry carrying the reason. It runs on the host
+against the database, which is the same privilege level as reading the rows it
+deletes.
 
 Deliberately not an API endpoint: an endpoint that clears a second factor is a
 second factor that anyone holding a session can clear.
@@ -143,5 +244,8 @@ WebAuthn and passkeys. Stronger, and worth their own issue — TOTP is the
 factor that needs no browser API work and the one every security review asks
 for.
 
-The dashboard enrolment and policy screens are `station:mac` work, tracked
-separately; this page describes the API surface they build on.
+The dashboard builds on this surface: `ui/src/components/SignInEnrolment.tsx`
+is the enrolment step in the sign-in card, loaded lazily so the QR encoder
+stays out of the chunk every signed-out visitor downloads, and the grace
+window is the **Start requiring it** control on the SSO screen's sign-in
+policy card.
