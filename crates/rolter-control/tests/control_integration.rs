@@ -3504,6 +3504,123 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     assert_eq!(as_admin.status(), 200);
 }
 
+/// A superadmin password reset through `PUT /api/v1/users/{id}` ends every
+/// session the account holds (#1936): the usual reason for a reset is that the
+/// old password is compromised, and whoever signed in with it must not keep a
+/// week-long session. A superadmin resetting their own password keeps the
+/// session they did it from and loses the rest, and the audit row says how
+/// many went.
+#[tokio::test]
+async fn a_password_reset_revokes_the_accounts_live_sessions() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let admin = seed_user(&pool, "reset-admin@example.com", true).await;
+    let admin_here = seed_session(&pool, admin, "resetadminhere").await;
+    let admin_elsewhere = seed_session(&pool, admin, "resetadminelsewhere").await;
+    let target = seed_user(&pool, "reset-target@example.com", false).await;
+    let stolen = seed_session(&pool, target, "resettargetstolen").await;
+    let laptop = seed_session(&pool, target, "resettargetlaptop").await;
+
+    let me = |token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .get(format!("{base}/api/v1/auth/me"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    assert_eq!(me(stolen.clone()).await, 200, "the session starts live");
+
+    // a change that leaves the password alone revokes nothing
+    let renamed = client
+        .put(format!("{base}/api/v1/users/{target}"))
+        .bearer_auth(&admin_here)
+        .json(&json!({"email": "reset-target-2@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), 200);
+    assert_eq!(me(laptop.clone()).await, 200);
+
+    let reset = client
+        .put(format!("{base}/api/v1/users/{target}"))
+        .bearer_auth(&admin_here)
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), 200);
+    for token in [&stolen, &laptop] {
+        assert_eq!(me(token.clone()).await, 401, "{token} outlived the reset");
+    }
+    assert_eq!(
+        me(admin_here.clone()).await,
+        200,
+        "resetting someone else touches only their sessions"
+    );
+    let revoked: Option<i64> = sqlx::query_scalar(
+        "select (detail->>'sessions_revoked')::bigint from audit_log
+         where action = 'user.update' and target_id = $1
+           and (detail->>'password_changed')::boolean
+         order by at desc limit 1",
+    )
+    .bind(target)
+    .fetch_optional(&pool)
+    .await
+    .unwrap()
+    .flatten();
+    assert_eq!(
+        revoked,
+        Some(2),
+        "the audit row counts the revoked sessions"
+    );
+
+    // resetting your own password keeps the session you did it from
+    let own = client
+        .put(format!("{base}/api/v1/users/{admin}"))
+        .bearer_auth(&admin_here)
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own.status(), 200);
+    assert_eq!(
+        me(admin_here.clone()).await,
+        200,
+        "the caller stays signed in"
+    );
+    assert_eq!(
+        me(admin_elsewhere.clone()).await,
+        401,
+        "every other session of the caller ends"
+    );
+
+    // the admin token is no session, so a reset through it spares none
+    let again = seed_session(&pool, target, "resettargetagain").await;
+    let by_token = client
+        .put(format!("{base}/api/v1/users/{target}"))
+        .bearer_auth("sekrit")
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_token.status(), 200);
+    assert_eq!(me(again).await, 401);
+}
+
 /// `GET /api/v1/stability` is the dashboard's one source for the nav's
 /// experimental markers (#1385): the least-privileged signed-in caller reads it
 /// — a viewer sees the nav too — an anonymous one does not, and every row it

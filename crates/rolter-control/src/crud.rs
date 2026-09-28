@@ -4843,6 +4843,7 @@ async fn update_user(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
     SafeJson(body): SafeJson<UpdateUser>,
 ) -> ApiResult<Json<User>> {
     authorize_superadmin(&principal, superadmin_cap!("user", Update))?;
@@ -4877,16 +4878,29 @@ async fn update_user(
         )
         .await?;
 
+    let mut sessions_revoked = 0;
     let mut detail = serde_json::json!({"email": user.email, "deactivated": body.deactivated});
     if let Some(deactivated) = body.deactivated {
         user = UserRepo(pool).set_deactivated(id, deactivated).await?;
         if deactivated {
             // cut existing access immediately, not just at token expiry
-            SessionRepo(pool).delete_for_user(id).await?;
+            sessions_revoked = SessionRepo(pool).delete_for_user_except(id, None).await?;
         }
         // the gateways stop, or resume, serving the keys the account minted
         // for itself (#1841), and the audit row says how many
         detail["personal_keys"] = VirtualKeyRepo(pool).count_personal(id).await?.into();
+    }
+    if password_hash.is_some() && body.deactivated != Some(true) {
+        // a reset usually means the old password is in someone else's hands,
+        // and whoever signed in with it would otherwise keep a session for its
+        // full lifetime (#1936). The session sending this request survives, so
+        // a superadmin resetting their own password is not signed out of the
+        // page they did it from; it matches no other account's rows
+        let own = crate::auth::bearer_token(&headers)
+            .map(|token| rolter_auth::hash_key(&crate::auth::session_pepper(), token));
+        sessions_revoked = SessionRepo(pool)
+            .delete_for_user_except(id, own.as_deref())
+            .await?;
     }
     if password_hash.is_some() || body.deactivated == Some(true) {
         // a sign-in halfway through its second-factor step was started with
@@ -4896,6 +4910,8 @@ async fn update_user(
     }
 
     // global account edit spans orgs, so it's logged unscoped
+    detail["password_changed"] = password_hash.is_some().into();
+    detail["sessions_revoked"] = sessions_revoked.into();
     log_audit(&state, &principal, None, "user.update", "user", id, detail).await;
     Ok(Json(user))
 }

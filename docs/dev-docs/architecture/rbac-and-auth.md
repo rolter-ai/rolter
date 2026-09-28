@@ -393,6 +393,8 @@ Human users authenticate to the control plane. Two providers ship today: **local
 
 Roles are granted via `memberships` at an **org / team / project** scope. Permission checks resolve the most specific membership for the target resource.
 
+Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
+
 ```mermaid
 flowchart LR
   U[User] -->|member of| Scope[org / team / project]

@@ -3569,6 +3569,27 @@ impl SessionRepo<'_> {
             .map_err(store_err)?;
         Ok(())
     }
+
+    /// revoke every session for a user except the one whose digest is
+    /// `keep_token_hash`, returning how many went (used on a password reset,
+    /// so the caller resetting their own password stays signed in while every
+    /// other session opened with the old password ends)
+    pub async fn delete_for_user_except(
+        &self,
+        user_id: Uuid,
+        keep_token_hash: Option<&str>,
+    ) -> Result<u64> {
+        let done = sqlx::query(
+            "delete from sessions
+             where user_id = $1 and ($2::text is null or token_hash <> $2)",
+        )
+        .bind(user_id)
+        .bind(keep_token_hash)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(done.rows_affected())
+    }
 }
 
 pub struct AuditLogRepo<'a>(pub &'a PgPool);
