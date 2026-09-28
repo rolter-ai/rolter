@@ -467,6 +467,14 @@ struct ControlState {
     /// `ROLTER_UPDATE_CHECK` is falsy
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     update_check: update_check::UpdateChecker,
+    /// second factors behave as though `ROLTER_KEK` were unset: nothing can be
+    /// sealed, so nobody can enrol and a `required_*` policy is refused.
+    /// Always `false` outside tests, where `Kek::from_env` alone decides. The
+    /// integration suite installs one KEK for the whole process (#1351), and
+    /// unsetting it would be read by every other test's in-flight request, so
+    /// `test_app_without_kek` reaches the no-KEK branches through this instead
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    mfa_without_kek: bool,
 }
 
 /// Run the control plane to completion. The caller owns argument parsing and
@@ -650,6 +658,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
+        mfa_without_kek: false,
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -670,6 +679,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
+        mfa_without_kek: false,
     };
 
     // converge the clickhouse ttl with the stored retention policy. spawned
@@ -1185,6 +1195,22 @@ pub async fn test_app_with_redis(pool: sqlx::PgPool, redis_url: &str) -> anyhow:
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] on a control plane that cannot seal a second factor, as
+/// though `ROLTER_KEK` were unset (#1852).
+///
+/// Sign-in refuses an account a `required_*` policy binds with no factor
+/// armed, since an enrolment it could not seal would only fail one step
+/// later, and the auth policy endpoint refuses to set such a policy at all.
+/// Both are reached through a flag on the state rather than by unsetting the
+/// variable, which every other test in the binary reads at request time.
+#[cfg(feature = "postgres")]
+pub async fn test_app_without_kek(pool: sqlx::PgPool) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, None, None);
+    state.mfa_without_kek = true;
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
@@ -1221,6 +1247,7 @@ fn test_state(
         // never on the network from a test; the endpoint's disabled shape is
         // what the integration test asserts
         update_check: update_check::UpdateChecker::disabled(),
+        mfa_without_kek: false,
         pool: Some(pool),
     }
 }
@@ -2569,6 +2596,7 @@ mod tests {
             login_throttle: Default::default(),
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),
+            mfa_without_kek: false,
             #[cfg(feature = "postgres")]
             pool: None,
         }

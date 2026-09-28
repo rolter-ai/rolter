@@ -22,8 +22,15 @@
 //! `org_auth_policies.mfa_policy` is one of `off`, `optional`,
 //! `required_superadmin`, `required_all`, and a user's effective policy is the
 //! strictest across their orgs. `optional` changes nothing about who may sign
-//! in; the two `required_*` values refuse a session to a user who has no armed
-//! factor, and say so, rather than letting them in unprotected.
+//! in. The two `required_*` values never let a user who has no armed factor
+//! in unprotected: the login exchange hands them an **enrolment challenge**
+//! instead of a session (#1852) -- a token that can mint a secret and prove
+//! it, and nothing else -- and proving it is what issues the session.
+//!
+//! An org may announce the requirement before it bites
+//! (`org_auth_policies.mfa_enforce_after`). Until that moment an unenrolled
+//! member signs in with the password alone, and the session says by when they
+//! have to enrol.
 //!
 //! Unlike `allow_password_login`, `required_all` does **not** exempt
 //! superadmins. It does not need to: the break-glass path here is
@@ -32,9 +39,10 @@
 //! and buy no recoverability.
 
 use axum::extract::State;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -42,9 +50,10 @@ use uuid::Uuid;
 use rolter_auth::totp;
 use rolter_core::Error;
 use rolter_store::postgres::crypto::Kek;
-use rolter_store::postgres::models::User;
+use rolter_store::postgres::models::{MfaPolicyBinding, User};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, MfaRepo, OrgAuthPolicyRepo, SessionRepo, UserRepo,
+    mfa_policy_rank, AuditLogRepo, ChallengePurpose, MfaRepo, OrgAuthPolicyRepo, SessionRepo,
+    UserRepo,
 };
 
 use crate::auth::{session_pepper, AuthError, CurrentUser};
@@ -62,6 +71,19 @@ const CHALLENGE_TTL_MINUTES: i64 = 5;
 /// password half is already throttled by [`crate::login_throttle`].
 const MAX_CHALLENGE_ATTEMPTS: i32 = 3;
 
+/// How long a login bound by a `required_*` policy has to enrol. Longer than a
+/// step-up, because the person may have to install an authenticator app
+/// first; still short enough that an abandoned one is gone before anyone
+/// thinks to look for it.
+const ENROLMENT_TTL_MINUTES: i64 = 10;
+
+/// Codes one enrolment challenge accepts before it is spent. Not a guessing
+/// budget -- whoever holds the token also holds the secret, so there is
+/// nothing to guess -- but a bound on how long one token stays useful. Five
+/// leaves room for a phone whose clock is off and a second try after fixing
+/// it.
+const MAX_ENROLMENT_ATTEMPTS: i32 = 5;
+
 /// How many recovery codes a batch holds. Ten is the number every comparable
 /// console issues; it fits on a printed card and survives a few uses.
 const RECOVERY_CODE_COUNT: usize = 10;
@@ -76,6 +98,10 @@ pub(crate) fn router() -> Router<ControlState> {
         // redeeming a challenge is by definition unauthenticated: the caller
         // has no session yet, which is the whole point
         .route("/api/v1/auth/mfa/verify", post(verify_challenge))
+        // the same for an enrolment challenge (#1852): the token in the body is
+        // the only credential, and it opens these two routes and no others
+        .route("/api/v1/auth/mfa/enroll", post(sign_in_enrol))
+        .route("/api/v1/auth/mfa/confirm", post(sign_in_confirm))
         .route("/api/v1/me/mfa", get(my_status))
         .route("/api/v1/me/mfa/enroll", post(begin_enrolment))
         .route("/api/v1/me/mfa/confirm", post(confirm_enrolment))
@@ -88,14 +114,27 @@ pub(crate) fn router() -> Router<ControlState> {
 /// Never a plaintext fallback: a TOTP secret is a bearer credential, so a
 /// deployment without a KEK must be told it cannot enrol rather than quietly
 /// storing one in the clear.
-fn kek() -> ApiResult<Kek> {
-    Kek::from_env().ok_or_else(|| {
-        ApiError::Core(Error::Config(
-            "enrolling a second factor requires the ROLTER_KEK environment variable on the \
-             control plane, so the shared secret is sealed at rest"
-                .to_string(),
-        ))
-    })
+fn kek(state: &ControlState) -> ApiResult<Kek> {
+    Kek::from_env()
+        .filter(|_| !state.mfa_without_kek)
+        .ok_or_else(|| {
+            ApiError::Core(Error::Config(
+                "enrolling a second factor requires the ROLTER_KEK environment variable on the \
+                 control plane, so the shared secret is sealed at rest"
+                    .to_string(),
+            ))
+        })
+}
+
+/// Whether this control plane can seal a new secret at all.
+///
+/// The login exchange asks before it hands out an enrolment challenge: without
+/// a KEK the challenge would lead to a refusal one step later, and a user is
+/// better served by the refusal up front, with a code that says the remedy is
+/// an operator's. The auth policy endpoint asks before it accepts a
+/// `required_*` policy, which without a KEK would lock out everyone it binds.
+pub(crate) fn can_enrol(state: &ControlState) -> bool {
+    kek(state).is_ok()
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -119,6 +158,10 @@ pub(crate) struct MfaStatus {
     pub(crate) policy: String,
     /// whether that policy makes the factor mandatory for this user
     pub(crate) required: bool,
+    /// set while the requirement is announced but not yet in force: from this
+    /// moment an unenrolled sign-in has to enrol before it gets a session
+    /// (#1852). `null` when nothing is required, or it already applies
+    pub(crate) enforce_after: Option<DateTime<Utc>>,
 }
 
 async fn my_status(
@@ -131,32 +174,98 @@ async fn my_status(
 pub(crate) async fn status_for(state: &ControlState, user: &User) -> ApiResult<MfaStatus> {
     let pool = pool(state);
     let factor = MfaRepo(pool).status(user.id).await?;
-    let (policy, required) = effective_policy(state, user).await?;
+    let effective = effective_policy(state, user).await?;
     Ok(MfaStatus {
         enabled: factor.as_ref().is_some_and(|f| f.confirmed_at.is_some()),
         enrolment_pending: factor.is_some_and(|f| f.confirmed_at.is_none()),
         recovery_codes_remaining: MfaRepo(pool).remaining_recovery_codes(user.id).await?,
-        policy,
-        required,
+        policy: effective.policy,
+        required: effective.required,
+        enforce_after: effective.enforce_after,
     })
 }
 
-/// The strictest policy across the user's orgs, and whether it binds them.
+/// The second-factor policy as it applies to one user at one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EffectivePolicy {
+    /// the strictest `mfa_policy` across the user's orgs; `off` when none
+    pub(crate) policy: String,
+    /// whether any of those policies makes a factor mandatory for this user
+    pub(crate) required: bool,
+    /// while every requirement that binds the user is still in its grace
+    /// window, the earliest moment one of them starts to apply. `None` when
+    /// nothing is required or a requirement already applies
+    pub(crate) enforce_after: Option<DateTime<Utc>>,
+}
+
+impl EffectivePolicy {
+    /// Whether a sign-in with no armed factor has to enrol before it gets a
+    /// session.
+    pub(crate) fn enforced(&self) -> bool {
+        self.required && self.enforce_after.is_none()
+    }
+}
+
+/// The policy that applies to the user right now, across all their orgs.
 pub(crate) async fn effective_policy(
     state: &ControlState,
     user: &User,
-) -> ApiResult<(String, bool)> {
-    let policy = OrgAuthPolicyRepo(pool(state))
-        .strictest_mfa_policy_for_user(user.id)
-        .await?
-        .map(|(policy, _)| policy)
-        .unwrap_or_else(|| "off".to_string());
-    let required = match policy.as_str() {
+) -> ApiResult<EffectivePolicy> {
+    let bindings = OrgAuthPolicyRepo(pool(state))
+        .mfa_policies_for_user(user.id)
+        .await?;
+    Ok(resolve_policy(&bindings, user.is_superadmin, Utc::now()))
+}
+
+/// Whether one org's `mfa_policy` makes a factor mandatory for this user.
+fn binds(policy: &str, is_superadmin: bool) -> bool {
+    match policy {
         "required_all" => true,
-        "required_superadmin" => user.is_superadmin,
+        "required_superadmin" => is_superadmin,
         _ => false,
+    }
+}
+
+/// Reduce every org policy that applies to a user to the one decision the
+/// login exchange needs.
+///
+/// Strictest wins for the policy, and the *earliest* start wins for the grace
+/// window: one hardened org already enforcing is enough, and a later window in
+/// another org must not postpone it. Split out of [`effective_policy`] so the
+/// reduction is tested without a database.
+fn resolve_policy(
+    bindings: &[MfaPolicyBinding],
+    is_superadmin: bool,
+    now: DateTime<Utc>,
+) -> EffectivePolicy {
+    let policy = bindings
+        .iter()
+        .map(|binding| binding.policy.as_str())
+        .max_by_key(|policy| mfa_policy_rank(policy))
+        .filter(|policy| mfa_policy_rank(policy) > 0)
+        .unwrap_or("off")
+        .to_string();
+    let binding: Vec<&MfaPolicyBinding> = bindings
+        .iter()
+        .filter(|binding| binds(&binding.policy, is_superadmin))
+        .collect();
+    let required = !binding.is_empty();
+    let in_force = binding
+        .iter()
+        .any(|binding| binding.enforce_after.is_none_or(|at| at <= now));
+    let enforce_after = if in_force {
+        None
+    } else {
+        binding
+            .iter()
+            .filter_map(|binding| binding.enforce_after)
+            .min()
     };
-    Ok((policy, required))
+    EffectivePolicy {
+        policy,
+        required,
+        enforce_after,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -179,25 +288,47 @@ async fn begin_enrolment(
     current: CurrentUser,
     State(state): State<ControlState>,
 ) -> ApiResult<Json<EnrolmentResponse>> {
-    let pool = pool(&state);
-    if MfaRepo(pool).has_armed_factor(current.user.id).await? {
-        return Err(ApiError::Conflict(
+    let already = || {
+        ApiError::Conflict(
             "a second factor is already enabled for this account; disable it before enrolling \
              a new one"
                 .to_string(),
-        ));
+        )
+    };
+    if MfaRepo(pool(&state))
+        .has_armed_factor(current.user.id)
+        .await?
+    {
+        return Err(already());
     }
-    let kek = kek()?;
+    // the check above is the common answer; this one is the race, a confirm
+    // from another tab landing in between
+    mint_secret(&state, &current.user)
+        .await?
+        .map(Json)
+        .ok_or_else(already)
+}
+
+/// Seal a fresh secret as the user's pending factor and return it, once.
+///
+/// Shared by the session-authenticated enrolment and the one a sign-in is
+/// sent through, so both hand out exactly the same thing. `None` when the
+/// account has an armed factor by the time the secret is written, which is
+/// never replaced. Deliberately not audited: an enrolment that is never
+/// confirmed is not an event, and the confirm is the one that changes how the
+/// account authenticates.
+async fn mint_secret(state: &ControlState, user: &User) -> ApiResult<Option<EnrolmentResponse>> {
+    let kek = kek(state)?;
     let mut secret = [0u8; totp::SECRET_BYTES];
     rand::rng().fill_bytes(&mut secret);
-    MfaRepo(pool)
-        .begin_enrolment(current.user.id, &secret, &kek)
+    let written = MfaRepo(pool(state))
+        .begin_enrolment(user.id, &secret, &kek)
         .await?;
-    // deliberately not audited: an enrolment that is never confirmed is not an
-    // event, and the confirm below is the one that changes how the account
-    // authenticates
-    Ok(Json(EnrolmentResponse {
-        otpauth_uri: totp::otpauth_uri(&issuer(), &current.user.email, &secret),
+    if !written {
+        return Ok(None);
+    }
+    Ok(Some(EnrolmentResponse {
+        otpauth_uri: totp::otpauth_uri(&issuer(), &user.email, &secret),
         secret: totp::base32_encode(&secret),
         digits: totp::DIGITS,
         period: totp::STEP_SECONDS,
@@ -232,7 +363,10 @@ async fn confirm_enrolment(
     SafeJson(body): SafeJson<ConfirmRequest>,
 ) -> ApiResult<Json<RecoveryCodesResponse>> {
     let pool = pool(&state);
-    let Some(factor) = MfaRepo(pool).open_secret(current.user.id, &kek()?).await? else {
+    let Some(factor) = MfaRepo(pool)
+        .open_secret(current.user.id, &kek(&state)?)
+        .await?
+    else {
         return Err(invalid("no enrolment in progress; request a secret first"));
     };
     let Some(step) = totp::verify_at(&factor.secret, &body.code, now_seconds()) else {
@@ -247,7 +381,16 @@ async fn confirm_enrolment(
             "that code did not match; check the clock on the device and try again",
         ));
     };
-    MfaRepo(pool).confirm(current.user.id, step as i64).await?;
+    if !MfaRepo(pool)
+        .confirm(current.user.id, step as i64, &factor.nonce)
+        .await?
+    {
+        // another enrolment replaced the secret after this code was checked
+        // against it; arming the new one would arm a secret nobody here saw
+        return Err(invalid(
+            "the secret changed while this code was checked; start the enrolment again",
+        ));
+    }
     let codes = mint_recovery_codes(&state, current.user.id).await?;
     audit(
         &state,
@@ -324,8 +467,9 @@ async fn disable_factor(
             "no second factor is enabled for this account".to_string(),
         )));
     }
-    let (_, required) = effective_policy(&state, &current.user).await?;
-    if required {
+    // a grace window does not change this: it lets the unenrolled in for a
+    // while, and says nothing about letting the enrolled back out
+    if effective_policy(&state, &current.user).await?.required {
         return Err(ApiError::Forbidden);
     }
     if !prove_factor(&state, current.user.id, &body.code).await? {
@@ -372,8 +516,15 @@ async fn verify_challenge(
 ) -> Result<Json<crate::auth::LoginResponse>, AuthError> {
     let pool = pool(&state);
     let token_hash = rolter_auth::hash_key(&session_pepper(), body.mfa_token.trim());
+    // scoped to step-ups: an enrolment token presented here is not found, so
+    // it cannot be turned into a session by a code from a secret it minted
+    // but never armed
     let Ok(Some(challenge)) = MfaRepo(pool)
-        .charge_challenge_attempt(&token_hash, MAX_CHALLENGE_ATTEMPTS)
+        .charge_challenge_attempt(
+            &token_hash,
+            ChallengePurpose::Verify,
+            MAX_CHALLENGE_ATTEMPTS,
+        )
         .await
     else {
         return Err(AuthError::InvalidCredentials);
@@ -400,9 +551,9 @@ async fn verify_challenge(
         .get(challenge.user_id)
         .await
         .map_err(|err| AuthError::Internal(err.to_string()))?;
-    // `after_lock` is the password step's business, and the challenge was only
-    // reachable because that step already succeeded
-    crate::auth::issue_session(&state, user, false)
+    // the password step knew whether it followed a lockout and wrote it on the
+    // challenge, so the session it finally mints says so like any other
+    crate::auth::issue_session(&state, user, challenge.after_lock)
         .await
         .map(Json)
 }
@@ -416,7 +567,7 @@ async fn prove_factor(state: &ControlState, user_id: Uuid, presented: &str) -> A
     let pool = pool(state);
     let presented = presented.trim();
     if presented.len() == totp::DIGITS as usize && presented.bytes().all(|b| b.is_ascii_digit()) {
-        let Some(factor) = MfaRepo(pool).open_secret(user_id, &kek()?).await? else {
+        let Some(factor) = MfaRepo(pool).open_secret(user_id, &kek(state)?).await? else {
             return Ok(false);
         };
         let Some(step) = totp::verify_at(&factor.secret, presented, now_seconds()) else {
@@ -451,28 +602,291 @@ pub(crate) struct MfaChallengeResponse {
     /// present this to `POST /api/v1/auth/mfa/verify` with a code
     pub(crate) mfa_token: String,
     pub(crate) expires_at: chrono::DateTime<Utc>,
+    /// seconds from now until `expires_at`. A client times the prompt from
+    /// this rather than from `expires_at`, which it would have to compare with
+    /// its own clock, and a browser clock a few minutes fast would expire the
+    /// prompt the moment it appeared
+    pub(crate) expires_in: i64,
 }
 
 /// Issue a challenge for a login that got past the password but still owes a
-/// factor.
+/// factor. `after_lock` is whether that password step followed a lockout.
 pub(crate) async fn issue_challenge(
     state: &ControlState,
     user_id: Uuid,
+    after_lock: bool,
 ) -> Result<MfaChallengeResponse, AuthError> {
+    let (mfa_token, expires_at) = mint_challenge(
+        state,
+        user_id,
+        "rolter_mfa",
+        CHALLENGE_TTL_MINUTES,
+        ChallengePurpose::Verify,
+        after_lock,
+    )
+    .await?;
+    Ok(MfaChallengeResponse {
+        mfa_required: true,
+        mfa_token,
+        expires_at,
+        expires_in: CHALLENGE_TTL_MINUTES * 60,
+    })
+}
+
+/// Store a hashed challenge and return the plaintext token, once.
+async fn mint_challenge(
+    state: &ControlState,
+    user_id: Uuid,
+    prefix: &str,
+    ttl_minutes: i64,
+    purpose: ChallengePurpose,
+    after_lock: bool,
+) -> Result<(String, DateTime<Utc>), AuthError> {
     let pool = pool(state);
     // the table only ever holds logins in flight, so this stays small
     let _ = MfaRepo(pool).purge_expired_challenges().await;
-    let (token, token_hash) = crate::auth::generate_token("rolter_mfa", &session_pepper());
-    let expires_at = Utc::now() + Duration::minutes(CHALLENGE_TTL_MINUTES);
+    let (token, token_hash) = crate::auth::generate_token(prefix, &session_pepper());
+    let expires_at = Utc::now() + Duration::minutes(ttl_minutes);
     MfaRepo(pool)
-        .create_challenge(user_id, &token_hash, expires_at)
+        .create_challenge(user_id, &token_hash, expires_at, purpose, after_lock)
         .await
         .map_err(|err| AuthError::Internal(err.to_string()))?;
-    Ok(MfaChallengeResponse {
-        mfa_required: true,
-        mfa_token: token,
+    Ok((token, expires_at))
+}
+
+// ---------------------------------------------------------------------------
+// enrolment at sign-in (unauthenticated: the token in the body is all there is)
+// ---------------------------------------------------------------------------
+
+/// What `auth::login` returns instead of a session when a `required_*` policy
+/// binds the account and it has no armed factor (#1852).
+#[derive(Debug, Serialize)]
+pub(crate) struct MfaEnrolmentChallengeResponse {
+    /// always `true`; present so a client can branch on one field
+    pub(crate) mfa_enrolment_required: bool,
+    /// present this to `POST /api/v1/auth/mfa/enroll` for a secret, then to
+    /// `POST /api/v1/auth/mfa/confirm` with a code from it. It opens nothing
+    /// else: it is not a session, and the step-up does not accept it either
+    pub(crate) enrolment_token: String,
+    pub(crate) expires_at: DateTime<Utc>,
+    /// seconds from now until `expires_at`, for the same reason as the
+    /// step-up's
+    pub(crate) expires_in: i64,
+}
+
+/// Issue an enrolment challenge for a login the policy will not let in
+/// without a factor. `after_lock` is whether that password step followed a
+/// lockout.
+pub(crate) async fn issue_enrolment_challenge(
+    state: &ControlState,
+    user_id: Uuid,
+    after_lock: bool,
+) -> Result<MfaEnrolmentChallengeResponse, AuthError> {
+    let (enrolment_token, expires_at) = mint_challenge(
+        state,
+        user_id,
+        "rolter_enrol",
+        ENROLMENT_TTL_MINUTES,
+        ChallengePurpose::Enrol,
+        after_lock,
+    )
+    .await?;
+    Ok(MfaEnrolmentChallengeResponse {
+        mfa_enrolment_required: true,
+        enrolment_token,
         expires_at,
+        expires_in: ENROLMENT_TTL_MINUTES * 60,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct SignInEnrolRequest {
+    /// the `enrolment_token` the login exchange returned
+    enrolment_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignInConfirmRequest {
+    enrolment_token: String,
+    code: String,
+}
+
+/// A session that came out of an enrolment, with the recovery codes that
+/// enrolment issued.
+#[derive(Debug, Serialize)]
+struct EnrolledSignIn {
+    #[serde(flatten)]
+    session: crate::auth::LoginResponse,
+    /// shown once; only peppered digests are stored
+    recovery_codes: Vec<String>,
+}
+
+/// The account an enrolment token names, if the token may still be used.
+///
+/// Every way it may not -- unknown, expired, spent, minted for the step-up,
+/// the account deactivated since, or a factor armed since (another tab
+/// finished first) -- is the same `invalid_credentials` the step-up answers,
+/// and the remedy is the same too: sign in with the password again, which
+/// now hands out whatever challenge fits.
+async fn enrolling_user(
+    state: &ControlState,
+    token_hash: &str,
+    charge: bool,
+) -> Result<User, AuthError> {
+    let repo = MfaRepo(pool(state));
+    let challenge = if charge {
+        repo.charge_challenge_attempt(token_hash, ChallengePurpose::Enrol, MAX_ENROLMENT_ATTEMPTS)
+            .await
+    } else {
+        repo.live_challenge(token_hash, ChallengePurpose::Enrol, MAX_ENROLMENT_ATTEMPTS)
+            .await
+    };
+    let Ok(Some(challenge)) = challenge else {
+        return Err(AuthError::InvalidCredentials);
+    };
+    let user = UserRepo(pool(state))
+        .get(challenge.user_id)
+        .await
+        .map_err(|err| AuthError::Internal(err.to_string()))?;
+    if user.deactivated_at.is_some() {
+        return Err(AuthError::InvalidCredentials);
+    }
+    let armed = repo
+        .has_armed_factor(user.id)
+        .await
+        .map_err(|err| AuthError::Internal(err.to_string()))?;
+    if armed {
+        return Err(AuthError::InvalidCredentials);
+    }
+    Ok(user)
+}
+
+fn enrolment_token_hash(token: &str) -> String {
+    rolter_auth::hash_key(&session_pepper(), token.trim())
+}
+
+/// Mint the secret a bound sign-in enrols with, and return it once.
+///
+/// Callable again with the same token -- it replaces the pending secret, the
+/// same way a second `POST /me/mfa/enroll` does -- and it does not charge the
+/// token's budget, because asking for a secret proves nothing.
+async fn sign_in_enrol(
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<SignInEnrolRequest>,
+) -> Result<Json<EnrolmentResponse>, EnrolError> {
+    let token_hash = enrolment_token_hash(&body.enrolment_token);
+    let user = enrolling_user(&state, &token_hash, false).await?;
+    // `None` is a factor armed since `enrolling_user` looked -- another tab
+    // finished first -- which this token must not disarm, and which leaves it
+    // exactly as dead as `enrolling_user` would have found it a moment later
+    match mint_secret(&state, &user).await? {
+        Some(enrolment) => Ok(Json(enrolment)),
+        None => Err(AuthError::InvalidCredentials.into()),
+    }
+}
+
+/// Arm the factor with a code from the minted secret, and sign in.
+///
+/// The one place an enrolment token turns into a session, and only once: the
+/// code is checked first, then the token is consumed by a delete that exactly
+/// one request can win, and only that request arms the factor and mints the
+/// recovery codes and the session. It arms the secret the code was checked
+/// against and no other: a pending secret replaced in between (another live
+/// enrolment token for the same account) fails the request rather than arming
+/// a secret this caller never saw. The session is issued by the same path
+/// every other sign-in takes, so it is audited as an `auth.login` like any
+/// other, `after_lock` included.
+async fn sign_in_confirm(
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<SignInConfirmRequest>,
+) -> Result<Json<EnrolledSignIn>, EnrolError> {
+    let pool = pool(&state);
+    let token_hash = enrolment_token_hash(&body.enrolment_token);
+    let user = enrolling_user(&state, &token_hash, true).await?;
+    let factor = MfaRepo(pool)
+        .open_secret(user.id, &kek(&state)?)
+        .await
+        .map_err(ApiError::from)?;
+    let Some(factor) = factor else {
+        return Err(invalid("no enrolment in progress; request a secret first").into());
+    };
+    let Some(step) = totp::verify_at(&factor.secret, &body.code, now_seconds()) else {
+        audit(
+            &state,
+            user.id,
+            "auth.mfa_confirm_failed",
+            serde_json::json!({ "at_sign_in": true }),
+        )
+        .await;
+        return Err(invalid(
+            "that code did not match; check the clock on the device and try again",
+        )
+        .into());
+    };
+    let taken = MfaRepo(pool)
+        .take_challenge(&token_hash, ChallengePurpose::Enrol)
+        .await
+        .map_err(ApiError::from)?;
+    let Some(taken) = taken else {
+        // another request with this token got here first, or it just expired
+        return Err(AuthError::InvalidCredentials.into());
+    };
+    let armed = MfaRepo(pool)
+        .confirm(user.id, step as i64, &factor.nonce)
+        .await
+        .map_err(ApiError::from)?;
+    if !armed {
+        // the pending secret was replaced after the code was checked. The token
+        // is spent either way, and a fresh sign-in is the only way to a secret
+        // this caller has actually seen
+        return Err(AuthError::InvalidCredentials.into());
+    }
+    let codes = mint_recovery_codes(&state, user.id).await?;
+    audit(
+        &state,
+        user.id,
+        "auth.mfa_enabled",
+        serde_json::json!({ "recovery_codes": codes.len(), "at_sign_in": true }),
+    )
+    .await;
+    let session = crate::auth::issue_session(&state, user, taken.after_lock).await?;
+    Ok(Json(EnrolledSignIn {
+        session,
+        recovery_codes: codes,
+    }))
+}
+
+/// What the two enrolment routes refuse with.
+///
+/// A dead token is the step-up's `invalid_credentials` ([`AuthError`]), so a
+/// client handles both challenges the same way; a wrong code or a missing KEK
+/// is the step's own answer ([`ApiError`]), the same one the account screen's
+/// enrolment gives. Kept as two small variants rather than a rendered
+/// `Response`, which is several times their size.
+enum EnrolError {
+    Token(AuthError),
+    Step(ApiError),
+}
+
+impl From<AuthError> for EnrolError {
+    fn from(err: AuthError) -> Self {
+        Self::Token(err)
+    }
+}
+
+impl From<ApiError> for EnrolError {
+    fn from(err: ApiError) -> Self {
+        Self::Step(err)
+    }
+}
+
+impl IntoResponse for EnrolError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Token(err) => err.into_response(),
+            Self::Step(err) => err.into_response(),
+        }
+    }
 }
 
 async fn audit(state: &ControlState, user_id: Uuid, action: &str, detail: serde_json::Value) {
@@ -505,6 +919,10 @@ pub async fn break_glass_reset(
     // in unknown hands, and leaving a session alive would leave the factor
     // bypassed for up to a week
     SessionRepo(pool).delete_for_user(user_id).await?;
+    // and every challenge in flight. An enrolment token minted before the reset
+    // is only refused while a factor is armed, so once the reset clears it,
+    // whoever holds one could arm a factor of their own and sign in
+    MfaRepo(pool).delete_challenges_for_user(user_id).await?;
     let _ = AuditLogRepo(pool)
         .create(
             None,
@@ -523,4 +941,99 @@ fn now_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(policy: &str, enforce_after: Option<DateTime<Utc>>) -> MfaPolicyBinding {
+        MfaPolicyBinding {
+            policy: policy.to_string(),
+            org_id: Uuid::new_v4(),
+            enforce_after,
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        "2026-09-26T12:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn no_memberships_means_off_and_nothing_owed() {
+        let effective = resolve_policy(&[], true, now());
+        assert_eq!(effective.policy, "off");
+        assert!(!effective.required);
+        assert!(!effective.enforced());
+    }
+
+    #[test]
+    fn a_required_policy_with_no_window_applies_at_once() {
+        let effective = resolve_policy(&[binding("required_all", None)], false, now());
+        assert!(effective.required);
+        assert!(effective.enforced());
+        assert_eq!(effective.enforce_after, None);
+    }
+
+    #[test]
+    fn required_superadmin_binds_only_superadmins() {
+        let bindings = [binding("required_superadmin", None)];
+        assert!(!resolve_policy(&bindings, false, now()).required);
+        assert!(resolve_policy(&bindings, true, now()).enforced());
+    }
+
+    #[test]
+    fn a_future_window_announces_the_requirement_without_enforcing_it() {
+        let later = now() + Duration::days(7);
+        let effective = resolve_policy(&[binding("required_all", Some(later))], false, now());
+        // still required, so the factor cannot be removed in the meantime
+        assert!(effective.required);
+        assert!(!effective.enforced());
+        assert_eq!(effective.enforce_after, Some(later));
+    }
+
+    #[test]
+    fn a_window_that_has_passed_is_no_window() {
+        let earlier = now() - Duration::minutes(1);
+        let effective = resolve_policy(&[binding("required_all", Some(earlier))], false, now());
+        assert!(effective.enforced());
+    }
+
+    #[test]
+    fn one_org_already_enforcing_beats_another_orgs_window() {
+        // a later grace window elsewhere must not postpone a requirement that
+        // already applies
+        let bindings = [
+            binding("required_all", Some(now() + Duration::days(30))),
+            binding("required_all", None),
+        ];
+        assert!(resolve_policy(&bindings, false, now()).enforced());
+    }
+
+    #[test]
+    fn the_earliest_window_wins_when_every_org_has_one() {
+        let soon = now() + Duration::days(3);
+        let bindings = [
+            binding("required_all", Some(now() + Duration::days(30))),
+            binding("required_all", Some(soon)),
+        ];
+        assert_eq!(
+            resolve_policy(&bindings, false, now()).enforce_after,
+            Some(soon)
+        );
+    }
+
+    #[test]
+    fn a_window_on_a_policy_that_does_not_bind_is_ignored() {
+        // a superadmin-only requirement says nothing to a member, whatever its
+        // window says, and must not surface a date they do not owe
+        let bindings = [
+            binding("required_superadmin", Some(now() + Duration::days(3))),
+            binding("optional", None),
+        ];
+        let effective = resolve_policy(&bindings, false, now());
+        assert_eq!(effective.policy, "required_superadmin");
+        assert!(!effective.required);
+        assert_eq!(effective.enforce_after, None);
+    }
 }

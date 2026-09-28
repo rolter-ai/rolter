@@ -195,9 +195,12 @@ pub enum AuthError {
     /// is locked for a while (#1079). Carries the remaining lock so the client
     /// gets a `Retry-After` instead of having to poll
     TooManyAttempts(std::time::Duration),
-    /// the password was right, but the account's org requires a second factor
-    /// and this account has none armed (403). Distinct from a wrong password:
-    /// there is nothing to retype, and the remedy is an admin's (#1078)
+    /// the password was right, the account's org requires a second factor
+    /// this account has none of, and this control plane cannot enrol one
+    /// because it has no `ROLTER_KEK` to seal the secret with (403). Distinct
+    /// from a wrong password: there is nothing to retype, and the remedy is an
+    /// operator's. With a KEK the same account gets an enrolment challenge
+    /// instead (#1078, #1852)
     MfaEnrolmentRequired,
     Internal(String),
 }
@@ -239,9 +242,9 @@ impl IntoResponse for AuthError {
             Self::MfaEnrolmentRequired => (
                 StatusCode::FORBIDDEN,
                 "mfa_enrolment_required",
-                "this organization requires a second factor and this account has none enrolled; \
-                 an administrator must relax the policy or clear the account with \
-                 `rolter mfa reset` so it can enrol",
+                "this organization requires a second factor and this account has none enrolled, \
+                 and this control plane cannot enrol one because ROLTER_KEK is not set; an \
+                 operator must set it, or an administrator must relax the policy",
             ),
             Self::Internal(ref msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal", msg.as_str())
@@ -289,6 +292,11 @@ pub(crate) struct LoginResponse {
     token: String,
     expires_at: chrono::DateTime<Utc>,
     user: User,
+    /// set when an org requires a second factor this account has not armed,
+    /// and its grace window has not run out yet (#1852): from this moment the
+    /// next sign-in has to enrol first. Absent otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mfa_enrol_by: Option<chrono::DateTime<Utc>>,
 }
 
 /// What `POST /api/v1/auth/login` answers with.
@@ -304,6 +312,9 @@ pub(crate) enum LoginOutcome {
     Session(LoginResponse),
     /// the password was right, but the account owes a second factor
     Challenge(crate::mfa::MfaChallengeResponse),
+    /// the password was right, the org requires a factor, and the account has
+    /// none armed: it may enrol one, and only that (#1852)
+    Enrolment(crate::mfa::MfaEnrolmentChallengeResponse),
 }
 
 async fn login(
@@ -407,22 +418,45 @@ async fn login(
     // throttle counter was already cleared above, on purpose: the password was
     // correct, and holding the failed-password lock open across the step-up
     // would let a wrong code look like a wrong password
-    let (policy, required) = crate::mfa::effective_policy(&state, &user)
+    let effective = crate::mfa::effective_policy(&state, &user)
         .await
         .map_err(|_| AuthError::Internal("failed to read the second-factor policy".into()))?;
     let armed = MfaRepo(pool).has_armed_factor(user.id).await?;
     if armed {
         state.metrics.record_login("mfa_challenge");
         return Ok(Json(LoginOutcome::Challenge(
-            crate::mfa::issue_challenge(&state, user.id).await?,
+            crate::mfa::issue_challenge(&state, user.id, after_lock).await?,
         )));
     }
-    if required {
-        // refusing rather than letting them in unprotected: an org that set
-        // `required_*` asked for exactly this. The message names the remedy,
-        // because a user who cannot enrol without signing in and cannot sign
-        // in without enrolling needs to be told an admin must relax the policy
-        // or run the break-glass path
+    if effective.enforced() {
+        // never a session without the factor an org that set `required_*`
+        // asked for. What the user gets instead is the one thing that fixes
+        // it: a token that can enrol and do nothing else (#1852)
+        if crate::mfa::can_enrol(&state) {
+            state.metrics.record_login("mfa_enrolment");
+            let _ = AuditLogRepo(pool)
+                .create(
+                    None,
+                    Some(user.id),
+                    "auth.mfa_enrolment_challenge",
+                    Some("user"),
+                    Some(user.id),
+                    // a lockout followed by a sign-in that enrols a factor is
+                    // the shape a stuffing run takes against an unenrolled
+                    // account, so the row an investigator reads says so
+                    Some(serde_json::json!({
+                        "policy": effective.policy,
+                        "after_lock": after_lock,
+                    })),
+                )
+                .await;
+            return Ok(Json(LoginOutcome::Enrolment(
+                crate::mfa::issue_enrolment_challenge(&state, user.id, after_lock).await?,
+            )));
+        }
+        // this control plane cannot seal a secret, so an enrolment challenge
+        // would only lead to the same refusal one step later, and the fix is
+        // an operator's rather than the user's
         state.metrics.record_login("mfa_required");
         let _ = AuditLogRepo(pool)
             .create(
@@ -431,15 +465,18 @@ async fn login(
                 "auth.mfa_enrolment_required",
                 Some("user"),
                 Some(user.id),
-                Some(serde_json::json!({ "policy": policy })),
+                Some(serde_json::json!({ "policy": effective.policy, "kek": false })),
             )
             .await;
         return Err(AuthError::MfaEnrolmentRequired);
     }
 
-    Ok(Json(LoginOutcome::Session(
-        issue_session(&state, user, after_lock).await?,
-    )))
+    let mut session = issue_session(&state, user, after_lock).await?;
+    // the requirement is announced but not in force yet: the session goes
+    // through, and says by when the account has to enrol, so a client can
+    // tell the user before the date rather than on it
+    session.mfa_enrol_by = effective.enforce_after;
+    Ok(Json(LoginOutcome::Session(session)))
 }
 
 /// Mint a session for a user whose credentials -- and second factor, where one
@@ -479,6 +516,7 @@ pub(crate) async fn issue_session(
         token,
         expires_at,
         user,
+        mfa_enrol_by: None,
     })
 }
 

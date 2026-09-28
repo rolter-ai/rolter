@@ -31,9 +31,9 @@ use super::models::{
     AccessProfile, AccessProfileAssignment, AccessProfilePolicy, AccessProfileRole,
     AdaptiveRoutingPolicy, AdaptiveRoutingTelemetry, AuditLogEntry, Budget, BusinessUnit,
     ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole, CustomRoleGrant, Customer,
-    EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, ModelDefaults,
-    ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance, Project,
-    PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
+    EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, MfaPolicyBinding,
+    ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
+    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
     ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
     ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
     SsoLoginState, SsoProvider, Team, User, VirtualKey,
@@ -3149,6 +3149,22 @@ impl InvitationRepo<'_> {
     }
 }
 
+/// How strict an `mfa_policy` value is, for picking the strictest across a
+/// user's orgs: `off` 0, `optional` 1, `required_superadmin` 2,
+/// `required_all` 3.
+///
+/// Expressed here and not as a SQL `order by`, because the policy values are
+/// words rather than a rank the database knows. An unknown value ranks with
+/// `off`, which the column's check constraint makes unreachable anyway.
+pub fn mfa_policy_rank(policy: &str) -> u8 {
+    match policy {
+        "required_all" => 3,
+        "required_superadmin" => 2,
+        "optional" => 1,
+        _ => 0,
+    }
+}
+
 /// per-org login policy: whether members may use a local password, and
 /// whether SSO callbacks for the org's providers are honoured.
 pub struct OrgAuthPolicyRepo<'a>(pub &'a PgPool);
@@ -3159,7 +3175,8 @@ impl OrgAuthPolicyRepo<'_> {
     /// logging in exactly as they did.
     pub async fn get(&self, org_id: Uuid) -> Result<OrgAuthPolicy> {
         let found: Option<OrgAuthPolicy> = sqlx::query_as(
-            "select org_id, allow_password_login, allow_sso, mfa_policy, updated_at
+            "select org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after,
+                    updated_at
              from org_auth_policies where org_id = $1",
         )
         .bind(org_id)
@@ -3171,6 +3188,7 @@ impl OrgAuthPolicyRepo<'_> {
             allow_password_login: true,
             allow_sso: true,
             mfa_policy: "off".to_string(),
+            mfa_enforce_after: None,
             updated_at: chrono::Utc::now(),
         }))
     }
@@ -3181,21 +3199,26 @@ impl OrgAuthPolicyRepo<'_> {
         allow_password_login: bool,
         allow_sso: bool,
         mfa_policy: &str,
+        mfa_enforce_after: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<OrgAuthPolicy> {
         sqlx::query_as(
-            "insert into org_auth_policies (org_id, allow_password_login, allow_sso, mfa_policy)
-             values ($1, $2, $3, $4)
+            "insert into org_auth_policies
+                 (org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after)
+             values ($1, $2, $3, $4, $5)
              on conflict (org_id) do update
                  set allow_password_login = excluded.allow_password_login,
                      allow_sso = excluded.allow_sso,
                      mfa_policy = excluded.mfa_policy,
+                     mfa_enforce_after = excluded.mfa_enforce_after,
                      updated_at = now()
-             returning org_id, allow_password_login, allow_sso, mfa_policy, updated_at",
+             returning org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after,
+                       updated_at",
         )
         .bind(org_id)
         .bind(allow_password_login)
         .bind(allow_sso)
         .bind(mfa_policy)
+        .bind(mfa_enforce_after)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -3214,8 +3237,26 @@ impl OrgAuthPolicyRepo<'_> {
         &self,
         user_id: Uuid,
     ) -> Result<Option<(String, Uuid)>> {
-        let rows: Vec<(String, Uuid)> = sqlx::query_as(
-            "select ap.mfa_policy, ap.org_id from memberships m
+        Ok(self
+            .mfa_policies_for_user(user_id)
+            .await?
+            .into_iter()
+            .map(|binding| (binding.policy, binding.org_id))
+            .max_by_key(|(policy, _)| mfa_policy_rank(policy))
+            .filter(|(policy, _)| mfa_policy_rank(policy) > 0))
+    }
+
+    /// Every org policy that applies to this user, one per membership, with
+    /// the grace window each carries (#1852).
+    ///
+    /// Returned whole rather than reduced to the strictest, because two
+    /// hardened orgs can disagree about *when* they start to bite, and the
+    /// earlier one has to win -- a later grace window in one org must not
+    /// postpone a requirement another org already enforces.
+    pub async fn mfa_policies_for_user(&self, user_id: Uuid) -> Result<Vec<MfaPolicyBinding>> {
+        sqlx::query_as(
+            "select ap.mfa_policy as policy, ap.org_id, ap.mfa_enforce_after as enforce_after
+             from memberships m
              left join teams t on t.id = m.team_id
              left join projects p on p.id = m.project_id
              left join teams pt on pt.id = p.team_id
@@ -3226,21 +3267,7 @@ impl OrgAuthPolicyRepo<'_> {
         .bind(user_id)
         .fetch_all(self.0)
         .await
-        .map_err(store_err)?;
-        // ordering is expressed here and not as a SQL `order by`, because the
-        // policy values are words rather than a rank the database knows
-        fn rank(policy: &str) -> u8 {
-            match policy {
-                "required_all" => 3,
-                "required_superadmin" => 2,
-                "optional" => 1,
-                _ => 0,
-            }
-        }
-        Ok(rows
-            .into_iter()
-            .max_by_key(|(policy, _)| rank(policy))
-            .filter(|(policy, _)| rank(policy) > 0))
+        .map_err(store_err)
     }
 
     /// True when at least one org this user belongs to forbids password login.

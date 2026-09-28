@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    MembershipRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
+    MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
 };
 
 use crate::auth::session_pepper;
@@ -554,12 +554,14 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 
 /// Deactivating drops the account's live sessions in the same step: an IdP
 /// disabling a leaver expects them logged out, not merely unable to log in
-/// again.
+/// again. Any second-factor challenge in flight goes with them, so a sign-in
+/// halfway through its code step cannot finish either.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<()> {
     let pool = pool(state);
     UserRepo(pool).set_deactivated(user_id, deactivated).await?;
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
+        MfaRepo(pool).delete_challenges_for_user(user_id).await?;
     }
     Ok(())
 }

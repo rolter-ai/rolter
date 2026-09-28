@@ -28,9 +28,9 @@ use rolter_store::postgres::models::{
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, BusinessUnitRepo,
-    CustomerRepo, MembershipRepo, ModelPriceRepo, OrgRepo, ProjectRepo, PromptTemplateRepo,
-    ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo,
-    SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
+    PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
+    RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -4590,6 +4590,12 @@ async fn update_user(
             // cut existing access immediately, not just at token expiry
             SessionRepo(pool).delete_for_user(id).await?;
         }
+    }
+    if password_hash.is_some() || body.deactivated == Some(true) {
+        // a sign-in halfway through its second-factor step was started with
+        // the old password, and an enrolment token among them could still arm
+        // a factor for whoever held that password (#1852)
+        MfaRepo(pool).delete_challenges_for_user(id).await?;
     }
 
     // global account edit spans orgs, so it's logged unscoped
