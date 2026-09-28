@@ -468,11 +468,9 @@ mod tests {
                 .any(|l| l.trim() == "require_auth = true"),
             "{production}"
         );
-        assert!(
-            !render_config(Profile::Local)
-                .lines()
-                .any(|l| l.trim() == "require_auth = true")
-        );
+        assert!(!render_config(Profile::Local)
+            .lines()
+            .any(|l| l.trim() == "require_auth = true"));
     }
 
     #[test]
