@@ -76,17 +76,19 @@ A new rule starts as `unknown`. Each evaluation compares the reading with what
 the rule last reported, which is the state of its newest history row, and
 records a row when the two differ:
 
-| Reading    | Last reported              | History row and delivery |
-| ---------- | -------------------------- | ------------------------ |
-| at or over | nothing yet, or `resolved` | `firing`                 |
-| under      | `firing`                   | `resolved`               |
-| at or over | `firing`                   | nothing                  |
-| under      | nothing yet, or `resolved` | nothing                  |
+| Reading    | Last reported              | History row and delivery                      |
+| ---------- | -------------------------- | --------------------------------------------- |
+| at or over | nothing yet, or `resolved` | `firing`                                      |
+| under      | `firing`                   | `resolved`                                    |
+| at or over | `firing`                   | nothing, or a [retry](#retries) of `firing`   |
+| under      | `resolved`                 | nothing, or a [retry](#retries) of `resolved` |
+| under      | nothing yet                | nothing                                       |
 
 So a rule created or enabled while its condition already holds reports
 `firing` on its first evaluation, and a rule whose first reading is under the
 threshold records nothing until it first fires. A rule that stays `firing` for
-an hour produces one row and one delivery, not sixty.
+an hour produces one row and one delivery, not sixty, once that delivery
+succeeds.
 
 Disabling a rule stops the scheduled evaluation and keeps its state as it was.
 Editing a rule keeps its state too, so a new threshold takes effect on the next
@@ -115,20 +117,26 @@ Every control-plane process runs its own evaluator, so with more than one
 replica each rule is evaluated by several of them. An evaluation holds the
 rule's row lock while it decides, delivers and writes the history, and the
 scheduled pass skips a rule another replica is holding, so one replica delivers
-and records each change of state.
+and records each change of state. If another replica records a newer reading
+while one replica's query is still running, the older reading is dropped rather
+than applied, so a slow query cannot undo a newer result. `last_evaluated_at`
+is the time the reading was taken.
 
 ### Evaluate now
 
 Each rule card has an **Evaluate now** button, backed by
 `POST /api/v1/alert-rules/{id}/evaluate`. It runs one evaluation immediately,
 whether or not the rule is enabled, and can record and deliver a transition
-exactly as the scheduled pass would. If a scheduled pass is evaluating the same
-rule at that moment, it waits for it to finish first.
+exactly as the scheduled pass would. It also retries a state that was never
+delivered straight away, without waiting for the [retry](#retries) delay. If a
+scheduled pass is evaluating the same rule at that moment, it waits for it to
+finish first.
 
 The response has three fields: `rule`, the updated rule; `notified`, which is
 `true` only when a transition was delivered; and `notification`, the history
-row the evaluation wrote, or `null` when the reading was not a transition. A
-transition the endpoint refused looks like this, with `rule` left out:
+row the evaluation wrote, or `null` when it wrote none: the reading was not a
+transition and nothing was retried. A transition the endpoint refused looks
+like this, with `rule` left out:
 
 ```json
 {
@@ -164,6 +172,9 @@ A channel is a named webhook endpoint. `webhook` is the only kind.
 | `endpoint`       | An `http` or `https` URL with a host. A URL carrying `user:password@` is rejected; put a credential in `managed_secret`. |
 | `enabled`        | A disabled channel receives nothing; its rules' transitions are recorded as `skipped`. Defaults to `false` in the API.   |
 | `managed_secret` | Optional bearer secret. Write-only, sealed before storage.                                                               |
+
+The endpoint is stored as the HTTP client parses it, so
+`HTTPS://Alerts.Example.com` is saved as `https://alerts.example.com/`.
 
 The **Add channel** sheet asks for a name, the endpoint URL and the optional
 secret, and creates the channel enabled. Each channel card shows its kind, a
@@ -212,10 +223,24 @@ A delivery succeeds on any `2xx` response. It is bounded to 10 seconds
 including a 5-second connect, and redirects are not followed, so a `3xx`
 counts as a failure. The response body is never read or stored.
 
-A failed delivery is recorded as `failed` and is not retried: the rule has
-already moved to its new state, and the next delivery is the next change. Check
-the **History** screen, or `GET /api/v1/alert-notifications`, for `failed`
-rows after changing an endpoint or its secret.
+### Retries
+
+A failed delivery is recorded as `failed` and the rule still moves to its new
+state. While that state holds, the scheduled pass sends it again: on the next
+pass, then 2, 4, 8, 16 and 32 minutes after the attempt before, then hourly,
+each attempt a new history row with a new `id`. Retries stop at the first `delivered` row, or when
+the state changes, and the new state is delivered as usual. A rule that
+resolves before its `firing` got through sends `resolved`.
+
+A transition recorded as `skipped` because the channel was disabled or the rule
+had none is sent on the first pass after the rule has an enabled channel. A
+rule without one writes no more rows while its state holds.
+
+A receiver can see the same `firing` or `resolved` more than once, from these
+retries, and should treat each request's `id` as the delivery, not the alert.
+Check the **History** screen, or `GET /api/v1/alert-notifications`, for
+`failed` rows after changing an endpoint or its secret, and use
+**Evaluate now** to retry one without waiting.
 
 ### Endpoints and the egress policy
 
@@ -226,17 +251,34 @@ denies link-local addresses, which is where cloud instance metadata lives, and
 can be tightened to deny loopback or private ranges too. A channel whose
 endpoint the policy denies is rejected with `400` when saved, and a delivery to
 an endpoint the policy has come to deny since is recorded as `failed` without a
-request being sent. The check classifies IP literals; a hostname is not
-resolved at save time.
+request being sent. Such a channel can still be switched off, renamed or
+deleted, but not switched back on or pointed at another denied address.
+
+Only an endpoint whose host is an IP address is checked, in whatever spelling
+the URL uses: `http://2852039166/`, `http://169.254.169.254./` and
+`http://[::ffff:169.254.169.254]/` are all checked as `169.254.169.254`. An
+endpoint with a hostname is not checked against the policy at all, neither
+when it is saved nor before a delivery, so a hostname that resolves to a
+private or loopback address is reached even with `block_private` or
+`block_loopback` on. Checking the address a hostname resolves to when the
+request connects is tracked in
+[#1949](https://github.com/rolter-ai/rolter/issues/1949).
 
 ### The secret is write-only
 
 A `managed_secret` is encrypted with the deployment KEK before it reaches
 Postgres. With `ROLTER_KEK` unset, storing one fails with
 `storing channel credentials requires ROLTER_KEK`. It is never returned: responses carry
-`secret_configured`, a boolean. An update that leaves `managed_secret` out
-keeps the stored secret, so flipping the enable switch cannot drop it. There is
-no way to clear a stored secret short of deleting the channel.
+`secret_configured`, a boolean. The secret is sent as an HTTP header, so a
+value with a control character or a line break, such as a trailing newline
+read from a file, is rejected with `400`.
+
+An update that leaves `managed_secret` out keeps the stored secret, so flipping
+the enable switch cannot drop it, unless the update moves the endpoint to
+another origin: a different scheme, host or port. That clears the stored
+secret, because it was given for the receiver at the old endpoint. Send the new
+receiver's `managed_secret` in the same request to keep the channel
+authenticated.
 
 The secret is unsealed only to build the `Authorization` header of a delivery.
 If it cannot be unsealed, because `ROLTER_KEK` is unset or differs from the key
@@ -252,7 +294,8 @@ The sealed column is covered by `rolter kek verify` and listed in
 Rules pointing at a deleted channel stay in place with their `channel_id`
 cleared, so their next transitions are recorded as `skipped` with
 `no channel configured`. History rows that named the channel keep their other
-fields.
+fields. A delete that arrives while a delivery to the channel is in flight
+waits for that delivery to finish, at most 10 seconds.
 
 ## Rules
 
@@ -318,15 +361,15 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 time, rule, state (`firing` or `resolved`), delivery status and detail. Every
 change of state has a row, including those of rules with no channel.
 
-| Delivery status | Detail                                                                                                                                                                                                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `delivered`     | The endpoint's status, for example `HTTP 200`.                                                                                                                                                                                                                                                              |
-| `failed`        | The endpoint's status when it answered outside `2xx` (`HTTP 401`, `HTTP 503`, `HTTP 302`), or what stopped the request: `timed out after 10s`, `could not connect to the endpoint`, `delivery failed`, `endpoint denied by the egress policy`, or `channel secret could not be unsealed; check ROLTER_KEK`. |
-| `skipped`       | `no channel configured`, `channel disabled`, or `channel deleted` when the channel is deleted mid-evaluation.                                                                                                                                                                                               |
+| Delivery status | Detail                                                                                                                                                                                                                                                                                                                                                    |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `delivered`     | The endpoint's status, for example `HTTP 200`.                                                                                                                                                                                                                                                                                                            |
+| `failed`        | The endpoint's status when it answered outside `2xx` (`HTTP 401`, `HTTP 503`, `HTTP 302`), or what stopped the request: `timed out after 10s`, `could not connect to the endpoint`, `delivery failed`, `endpoint denied by the egress policy`, `channel secret could not be unsealed; check ROLTER_KEK`, or `channel secret is not a valid header value`. |
+| `skipped`       | `no channel configured` or `channel disabled`.                                                                                                                                                                                                                                                                                                            |
 
 A detail never contains the endpoint's response body, which can echo the
 credential it rejected. `sent_at` is when the row was written, just after the
-delivery attempt finished.
+delivery attempt finished. A [retried](#retries) state has one row per attempt.
 
 The history is append-only: the API has no update or delete for it. Deleting a
 rule deletes that rule's rows along with it.
@@ -362,7 +405,9 @@ row.
 Every create, update and delete of a channel or rule writes an audit entry
 (`alert.channel.create`, `alert.rule.delete` and so on). Create and update
 entries carry the name, the enabled flag and, for a rule, the signal. A channel
-secret never appears in one.
+update entry also records `endpoint_changed`, `secret_replaced` and
+`secret_cleared`, as booleans. Neither a channel secret nor its endpoint ever
+appears in one, since an endpoint's query string can carry a token.
 
 All of these operations are in the control plane's
 [OpenAPI document](/api/control-plane-openapi) under the `alerting` tag.
