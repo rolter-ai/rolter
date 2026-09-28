@@ -10,6 +10,7 @@ import {
   StaleSession,
   routes,
   withCapabilities,
+  withGateway,
   type FetchStub,
 } from "./story-harness";
 
@@ -112,19 +113,26 @@ const SUMMARY = {
  * than into an error.
  */
 export function shellStub(extra: [string, () => unknown][] = []): FetchStub {
+  // the header's gateway pill asks on every screen (#1973). the catch-all
+  // below answers anything unmatched with a JSON `[]`, which the probe rightly
+  // reads as "not the gateway", so a healthy gateway is stated rather than left
+  // to the fallthrough
   return withCapabilities(
     "superadmin",
-    routes([
-      ...extra,
-      ["/api/v1/auth/me", () => ME],
-      ["/api/v1/analytics/summary", () => ({ data: [SUMMARY] })],
-      ["/api/v1/analytics", () => ({ data: [] })],
-      ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
-      ["/api/v1/version", () => VERSION],
-      // nothing experimental by default: the marker is the exception, so the
-      // stories that are not about it get the rail every other build renders
-      ["/api/v1/stability", () => [] as SubsystemStability[]],
-    ]),
+    withGateway(
+      "ready",
+      routes([
+        ...extra,
+        ["/api/v1/auth/me", () => ME],
+        ["/api/v1/analytics/summary", () => ({ data: [SUMMARY] })],
+        ["/api/v1/analytics", () => ({ data: [] })],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+        ["/api/v1/version", () => VERSION],
+        // nothing experimental by default: the marker is the exception, so the
+        // stories that are not about it get the rail every other build renders
+        ["/api/v1/stability", () => [] as SubsystemStability[]],
+      ]),
+    ),
   );
 }
 
