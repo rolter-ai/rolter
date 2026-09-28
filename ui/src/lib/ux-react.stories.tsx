@@ -90,6 +90,9 @@ function Screen({ screen = "providers" }: { screen?: string }) {
         <button type="button" onClick={() => form.current?.failed()}>
           fail the save
         </button>
+        <button type="button" onClick={() => form.current?.saved()}>
+          land the save
+        </button>
       </div>
       {screen ? <UxScreenProvider screen={screen}>{body}</UxScreenProvider> : body}
       <Queue />
@@ -251,5 +254,64 @@ export const ReportsARetryAfterAFailedSave: Story = {
       expect(lines(canvasElement).filter((l) => l.startsWith("form_submit"))).toHaveLength(3),
     );
     await expect(lines(canvasElement).filter((l) => l.startsWith("retry_submit"))).toHaveLength(1);
+  },
+};
+
+/**
+ * A caller that closes from its mutation's own `onSuccess` closes while the
+ * request is still pending, so the landing is reported a commit *after* the
+ * form went away. The clock has to survive that closing edge: before #1761 it
+ * stopped there, and every such `save_confirmed` went out with no duration,
+ * the one field the save-latency query in the observability docs reads.
+ */
+export const KeepsTheClockForASaveThatLandsAfterClosing: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "save" }));
+    await userEvent.click(canvas.getByRole("button", { name: "close the sheet" }));
+    await userEvent.click(canvas.getByRole("button", { name: "land the save" }));
+    await waitFor(() =>
+      expect(lines(canvasElement)).toContain("save_confirmed:providers:provider"),
+    );
+    const confirmed = pendingUxEvents().find((e) => e.action === "save_confirmed");
+    await expect(typeof confirmed?.duration_ms).toBe("number");
+    // a submitted form that closed is not an abandon on its way out
+    await expect(lines(canvasElement).filter((l) => l.startsWith("form_abandon"))).toHaveLength(0);
+  },
+};
+
+/**
+ * `save_confirmed` is read as the wait between pressing save and being told it
+ * worked, and the save-latency query in the observability docs calls anything
+ * past about two seconds a duplicate write waiting to happen. Measured from the
+ * opening it counted the form fill too, so a twenty-second read of a delete
+ * dialog came out as a twenty-second save (#1894). The press beside it keeps
+ * the dwell since the opening, which is what `form_submit` means.
+ */
+export const MeasuresTheSaveFromThePress: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the clock is shifted rather than frozen, so the runner's own timers keep
+    // moving and only the gap the story names is artificial
+    const realNow = Date.now;
+    let skew = 0;
+    Date.now = () => realNow() + skew;
+    try {
+      await userEvent.click(canvas.getByRole("button", { name: "open the sheet" }));
+      skew += 20_000; // twenty seconds spent reading the form
+      await userEvent.click(canvas.getByRole("button", { name: "save" }));
+      await userEvent.click(canvas.getByRole("button", { name: "land the save" }));
+    } finally {
+      Date.now = realNow;
+    }
+    await waitFor(() =>
+      expect(lines(canvasElement)).toContain("save_confirmed:providers:provider"),
+    );
+    const events = pendingUxEvents();
+    const press = events.find((e) => e.action === "form_submit");
+    const confirmed = events.find((e) => e.action === "save_confirmed");
+    await expect(press?.duration_ms).toBeGreaterThanOrEqual(20_000);
+    await expect(confirmed?.duration_ms).toBeLessThan(20_000);
   },
 };

@@ -14,6 +14,7 @@ import {
   apiBaseDoublesV1,
   resolveUpstreamUrl,
   isConvertible,
+  unservedRoutes,
   type CurrencySettings,
 } from "./api";
 
@@ -546,5 +547,44 @@ describe("session revalidation", () => {
 
     await expect(fetchMe()).rejects.toThrow();
     expect(signalled).toBe(0);
+  });
+});
+
+/**
+ * The Playground's fallback list leaves out what the snapshot prunes (#1853),
+ * and the only place that is said is `/api/v1/config/problems`, in sentences.
+ * The fixtures are the exact strings `sanitize_for_snapshot` and
+ * `provider_problems` write.
+ */
+describe("unservedRoutes", () => {
+  it("reads the model out of a pruned route's line", () => {
+    const routes = unservedRoutes([
+      "route 'claude-sonnet-4' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+    ]);
+    expect([...routes]).toEqual(["claude-sonnet-4"]);
+  });
+
+  // a provider's own line names the provider, not a route: the routes it
+  // strands are reported separately, and those are the ones that matter here
+  it("ignores every line that is not about a pruned route", () => {
+    const routes = unservedRoutes([
+      "provider 'openrouter-edge' omitted from the snapshot: openrouter provider 'openrouter-edge' requires api_key_env",
+      "duplicate route model 'gpt-4o'",
+      "route 'gpt-4o-mini' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+    ]);
+    expect([...routes]).toEqual(["gpt-4o-mini"]);
+  });
+
+  it("keeps a model name with a slash or a quote in it whole", () => {
+    const routes = unservedRoutes([
+      "route 'meta-llama/Llama-3.1-8B' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+      "route 'o'brien' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+    ]);
+    expect([...routes]).toEqual(["meta-llama/Llama-3.1-8B", "o'brien"]);
+  });
+
+  it("is empty before the problems are known", () => {
+    expect(unservedRoutes(undefined).size).toBe(0);
+    expect(unservedRoutes([]).size).toBe(0);
   });
 });

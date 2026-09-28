@@ -9,13 +9,18 @@ import {
   confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   Harness as GatedHarness,
   json,
   NEEDS_ADMIN,
+  recordUxEvents,
   recording,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type {
@@ -25,6 +30,7 @@ import type {
   McpToolGroupRow,
 } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = { id: "org-1", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
 const TEAM = { id: "team-1", org_id: ORG.id, name: "Platform", created_at: ORG.created_at };
@@ -327,18 +333,89 @@ export const CatalogValidatesEndpoint: Story = {
     await expect(dialog.getByRole("button", { name: "Register server" })).toBeDisabled();
   },
 };
+/**
+ * Deleting a server confirms through the shared `ConfirmDialog` (#1760): the
+ * title names the server and the body says what goes with it, a cancel sends
+ * nothing and is an abandon, and a confirm sends the DELETE and lands as
+ * `save_confirmed`.
+ */
+let serverDeletes: Recorder;
 export const CatalogExplainsDeleteCascade: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    serverDeletes = recording(
+      routed({
+        servers: async (_input, init) =>
+          init?.method === "DELETE" ? json(null, 204) : json(SERVERS),
+      }),
+    );
+    return (
+      <Harness fetchStub={serverDeletes.stub}>
+        <UxScreenProvider screen="mcp-catalog">
+          <McpCatalog />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const remove = await canvas.findByRole("button", { name: "Delete server GitHub" });
+    await userEvent.click(remove);
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Delete server GitHub?" }),
+    ).toBeVisible();
+    await cancelConfirmation();
+    serverDeletes.expectNotSent("DELETE", "/mcp-servers/");
+    const abandon = await expectUxEvent("form_abandon", "mcp-server-delete");
+    await expect(abandon.screen).toBe("mcp-catalog");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "mcp-server-delete");
+
+    await userEvent.click(remove);
+    await confirmDestructive(/removes every OAuth grant and token session/, "Delete server");
+    await serverDeletes.expectSent("DELETE", "/mcp-servers/server-github");
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "mcp-server-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "mcp-server-delete");
+  },
+};
+
+/**
+ * A refused delete keeps the dialog open over the control plane's reason, and
+ * the refusal is a row of its own beside the press even though the stub
+ * answers in the same tick (#1761).
+ */
+export const CatalogDeleteRefused: Story = {
+  beforeEach: recordUxEvents,
   render: () => (
-    <Harness fetchStub={routed()}>
-      <McpCatalog />
+    <Harness
+      fetchStub={routed({
+        servers: async (_input, init) =>
+          init?.method === "DELETE"
+            ? json({ error: { message: "GitHub is still granted to 2 tool groups" } }, 409)
+            : json(SERVERS),
+      })}
+    >
+      <UxScreenProvider screen="mcp-catalog">
+        <McpCatalog />
+      </UxScreenProvider>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Delete server GitHub" }));
-    const body = within(document.body);
-    await expect(body.getByText(/removes every OAuth grant and token session/)).toBeVisible();
-    await expect(body.getByRole("button", { name: "Delete server" })).toBeEnabled();
+    await confirmDestructive(/GitHub/, "Delete server");
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "mcp-server-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
+    expectNoUxEvent("save_confirmed", "mcp-server-delete");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent("still granted to 2 tool");
   },
 };
 

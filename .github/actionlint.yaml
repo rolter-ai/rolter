@@ -1,0 +1,11 @@
+# actionlint reads this file on its own, in CI (quality.yml) and in the prek hook
+paths:
+  # `vulnerability-alerts` is the GITHUB_TOKEN scope that lists dependabot
+  # alerts (GitHub's workflow-syntax reference documents it), but actionlint's
+  # permission table predates it and rejects the name, up to and including
+  # v1.7.12 (rhysd/actionlint#713). the ignore is scoped to this one file and
+  # this one message: any other permission typo there still fails. drop it once
+  # an actionlint release knows the scope
+  .github/workflows/ui-security-updates.yml:
+    ignore:
+      - 'unknown permission scope "vulnerability-alerts"'

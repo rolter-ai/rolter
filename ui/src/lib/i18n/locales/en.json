@@ -517,8 +517,11 @@
       "readOnlyPill": "read-only",
       "view": "View",
       "edit": "Edit",
-      "deleteTitle": "Delete model",
-      "deleteBody": "This removes all routes and targets for <0>{{model}}</0>. This cannot be undone."
+      "confirm": {
+        "deleteTitle": "Delete model {{model}}?",
+        "deleteBody": "Every route and target for it is removed. This cannot be undone.",
+        "deleteConfirm": "Delete model"
+      }
     },
     "providers": {
       "search": "Search providers",
@@ -664,8 +667,6 @@
       "edit": "Edit",
       "editTitle": "Edit {{model}}",
       "editSubtitle": "Prices are per million tokens (Mtok); saving upserts by model name.",
-      "deleteTitle": "Delete price",
-      "deleteBody": "Removes the pricing entry for <0>{{model}}</0>. Cost accounting for this model falls back to no known price.",
       "modelName": "Model name",
       "inputPrice": "Input price per Mtok",
       "outputPrice": "Output price per Mtok",
@@ -673,12 +674,20 @@
       "cachedPlaceholder": "defaults to input price",
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
-      "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget."
+      "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "confirm": {
+        "deleteTitle": "Delete the price for {{model}}?",
+        "deleteBody": "Cost accounting for this model falls back to no known price.",
+        "deleteConfirm": "Delete price"
+      }
     },
     "playground": {
       "groupRoutes": "Routes",
       "modelsNeedKey": "Showing configured routes. Set a virtual key above to list what the gateway actually serves — provider-pinned and provider-group addresses only appear in the gateway's list.",
       "modelsUnreachable": "Could not read the gateway's model list with this key, so configured routes are shown instead. Provider-pinned and provider-group addresses are missing from this list.",
+      "modelsWaiting": "Asking the gateway which models this key can use. A key minted a moment ago takes a few seconds to reach it.",
+      "unservedHidden_one": "{{count}} configured route is left out because the gateway does not serve it.",
+      "unservedHidden_other": "{{count}} configured routes are left out because the gateway does not serve them.",
       "modelAria": "Model",
       "imageSizeAria": "Image size",
       "imageCountAria": "Number of images",
@@ -758,13 +767,6 @@
       "renameAction": "Rename {{name}}",
       "renamed": "Template details updated.",
       "deleteAction": "Delete {{name}}",
-      "deleteTitle": "Delete {{name}}?",
-      "deleteLive": "v{{version}} is live — anything routing through this template starts failing immediately.",
-      "deleteUnpublished": "This template has never been published.",
-      "deleteConsequence": "Every version, scope and sample is deleted with it. This cannot be undone.",
-      "deleteConfirmLabel": "Type {{slug}} to confirm",
-      "deleteSubmit": "Delete template",
-      "deleting": "Deleting…",
       "fieldName": "Name",
       "fieldDescription": "Description",
       "fieldOptional": "optional",
@@ -865,17 +867,18 @@
       "creating": "Creating…",
       "rollbackDescription": "This changes the live version from v{{from}} to immutable v{{to}}. The newer versions remain in history.",
       "keepLive": "Keep v{{version}} live",
-      "rollingBack": "Rolling back…"
+      "rollingBack": "Rolling back…",
+      "confirm": {
+        "deleteTitle": "Delete template {{name}}?",
+        "deleteLive": "v{{version}} is live — anything routing through this template starts failing immediately.",
+        "deleteUnpublished": "This template has never been published.",
+        "deleteConsequence": "Every version, scope and sample is deleted with it. This cannot be undone.",
+        "deleteSlugLabel": "Type {{slug}} to confirm",
+        "deleteConfirm": "Delete template"
+      }
     },
     "skillsRepo": {
       "deleteAction": "Delete {{name}}",
-      "deleteTitle": "Delete {{name}}?",
-      "deletePublished": "v{{version}} is published — agents resolving this skill start failing immediately.",
-      "deleteUnpublished": "This skill has never been published.",
-      "deleteConsequence": "Every version and access rule is deleted with it. Retire it instead if you only want it hidden.",
-      "deleteConfirmLabel": "Type {{slug}} to confirm",
-      "deleteSubmit": "Delete skill",
-      "deleting": "Deleting…",
       "settings": "Settings",
       "cancel": "Cancel",
       "created": "Skill created. Add its first immutable version.",
@@ -955,7 +958,15 @@
       "saveSettings": "Save settings",
       "rollbackDescription": "This changes the resolved version from v{{from}} to immutable v{{to}}. Newer versions remain in history.",
       "keepLive": "Keep v{{version}} live",
-      "rollingBack": "Rolling back…"
+      "rollingBack": "Rolling back…",
+      "confirm": {
+        "deleteTitle": "Delete skill {{name}}?",
+        "deletePublished": "v{{version}} is published — agents resolving this skill start failing immediately.",
+        "deleteUnpublished": "This skill has never been published.",
+        "deleteConsequence": "Every version and access rule is deleted with it. Retire it instead if you only want it hidden.",
+        "deleteSlugLabel": "Type {{slug}} to confirm",
+        "deleteConfirm": "Delete skill"
+      }
     },
     "tool-groups": {
       "confirm": {
@@ -1284,12 +1295,6 @@
       "emptyTitle": "No MCP servers registered",
       "emptyBody": "Register a custom endpoint or install a curated server from MCP Library.",
       "configure": "Configure",
-      "confirmDelete": {
-        "title": "Delete {{name}}?",
-        "body": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
-        "confirm": "Delete server",
-        "pending": "Deleting…"
-      },
       "dialog": {
         "titleAdd": "Register MCP server",
         "titleEdit": "Configure MCP server",
@@ -1367,7 +1372,10 @@
         "clearCredentialTitle": "Clear the stored credential for {{name}}?",
         "clearCredentialBody": "The credential is deleted and the server switches to no authentication, so Rolter calls it unauthenticated from now on. The value cannot be read back — to restore it you must paste it again.",
         "switchKindBody": "Switching to {{kind}} deletes the stored credential. The value cannot be read back — to go back you must paste it again.",
-        "clearCredentialConfirm": "Clear credential"
+        "clearCredentialConfirm": "Clear credential",
+        "deleteTitle": "Delete server {{name}}?",
+        "deleteBody": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
+        "deleteConfirm": "Delete server"
       }
     },
     "mcpOAuth": {
@@ -1978,6 +1986,7 @@
     },
     "limits": {
       "budgetCreated": "Budget created",
+      "budgetUpdated": "Budget updated",
       "budgetDeleted": "Budget deleted",
       "budgetNoun": "the budget",
       "budgetsEmptyAction": "Add budget",
@@ -1985,6 +1994,7 @@
       "budgetsEmptyTitle": "No budgets for this scope",
       "budgetsHint": "Spend caps per org, team, project, virtual key, business unit, or customer",
       "rateLimitCreated": "Rate limit created",
+      "rateLimitUpdated": "Rate limit updated",
       "rateLimitDeleted": "Rate limit deleted",
       "rateLimitNoun": "the rate limit",
       "rateLimitsEmptyAction": "Add rate limit",
@@ -2014,7 +2024,9 @@
       "unpricedLabel": "Unpriced traffic",
       "noCaps": "no caps",
       "deleteBudgetAria": "Delete the {{period}} budget of {{amount}} for {{scope}}",
+      "editBudgetAria": "Edit the {{period}} budget of {{amount}} for {{scope}}",
       "deleteRateLimitAria": "Delete the {{limit}} rate limit for {{scope}}",
+      "editRateLimitAria": "Edit the {{limit}} rate limit for {{scope}}",
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
@@ -2029,11 +2041,13 @@
       "rateLimitsTitle": "Rate limits",
       "rateLimitsAdd": "Add rate limit",
       "budgetSheetTitle": "Add budget",
-      "budgetSheetSubtitle": "Spend cap for {{scope}} — delete and recreate to change it",
+      "budgetEditTitle": "Edit budget",
+      "budgetSheetSubtitle": "Spend cap for {{scope}}",
       "budgetLimitLabel": "Limit (USD)",
       "budgetPeriodLabel": "Period",
       "budgetPeriodHint": "e.g. 30d, 7d, 1d",
       "rateLimitSheetTitle": "Add rate limit",
+      "rateLimitEditTitle": "Edit rate limit",
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
       "tpmLabel": "Tokens per minute (optional)",
@@ -2129,8 +2143,11 @@
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
       "edit": "Edit",
-      "deleteTitle": "Delete provider group",
-      "deleteBody": "<0>{{name}}</0> will stop resolving as a <1>{{address}}</1> address. Member providers are unaffected. This cannot be undone."
+      "confirm": {
+        "deleteTitle": "Delete provider group {{name}}?",
+        "deleteBody": "It stops resolving as a <0>{{address}}</0> address. Member providers are unaffected. This cannot be undone.",
+        "deleteConfirm": "Delete group"
+      }
     },
     "teams": {
       "emptyTitle": "No teams yet",
@@ -2703,6 +2720,13 @@
     "deleteOrg": "Delete org",
     "deleteTeam": "Delete team",
     "deleteProject": "Delete project",
+    "confirm": {
+      "orgTitle": "Delete org {{name}}?",
+      "teamTitle": "Delete team {{name}}?",
+      "projectTitle": "Delete project {{name}}?",
+      "cascadeBody": "Everything under it is removed with it. This cannot be undone.",
+      "body": "Everything scoped to it is removed with it, routes and virtual keys included. This cannot be undone."
+    },
     "newOrg": "New org",
     "newTeam": "New team",
     "newProject": "New project",
@@ -2710,11 +2734,6 @@
     "newOrgHint": "Creates an org with a URL-safe slug derived from the name.",
     "newTeamHint": "Creates a team under the currently selected org.",
     "newProjectHint": "Creates a project under the currently selected team.",
-    "deleteOrgTitle": "Delete org",
-    "deleteTeamTitle": "Delete team",
-    "deleteProjectTitle": "Delete project",
-    "deleteCascadeHint": "This removes <0>{{name}}</0> and everything under it. This cannot be undone.",
-    "deleteHint": "This removes <0>{{name}}</0>. This cannot be undone.",
     "errors": {
       "orgsFailed": "failed to load orgs",
       "noOrg": "no org configured — create one to get started",
@@ -3055,12 +3074,6 @@
       "selectProject": "Select a project in the sidebar to mint a virtual key",
       "emptyTitle": "No virtual keys yet",
       "empty": "You haven't minted a virtual key yet. Create one to start calling the gateway.",
-      "delete": {
-        "title": "Delete virtual key",
-        "body": "will stop authenticating immediately. This cannot be undone.",
-        "cancel": "Cancel",
-        "confirm": "Delete"
-      },
       "card": {
         "unnamed": "unnamed key",
         "disabled": "disabled",
@@ -3090,6 +3103,11 @@
         "title": "Rotate {{name}}?",
         "body": "A new secret is issued and the current one stops authenticating immediately, so anything still using the old key starts failing.",
         "confirm": "Rotate key"
+      },
+      "deleteConfirm": {
+        "title": "Delete key {{name}}?",
+        "body": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
+        "confirm": "Delete key"
       }
     },
     "mfa": {
@@ -3280,6 +3298,7 @@
     "lockedToggle": "Locked — callers can't override; click to allow",
     "overridableToggle": "Overridable — callers may override; click to lock",
     "removeParam": "Remove param",
+    "removeParamNamed": "Remove param {{name}}",
     "addParam": "Add param",
     "unknownKeys": "Not a standard OpenAI/Anthropic param: {{keys}}. Saved as-is — check the spelling if unintended.",
     "policyTitle": "Override policy",
@@ -3308,7 +3327,7 @@
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
-      "realtime": "The /v1/realtime websocket relay is outside the request-path subsystems: a session is admitted against process-local caps only, and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution",
+      "realtime": "Guardrails, the PII sanitizer and plugins do not run on /v1/realtime session events: a session meets budgets and rate limits and its usage is recorded, but what it carries reaches the provider without a content check",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },

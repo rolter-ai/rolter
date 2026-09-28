@@ -4,19 +4,29 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Pricing from "./Pricing";
 import {
   Harness,
+  cancelConfirmation,
   clickWhenEnabled,
+  confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectNoUxEvent,
+  expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
+  recording,
   routes,
   scoped,
   sheet,
   Toasted,
   expectToast,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const price = (model: string, currency: string, id = model): ModelPriceRow => ({
   id,
@@ -198,5 +208,90 @@ export const AddRejectedByTheServer: Story = {
     await expect(form.getByLabelText("Model name")).toHaveValue("gpt-4o");
     // a number input, so the value reads back numeric rather than as typed
     await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(10);
+  },
+};
+
+/**
+ * Deleting a price confirms through the shared `ConfirmDialog` (#1760): the
+ * title names the model, a cancel sends nothing and is an abandon, and a
+ * confirm sends the DELETE and lands as `save_confirmed`.
+ */
+let priceDeletes: Recorder;
+export const DeleteIsConfirmedAndReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    priceDeletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? json(null, 204) : withCurrency(CONFIGURED)(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={priceDeletes.stub}>
+        <UxScreenProvider screen="pricing-overrides">
+          <Pricing />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Delete the price for mistral-large");
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Delete the price for mistral-large?",
+      }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    priceDeletes.expectNotSent("DELETE", "/model-prices/");
+    const abandon = await expectUxEvent("form_abandon", "price-delete");
+    await expect(abandon.screen).toBe("pricing-overrides");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "price-delete");
+
+    await clickWhenEnabled(canvasElement, "Delete the price for mistral-large");
+    await confirmDestructive(/mistral-large/, "Delete price");
+    await priceDeletes.expectSent("DELETE", "/model-prices/mistral-large");
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "price-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "price-delete");
+  },
+};
+
+/**
+ * A refused delete keeps the dialog open with the control plane's reason, and
+ * the refusal reaches the UX stream beside the press even though the stub
+ * answers in the same tick (#1761).
+ */
+export const DeleteRejectedByTheServer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "the store is read-only while a restore runs" } }, 409)
+          : withCurrency(CONFIGURED)(input, init),
+      )}
+    >
+      <UxScreenProvider screen="pricing-overrides">
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Delete the price for gpt-4o");
+    await confirmDestructive(/gpt-4o/, "Delete price");
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "price-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
+    expectNoUxEvent("save_confirmed", "price-delete");
+    await expectToast(canvasElement, /read-only while a restore runs/, "error");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(dialog.getByRole("alert")).toHaveTextContent("read-only while a restore runs");
   },
 };

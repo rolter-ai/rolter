@@ -8,7 +8,11 @@
 // in `ui/scripts/` looked for a bare `<select>`, a raw `<pre>`, a
 // `window.confirm`, or a primitive re-declared inside the screen that needed
 // it. #1044 is what that costs — seven form primitives sat trapped in one
-// sheet's file for months because no check noticed they were there.
+// sheet's file for months because no check noticed they were there. The
+// repeated-shape rule (#1686) made five, and a sixth came later: a
+// confirmation assembled out of `DialogFooter` and a destructive `Button`
+// rather than taken from `ConfirmDialog`, which eight screens had drifted into
+// by the time #1760 found them.
 //
 // The rules are deliberately grep-level, the way `check-literals.ts` is: this
 // is a guard against the obvious mistake, not a type system. Two things keep
@@ -103,7 +107,13 @@ export function stripComments(source: string): string {
  */
 const WAIVER = /ui-primitives-allow:\s*(.*)$/;
 
-export type RuleId = "select" | "pre" | "native-dialog" | "shadowed-primitive" | "duplicated-shape";
+export type RuleId =
+  | "select"
+  | "pre"
+  | "native-dialog"
+  | "hand-rolled-confirmation"
+  | "shadowed-primitive"
+  | "duplicated-shape";
 
 export interface Violation {
   file: string;
@@ -142,6 +152,12 @@ const ADVICE: Record<RuleId, string> = {
     "a native `window.confirm`/`alert`/`prompt` is unstyled, untranslatable, " +
     "and in a test runner it blocks the thread. Use `ConfirmDialog` from " +
     "`@/components/ConfirmDialog`.",
+  "hand-rolled-confirmation":
+    "a destructive button in a hand-assembled `DialogFooter` is a confirmation " +
+    "that works out its own pending, error and disabled rules and emits none of " +
+    "the UX-stream rows, so a fix to `ConfirmDialog` never reaches it. Use " +
+    "`ConfirmDialog` from `@/components/ConfirmDialog`; a typed confirmation " +
+    "goes in its `children` with `confirmDisabled`.",
   "shadowed-primitive":
     "this re-declares a component `src/components/ui/` already exports, " +
     "without importing it — a second copy of a primitive, which is how #1044 " +
@@ -222,6 +238,29 @@ export function waiverAbove(lines: string[], index: number): string | null {
 }
 
 /**
+ * The 0-based lines of every `<DialogFooter>` that holds a destructive button.
+ *
+ * Read as the span from the opening tag to the next closing one — a footer
+ * never nests another — and matched on the `"destructive"` literal anywhere in
+ * it, so `variant="destructive"` and a ternary that picks it are both caught.
+ * Reported at the footer rather than at the button, which is where the waiver
+ * for the one legitimate case (`ConfirmDialog` itself) has to sit.
+ */
+export function destructiveFooters(masked: string): number[] {
+  const found: number[] = [];
+  const open = /<DialogFooter[\s>]/g;
+  let match: RegExpExecArray | null;
+  while ((match = open.exec(masked))) {
+    const close = masked.indexOf("</DialogFooter>", match.index);
+    const body = masked.slice(match.index, close === -1 ? masked.length : close);
+    if (/["'`]destructive["'`]/.test(body)) {
+      found.push(masked.slice(0, match.index).split("\n").length - 1);
+    }
+  }
+  return found;
+}
+
+/**
  * Every rule broken in one file.
  *
  * `primitives` is the set of shared component names; pass `[]` to check only
@@ -284,6 +323,9 @@ export function checkSource(
       record(index, "shadowed-primitive", (shadowed[1] ?? shadowed[2])!);
     }
   });
+  for (const index of destructiveFooters(masked)) {
+    record(index, "hand-rolled-confirmation", "<DialogFooter> with a destructive button");
+  }
 
   return { violations, waivers };
 }

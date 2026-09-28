@@ -41,8 +41,9 @@ services:
     image: clickhouse/clickhouse-server:24-alpine
     volumes:
       - ../../clickhouse:/docker-entrypoint-initdb.d
+    # overridable where the runtime cannot grant 262144 (#1819)
     ulimits:
-      nofile: { soft: 262144, hard: 262144 }
+      nofile: { soft: "${CLICKHOUSE_NOFILE:-262144}", hard: "${CLICKHOUSE_NOFILE:-262144}" }
     # the alpine clickhouse HTTP port can bind late; the native client is the
     # reliable readiness signal.
     healthcheck:

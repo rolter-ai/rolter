@@ -8,6 +8,15 @@
 # `dogfood.toml` beside this file is the full fleet, kept as the reference an
 # operator copies from (and for `rolter-seed --import` when a populated
 # dashboard is wanted instead).
+#
+# This is the gateway's *runtime* config: `just dogfood` starts the gateway on
+# it, and nothing else reads it. `dogfood.toml` is desired state for the
+# importer and is never read by a running process. Once the control plane
+# answers, its snapshot replaces everything here except what the gateway reads
+# at startup, `[server]` and `[logging].clickhouse_url` (#1288). Both files
+# declare `[logging.payload_capture]` — here for the gateway before its first
+# snapshot, there for the `logging_settings` row — so keep the two copies equal.
+# See "Which config file does what" in README.md.
 
 [server]
 host = "0.0.0.0"
@@ -31,6 +40,11 @@ clickhouse_url = "http://127.0.0.1:8123"
 # visibility is the whole point of dogfooding the Logs screen. Enabling it here
 # means the drawer shows real request and response bodies out of the box
 # instead of an empty panel the operator has to go and switch on.
+#
+# This copy governs only until the control plane's first snapshot. From then on
+# the `logging_settings` row does, and `just dogfood-seed` sets that row from
+# the same section in `dogfood.toml`; a stack that was never seeded serves
+# capture off (#1911).
 #
 # The guardrails still apply and are worth exercising too: `max_bytes` truncates,
 # and `redact_fields` strips the named JSON keys *before* the write, so a

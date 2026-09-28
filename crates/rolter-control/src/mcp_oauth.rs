@@ -37,7 +37,8 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::crud::{
-    log_audit, pool, publish_config_change, require_non_empty, ApiError, ApiResult, SafeJson,
+    explicit_null, log_audit, pool, publish_config_change, require_non_empty, ApiError, ApiResult,
+    SafeJson,
 };
 use crate::mcp_oauth_flow::kek;
 use crate::rbac::{authorize, holds_admin, Principal, ScopeChain};
@@ -273,20 +274,6 @@ struct UpdateMcpServer {
     request_timeout_ms: Option<Option<i32>>,
     #[serde(default, deserialize_with = "explicit_null")]
     max_retries: Option<Option<i32>>,
-}
-
-/// Deserialize a present-but-null field as `Some(None)` rather than `None`.
-///
-/// serde collapses both "absent" and "null" to `None` for an `Option<Option<T>>`,
-/// which for a PATCH silently turns "clear this override" into "leave it
-/// alone" — the field is only reached when the key is present, so wrapping in
-/// `Some` here is what makes the two distinguishable.
-fn explicit_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    Option::deserialize(deserializer).map(Some)
 }
 
 /// A per-server override and the range the org-wide setting already uses.

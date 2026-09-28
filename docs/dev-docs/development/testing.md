@@ -85,14 +85,34 @@ clobbering each other.
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
-a Postgres they may write to. The role wants `CREATEDB`, since each worktree
-gets a database of its own (below); without it the tests still run, they just
-share the database the url names:
+a Postgres they may write to. A machine needs one such server however many
+worktrees it has, and `just test-pg` is the way to get it:
 
 ```bash
-ROLTER_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/rolter_test \
-  cargo nextest run -p rolter-store -p rolter-control --features postgres
+eval "$(just test-pg)"   # starts rolter-test-pg on 127.0.0.1:55433 if needed, exports the url
+cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
+
+The recipe is idempotent: it creates the `rolter-test-pg` container the first
+time, starts it again after a reboot, and otherwise only prints the export line,
+so every session on the machine runs the same command and lands on the same
+server. `just test-pg-status` shows the connections in use against
+`max_connections` and which worktree each test database belongs to;
+`just test-pg-down` removes the container together with its data.
+`ROLTER_TEST_PG_PORT` and `ROLTER_TEST_PG_MAX_CONNECTIONS` pick a different port
+or limit, and only take effect when the container is created, so change them
+with a `just test-pg-down` first.
+
+Do not start a Postgres per worktree. Each worktree already gets a database of
+its own on the shared server (below), so a second container isolates nothing,
+and nothing ever takes it down: it outlives the worktree that started it, holding
+a port, shared memory and disk, and the next session has to step over it to find
+a free port (#1736). Containers left over from that habit (`rolter-test-pg-<n>`,
+`rolter-<n>-pg` and similar) can go once nothing uses them.
+
+Any other Postgres works too, as long as the role may create databases
+(`CREATEDB`), since each worktree gets one of its own; without it the tests still
+run, they just share the database the url names.
 
 ### One database per worktree
 
@@ -114,10 +134,15 @@ Two things that used to be true stop being true:
 - a worktree on an older commit no longer applies its migration set to the
   database another worktree is reading
 
-The worktree's path is stored as the database's comment, which is the whole
-cleanup story: the next run drops any `rolter_test_wt_*` database whose recorded
-directory no longer exists, so a removed worktree takes its database with it and
-no hook has to run. List them with `\l rolter_test_wt*`, or:
+The worktree's path is stored as the database's comment, and both ways a
+database is reclaimed go through it. Removing the worktree with `wt remove` runs
+the `pre-remove` hook in [`.config/wt.toml`](../../../.config/wt.toml), which drops
+the databases carrying that worktree's path on the `just test-pg` server
+straight away. Independently of any hook, the next test run in any worktree drops
+every `rolter_test_wt_*` database whose recorded directory no longer exists, so a
+worktree removed some other way, or one whose tests ran against a different
+server, still takes its database with it. List them with `just test-pg-status`,
+`\l rolter_test_wt*`, or:
 
 ```sql
 select datname, shobj_description(oid, 'pg_database')
@@ -130,6 +155,67 @@ reproduction of the shared-database behaviour. The derivation also steps aside
 when it cannot create a database (a role without `CREATEDB`, for instance): it
 prints why and falls back to the configured url, because losing isolation is
 better than losing the suite.
+
+### The connection budget
+
+A database per worktree isolates schemas and migrations, but not the server's
+`max_connections`: every suite on the machine, from every worktree, draws from
+that one budget (#1735). When it runs out, Postgres refuses new connections with
+`sorry, too many clients already` and the refusal lands on whichever test
+happened to be connecting.
+
+Measured with the `rolter-store` and `rolter-control` postgres suites run the way
+plain `cargo test` runs them (every test in a binary at once, one thread per
+logical CPU by default), each simulated worktree on a database of its own, and
+client backends sampled every 100 ms:
+
+| Worktrees × test threads | Pool per test | `max_connections` | Peak client backends | Outcome                                         |
+| ------------------------ | ------------- | ----------------- | -------------------- | ----------------------------------------------- |
+| 1 × 8                    | 10            | 100               | 14                   | green                                           |
+| 6 × 8                    | 10            | 100               | 78                   | green                                           |
+| 4 × 24                   | 10            | 100               | 100, the limit       | 978 refused connections, 79 of 560 tests failed |
+| 4 × 24                   | 10            | 300               | 120                  | green but one flake of the sweep test (#1910)   |
+| 4 × 24                   | 4             | 300               | 114                  | green                                           |
+| 1 × 24                   | 1             | 300               | 27                   | 3 tests fail on the pool: they need 2           |
+
+A test holds about one connection at a time, so a worktree costs roughly one
+connection per test thread plus a handful for the harness. The pool size barely
+moves the peak; the number of tests running at once does. That is why the stock
+limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
+24-thread workstation. Under `cargo nextest` the `serial-db` group in
+[`.config/nextest.toml`](../../../.config/nextest.toml) runs one postgres test at a
+time per worktree, so a worktree holds only a few connections there; the numbers
+above are the case for `cargo test`, and for nextest too if that group goes
+(#1429).
+
+So the budget is kept in two places:
+
+- `just test-pg` starts the server with `max_connections = 300`: room for about
+  ten worktrees at 24 threads, and twenty at 8. A slot nothing is connected to
+  costs a little shared memory, not a backend, and the larger lock table that
+  comes with it (`max_locks_per_transaction` is per slot) also gives the schema
+  drops more room. On a server of your own, size `max_connections` the same way:
+  worktrees × (test threads + 5)
+- `TestSchema` builds each test's pool with at most 4 connections instead of the
+  control plane's 10: twice what the hungriest tests use (a KEK rotation holding
+  a transaction while it queries, the readiness probe), and a test that wants
+  more waits for a free connection instead of opening one. It is a ceiling on
+  the worst case rather than the fix. `ROLTER_TEST_POOL_MAX_CONNECTIONS`
+  overrides it
+
+A test that cannot connect says which budget ran out, since the pool on its
+own does not: it retries `too many clients` until its 30-second acquire timeout
+and then reports a bare `pool timed out while waiting for an open connection`,
+which reads like a slow query or a regression. `TestSchema` connects directly
+for its own setup. It waits out a server at its limit for the same 30 seconds,
+with backoff, since a slot usually frees within milliseconds as another test's
+guard finishes its cleanup, and only then panics with the server's answer (`has
+no connection slots left (SQLSTATE 53300 ...)`). A server that is down is
+reported at once instead, as `nothing is accepting connections`. A test that fails while the server is at or within a tenth of its limit
+gets the same note printed after its panic, and one that fails with its own pool
+fully checked out is told that instead. `just test-pg-status` shows how many
+connections are in use; `cargo test -- --test-threads=<n>` lowers a worktree's
+share when the server cannot be changed.
 
 ### One schema per test
 
@@ -420,8 +506,115 @@ Dependabot has spoken bun since bun 1.1.39, so `/ui` now runs as
 `package-ecosystem: bun` and `package-lock.json` is gone. Dependabot writes
 `bun.lock` itself, so a stale lockfile fails on the PR that caused it and never
 reaches `master`. The trade is that the bun ecosystem does version updates but
-not security updates: alerts still fire on `ui` dependencies, but the security
-bump has to be raised by hand (#1148).
+not security updates, and GitHub's dependency graph reads `ui/package.json` but
+not `bun.lock`. Alerts still fire for the dependencies `ui/package.json`
+declares, and the pull request that fixes them comes from the workflow below
+instead of from Dependabot. A package that only arrives transitively through
+`bun.lock` raises no alert at all: every transitive `ui` alert was marked
+`fixed` the moment `package-lock.json` was deleted, with no version having
+changed. Nothing monitors that class until #1930 audits the lockfile itself, and
+#1931 tracks the vulnerable transitive packages `bun audit` reports today.
+
+### UI security updates
+
+`.github/workflows/ui-security-updates.yml` stands in for the Dependabot
+security updates the `bun` ecosystem lacks (#1148). GitHub's
+[supported-ecosystems table](https://docs.github.com/en/code-security/dependabot/ecosystems-supported-by-dependabot/supported-ecosystems-and-repositories)
+still marks bun as version updates only; once that changes, delete the workflow,
+its script and the `.github/actionlint.yaml` entry.
+
+It runs daily at 06:30 UTC and on demand. Each run:
+
+1. lists the open Dependabot alerts with the repository `GITHUB_TOKEN`, under
+   the `vulnerability-alerts: read` scope. A failed listing fails the run rather
+   than reading as "no alerts";
+2. hands them to `ui/scripts/security-updates.ts`, which raises each vulnerable
+   direct dependency in `ui/package.json` to its first patched release and keeps
+   the range operator (`^1.2.0` becomes `^1.2.7`);
+3. refreshes `bun.lock` with `bun install --lockfile-only`;
+4. rebuilds the `security/ui-dependencies` branch from `master` when the planned
+   change differs from what the branch already carries, and opens or updates
+   one pull request, titled
+   `build(deps): raise vulnerable ui dependencies to patched releases`;
+5. dispatches `ci.yml` against that branch after every push, since a pull
+   request opened with the repository token triggers no `pull_request` run.
+   This is the same path the release PR takes (see [ci-gating](ci-gating.md)).
+
+The script only raises what it can raise safely. It judges each alert on its
+own, raises a package to the highest first patched release among the alerts a
+semver-compatible bump clears, and leaves the rest for a hand bump. Each one is
+listed, with its reason, in the run summary and the pull request body:
+
+- no patched release has been published yet;
+- the package is not a direct dependency (the fix would be an `overrides` entry,
+  which changes what every other dependent resolves);
+- the range is not a plain `^`, `~` or exact version;
+- the first patched release is a breaking bump from the current floor (a new
+  major, or a new minor below 1.0). One such advisory does not hold back a
+  compatible fix for another advisory on the same package;
+- the range already starts at the patched release, so the alert is stale and
+  closes on its own once GitHub re-reads the manifest.
+
+The pull request carries `station:mac`, since the mac station owns `ui/`, and
+that station reviews and merges it like any other of its PRs. It does not reach
+the project board: `project-automation.yml` does not fire for a pull request the
+repository token opens.
+
+Each proposal body ends with a hidden marker naming the ranges it raises and
+their targets. Closing the pull request unmerged declines that exact set of
+bumps: while a closed, unmerged pull request for the branch carries the marker
+of today's plan, the workflow does not open another. The decision reads pull
+request state, never the branch, so an unrelated dependency change on `master`
+does not reopen a declined bump, while a new alert or a different target does.
+
+When nothing is left to raise, the workflow withdraws its own pull request. It
+first rewrites the body to say why, with the table of anything still left for a
+person and without the marker, so a withdrawal never counts as a person
+declining, then closes the pull request and deletes the branch.
+
+The run heals itself when a step fails half way:
+
+- a push that landed before `gh pr create` failed leaves a branch with no pull
+  request and no declined one, and the next run opens the pull request for it;
+- when the branch already carries the planned change and `ci.yml` has no run for
+  its head that is in progress or ended in success or failure, the workflow
+  dispatches one. A cancelled or never-dispatched gate is re-run the next day;
+  a failed one is left for a person to read and re-run.
+
+To try a change to the workflow before it merges, dispatch it with `dry-run`
+from the branch. A dry run writes the plan to the run summary and pushes
+nothing. A run that publishes refuses to start anywhere but `master`.
+
+```bash
+gh workflow run ui-security-updates.yml --ref <branch> -f dry-run=true
+```
+
+The publish path only runs from `master`, and with no open alert it has nothing
+to publish. The `synthetic-alert` input exercises it on purpose: it adds one
+made-up alert (number `#0`, advisory `SYNTHETIC`, linking to the run) on a direct
+dependency, patched at the version you name, which must be a real release above
+the current floor and semver-compatible with it. After a change to the publish or dispatch steps
+merges, run it once from `master`:
+
+```bash
+gh workflow run ui-security-updates.yml -f synthetic-alert=@opentelemetry/api@1.9.1
+```
+
+Then check that the pull request opened with `station:mac`, that the dispatched
+`ci.yml` run reported `ci-ok` on its head, and that the next run without the
+input withdrew it and deleted the branch. Merge nothing from a synthetic run.
+
+The planner runs locally against a saved alert listing:
+
+```bash
+gh api "repos/rolter-ai/rolter/dependabot/alerts?state=open&ecosystem=npm" > alerts.json
+cd ui && bun scripts/security-updates.ts --alerts ../alerts.json   # plan only
+```
+
+actionlint has no entry for `vulnerability-alerts` yet
+([rhysd/actionlint#713](https://github.com/rhysd/actionlint/issues/713)), so
+`.github/actionlint.yaml` ignores that one message in that one file. Any other
+permission typo in the workflow still fails the check.
 
 ### Secret scanning
 
@@ -433,10 +626,13 @@ it `ci-ok`. The CLI is free and unrestricted, so `quality.yml` now takes no
 secrets and behaves identically for forks, dependabot and direct pushes.
 
 Two passes run with the shared `.github/config/gitleaks.toml` policy: `gitleaks
-dir` over the working tree (everything the commit ships) and, on PRs, `gitleaks
-git --log-opts base..head` over the branch history (catches a secret added and
-then removed inside the same PR). The pinned digest is v8.30.1 — the version
-`prek.toml` already uses for the staged-content hook, so local and CI scans agree.
+dir` over the working tree (everything the commit ships) and, on PRs and
+merge-queue runs, `gitleaks git --log-opts base..head` over the branch history.
+That second pass catches a secret added and then removed inside the same PR; on
+a queue run the range is every commit the queue is about to write to `master`
+(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). The
+pinned digest is v8.30.1 — the version `prek.toml` already uses for the
+staged-content hook, so local and CI scans agree.
 
 Reproduce a CI run locally:
 
@@ -525,11 +721,11 @@ false positive for this repository, suppress that one rule on that one step with
 a bare suppression is indistinguishable from the noise this gate exists to stop.
 The four suppressions in the tree today are:
 
-| Where                                             | Rule                 | Why                                                                                                                                               |
-| ------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine-integration.yml` — `Swatinem/rust-cache`  | `cache-poisoning`    | nothing this workflow builds is published, so the cache cannot poison a release                                                                   |
-| `release-plz.yml` — both `actions/checkout` steps | `artipacked`         | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on                                |
-| `project-automation.yml` — `pull_request_target`  | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id and literal field names to `run:` |
+| Where                                             | Rule                 | Why                                                                                                                                                                                                |
+| ------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine-integration.yml` — `Swatinem/rust-cache`  | `cache-poisoning`    | nothing this workflow builds is published, so the cache cannot poison a release                                                                                                                    |
+| `release-plz.yml` — both `actions/checkout` steps | `artipacked`         | release-plz pushes the release branch and the tags with the persisted token, so `persist-credentials` must stay on                                                                                 |
+| `project-automation.yml` — `pull_request_target`  | `dangerous-triggers` | required so fork PRs can read the org PAT; the workflow never checks out PR head and passes only the project id, the item's node id and url, and literal field names to `run:`, all through `env:` |
 
 ### Storybook play tests
 
@@ -909,6 +1105,70 @@ headers were a `div role="button"` wrapping the info hint's own button
 `title` alone (`label-title-only`), and `StatusRow`'s `colorText` painted its
 label with the solid `--status-*` signal colour, which is below AA as text — the
 `--status-*-text` pair exists for exactly that.
+
+#### A StrictMode story mounts its subject in a later commit (#1744)
+
+The obvious way to test `React.StrictMode` behaviour in a story is to wrap the
+subject in `<React.StrictMode>` inside `render`. That story renders the subject
+twice, but it mounts each effect once and never runs a cleanup, so an assertion
+about the simulated unmount and remount passes against broken code. The first
+`StrictMode*` story in `ui/src/components/EditorSheet.stories.tsx` did exactly
+that in #1743: it stayed green against the naive fix it was written to refuse.
+
+React decides what to double after each commit. It walks down from the root to
+every newly placed fiber and runs the simulated unmount and remount on it only
+if the walk passed a `StrictMode` element on the way, or the placed fiber is one
+(`recursivelyTraverseAndDoubleInvokeEffectsInDEV` in
+`react-dom-client.development.js`, React 19.3). Storybook mounts every story as
+`<ErrorBoundary key={storyId}><Story /></ErrorBoundary>` (`renderToCanvas` in
+`@storybook/react`), so the placed fiber is that boundary. It sits above the
+story's own `StrictMode`, the walk stops there, and nothing below it is doubled.
+Double rendering follows a different rule, the fiber's mode, which is why the
+renders still come in pairs and the story looks strict.
+
+So mount the `StrictMode` first and the subject into it later. The host renders
+the subject only when its own state says so, `render` starts it without one, and
+the play function mounts it with a click:
+
+```tsx
+export const StrictModeDoesNotInventAnAbandon: Story = {
+  render: () => (
+    <React.StrictMode>
+      <Unmountable mounted={false} />
+    </React.StrictMode>
+  ),
+  play: async () => {
+    // mounts the sheet in a later commit, under a StrictMode that is already there
+    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
+    // the double-invoke has happened by the time the sheet can be used
+  },
+};
+```
+
+This is also the app's own shape. `ui/src/main.tsx` makes the root strict long
+before anyone opens a sheet, so a story built this way runs the same lifecycle a
+browser on `bun run dev` does.
+
+Two more habits keep such a story from passing for the wrong reason:
+
+- **Anchor an absence on something that happened.** "No `form_abandon`" is also
+  true before the sheet has finished mounting, so `expectNoUxEvent(…)` on the
+  line after the click proves nothing. `StrictModeDoesNotInventAnAbandon` first
+  presses the sheet's save button and waits for its `form_submit`: the button
+  cannot be pressed until the sheet has mounted, been remounted and settled, so
+  the absence asserted after that point covers the whole double-invoke.
+- **Watch it fail once.** Break the code the story guards and run the file with
+  `bun run test:stories`; for #1739 that meant emitting the abandon straight
+  from the effect cleanup. A StrictMode story that stays green against the
+  broken code is asserting against a lifecycle that never ran. When the reason
+  is unclear, a probe settles it: a child whose effect counts its mounts and
+  cleanups should read two mounts and one cleanup under a working `StrictMode`,
+  and reads one and zero in the same-commit shape.
+
+`framework.options.strictMode` in `ui/.storybook/main.ts` would put a
+`StrictMode` above that boundary for every story. It is off, and turning it on
+changes the lifecycle of every story in the tree, which is a larger decision
+than one assertion needs.
 
 ### Full-stack compose smoke
 

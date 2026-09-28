@@ -1,9 +1,10 @@
-import { AlertTriangle, Lock, LockOpen, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Lock, LockOpen, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 
@@ -391,14 +392,14 @@ export function ParamsEditor(props: EditProps | CreateProps) {
                   )}
                 </button>
               )}
-              <button
-                type="button"
-                aria-label={t("paramsEditor.removeParam")}
+              <DeleteIconButton
+                label={
+                  row.key.trim()
+                    ? t("paramsEditor.removeParamNamed", { name: row.key.trim() })
+                    : t("paramsEditor.removeParam")
+                }
                 onClick={() => removeRow(row.id)}
-                className="mt-1.5 shrink-0 text-muted-foreground hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
           );
         })}

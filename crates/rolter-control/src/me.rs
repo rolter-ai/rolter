@@ -8,7 +8,7 @@
 //! (so a viewer can't mint keys), and rotate/delete/usage additionally require
 //! that the key was minted by the caller (`created_by = me`).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -27,6 +27,7 @@ use crate::crud::{
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
+use crate::time_bounds::Query;
 use crate::ControlState;
 
 pub fn router() -> Router<ControlState> {

@@ -47,6 +47,61 @@ describe("the element rules", () => {
   });
 });
 
+describe("the hand-rolled-confirmation rule", () => {
+  // the shape #1760 found on five screens: a `Dialog` whose footer carries its
+  // own destructive button instead of being a `ConfirmDialog`
+  const handRolled = (variant: string) =>
+    `export function DeleteDialog() {\n` +
+    `  return (\n` +
+    `    <Dialog open onOpenChange={close}>\n` +
+    `      <DialogFooter>\n` +
+    `        <Button variant="outline" onClick={close}>{t("common.cancel")}</Button>\n` +
+    `        <Button variant=${variant} onClick={remove}>{t("common.delete")}</Button>\n` +
+    `      </DialogFooter>\n` +
+    `    </Dialog>\n` +
+    `  );\n` +
+    `}`;
+
+  it("fails a footer holding a destructive button and names ConfirmDialog", () => {
+    const [violation] = checkSource(handRolled(`"destructive"`), SCREEN).violations;
+    expect(violation).toMatchObject({ rule: "hand-rolled-confirmation", line: 4 });
+    expect(describeViolation(violation!)).toContain("ConfirmDialog");
+  });
+
+  it("fails a variant picked by a ternary too", () => {
+    const source = handRolled(`{danger ? "destructive" : "default"}`);
+    expect(checkSource(source, SCREEN).violations).toMatchObject([
+      { rule: "hand-rolled-confirmation" },
+    ]);
+  });
+
+  it("passes a footer whose buttons are not destructive", () => {
+    // a create or a rename dialog is a form, not a confirmation
+    expect(checkSource(handRolled(`"default"`), SCREEN).violations).toEqual([]);
+  });
+
+  it("does not read a destructive button after the footer into it", () => {
+    const source =
+      `<DialogFooter>\n  <Button>{t("common.save")}</Button>\n</DialogFooter>\n` +
+      `<Button variant="destructive" onClick={remove} />`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+  });
+
+  it("ignores the pattern named in a comment", () => {
+    const source = `// this used to be a <DialogFooter> with a "destructive" button\nconst a = 1;`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+  });
+
+  it("honours a waiver above the footer", () => {
+    const source =
+      `{/* ui-primitives-allow: this is the confirmation every screen is sent to */}\n` +
+      `<DialogFooter>\n  <Button variant="destructive" />\n</DialogFooter>`;
+    const { violations, waivers } = checkSource(source, "src/components/ConfirmDialog.tsx");
+    expect(violations).toEqual([]);
+    expect(waivers).toMatchObject([{ rule: "hand-rolled-confirmation", line: 2 }]);
+  });
+});
+
 describe("comments and strings", () => {
   it("ignores the rule named in a comment", () => {
     // every `window.confirm` in the dashboard today is a comment saying what a
