@@ -19,6 +19,7 @@ import {
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { resolveColorToken } from "@/lib/story-tokens";
 
 const fmt = formattersFor("en");
 
@@ -93,13 +94,19 @@ const RECENT = [
   },
 ];
 
-const loaded: FetchStub = routes([
-  ["/api/v1/analytics/summary", () => ({ data: [SUMMARY] })],
-  ["/api/v1/analytics/timeseries", () => ({ data: SERIES })],
-  ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
-  ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
-  ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
-]);
+const loadedWith = (summary: typeof SUMMARY): FetchStub =>
+  routes([
+    ["/api/v1/analytics/summary", () => ({ data: [summary] })],
+    ["/api/v1/analytics/timeseries", () => ({ data: SERIES })],
+    ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
+    ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
+    ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+  ]);
+
+const loaded = loadedWith(SUMMARY);
+
+/** the error-rate tile's delta line, as `t("pages.dashboard.errors")` renders it */
+const errorCount = (n: number) => en.pages.dashboard.errors_other.replace("{{count}}", String(n));
 
 // the first-run checklist the screen now opens with links to four screens, so
 // the dashboard's stories need a router around them (#1585)
@@ -125,6 +132,38 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     // the count is both a stat card and the donut centre
     await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+
+    // 7 errors in 132 requests is 5.30%, over the 1% line, so the count reads
+    // in the danger text colour. it used to come out success green under an
+    // up arrow, because the arrow picked the colour (#1974)
+    const errors = await canvas.findByText(errorCount(7));
+    await expect(getComputedStyle(errors).color).toBe(resolveColorToken("--status-danger-text"));
+    await expect(getComputedStyle(errors).color).not.toBe(
+      resolveColorToken("--status-success-text"),
+    );
+    // the summary is one window with nothing earlier to compare against, so
+    // the tile draws no arrow: it would claim a movement nobody measured
+    await expect(errors.querySelector("svg")).toBeNull();
+  },
+};
+
+/**
+ * Errors under the 1% line are reported, not flagged: 3 in 1,000 requests
+ * keeps its count in the same muted grey as the tile's label. Red is kept for
+ * the case that needs a look.
+ */
+export const ErrorsBelowThreshold: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, requests: 1000, errors: 3 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const errors = await canvas.findByText(errorCount(3));
+    await expect(getComputedStyle(errors).color).toBe(
+      getComputedStyle(canvas.getByText(en.pages.dashboard.statErrorRate)).color,
+    );
+    await expect(getComputedStyle(errors).color).not.toBe(
+      resolveColorToken("--status-danger-text"),
+    );
+    await expect(errors.querySelector("svg")).toBeNull();
   },
 };
 

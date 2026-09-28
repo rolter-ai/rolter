@@ -169,7 +169,11 @@ export default function Dashboard() {
               maximumFractionDigits: 2,
             })}
             unit="%"
-            trend={errorRate > 1 ? "up" : "flat"}
+            // no `trend`: the summary is one window with nothing earlier to
+            // compare against, so an arrow would claim a movement nobody
+            // measured. above 1% of requests the count reads as the problem it
+            // is rather than as growth (#1974)
+            tone={errorRate > 1 ? "bad" : "neutral"}
             // russian needs four plural forms here where english needs two
             delta={errors > 0 ? t("pages.dashboard.errors", { count: errors }) : undefined}
           />
