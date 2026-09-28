@@ -1,0 +1,185 @@
+{
+  "title": "rolter · gateway capacity",
+  "description": "Provider queues and Redis-backed admission controls on the gateway, from its OTLP metrics (#1862, #1772). Imported by `just dogfood`. Panels query signoz_metrics directly, like the other boards, and compute the wait p95 from the histogram buckets in plain SQL, so they need no custom function.",
+  "tags": ["rolter", "provisioned"],
+  "variables": {},
+  "widgets": [
+    {
+      "id": "rolter-queue-wait",
+      "title": "Provider queue wait p95",
+      "description": "How long requests waited for a provider queue worker, from the rolter_provider_queue_wait_ms histogram. A rising line means the provider's [provider_queue] workers are the bottleneck, not the provider.",
+      "panelTypes": "graph",
+      "timePreferance": "GLOBAL_TIME",
+      "isStacked": false,
+      "opacity": "1",
+      "nullZeroValues": "zero",
+      "yAxisUnit": "ms",
+      "query": {
+        "queryType": "clickhouse_sql",
+        "id": "rolter-queue-wait-q",
+        "promql": [],
+        "builder": {
+          "queryData": [],
+          "queryFormulas": []
+        },
+        "clickhouse_sql": [
+          {
+            "name": "A",
+            "legend": "{{provider}}",
+            "disabled": false,
+            "query": "SELECT ts, provider, value FROM ( SELECT ts, provider, arraySort(b -> b.1, groupArray((toFloat64(le), waits))) AS buckets, arrayMap(b -> b.1, buckets) AS bounds, arrayMap(b -> b.2, buckets) AS counts, counts[-1] AS total, 0.95 * total AS rank, arrayFirstIndex(c -> c >= rank, counts) AS i, if(i > 1, bounds[i - 1], 0) AS lower, if(i > 1, counts[i - 1], 0) AS below, if(isInfinite(bounds[i]), lower, lower + (bounds[i] - lower) * (rank - below) / greatest(counts[i] - below, 1)) AS value FROM ( SELECT ts, provider, le, sum(increase) AS waits FROM ( SELECT ts, provider, le, per_minute - lagInFrame(per_minute, 1, per_minute) OVER (PARTITION BY fingerprint ORDER BY ts ASC ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS delta, if(delta < 0, per_minute, delta) AS increase FROM ( SELECT toStartOfInterval(toDateTime(intDiv(s.unix_milli, 1000)), INTERVAL 1 MINUTE) AS ts, s.fingerprint AS fingerprint, any(t.provider) AS provider, any(t.le) AS le, max(s.value) AS per_minute FROM signoz_metrics.distributed_samples_v4 AS s INNER JOIN ( SELECT DISTINCT fingerprint, JSONExtractString(labels, 'provider') AS provider, JSONExtractString(labels, 'le') AS le FROM signoz_metrics.distributed_time_series_v4 WHERE metric_name = 'rolter_provider_queue_wait_ms.bucket' AND unix_milli >= intDiv({{.start_timestamp_ms}} - 60000, 3600000) * 3600000 ) AS t ON s.fingerprint = t.fingerprint WHERE s.metric_name = 'rolter_provider_queue_wait_ms.bucket' AND s.unix_milli >= {{.start_timestamp_ms}} - 60000 AND s.unix_milli <= {{.end_timestamp_ms}} GROUP BY ts, fingerprint ) ) GROUP BY ts, provider, le ) GROUP BY ts, provider HAVING total > 0 ) ORDER BY ts"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rolter-queue-depth",
+      "title": "Provider queue depth",
+      "description": "Requests waiting for a worker, per provider. A gauge sampled at the OTLP export interval, so a burst shorter than it can fall between samples; the wait p95 records every wait.",
+      "panelTypes": "graph",
+      "timePreferance": "GLOBAL_TIME",
+      "isStacked": false,
+      "opacity": "1",
+      "nullZeroValues": "zero",
+      "yAxisUnit": "none",
+      "query": {
+        "queryType": "clickhouse_sql",
+        "id": "rolter-queue-depth-q",
+        "promql": [],
+        "builder": {
+          "queryData": [],
+          "queryFormulas": []
+        },
+        "clickhouse_sql": [
+          {
+            "name": "A",
+            "legend": "{{provider}}",
+            "disabled": false,
+            "query": "SELECT toStartOfInterval(toDateTime(intDiv(s.unix_milli, 1000)), INTERVAL 1 MINUTE) AS ts, t.provider AS provider, max(s.value) AS value FROM signoz_metrics.distributed_samples_v4 AS s INNER JOIN (SELECT DISTINCT fingerprint, JSONExtractString(labels, 'provider') AS provider FROM signoz_metrics.distributed_time_series_v4 WHERE metric_name = 'rolter_provider_queue_depth' AND unix_milli >= intDiv({{.start_timestamp_ms}}, 3600000) * 3600000) AS t ON s.fingerprint = t.fingerprint WHERE s.metric_name = 'rolter_provider_queue_depth' AND s.unix_milli >= {{.start_timestamp_ms}} AND s.unix_milli <= {{.end_timestamp_ms}} GROUP BY ts, provider ORDER BY ts"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rolter-inflight",
+      "title": "Provider in-flight",
+      "description": "Upstream calls awaiting response headers, per provider. Flat at the worker count means the queue is saturated.",
+      "panelTypes": "graph",
+      "timePreferance": "GLOBAL_TIME",
+      "isStacked": false,
+      "opacity": "1",
+      "nullZeroValues": "zero",
+      "yAxisUnit": "none",
+      "query": {
+        "queryType": "clickhouse_sql",
+        "id": "rolter-inflight-q",
+        "promql": [],
+        "builder": {
+          "queryData": [],
+          "queryFormulas": []
+        },
+        "clickhouse_sql": [
+          {
+            "name": "A",
+            "legend": "{{provider}}",
+            "disabled": false,
+            "query": "SELECT toStartOfInterval(toDateTime(intDiv(s.unix_milli, 1000)), INTERVAL 1 MINUTE) AS ts, t.provider AS provider, max(s.value) AS value FROM signoz_metrics.distributed_samples_v4 AS s INNER JOIN (SELECT DISTINCT fingerprint, JSONExtractString(labels, 'provider') AS provider FROM signoz_metrics.distributed_time_series_v4 WHERE metric_name = 'rolter_provider_inflight' AND unix_milli >= intDiv({{.start_timestamp_ms}}, 3600000) * 3600000) AS t ON s.fingerprint = t.fingerprint WHERE s.metric_name = 'rolter_provider_inflight' AND s.unix_milli >= {{.start_timestamp_ms}} AND s.unix_milli <= {{.end_timestamp_ms}} GROUP BY ts, provider ORDER BY ts"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rolter-redis",
+      "title": "Redis connected",
+      "description": "1 while each Redis consumer holds a live connection. It reflects the last use, so an idle consumer does not probe.",
+      "panelTypes": "graph",
+      "timePreferance": "GLOBAL_TIME",
+      "isStacked": false,
+      "opacity": "1",
+      "nullZeroValues": "zero",
+      "yAxisUnit": "none",
+      "query": {
+        "queryType": "clickhouse_sql",
+        "id": "rolter-redis-q",
+        "promql": [],
+        "builder": {
+          "queryData": [],
+          "queryFormulas": []
+        },
+        "clickhouse_sql": [
+          {
+            "name": "A",
+            "legend": "{{consumer}}",
+            "disabled": false,
+            "query": "SELECT toStartOfInterval(toDateTime(intDiv(s.unix_milli, 1000)), INTERVAL 1 MINUTE) AS ts, t.consumer AS consumer, min(s.value) AS value FROM signoz_metrics.distributed_samples_v4 AS s INNER JOIN (SELECT DISTINCT fingerprint, JSONExtractString(labels, 'consumer') AS consumer FROM signoz_metrics.distributed_time_series_v4 WHERE metric_name = 'rolter_redis_connected' AND unix_milli >= intDiv({{.start_timestamp_ms}}, 3600000) * 3600000) AS t ON s.fingerprint = t.fingerprint WHERE s.metric_name = 'rolter_redis_connected' AND s.unix_milli >= {{.start_timestamp_ms}} AND s.unix_milli <= {{.end_timestamp_ms}} GROUP BY ts, consumer ORDER BY ts"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rolter-fail-open",
+      "title": "Requests admitted unchecked",
+      "description": "Requests a budget or rate limit let through per minute because Redis was unavailable: the cost exposure of an outage.",
+      "panelTypes": "graph",
+      "timePreferance": "GLOBAL_TIME",
+      "isStacked": false,
+      "opacity": "1",
+      "nullZeroValues": "zero",
+      "yAxisUnit": "none",
+      "query": {
+        "queryType": "clickhouse_sql",
+        "id": "rolter-fail-open-q",
+        "promql": [],
+        "builder": {
+          "queryData": [],
+          "queryFormulas": []
+        },
+        "clickhouse_sql": [
+          {
+            "name": "A",
+            "legend": "{{control}}",
+            "disabled": false,
+            "query": "SELECT ts, control, sum(if(delta < 0, per_minute, delta)) AS value FROM ( SELECT ts, control, per_minute, per_minute - lagInFrame(per_minute, 1, per_minute) OVER (PARTITION BY fingerprint ORDER BY ts ASC ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS delta FROM ( SELECT toStartOfInterval(toDateTime(intDiv(s.unix_milli, 1000)), INTERVAL 1 MINUTE) AS ts, s.fingerprint AS fingerprint, any(t.control) AS control, max(s.value) AS per_minute FROM signoz_metrics.distributed_samples_v4 AS s INNER JOIN (SELECT DISTINCT fingerprint, JSONExtractString(labels, 'control') AS control FROM signoz_metrics.distributed_time_series_v4 WHERE metric_name = 'rolter_fail_open_total' AND unix_milli >= intDiv({{.start_timestamp_ms}} - 60000, 3600000) * 3600000) AS t ON s.fingerprint = t.fingerprint WHERE s.metric_name = 'rolter_fail_open_total' AND s.unix_milli >= {{.start_timestamp_ms}} - 60000 AND s.unix_milli <= {{.end_timestamp_ms}} GROUP BY ts, fingerprint)) WHERE ts >= toStartOfInterval(toDateTime(intDiv({{.start_timestamp_ms}}, 1000)), INTERVAL 1 MINUTE) GROUP BY ts, control ORDER BY ts"
+          }
+        ]
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "rolter-queue-wait",
+      "x": 0,
+      "y": 0,
+      "w": 12,
+      "h": 3
+    },
+    {
+      "i": "rolter-queue-depth",
+      "x": 0,
+      "y": 3,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "rolter-inflight",
+      "x": 6,
+      "y": 3,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "rolter-redis",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 3
+    },
+    {
+      "i": "rolter-fail-open",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 3
+    }
+  ]
+}

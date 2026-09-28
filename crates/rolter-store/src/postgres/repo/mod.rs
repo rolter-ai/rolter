@@ -420,6 +420,62 @@ impl ProjectRepo<'_> {
         }
         Ok(())
     }
+
+    /// The lowest built-in role that may read the captured request and response
+    /// bodies of this project's traffic: `member` unless an admin lowered it to
+    /// `viewer` (#1820).
+    pub async fn payload_min_role(&self, id: Uuid) -> Result<String> {
+        sqlx::query_scalar("select payload_min_role from projects where id = $1")
+            .bind(id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| Error::NotFound(format!("project {id}")))
+    }
+
+    /// Set [`Self::payload_min_role`]. The column's check constraint admits only
+    /// `member` and `viewer`, so an unknown role is refused by the database even
+    /// if a caller skipped its own validation.
+    pub async fn set_payload_min_role(&self, id: Uuid, role: &str) -> Result<()> {
+        let res = sqlx::query("update projects set payload_min_role = $2 where id = $1")
+            .bind(id)
+            .bind(role)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
+    /// The projects under any of these scopes whose admin let viewers read
+    /// captured bodies, in one query.
+    ///
+    /// Bounded by the scopes a caller holds a role in rather than listing every
+    /// such project in the deployment, so the answer grows with one user's
+    /// reach and not with the number of tenants (#1820).
+    pub async fn viewer_payload_projects(
+        &self,
+        org_ids: &[Uuid],
+        team_ids: &[Uuid],
+        project_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
+        if org_ids.is_empty() && team_ids.is_empty() && project_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar(
+            "select p.id from projects p join teams t on t.id = p.team_id
+             where p.payload_min_role = 'viewer'
+               and (t.org_id = any($1) or p.team_id = any($2) or p.id = any($3))",
+        )
+        .bind(org_ids)
+        .bind(team_ids)
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
 }
 
 impl BusinessUnitRepo<'_> {
@@ -1150,6 +1206,74 @@ impl SkillRepo<'_> {
 pub struct ProviderRepo<'a>(pub &'a PgPool);
 
 impl ProviderRepo<'_> {
+    /// Whether any provider in the deployment already has `name`. The gateway
+    /// keys providers by name alone, across every org, so a second one would
+    /// make the snapshot refuse (#1845); per-org names are #1857.
+    pub async fn name_in_use(&self, name: &str) -> Result<bool> {
+        sqlx::query_scalar("select exists(select 1 from providers where name = $1)")
+            .bind(name)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
+    }
+
+    /// Whether a provider other than `except` already has `slug`, in any org.
+    /// `provider-slug/model` addressing resolves a slug across the deployment.
+    pub async fn slug_in_use(&self, slug: &str, except: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where slug = $1 \
+             and ($2::uuid is null or id <> $2))",
+        )
+        .bind(slug)
+        .bind(except)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether a provider or a provider group other than `except` already
+    /// answers `slug`, in any org.
+    ///
+    /// The gateway resolves `provider-slug/model` and `group-slug/model` in one
+    /// namespace across the deployment, and a group whose slug a provider holds
+    /// is not addressable at all. So a new or renamed slug has to be free in
+    /// both tables, or the second holder silently takes the address from the
+    /// first. Row ids are unique across the two tables, so one `except` covers
+    /// a rename of either kind.
+    pub async fn address_slug_in_use(&self, slug: &str, except: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where slug = $1 \
+                            and ($2::uuid is null or id <> $2)) \
+                 or exists(select 1 from provider_groups where slug = $1 \
+                            and ($2::uuid is null or id <> $2))",
+        )
+        .bind(slug)
+        .bind(except)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether a provider or provider group outside `org_id` answers `slug`.
+    ///
+    /// A route named `slug/…` in `org_id` would sit on that holder's
+    /// `provider-slug/model` or `group-slug/model` address, and a key with no
+    /// org (the operator's) would reach the route instead of the address.
+    /// `None` treats every org as another one.
+    pub async fn address_slug_outside_org(&self, slug: &str, org_id: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where slug = $1 \
+                            and ($2::uuid is null or org_id <> $2)) \
+                 or exists(select 1 from provider_groups where slug = $1 \
+                            and ($2::uuid is null or org_id <> $2))",
+        )
+        .bind(slug)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
             "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
@@ -1171,6 +1295,21 @@ impl ProviderRepo<'_> {
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
+    }
+
+    /// The names of every provider in any of `org_ids`: what the gateway writes
+    /// into `provider_health_events.provider`, which carries no org of its own,
+    /// so this is how a health rollup is narrowed to the orgs a caller may read
+    /// (#1820).
+    pub async fn names_in_orgs(&self, org_ids: &[Uuid]) -> Result<Vec<String>> {
+        if org_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_scalar("select name from providers where org_id = any($1)")
+            .bind(org_ids)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2035,6 +2174,36 @@ impl ProviderKeyRepo<'_> {
 pub struct RouteRepo<'a>(pub &'a PgPool);
 
 impl RouteRepo<'_> {
+    /// Whether any route in the deployment already answers to `model`. The
+    /// gateway keys routes by public name alone, across every org, so a
+    /// second one would make the snapshot refuse (#1845); per-org names are
+    /// #1857.
+    pub async fn model_in_use(&self, model: &str) -> Result<bool> {
+        sqlx::query_scalar("select exists(select 1 from routes where model = $1)")
+            .bind(model)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
+    }
+
+    /// Whether a route named `model` in `org_id` would sit on the
+    /// `provider-slug/model` or `group-slug/model` address of a provider or
+    /// provider group outside that org. `None` treats every org as another one.
+    pub async fn name_takes_address_outside_org(
+        &self,
+        model: &str,
+        org_id: Option<Uuid>,
+    ) -> Result<bool> {
+        match rolter_core::slug::address_slug(model) {
+            Some(slug) => {
+                ProviderRepo(self.0)
+                    .address_slug_outside_org(slug, org_id)
+                    .await
+            }
+            None => Ok(false),
+        }
+    }
+
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<Route>> {
         sqlx::query_as(
             "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
@@ -2351,6 +2520,17 @@ impl VirtualKeyRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// How many keys `user_id` minted for themselves. Deactivating the account
+    /// takes exactly these out of the snapshot, and deleting it disables them
+    /// (#1841), so the count is what an offboarding audit row records.
+    pub async fn count_personal(&self, user_id: Uuid) -> Result<i64> {
+        sqlx::query_scalar("select count(*) from virtual_keys where created_by = $1")
+            .bind(user_id)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
     }
 
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
@@ -2950,6 +3130,27 @@ impl MembershipRepo<'_> {
         sqlx::query_as(
             "select id, user_id, org_id, team_id, project_id, role, source, created_at
              from memberships where user_id = $1 order by created_at",
+        )
+        .bind(user_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// `(membership id, org, team)` for every membership of `user_id`: the org
+    /// and team each one sits under, which a project membership does not name
+    /// on its own row.
+    pub async fn ancestors_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<(Uuid, Option<Uuid>, Option<Uuid>)>> {
+        sqlx::query_as(
+            "select m.id, coalesce(m.org_id, t.org_id, pt.org_id), coalesce(m.team_id, p.team_id)
+             from memberships m
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.user_id = $1",
         )
         .bind(user_id)
         .fetch_all(self.0)
@@ -3778,6 +3979,25 @@ impl LoggingSettingsRepo<'_> {
     }
 }
 
+/// Everyone holding a role anywhere in the org bound as `$1`: at the org, one
+/// of its teams or one of its projects.
+///
+/// Account events — sign-ins, failed sign-ins, second-factor changes, a
+/// break-glass reset — are written with no org, because an account is not any
+/// one org's. An org's audit log still has to show them for its own people,
+/// or the rows are written and nobody can read them (#1854).
+macro_rules! org_members_cte {
+    () => {
+        "with members as (
+     select m.user_id from memberships m
+       left join teams t on t.id = m.team_id
+       left join projects p on p.id = m.project_id
+       left join teams pt on pt.id = p.team_id
+      where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1)
+ "
+    };
+}
+
 impl AuditLogRepo<'_> {
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
@@ -3828,28 +4048,30 @@ impl AuditLogRepo<'_> {
     ) -> Result<AuditLogPage> {
         let query = match filter.direction {
             AuditLogDirection::Next => {
-                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                concat!(org_members_cte!(), "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
                  from audit_log
-                 where org_id = $1
+                 where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
+                        or (target_type = 'user' and target_id in (select user_id from members)))))
                    and ($2::uuid is null or actor_user_id = $2)
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
                    and ($6::timestamptz is null or at <= $6)
                    and ($7::timestamptz is null or (at, id) < ($7, $8))
-                 order by at desc, id desc limit $9"
+                 order by at desc, id desc limit $9")
             }
             AuditLogDirection::Previous => {
-                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                concat!(org_members_cte!(), "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
                  from audit_log
-                 where org_id = $1
+                 where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
+                        or (target_type = 'user' and target_id in (select user_id from members)))))
                    and ($2::uuid is null or actor_user_id = $2)
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
                    and ($6::timestamptz is null or at <= $6)
                    and ($7::timestamptz is null or (at, id) > ($7, $8))
-                 order by at asc, id asc limit $9"
+                 order by at asc, id asc limit $9")
             }
         };
         let mut entries: Vec<AuditLogEntry> = sqlx::query_as(query)
@@ -3879,15 +4101,17 @@ impl AuditLogRepo<'_> {
     /// this extra query because a precise total is not needed for normal
     /// next/previous navigation.
     pub async fn count(&self, org_id: Uuid, filter: &AuditLogFilter) -> Result<i64> {
-        sqlx::query_scalar(
+        sqlx::query_scalar(concat!(
+            org_members_cte!(),
             "select count(*) from audit_log
-             where org_id = $1
+             where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
+                    or (target_type = 'user' and target_id in (select user_id from members)))))
                and ($2::uuid is null or actor_user_id = $2)
                and ($3::text is null or action = $3)
                and ($4::text is null or target_type = $4)
                and ($5::timestamptz is null or at >= $5)
                and ($6::timestamptz is null or at <= $6)",
-        )
+        ))
         .bind(org_id)
         .bind(filter.actor_user_id)
         .bind(filter.action.as_deref())
@@ -3907,6 +4131,20 @@ impl AuditLogRepo<'_> {
 pub struct ProviderGroupRepo<'a>(pub &'a PgPool);
 
 impl ProviderGroupRepo<'_> {
+    /// Whether a group other than `except` already has `slug`, in any org.
+    /// `group-slug/model` addressing resolves a slug across the deployment.
+    pub async fn slug_in_use(&self, slug: &str, except: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from provider_groups where slug = $1 \
+             and ($2::uuid is null or id <> $2))",
+        )
+        .bind(slug)
+        .bind(except)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
         sqlx::query_as(
             "select id, org_id, name, slug, strategy, created_at

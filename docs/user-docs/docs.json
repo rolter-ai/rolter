@@ -52,6 +52,15 @@
             ]
           },
           {
+            "group": "Guides",
+            "pages": [
+              "guides/admin-first-hour",
+              "guides/connecting-models",
+              "guides/engineer-first-day",
+              "guides/tracking-spend"
+            ]
+          },
+          {
             "group": "Core Concepts",
             "pages": [
               "concepts/providers-and-routes",
@@ -155,6 +164,7 @@
               "api/ui-events",
               "api/version",
               "api/org-projects",
+              "api/project-settings",
               "api/budgets-and-rate-limits",
               "api/control-plane-openapi"
             ]

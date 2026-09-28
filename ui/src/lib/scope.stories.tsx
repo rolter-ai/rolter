@@ -234,6 +234,74 @@ export const PrefersTheOrgTheAccountBelongsTo: Story = {
   },
 };
 
+/** `/auth/me` for an account whose only role sits below the org */
+const memberBelowTheOrg =
+  (membership: Record<string, string | null>): FetchStub =>
+  async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/auth/me") {
+      return json({
+        user: {
+          id: "user-1",
+          email: "anya@acme.co",
+          is_superadmin: false,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        memberships: [
+          {
+            id: "membership-1",
+            user_id: "user-1",
+            org_id: null,
+            team_id: null,
+            project_id: null,
+            role: "member",
+            source: "manual",
+            created_at: "2026-01-01T00:00:00Z",
+            ...membership,
+          },
+        ],
+      });
+    }
+    return chain(input, init);
+  };
+
+/**
+ * A member of one project lands on that project, not on whatever each list
+ * starts with (#1846): Batch is the second project of the first team.
+ */
+export const AProjectMemberLandsOnTheirOwnProject: Story = {
+  render: () => (
+    <Harness
+      fetchStub={memberBelowTheOrg({
+        project_id: "project-2",
+        scope_org_id: "org-1",
+        scope_team_id: "team-1",
+      })}
+    >
+      <StaleSession>
+        <ScopeProbe />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await settled(canvasElement, "probe", ["org-1", "team-1", "project-2"]);
+  },
+};
+
+/** a team member lands on their team, and on its first project */
+export const ATeamMemberLandsOnTheirOwnTeam: Story = {
+  render: () => (
+    <Harness fetchStub={memberBelowTheOrg({ team_id: "team-2", scope_org_id: "org-1" })}>
+      <StaleSession>
+        <ScopeProbe />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await settled(canvasElement, "probe", ["org-1", "team-2", "project-3"]);
+  },
+};
+
 /** but an explicit pick still outranks the membership: the switcher has to stick */
 export const AStoredPickOutranksTheMembership: Story = {
   render: () => (

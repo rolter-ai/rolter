@@ -20,6 +20,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::metrics::{Metrics, RedisConsumer};
 use crate::redis_conn::ReconnectingRedis;
 
 /// A stored upstream response: enough to reconstruct the client reply byte-for-byte.
@@ -69,7 +70,7 @@ impl ResponseCache {
 
     /// Build a cache against `redis_url`. An invalid url disables it.
     pub fn new(redis_url: &str) -> Self {
-        match ReconnectingRedis::new(redis_url, "response cache") {
+        match ReconnectingRedis::new(redis_url, RedisConsumer::ResponseCache.label()) {
             Ok(redis) => Self {
                 redis: Some(redis),
                 #[cfg(test)]
@@ -79,6 +80,16 @@ impl ResponseCache {
                 tracing::warn!(error = %err, "invalid redis url; response cache disabled");
                 Self::disabled()
             }
+        }
+    }
+
+    /// Report this cache's Redis connection on `/metrics`, and connect now
+    /// rather than on the first cacheable request (#1772). Does nothing when
+    /// disabled.
+    pub fn watch(&self, metrics: &Metrics) {
+        if let Some(redis) = &self.redis {
+            metrics.watch_redis(RedisConsumer::ResponseCache, redis.stats().clone());
+            redis.warm_up();
         }
     }
 

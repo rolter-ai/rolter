@@ -23,14 +23,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use rolter_auth::Role;
-use rolter_store::postgres::models::{AccessProfilePolicy, EffectiveGrant};
-use rolter_store::postgres::repo::{AccessProfileRepo, CustomRoleRepo, MembershipRepo};
+use rolter_store::postgres::models::{AccessProfilePolicy, EffectiveGrant, Membership};
+use rolter_store::postgres::repo::{
+    AccessProfileRepo, CustomRoleRepo, MembershipRepo, ProjectRepo,
+};
 
 use crate::access_control::{merge_policies, MergedPolicy};
-use crate::crud::{pool, ApiResult};
+use crate::crud::{pool, ApiError, ApiResult};
 use crate::rbac::{
-    authorize, best_role, custom_base_role, grant_applies, resolve_role, role_rank, Principal,
-    ScopeChain, ROLES,
+    best_role, custom_base_role, grant_applies, reaches_org, resolve_role, role_rank, Principal,
+    ScopeChain, ScopeFilter, ROLES,
 };
 use crate::ControlState;
 
@@ -158,6 +160,17 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: ADMIN,
     },
+    // a project's own settings, apart from the project row (#1820). Today that
+    // is who may read the bodies payload capture stored for its traffic, which
+    // decides who reads its prompts, so changing it is a project admin's
+    Capability {
+        resource: "project_settings",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: ADMIN,
+        delete: NA,
+    },
     Capability {
         resource: "provider",
         scope: "org",
@@ -181,6 +194,16 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+    },
+    // provider uptime, MTTR and failure timeline (#1820): whoever may read a
+    // provider may read how it has been behaving
+    Capability {
+        resource: "provider_health",
+        scope: "org",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
     },
     Capability {
         // a label on a provider, provider group or route. its own capability
@@ -227,6 +250,29 @@ const CAPABILITIES: &[Capability] = &[
         scope: "project",
         read: NA,
         create: MEMBER,
+        update: NA,
+        delete: NA,
+    },
+    // request logs and the usage, spend and attribution rollups over them
+    // (#1820). A user reads the rows of the orgs, teams and projects they hold
+    // a role in and nothing else — never the deployment as a whole
+    Capability {
+        resource: "analytics",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
+    // the request and response bodies payload capture stored with those rows
+    // (#1820): the most sensitive thing the logs hold, so a member's by
+    // default. A project admin may lower the bar to viewer for their own
+    // project through `project_settings`
+    Capability {
+        resource: "request_payload",
+        scope: "project",
+        read: MEMBER,
+        create: NA,
         update: NA,
         delete: NA,
     },
@@ -815,17 +861,19 @@ async fn get_matrix(
     Query(query): Query<MatrixQuery>,
 ) -> ApiResult<Json<MatrixView>> {
     // the org-defined half is per-tenant, so it takes a membership in that
-    // tenant; without `org_id` the answer is the built-in table alone, exactly
-    // as before
+    // tenant — at the org or anywhere inside it: a profile can compose a custom
+    // role at a team or project, and the dashboard asks for this table as soon
+    // as a project member has an org in scope, to explain its disabled
+    // controls (#1846). without `org_id` the answer is the built-in table
+    // alone, exactly as before
     let custom_roles = match query.org_id {
         Some(org_id) => {
-            authorize(
-                &state,
-                &principal,
-                ScopeChain::org(org_id),
-                cap!("custom_role", Read),
-            )
-            .await?;
+            let filter = ScopeFilter::load(&state, &principal, cap!("custom_role", Read)).await?;
+            if !filter.allows(ScopeChain::org(org_id))
+                && !reaches_org(&filter.reach(pool(&state)).await?, org_id)
+            {
+                return Err(ApiError::Forbidden);
+            }
             custom_role_views(&state, org_id).await?
         }
         None => Vec::new(),
@@ -845,7 +893,7 @@ async fn get_matrix(
 
 #[derive(Debug, Deserialize)]
 struct MatrixQuery {
-    /// include this org's custom roles; requires a membership there
+    /// include this org's custom roles; requires a role at the org or inside it
     org_id: Option<Uuid>,
 }
 
@@ -951,27 +999,75 @@ async fn get_effective(
         team: query.team_id,
         project: query.project_id,
     };
-    let (superadmin, from_memberships, grants, policies) = match &principal {
-        Principal::Superadmin => (true, None, Vec::new(), Vec::new()),
+    let (superadmin, memberships, grants, policies) = match &principal {
+        Principal::Superadmin => (true, Vec::new(), Vec::new(), Vec::new()),
         Principal::User(user) => {
-            let memberships = MembershipRepo(pool(&state)).list_for_user(user.id).await?;
             let profiles = AccessProfileRepo(pool(&state));
             (
                 false,
-                resolve_role(&memberships, chain.org, chain.team, chain.project),
+                MembershipRepo(pool(&state)).list_for_user(user.id).await?,
                 profiles.effective_grants_for_user(user.id).await?,
                 profiles.policies_for_user(user.id).await?,
             )
         }
     };
-    let role = best_role(from_memberships, custom_base_role(&grants, chain));
+    let role = best_role(
+        resolve_role(&memberships, chain.org, chain.team, chain.project),
+        custom_base_role(&grants, chain),
+    );
+    let mut allowed = allowed_for(superadmin, role, &grants, chain);
+    // the matrix states the default `request_payload` floor; a project admin
+    // may lower it to viewer for their own project (#1820). Any role at all is
+    // at least a viewer's, so holding one there is enough
+    if let (false, Some(project), Some(_)) = (superadmin, chain.project, role) {
+        let pair = format!("request_payload:{}", action_key(Action::Read));
+        if !allowed.contains(&pair)
+            && project_opens_payloads_to(&state, &memberships, &grants, project).await
+        {
+            allowed.push(pair);
+        }
+    }
     Ok(Json(EffectiveView {
         superadmin,
         role,
-        allowed: allowed_for(superadmin, role, &grants, chain),
+        allowed,
         custom_roles: held_roles(&grants, chain),
         model_policy: merged_policy(&policies),
     }))
+}
+
+/// Whether `project` shows its captured bodies to viewers and the caller holds
+/// a role on the project's own scope chain.
+///
+/// The chain is read from the project row, never taken from the query string.
+/// `rbac/effective` otherwise evaluates whatever `org_id`/`team_id`/`project_id`
+/// the caller assembled, so a viewer of one org could name another org's
+/// project beside their own org and read that project's setting back as a
+/// permission they do not have. Requiring a role on the real chain is the same
+/// reach the analytics filter applies before it honours the override. A
+/// project that does not exist, or a lookup that fails, opens nothing: the
+/// answer here is advisory, and a stale id from the dashboard should not turn
+/// it into an error.
+async fn project_opens_payloads_to(
+    state: &ControlState,
+    memberships: &[Membership],
+    grants: &[EffectiveGrant],
+    project: Uuid,
+) -> bool {
+    let pool = pool(state);
+    let Ok(chain) = ScopeChain::from_project(pool, project).await else {
+        return false;
+    };
+    let reaches = best_role(
+        resolve_role(memberships, chain.org, chain.team, chain.project),
+        custom_base_role(grants, chain),
+    )
+    .is_some();
+    reaches
+        && ProjectRepo(pool)
+            .payload_min_role(project)
+            .await
+            .is_ok_and(|min| min == "viewer")
 }
 
 /// Distinct `(profile, role)` pairs the caller holds at `chain`.
@@ -1082,6 +1178,9 @@ mod tests {
             extra,
             vec![
                 "my_virtual_key:create",
+                // the bodies behind their own project's request logs, which a
+                // viewer sees only where a project admin allows it (#1820)
+                "request_payload:read",
                 "mcp_oauth_grant:create",
                 "mcp_oauth_session:create",
                 "mcp_oauth_session:update",
@@ -1180,6 +1279,7 @@ mod tests {
         ),
         ("alerting.rs", include_str!("alerting.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
+        ("analytics_access.rs", include_str!("analytics_access.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
         ("cluster.rs", include_str!("cluster.rs")),

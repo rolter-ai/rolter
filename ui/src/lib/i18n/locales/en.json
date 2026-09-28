@@ -211,7 +211,8 @@
       "complexityPolicies": "complexity policies",
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
-      "playgroundKey": "the playground key"
+      "playgroundKey": "the playground key",
+      "projectSettings": "project settings"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -346,8 +347,9 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Public = available to anyone meeting the minimum role. Restricted = only the teams, virtual keys, and users you list below.",
-      "public": "Public",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "public": "Whole organization",
+      "project": "This project",
       "restricted": "Restricted",
       "teams": "Allowed teams / business units",
       "vkeys": "Allowed virtual keys",
@@ -2118,7 +2120,8 @@
       "requests_one": "{{count}} request",
       "requests_other": "{{count}} requests",
       "pageShort": "p{{page}}",
-      "requestFallback": "request"
+      "requestFallback": "request",
+      "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings."
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2602,6 +2605,7 @@
       }
     },
     "featureFlags": {
+      "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
           "title": "Response Cache",
@@ -2779,6 +2783,13 @@
       "org": "Acme Inc",
       "team": "Platform",
       "project": "prod"
+    },
+    "projectSettings": "Project settings",
+    "settings": {
+      "title": "{{name}} settings",
+      "hint": "These apply to this project only.",
+      "viewersSeePayloads": "Viewers can read captured payloads",
+      "viewersSeePayloadsHint": "Off: request and response bodies in the request log are shown to this project's members and admins. On: its viewers see them too."
     }
   },
   "screens": {

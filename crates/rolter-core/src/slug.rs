@@ -24,6 +24,16 @@ pub fn is_valid_slug(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// The provider or group slug a `slug/model` address names, when `model` has
+/// that shape: a valid slug before the first `/` and something after it.
+///
+/// This is the split the gateway applies once no route by the full name
+/// answers, so a route whose name has this shape sits on that address.
+pub fn address_slug(model: &str) -> Option<&str> {
+    let (slug, upstream) = model.split_once('/')?;
+    (!upstream.is_empty() && is_valid_slug(slug)).then_some(slug)
+}
+
 /// Derive a candidate slug from a display `name`: lowercase, non-alphanumerics
 /// collapse to single hyphens, leading/trailing hyphens trimmed, truncated to
 /// [`SLUG_MAX_LEN`]. The result satisfies [`is_valid_slug`] as long as `name`
@@ -104,5 +114,15 @@ mod tests {
     fn slugify_truncates_to_max_len() {
         let long = "x".repeat(100);
         assert_eq!(slugify(&long).chars().count(), SLUG_MAX_LEN);
+    }
+
+    #[test]
+    fn address_slug_is_the_segment_the_gateway_pins() {
+        assert_eq!(address_slug("edge/gpt-4o"), Some("edge"));
+        assert_eq!(address_slug("edge/org/model:tag"), Some("edge"));
+        // a slug is lower-case, so an hf-style org segment is never one
+        assert_eq!(address_slug("Qwen/Qwen2.5-7B"), None);
+        assert_eq!(address_slug("edge/"), None);
+        assert_eq!(address_slug("gpt-4o"), None);
     }
 }
