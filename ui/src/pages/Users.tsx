@@ -18,6 +18,7 @@ import {
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
+import { Segmented } from "@/components/ui/segmented";
 import {
   Dialog,
   DialogDescription,
@@ -174,26 +175,15 @@ export default function Users() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="flex gap-0.5">
-          {(["all", "active", "deactivated"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setStatusTab(tab)}
-              className={
-                "border-b-2 px-3 py-[7px] text-sm capitalize transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring " +
-                (statusTab === tab
-                  ? "border-[color:var(--red-folk)] text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground")
-              }
-            >
-              {statusLabels[tab]}{" "}
-              <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
-                {counts[tab]}
-              </span>
-            </button>
-          ))}
-        </div>
+        <Segmented
+          ariaLabel={t("pages.users.statusFilterAria")}
+          value={statusTab}
+          options={(["all", "active", "deactivated"] as const).map((tab) => ({
+            value: tab,
+            label: `${statusLabels[tab]} ${counts[tab]}`,
+          }))}
+          onChange={setStatusTab}
+        />
         <GatedButton
           gate="invitation:create"
           control="user-invite"

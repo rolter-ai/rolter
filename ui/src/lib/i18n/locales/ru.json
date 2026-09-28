@@ -2381,6 +2381,7 @@
       "colStatus": "Статус",
       "colCreated": "Создан",
       "noRoles": "нет ролей",
+      "statusFilterAria": "Фильтр пользователей по статусу",
       "statusAll": "все",
       "statusActive": "активные",
       "statusDeactivated": "отключённые",
