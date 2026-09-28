@@ -42,3 +42,8 @@
 
 **Learning:** Hand-rolled `<Dialog>` implementations for destructive actions often miss inline error displays, UX telemetry (`useFormTelemetry`), and pending spinner states on the confirm button.
 **Action:** Always replace hand-rolled destructive dialogs with the shared `ConfirmDialog` component (`name="<action-slug>"`), passing `pending` and `error` from the mutation so failures are reported directly inside the open dialog.
+
+## 2026-09-11 - Users Status Segmented Control Primitive
+
+**Learning:** Replacing hand-rolled tab buttons with the `<Segmented />` primitive standardizes accessibility across screens (`role="radiogroup"` and `role="radio"`).
+**Action:** When replacing custom tab/button groups with `<Segmented />`, update story assertions to query `getByRole("radio", { name: ... })` instead of `getByRole("button", ...)` and include an explicit `ariaLabel` for proper screen reader context.

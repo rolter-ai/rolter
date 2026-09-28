@@ -144,7 +144,7 @@ export const FiltersToDeactivatedAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ada@example.com")).toBeInTheDocument();
-    await userEvent.click(canvas.getByRole("button", { name: /deactivated/i }));
+    await userEvent.click(canvas.getByRole("radio", { name: /deactivated/i }));
     await expect(canvas.getByText("former@example.com")).toBeInTheDocument();
     await expect(canvas.queryByText("ada@example.com")).not.toBeInTheDocument();
   },
