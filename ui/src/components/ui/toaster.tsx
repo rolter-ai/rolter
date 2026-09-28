@@ -33,6 +33,10 @@ export function Toaster() {
       // the live regions rather than on them (#1181)
       role="region"
       aria-label={t("toast.region")}
+      // drawn above every sheet and dialog, so it stays live while one makes
+      // the rest of the page inert — an inert live region announces nothing
+      // (see lib/modal-a11y.ts)
+      data-above-modals
     >
       <div role="status" aria-live="polite" className="contents">
         {rest.map((toast) => (
