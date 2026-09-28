@@ -6,7 +6,6 @@ colors:
   surface-base: "#111113"
   surface-elevated: "#1f1f23"
   surface-subtle: "#27272a"
-  surface-active: "#3f3f46"
   text-primary: "#fafafa"
   text-secondary: "#d4d4d8"
   text-muted: "#a1a1aa"
@@ -61,6 +60,12 @@ typography:
     fontSize: "0.625rem"
     fontWeight: 500
     lineHeight: 1
+  overline:
+    fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif"
+    fontSize: "0.6875rem"
+    fontWeight: 400
+    lineHeight: 1.33
+    letterSpacing: "0.07em"
   mono:
     fontFamily: "Geist Mono Variable, ui-monospace, SFMono-Regular, monospace"
     fontSize: "0.75rem"
@@ -183,6 +188,11 @@ components:
     textColor: "{colors.text-muted}"
     typography: "{typography.label}"
     padding: "8px 16px"
+  list-header:
+    backgroundColor: "{colors.surface-subtle}"
+    textColor: "{colors.text-subtle}"
+    typography: "{typography.overline}"
+    padding: "9px 16px"
   table-cell:
     textColor: "{colors.text-secondary}"
     typography: "{typography.body}"
@@ -237,11 +247,13 @@ A single neutral zinc ramp carries almost every pixel; two reds and four status 
 
 ### Primary
 
-- **Accent Red** (`red-accent`): the bright stitch of the mark. As a border it marks a selected
-  chip or a locked field; `red-accent-hover` and `red-accent-press` are its interaction steps.
+- **Accent Red** (`red-accent`): the bright stitch of the mark. In the interface it marks a
+  _selection_: the border of a selected chip or a locked field, and a chart series. It is not a
+  button fill. `red-accent-hover` is the first chart series; `red-accent-press` is the brand
+  button's hover.
 - **Folk Red** (`red-folk`): the deep embroidery red from the logo's inner ring. It is a _shape_
-  colour: the active-nav tick, a switch track that is on, the вышивка rule, the brand button and
-  destructive surfaces. It is 2.82:1 on `surface-base`, so it never colours text.
+  colour: the brand button fill, the active-nav tick, a switch track that is on, the вышивка rule
+  and destructive surfaces. It is 2.82:1 on `surface-base`, so it never colours text.
 - **Folk Red, text half** (`red-folk-text`): the same family lifted to 6.09:1 for eyebrows,
   accent badges and code keywords.
 - **Red Tint** (`red-tint`): a 12% wash of Accent Red for selected chips, accent badges and hover
@@ -254,7 +266,6 @@ A single neutral zinc ramp carries almost every pixel; two reds and four status 
 - **Graphite** (`surface-base`): the page, cards and table bodies.
 - **Raised Graphite** (`surface-elevated`): popovers, menus, sheets.
 - **Zinc Band** (`surface-subtle`): table header bands, inputs, hovered rows, the active nav item.
-- **Pressed Zinc** (`surface-active`): pressed and selected-within-selected states.
 - **Near White** (`text-primary`): headings, values, primary button fill.
 - **Soft Zinc** (`text-secondary`): table cell text.
 - **Muted Zinc** (`text-muted`): descriptions, idle nav items, table headers.
@@ -274,9 +285,10 @@ Charts read `--chart-1` … `--chart-8` and `--chart-other` by index, and avatar
 
 ### Named Rules
 
-**The One Red Voice Rule.** A view has one red action at most. Folk Red marks state (active,
-on, selected); Accent Red marks the single primary action. If two things on a screen are red for
-different reasons, one of them is wrong.
+**The One Red Voice Rule.** A view has one red action at most: the Folk Red brand button, or a
+single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on)
+and Accent Red marks a selection. If two things on a screen are red for different reasons, one of
+them is wrong.
 
 **The Shape-or-Glyph Rule.** Every hue that colours both shapes and text comes as a pair. Pick the
 half by what it paints: a dot, bar or border takes the fill; a letter takes the `-text` token.
@@ -301,7 +313,10 @@ prefixes, config keys, token counts, latency and money.
 - **Title** (500, 14px): buttons, tabs, empty-state titles.
 - **Body** (400, 14px): tables, inputs, nav items, descriptions.
 - **Body compact** (400, 13px): the document default for everything that does not set its own size.
-- **Label** (500, 12px): table headers, stat-card labels, helper lines.
+- **Label** (500, 12px): `Table` headers, stat-card labels, helper lines.
+- **Overline** (400, 11px, uppercase, 0.07em tracking): `ListTable` headers and small eyebrows,
+  in Subtle Zinc. The `--text-2xs` token carries the size but is not registered with Tailwind yet,
+  so call sites spell it out (#1990).
 - **Badge** (500, 10px): badge text only.
 - **Mono** (400, 12px): identifiers and values inline with body text; sheet subtitles.
 - **Figure** (Geist Mono 500, 28px, tight tracking): the headline number of a stat card.
@@ -334,9 +349,11 @@ and hairline borders. Cards have no shadow. Shadows exist only on things that fl
 
 ### Shadow Vocabulary
 
-- **Overlay** (`box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45)`, `--shadow-md`): menus and popovers.
-- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): dialogs and the
-  account menu.
+- **Overlay** (`box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45)`, `--shadow-md`): the combobox list
+  and chart tooltips.
+- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): meant for dialogs and
+  menus. Those currently use Tailwind's stock `shadow-lg` utility, which is not this token, and the
+  sign-in card rests on a `shadow-2xl`; both are tracked in #1990.
 - **Sheet edge** (`box-shadow: -14px 0 44px rgba(0, 0, 0, 0.42)`): the right-hand sheet over a 50%
   black scrim, mirrored for the nav drawer below `md`.
 
@@ -361,8 +378,9 @@ is state to show.
 
 - **Shape:** gently rounded (8px), 36px tall; `sm` is 32px with 12px text.
 - **Primary:** Near White fill with Graphite text. The default action button is neutral, not red.
-- **Brand:** Folk Red fill with white text, pressing to `red-accent-press`. Reserved for the one
-  action a screen exists for, such as signing in or accepting an invite.
+- **Brand:** Folk Red fill with white text, hovering to `red-accent-press`. Reserved for the one
+  action a screen exists for, such as signing in, accepting an invite or turning on two-factor.
+  It is hand-written at each call site today rather than a `Button` variant (#1993).
 - **Outline / Ghost:** Graphite or transparent with Near White text, hovering to the Zinc Band.
 - **Destructive:** a Folk Red surface; its confirm lives in `ConfirmDialog`.
 - **Focus:** a 1px `focus-ring` ring on `:focus-visible`; disabled drops to 50% opacity.
@@ -402,8 +420,10 @@ the label in the `-text` half; the accent tone is Red Tint with Folk Red text.
 
 ### Tables
 
-A Zinc Band header row in 12px medium Muted Zinc, body cells in 14px Soft Zinc, `border-subtle`
-between rows, hover to the Zinc Band. Mono columns drop to 12px Near White.
+Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted Zinc; the
+`ListTable` grid used by most list screens has an 11px uppercase Overline header in Subtle Zinc.
+Body cells are 14px Soft Zinc with `border-subtle` between rows and hover to the Zinc Band. Mono
+columns drop to 12px Near White.
 
 ### Stat card
 

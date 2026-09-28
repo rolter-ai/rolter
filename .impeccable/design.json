@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-28T16:34:54+00:00",
+  "generatedAt": "2026-09-28T17:10:13+00:00",
   "title": "Design System: rolter",
   "extensions": {
     "colorMeta": {
@@ -128,21 +128,6 @@
         "role": "neutral",
         "displayName": "Zinc Band",
         "canonical": "oklch(27.4% 0.005 286.0)",
-        "tonalRamp": [
-          "#09090b",
-          "#18181b",
-          "#27272a",
-          "#3f3f46",
-          "#71717a",
-          "#a1a1aa",
-          "#d4d4d8",
-          "#fafafa"
-        ]
-      },
-      "surface-active": {
-        "role": "neutral",
-        "displayName": "Pressed Zinc",
-        "canonical": "oklch(37.0% 0.012 285.8)",
         "tonalRamp": [
           "#09090b",
           "#18181b",
@@ -375,6 +360,10 @@
         "displayName": "Badge",
         "purpose": "Badge text only."
       },
+      "overline": {
+        "displayName": "Overline",
+        "purpose": "ListTable headers and small eyebrows; 11px uppercase, Subtle Zinc."
+      },
       "mono": {
         "displayName": "Mono",
         "purpose": "Identifiers and values inline with body text."
@@ -388,12 +377,12 @@
       {
         "name": "overlay",
         "value": "0 4px 12px rgba(0, 0, 0, 0.45)",
-        "purpose": "Menus and popovers (--shadow-md)."
+        "purpose": "The combobox list and chart tooltips (--shadow-md)."
       },
       {
         "name": "lifted",
         "value": "0 12px 32px rgba(0, 0, 0, 0.55)",
-        "purpose": "Dialogs and the account menu (--shadow-lg)."
+        "purpose": "Meant for dialogs and menus (--shadow-lg); they still use Tailwind's stock shadow-lg (#1990)."
       },
       {
         "name": "sheet-edge",
@@ -533,7 +522,7 @@
     "rules": [
       {
         "name": "The One Red Voice Rule",
-        "body": "A view has one red action at most. Folk Red marks state (active, on, selected); Accent Red marks the single primary action. If two things on a screen are red for different reasons, one of them is wrong.",
+        "body": "A view has one red action at most: the Folk Red brand button, or a single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on) and Accent Red marks a selection. If two things on a screen are red for different reasons, one of them is wrong.",
         "section": "colors"
       },
       {
