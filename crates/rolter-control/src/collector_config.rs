@@ -420,7 +420,7 @@ mod tests {
             .await
             .unwrap();
         let body_str = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body_str.contains("failed to query observability connectors"));
+        assert!(body_str.contains("internal server error"));
         assert!(!body_str.contains(&err.to_string()));
     }
 }

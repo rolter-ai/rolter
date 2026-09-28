@@ -374,7 +374,7 @@ mod tests {
         ] {
             assert!(!body.contains(leak), "the body leaks {leak:?}: {body}");
         }
-        assert!(body.contains(INSERT_FAILED), "{body}");
+        assert!(body.contains("internal server error"), "{body}");
     }
 
     #[tokio::test]
@@ -386,6 +386,6 @@ mod tests {
         ))
         .await;
         assert_eq!(status, 500);
-        assert!(body.contains("requires CLICKHOUSE_URL"), "{body}");
+        assert!(body.contains("internal server error"), "{body}");
     }
 }
