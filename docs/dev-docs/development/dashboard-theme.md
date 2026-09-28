@@ -66,6 +66,18 @@ token. Its `AllTones` story asserts the computed label colour still resolves to
 the token, so a tone that drifts back to a raw palette colour fails the story
 tests.
 
+The delta under a `StatCard` figure (`ui/src/components/ui/stat-card.tsx`)
+takes the same `-text` half, and its colour follows what a change means rather
+than which way it went. The same up arrow is good news on traffic and bad news
+on errors, latency or spend, so the two are separate props: `trend` (`up`,
+`down`, `flat`) draws the arrow and `tone` (`good`, `bad`, `neutral`) picks the
+colour (#1974). Without `tone` the colour follows the arrow the way a count you
+want more of reads, so pass it for any figure that is bad when it rises. Leave
+`trend` out when the delta is not a comparison with an earlier window: the card
+then draws no arrow, since one would claim a movement nobody measured. The
+`BadUp` and `NoComparison` stories assert the computed colour against the
+token, the same way `AllTones` does for `Badge`.
+
 When you add a status hue, add both halves, check the ratio against all four
 surfaces _and_ against the tint the text will sit on, and record the worst
 number in the comment beside the token.

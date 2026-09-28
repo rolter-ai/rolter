@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
 import { Badge } from "./badge";
+import { resolveColorToken } from "@/lib/story-tokens";
 
 const meta = {
   title: "Primitives/Badge",
@@ -33,17 +34,6 @@ const TONE_TOKENS = {
   info: "--status-info-text",
   accent: "--red-folk-text",
 } as const;
-
-// resolve a custom property the way the browser would, so the assertion follows
-// the token if the design retunes it instead of pinning a literal rgb()
-function resolve(token: string): string {
-  const probe = document.createElement("span");
-  probe.style.color = `var(${token})`;
-  document.body.appendChild(probe);
-  const color = getComputedStyle(probe).color;
-  probe.remove();
-  return color;
-}
 
 export const AllTones: Story = {
   render: () => (
@@ -83,7 +73,7 @@ export const AllTones: Story = {
 
     for (const [tone, token] of Object.entries(TONE_TOKENS)) {
       const badge = canvas.getByText(labels[tone as keyof typeof TONE_TOKENS]);
-      await expect(getComputedStyle(badge).color).toBe(resolve(token));
+      await expect(getComputedStyle(badge).color).toBe(resolveColorToken(token));
     }
 
     // no tone may carry a variant the dark-only theme can never turn on
