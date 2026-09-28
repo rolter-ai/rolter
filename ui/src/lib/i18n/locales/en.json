@@ -2230,6 +2230,7 @@
       "colStatus": "Status",
       "colCreated": "Created",
       "noRoles": "no roles",
+      "statusFilterAria": "Filter users by status",
       "statusAll": "all",
       "statusActive": "active",
       "statusDeactivated": "deactivated",
